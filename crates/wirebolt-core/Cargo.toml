@@ -6,11 +6,24 @@ rust-version.workspace = true
 
 [dependencies]
 http.workspace = true
+reqwest.workspace = true
 serde.workspace = true
+tokio.workspace = true
+tokio-util.workspace = true
 toml.workspace = true
 
 [dev-dependencies]
+bytes.workspace = true
+criterion.workspace = true
+http-body-util.workspace = true
+hyper.workspace = true
+hyper-util.workspace = true
 tempfile.workspace = true
+tokio.workspace = true
+
+[[bench]]
+name = "http_engine"
+harness = false
 
 [lints]
 workspace = true

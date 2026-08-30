@@ -44,6 +44,10 @@ impl PreparedRequest {
     pub fn body(&self) -> &[u8] {
         &self.body
     }
+
+    pub(crate) fn into_parts(self) -> (Method, Uri, HeaderMap, Vec<u8>) {
+        (self.method, self.uri, self.headers, self.body)
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]

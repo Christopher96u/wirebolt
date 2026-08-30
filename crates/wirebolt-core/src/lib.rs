@@ -1,8 +1,13 @@
 #![forbid(unsafe_code)]
 
+mod http_engine;
 mod request;
 mod storage;
 
+pub use http_engine::{
+    HttpEngine, HttpEngineConfig, HttpVersion, HttpVersionPolicy, Run, RunCancellation, RunError,
+    RunErrorKind, RunHeader, RunOptions, StreamControl,
+};
 pub use request::{
     HeaderField, PreparedRequest, RequestDraft, RequestPreparationError, prepare_request,
 };

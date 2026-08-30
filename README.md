@@ -17,3 +17,9 @@ Measure the performance contract on an idle Apple Silicon Mac:
 ```sh
 ./scripts/performance.sh check
 ```
+
+Benchmark the Rust HTTP engine over loopback:
+
+```sh
+./scripts/http-benchmark.sh
+```
