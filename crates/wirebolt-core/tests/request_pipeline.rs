@@ -332,6 +332,183 @@ fn id(value: &str) -> DocumentId {
 }
 
 #[test]
+fn secret_backed_variables_keep_their_provenance_through_templates() {
+    let token = SecretName::new("API_TOKEN").expect("secret name");
+    let secrets = FixtureSecrets(BTreeMap::from([(
+        token.as_str().to_owned(),
+        "super-secret".to_owned(),
+    )]));
+    let environment = Environment::new(
+        id("local"),
+        "Local".to_owned(),
+        BTreeMap::from([
+            ("token".to_owned(), ValueSource::secret(token)),
+            ("prefix".to_owned(), ValueSource::literal("Token {{token}}")),
+            ("plain".to_owned(), ValueSource::literal("v1")),
+        ]),
+    );
+    let mut request = Request::new(
+        id("templated"),
+        "Templated",
+        "GET",
+        "https://api.example.com",
+    );
+    request.headers.push(RequestHeader::enabled(
+        "x-token",
+        ValueSource::literal("{{token}}"),
+    ));
+    request.headers.push(RequestHeader::enabled(
+        "x-nested",
+        ValueSource::literal("{{prefix}}"),
+    ));
+    request.headers.push(RequestHeader::enabled(
+        "x-cached",
+        ValueSource::literal("again {{token}}"),
+    ));
+    request.headers.push(RequestHeader::enabled(
+        "x-plain",
+        ValueSource::literal("{{plain}}"),
+    ));
+
+    let prepared = RequestPipeline::new(Some(&environment), &secrets)
+        .prepare(&request)
+        .expect("valid request");
+
+    let headers = prepared.headers();
+    assert_eq!(headers["x-token"], "super-secret");
+    assert_eq!(headers["x-nested"], "Token super-secret");
+    assert_eq!(headers["x-cached"], "again super-secret");
+    assert!(headers["x-token"].is_sensitive());
+    assert!(headers["x-nested"].is_sensitive());
+    assert!(headers["x-cached"].is_sensitive());
+    assert!(!headers["x-plain"].is_sensitive());
+    let rendered = format!("{prepared:?}");
+    assert!(!rendered.contains("super-secret"), "{rendered}");
+    assert!(rendered.contains("v1"), "{rendered}");
+}
+
+#[test]
+fn a_secret_in_the_url_redacts_the_whole_url_from_debug() {
+    let key = SecretName::new("API_KEY").expect("secret name");
+    let secrets = FixtureSecrets(BTreeMap::from([(
+        key.as_str().to_owned(),
+        "sk-live-1234".to_owned(),
+    )]));
+    let environment = Environment::new(
+        id("local"),
+        "Local".to_owned(),
+        BTreeMap::from([("key".to_owned(), ValueSource::secret(key.clone()))]),
+    );
+
+    let mut by_template = Request::new(
+        id("template"),
+        "Template",
+        "GET",
+        "https://api.example.com/{{key}}/items",
+    );
+    by_template.query.push(RequestValueField::enabled(
+        "visible",
+        ValueSource::literal("yes"),
+    ));
+    let mut by_api_key = Request::new(id("api-key"), "API key", "GET", "https://api.example.com");
+    by_api_key.authentication = RequestAuthentication::ApiKey {
+        placement: ApiKeyPlacement::Query,
+        name: "api_key".to_owned(),
+        value: ValueSource::secret(key),
+    };
+    let plain = Request::new(id("plain"), "Plain", "GET", "https://api.example.com/items");
+
+    let pipeline = RequestPipeline::new(Some(&environment), &secrets);
+    for request in [&by_template, &by_api_key] {
+        let prepared = pipeline.prepare(request).expect("valid request");
+        assert!(prepared.url().as_str().contains("sk-live-1234"));
+        let rendered = format!("{prepared:?}");
+        assert!(!rendered.contains("sk-live-1234"), "{rendered}");
+        assert!(rendered.contains("[REDACTED]"), "{rendered}");
+    }
+    let rendered = format!("{:?}", pipeline.prepare(&plain).expect("valid request"));
+    assert!(
+        rendered.contains("https://api.example.com/items"),
+        "{rendered}"
+    );
+}
+
+#[test]
+fn a_secret_in_a_header_name_withholds_the_header_map_from_debug() {
+    let secret = SecretName::new("HEADER_NAME").expect("secret name");
+    let secrets = FixtureSecrets(BTreeMap::from([(
+        secret.as_str().to_owned(),
+        "x-hidden-name".to_owned(),
+    )]));
+    let environment = Environment::new(
+        id("local"),
+        "Local".to_owned(),
+        BTreeMap::from([("name".to_owned(), ValueSource::secret(secret))]),
+    );
+    let mut by_header = Request::new(id("header"), "Header", "GET", "https://api.example.com");
+    by_header.headers.push(RequestHeader::enabled(
+        "{{name}}",
+        ValueSource::literal("public value"),
+    ));
+    by_header.headers.push(RequestHeader::enabled(
+        "x-plain",
+        ValueSource::literal("also public"),
+    ));
+    let mut by_api_key = Request::new(id("api-key"), "API key", "GET", "https://api.example.com");
+    by_api_key.authentication = RequestAuthentication::ApiKey {
+        placement: ApiKeyPlacement::Header,
+        name: "{{name}}".to_owned(),
+        value: ValueSource::literal("key"),
+    };
+
+    let pipeline = RequestPipeline::new(Some(&environment), &secrets);
+    for request in [&by_header, &by_api_key] {
+        let prepared = pipeline.prepare(request).expect("valid request");
+        assert!(prepared.headers().contains_key("x-hidden-name"));
+        let rendered = format!("{prepared:?}");
+        assert!(!rendered.contains("x-hidden-name"), "{rendered}");
+        assert!(!rendered.contains("public value"), "{rendered}");
+        assert!(rendered.contains("[REDACTED"), "{rendered}");
+        assert!(rendered.contains("https://api.example.com"), "{rendered}");
+    }
+    let rendered = format!(
+        "{:?}",
+        RequestPipeline::new(None, &FixtureSecrets::default())
+            .prepare(&Request::new(
+                id("plain"),
+                "Plain",
+                "GET",
+                "https://api.example.com"
+            ))
+            .expect("valid request")
+    );
+    assert!(rendered.contains("headers: {}"), "{rendered}");
+}
+
+#[test]
+fn header_values_are_sent_exactly_as_written() {
+    let mut request = Request::new(id("exact"), "Exact", "POST", "https://api.example.com");
+    request.headers.push(RequestHeader::enabled(
+        "x-padded",
+        ValueSource::literal("  spaced out\t"),
+    ));
+    request.body = RequestBody::Text {
+        content_type: Some(" text/plain ".to_owned()),
+        value: "body".to_owned(),
+    };
+
+    let prepared = RequestPipeline::new(None, &FixtureSecrets::default())
+        .prepare(&request)
+        .expect("valid request");
+
+    assert_eq!(prepared.headers()["x-padded"].as_bytes(), b"  spaced out\t");
+    assert_eq!(
+        prepared.headers()["content-type"].as_bytes(),
+        b" text/plain "
+    );
+}
+
+#[test]
 fn prepares_environment_query_bearer_and_json_as_one_request() {
     let mut variables = BTreeMap::new();
     variables.insert(

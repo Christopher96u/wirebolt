@@ -24,13 +24,27 @@ pub struct RequestDraft {
 /// The URL is kept as a [`Url`] because that is the representation the
 /// transport consumes directly; converting through strings or `http::Uri`
 /// would parse the same text again on every run.
-#[derive(Clone, Debug)]
+///
+/// `Debug` output is safe to log: sensitive header values print as
+/// `Sensitive`, the header map is withheld entirely when a secret went into a
+/// header name, a URL that carries secret material is redacted, and the body
+/// is reported by length only.
+#[derive(Clone)]
 pub struct PreparedRequest {
     method: Method,
     url: Url,
     headers: HeaderMap,
     body: Vec<u8>,
     warnings: Vec<RequestIssue>,
+    redaction: Redaction,
+}
+
+/// Which parts of a prepared request carry secret material that `Debug`
+/// must not print. Header values track this per value on `HeaderValue`.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(crate) struct Redaction {
+    pub(crate) url: bool,
+    pub(crate) header_names: bool,
 }
 
 impl PreparedRequest {
@@ -40,6 +54,7 @@ impl PreparedRequest {
         headers: HeaderMap,
         body: Vec<u8>,
         warnings: Vec<RequestIssue>,
+        redaction: Redaction,
     ) -> Self {
         Self {
             method,
@@ -47,6 +62,7 @@ impl PreparedRequest {
             headers,
             body,
             warnings,
+            redaction,
         }
     }
 
@@ -79,6 +95,30 @@ impl PreparedRequest {
 
     pub(crate) fn into_parts(self) -> (Method, Url, HeaderMap, Vec<u8>) {
         (self.method, self.url, self.headers, self.body)
+    }
+}
+
+impl fmt::Debug for PreparedRequest {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let mut debug = formatter.debug_struct("PreparedRequest");
+        debug.field("method", &self.method);
+        if self.redaction.url {
+            debug.field("url", &"[REDACTED]");
+        } else {
+            debug.field("url", &self.url.as_str());
+        }
+        if self.redaction.header_names {
+            debug.field(
+                "headers",
+                &format_args!("[REDACTED {} headers]", self.headers.len()),
+            );
+        } else {
+            debug.field("headers", &self.headers);
+        }
+        debug
+            .field("body", &format_args!("[{} bytes]", self.body.len()))
+            .field("warnings", &self.warnings)
+            .finish()
     }
 }
 
@@ -132,6 +172,7 @@ pub fn prepare_request(draft: RequestDraft) -> Result<PreparedRequest, RequestPr
         headers,
         draft.body,
         Vec::new(),
+        Redaction::default(),
     ))
 }
 
@@ -221,6 +262,17 @@ mod tests {
                 "{url}"
             );
         }
+    }
+
+    #[test]
+    fn debug_output_reports_the_body_by_length_only() {
+        let mut draft = representative_draft();
+        draft.body = b"sk-live-do-not-print".to_vec();
+
+        let rendered = format!("{:?}", prepare_request(draft).expect("valid request"));
+
+        assert!(!rendered.contains("sk-live-do-not-print"), "{rendered}");
+        assert!(rendered.contains("[20 bytes]"), "{rendered}");
     }
 
     #[test]

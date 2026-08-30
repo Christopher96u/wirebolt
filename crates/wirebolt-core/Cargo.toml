@@ -7,8 +7,10 @@ rust-version.workspace = true
 [dependencies]
 base64.workspace = true
 brotli-decompressor.workspace = true
+bytes.workspace = true
 flate2.workspace = true
 http.workspace = true
+http-body.workspace = true
 percent-encoding.workspace = true
 reqwest.workspace = true
 serde.workspace = true
@@ -24,7 +26,6 @@ security-framework.workspace = true
 security-framework-sys.workspace = true
 
 [dev-dependencies]
-bytes.workspace = true
 criterion.workspace = true
 http-body-util.workspace = true
 hyper.workspace = true

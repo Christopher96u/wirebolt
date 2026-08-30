@@ -16,7 +16,7 @@ use url::Url;
 use crate::{
     ApiKeyPlacement, Environment, PreparedRequest, Request, RequestAuthentication, RequestBody,
     RequestHeader, RequestValueField, SecretResolver, ValueSource,
-    request::{parse_http_url, parse_method},
+    request::{Redaction, parse_http_url, parse_method},
 };
 
 const MAX_TEMPLATE_DEPTH: usize = 64;
@@ -76,6 +76,7 @@ impl<'a, R: SecretResolver + ?Sized> RequestPipeline<'a, R> {
                 None,
             );
         }
+        let url_mark = resolver.secret_mark();
         let Some(mut url) = resolver
             .resolve_template(&request.url, FieldPath::Fixed("url"))
             .and_then(|value| parse_http_url(&value))
@@ -85,9 +86,12 @@ impl<'a, R: SecretResolver + ?Sized> RequestPipeline<'a, R> {
             }
             return Err(resolver.finish());
         };
+        resolver.redaction.url |= resolver.used_secret_since(url_mark);
 
         let mut query = QueryBuilder::new(&url);
+        let query_mark = resolver.secret_mark();
         append_query(&request.query, &mut resolver, &mut query);
+        resolver.redaction.url |= resolver.used_secret_since(query_mark);
         let mut headers = resolve_headers(&request.headers, &mut resolver);
         apply_authentication(
             &request.authentication,
@@ -105,6 +109,7 @@ impl<'a, R: SecretResolver + ?Sized> RequestPipeline<'a, R> {
                 headers,
                 body,
                 resolver.warnings,
+                resolver.redaction,
             )),
             _ => Err(resolver.finish()),
         }
@@ -169,21 +174,27 @@ fn resolve_headers<R: SecretResolver + ?Sized>(
     for (index, field) in fields.iter().enumerate().filter(|(_, field)| field.enabled) {
         let name_path = FieldPath::indexed("headers", index, "name");
         let value_path = FieldPath::indexed("headers", index, "value");
-        let name = resolver.resolve_template(&field.name, name_path);
+        let name = resolver.resolve_header_name_template(&field.name, name_path);
+        // A value is sensitive when any secret went into it, whether the
+        // field names the secret directly or reaches it through `{{var}}`.
+        let value_mark = resolver.secret_mark();
         let value = resolver.resolve_source(&field.value, value_path);
+        let sensitive = resolver.used_secret_since(value_mark);
         let (Some(name), Some(value)) = (name, value) else {
             continue;
         };
         let name = resolver.header_name(&name, name_path);
         let value = resolver.header_value(&value, value_path);
         if let (Some(name), Some(mut value)) = (name, value) {
-            value.set_sensitive(matches!(field.value, ValueSource::Secret { .. }));
+            value.set_sensitive(sensitive);
             headers.append(name, value);
         }
     }
     headers
 }
 
+/// Applies the configured credentials and records on the resolver whatever
+/// they make sensitive beyond the header values themselves.
 fn apply_authentication<R: SecretResolver + ?Sized>(
     authentication: &RequestAuthentication,
     resolver: &mut TemplateResolver<'_, R>,
@@ -244,7 +255,10 @@ fn apply_api_key<R: SecretResolver + ?Sized>(
 ) {
     let name_path = FieldPath::Fixed("authentication.name");
     let value_path = FieldPath::Fixed("authentication.value");
-    let name = resolver.resolve_template(name, name_path);
+    let name = match placement {
+        ApiKeyPlacement::Header => resolver.resolve_header_name_template(name, name_path),
+        ApiKeyPlacement::Query => resolver.resolve_template(name, name_path),
+    };
     let value = resolver.resolve_source(value, value_path);
     let (Some(name), Some(value)) = (name, value) else {
         return;
@@ -258,7 +272,11 @@ fn apply_api_key<R: SecretResolver + ?Sized>(
                 headers.append(name, value);
             }
         }
-        ApiKeyPlacement::Query => query.append(&name, &value),
+        ApiKeyPlacement::Query => {
+            // The key is a credential wherever it came from.
+            query.append(&name, &value);
+            resolver.redaction.url = true;
+        }
     }
 }
 
@@ -365,7 +383,14 @@ struct TemplateResolver<'a, R: SecretResolver + ?Sized> {
     environment: Option<&'a Environment>,
     secrets: &'a R,
     resolving: BTreeSet<String>,
-    resolved_variables: BTreeMap<String, String>,
+    /// Resolved variable text plus whether a secret went into it.
+    resolved_variables: BTreeMap<String, (String, bool)>,
+    /// Counts every time secret material enters a resolved value, including
+    /// through a cached variable, so callers can tell whether the value they
+    /// just resolved is sensitive.
+    secret_uses: u64,
+    /// What the prepared request's `Debug` must withhold.
+    redaction: Redaction,
     issues: Vec<RequestIssue>,
     warnings: Vec<RequestIssue>,
 }
@@ -377,9 +402,35 @@ impl<'a, R: SecretResolver + ?Sized> TemplateResolver<'a, R> {
             secrets,
             resolving: BTreeSet::new(),
             resolved_variables: BTreeMap::new(),
+            secret_uses: 0,
+            redaction: Redaction {
+                url: false,
+                header_names: false,
+            },
             issues: Vec::new(),
             warnings: Vec::new(),
         }
+    }
+
+    const fn secret_mark(&self) -> u64 {
+        self.secret_uses
+    }
+
+    const fn used_secret_since(&self, mark: u64) -> bool {
+        self.secret_uses != mark
+    }
+
+    /// Resolves a header name. `HeaderName` cannot be marked sensitive, so a
+    /// secret reaching a name makes the whole header map unprintable.
+    fn resolve_header_name_template<'v>(
+        &mut self,
+        input: &'v str,
+        path: FieldPath,
+    ) -> Option<Cow<'v, str>> {
+        let mark = self.secret_mark();
+        let name = self.resolve_template(input, path);
+        self.redaction.header_names |= self.used_secret_since(mark);
+        name
     }
 
     fn resolve_source<'v>(
@@ -391,6 +442,7 @@ impl<'a, R: SecretResolver + ?Sized> TemplateResolver<'a, R> {
             ValueSource::Literal(value) => self.resolve_template(value, path),
             ValueSource::Secret { secret } => {
                 if let Ok(value) = self.secrets.resolve(secret) {
+                    self.secret_uses += 1;
                     Some(Cow::Owned(value.expose().to_owned()))
                 } else {
                     self.issue(path, RequestIssueKind::MissingSecret, Some(secret.as_str()));
@@ -453,7 +505,10 @@ impl<'a, R: SecretResolver + ?Sized> TemplateResolver<'a, R> {
     }
 
     fn resolve_variable(&mut self, name: &str, path: FieldPath) -> Option<String> {
-        if let Some(value) = self.resolved_variables.get(name) {
+        if let Some((value, sensitive)) = self.resolved_variables.get(name) {
+            if *sensitive {
+                self.secret_uses += 1;
+            }
             return Some(value.clone());
         }
         let Some(source) = self
@@ -471,11 +526,13 @@ impl<'a, R: SecretResolver + ?Sized> TemplateResolver<'a, R> {
             self.issue(path, RequestIssueKind::CyclicVariable, Some(name));
             return None;
         }
+        let mark = self.secret_mark();
         let result = self.resolve_source(source, path).map(Cow::into_owned);
         self.resolving.remove(name);
         if let Some(value) = &result {
+            let sensitive = self.used_secret_since(mark);
             self.resolved_variables
-                .insert(name.to_owned(), value.clone());
+                .insert(name.to_owned(), (value.clone(), sensitive));
         }
         result
     }
@@ -501,8 +558,10 @@ impl<'a, R: SecretResolver + ?Sized> TemplateResolver<'a, R> {
         name
     }
 
+    /// Validates a header value without altering it: what the user typed is
+    /// what goes on the wire, surrounding whitespace included.
     fn header_value(&mut self, value: &str, path: FieldPath) -> Option<HeaderValue> {
-        let value = HeaderValue::from_str(value.trim()).ok();
+        let value = HeaderValue::from_str(value).ok();
         if value.is_none() {
             self.issue(path, RequestIssueKind::InvalidHeaderValue, None);
         }

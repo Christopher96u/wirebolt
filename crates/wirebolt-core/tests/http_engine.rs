@@ -233,7 +233,7 @@ async fn enforces_the_read_timeout_between_body_chunks() {
         .run(
             get_request(address, "/slow-body"),
             RunOptions {
-                read_timeout: Duration::from_millis(20),
+                read_timeout: Some(Duration::from_millis(20)),
                 ..RunOptions::default()
             },
             &RunCancellation::new(),
@@ -256,7 +256,7 @@ async fn enforces_the_total_timeout_before_response_headers() {
         .run(
             get_request(address, "/slow-headers"),
             RunOptions {
-                total_timeout: Duration::from_millis(20),
+                total_timeout: Some(Duration::from_millis(20)),
                 ..RunOptions::default()
             },
             &RunCancellation::new(),
@@ -268,6 +268,106 @@ async fn enforces_the_total_timeout_before_response_headers() {
     assert_eq!(error.kind(), RunErrorKind::TotalTimeout);
     server.abort();
     assert!(server.await.expect_err("server was aborted").is_cancelled());
+}
+
+#[tokio::test]
+async fn the_run_read_timeout_covers_the_wait_for_headers() {
+    let (address, server) = spawn_stalled_http1_server().await;
+    let engine = HttpEngine::new(&HttpEngineConfig::default()).expect("HTTP engine");
+
+    let error = engine
+        .run(
+            get_request(address, "/silent-headers"),
+            RunOptions {
+                read_timeout: Some(Duration::from_millis(30)),
+                total_timeout: Some(Duration::from_secs(5)),
+                ..RunOptions::default()
+            },
+            &RunCancellation::new(),
+            |_| StreamControl::Continue,
+        )
+        .await
+        .expect_err("a silent server must trip the per-run stall guard");
+
+    assert_eq!(error.kind(), RunErrorKind::ReadTimeout);
+    server.abort();
+    let _ = server.await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_upload_that_keeps_moving_is_not_a_stall() {
+    // Larger than the most the kernel can buffer for one loopback socket
+    // pair (macOS caps it at 8 MiB), so most of the upload is gated by the
+    // server's reads rather than absorbed before the first read.
+    const BODY_BYTES: usize = 32 * 1024 * 1024;
+    let (address, server) = spawn_slow_reading_server(
+        b"HTTP/1.1 200 OK\r\nContent-Length: 8\r\nConnection: close\r\n\r\nuploaded",
+    )
+    .await;
+    let engine = HttpEngine::new(&HttpEngineConfig::default()).expect("HTTP engine");
+    let request = prepare_request(RequestDraft {
+        method: "PUT".to_owned(),
+        url: format!("http://{address}/upload"),
+        headers: Vec::new(),
+        body: vec![b'x'; BODY_BYTES],
+    })
+    .expect("prepared request");
+    let mut body = Vec::new();
+
+    let run = engine
+        .run(
+            request,
+            RunOptions {
+                read_timeout: Some(Duration::from_millis(250)),
+                total_timeout: Some(Duration::from_secs(30)),
+                ..RunOptions::default()
+            },
+            &RunCancellation::new(),
+            |chunk| {
+                body.extend_from_slice(chunk);
+                StreamControl::Continue
+            },
+        )
+        .await
+        .expect("a slow but moving upload must not time out");
+
+    assert_eq!(body, b"uploaded");
+    assert!(
+        run.time_to_headers > Duration::from_millis(250),
+        "the upload finished too quickly to prove anything: {:?}",
+        run.time_to_headers
+    );
+    assert_eq!(server.await.expect("slow server task"), BODY_BYTES);
+}
+
+#[tokio::test]
+async fn disabled_timeouts_leave_cancellation_in_charge() {
+    let (address, server) = spawn_stalled_http1_server().await;
+    let engine = HttpEngine::new(&HttpEngineConfig::default()).expect("HTTP engine");
+    let cancellation = RunCancellation::new();
+    let trigger = cancellation.clone();
+    tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        trigger.cancel();
+    });
+
+    let error = engine
+        .run(
+            get_request(address, "/no-deadline"),
+            RunOptions {
+                read_timeout: None,
+                total_timeout: None,
+                ..RunOptions::default()
+            },
+            &cancellation,
+            |_| StreamControl::Continue,
+        )
+        .await
+        .expect_err("only cancellation can end the run");
+
+    assert_eq!(error.kind(), RunErrorKind::Cancelled);
+    server.abort();
+    let _ = server.await;
 }
 
 #[tokio::test]
@@ -802,7 +902,7 @@ async fn a_connect_timeout_is_not_reported_as_the_total_timeout() {
         .run(
             get_url("http://192.0.2.1:81/blackhole"),
             RunOptions {
-                total_timeout: Duration::from_secs(5),
+                total_timeout: Some(Duration::from_secs(5)),
                 ..RunOptions::default()
             },
             &RunCancellation::new(),
@@ -834,7 +934,8 @@ async fn the_engine_read_timeout_covers_the_wait_for_headers() {
         .run(
             get_request(address, "/silent"),
             RunOptions {
-                total_timeout: Duration::from_secs(5),
+                total_timeout: Some(Duration::from_secs(5)),
+                read_timeout: None,
                 ..RunOptions::default()
             },
             &RunCancellation::new(),
@@ -848,6 +949,221 @@ async fn the_engine_read_timeout_covers_the_wait_for_headers() {
     let _ = server.await;
 }
 
+#[tokio::test]
+async fn decodes_brotli_and_zstd_bodies_split_across_chunks() {
+    for (encoding, wire, expected) in [
+        ("br", brotli_fixture(), &b"wirebolt brotli body"[..]),
+        (
+            "zstd",
+            zstd::encode_all(&b"wirebolt zstd body"[..], 3).expect("zstd encode"),
+            &b"wirebolt zstd body"[..],
+        ),
+    ] {
+        let split = wire.len() / 2;
+        let (head, tail) = wire.split_at(split);
+        let (address, server) = spawn_http1_script(
+            leak(format!(
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nContent-Encoding: {encoding}\r\nConnection: close\r\n\r\n",
+                wire.len()
+            )),
+            vec![
+                (Duration::ZERO, leak(head.to_vec())),
+                (Duration::from_millis(20), leak(tail.to_vec())),
+            ],
+        )
+        .await;
+        let engine = HttpEngine::new(&HttpEngineConfig::default()).expect("HTTP engine");
+        let mut body = Vec::new();
+
+        let run = engine
+            .run(
+                get_request(address, "/split"),
+                RunOptions::default(),
+                &RunCancellation::new(),
+                |chunk| {
+                    body.extend_from_slice(chunk);
+                    StreamControl::Continue
+                },
+            )
+            .await
+            .expect("decoded run");
+
+        assert_eq!(body, expected, "{encoding}");
+        assert_eq!(run.bytes_received, wire.len() as u64);
+        assert_eq!(run.bytes_decoded, expected.len() as u64);
+        server.await.expect("HTTP server task");
+    }
+}
+
+#[tokio::test]
+async fn a_truncated_compressed_body_is_a_response_body_error() {
+    for (encoding, wire) in [
+        ("gzip", gzip(b"a gzip body that is long enough to cut")),
+        ("br", brotli_fixture()),
+        (
+            "zstd",
+            zstd::encode_all(&b"a zstd body that is long enough to cut"[..], 3).expect("encode"),
+        ),
+    ] {
+        let truncated = &wire[..wire.len() - 4];
+        let response = leak(
+            [
+                format!(
+                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nContent-Encoding: {encoding}\r\nConnection: close\r\n\r\n",
+                    truncated.len()
+                )
+                .into_bytes(),
+                truncated.to_vec(),
+            ]
+            .concat(),
+        );
+        let (address, _) = spawn_http1_once(response).await;
+        let engine = HttpEngine::new(&HttpEngineConfig::default()).expect("HTTP engine");
+
+        let error = engine
+            .run(
+                get_request(address, "/truncated"),
+                RunOptions::default(),
+                &RunCancellation::new(),
+                |_| StreamControl::Continue,
+            )
+            .await
+            .expect_err("a truncated stream must not look complete");
+
+        assert_eq!(error.kind(), RunErrorKind::ResponseBody, "{encoding}");
+    }
+}
+
+#[tokio::test]
+async fn a_compression_bomb_fails_at_the_cap_not_after_expanding() {
+    const DECODED_BYTES: usize = 32 * 1024 * 1024;
+    const CAP: u64 = 1024 * 1024;
+    let wire = gzip(&vec![0; DECODED_BYTES]);
+    assert!(wire.len() < 128 * 1024, "fixture is not a bomb");
+    let (address, _) = spawn_http1_once(gzip_response(&wire)).await;
+    let engine = HttpEngine::new(&HttpEngineConfig::default()).expect("HTTP engine");
+    let mut delivered = 0_u64;
+
+    let error = engine
+        .run(
+            get_request(address, "/bomb"),
+            RunOptions {
+                max_response_bytes: Some(CAP),
+                ..RunOptions::default()
+            },
+            &RunCancellation::new(),
+            |chunk| {
+                delivered += chunk.len() as u64;
+                StreamControl::Continue
+            },
+        )
+        .await
+        .expect_err("decoded size must exceed the cap");
+
+    assert_eq!(error.kind(), RunErrorKind::ResponseTooLarge);
+    assert_eq!(error.response_limit(), Some(CAP));
+    assert!(delivered <= CAP, "delivered {delivered} bytes past the cap");
+}
+
+#[tokio::test]
+async fn bodyless_responses_with_a_content_encoding_are_not_decode_failures() {
+    for (status, response) in [
+        (
+            204,
+            &b"HTTP/1.1 204 No Content\r\nContent-Encoding: gzip\r\nConnection: close\r\n\r\n"[..],
+        ),
+        (
+            304,
+            &b"HTTP/1.1 304 Not Modified\r\nContent-Encoding: br\r\nContent-Length: 512\r\nConnection: close\r\n\r\n"[..],
+        ),
+    ] {
+        let (address, server) = spawn_http1_once(response).await;
+        let engine = HttpEngine::new(&HttpEngineConfig::default()).expect("HTTP engine");
+
+        let run = engine
+            .run(
+                get_request(address, "/empty"),
+                RunOptions::default(),
+                &RunCancellation::new(),
+                |_| StreamControl::Continue,
+            )
+            .await
+            .expect("a response without a body has nothing to decode");
+
+        assert_eq!(run.status, status);
+        assert_eq!(run.bytes_received, 0);
+        assert_eq!(run.bytes_decoded, 0);
+        server.await.expect("HTTP server task");
+    }
+}
+
+#[tokio::test]
+async fn a_head_response_with_a_content_encoding_is_not_a_decode_failure() {
+    let (address, server) = spawn_http1_once(
+        b"HTTP/1.1 200 OK\r\nContent-Encoding: gzip\r\nContent-Length: 4096\r\nConnection: close\r\n\r\n",
+    )
+    .await;
+    let engine = HttpEngine::new(&HttpEngineConfig::default()).expect("HTTP engine");
+    let request = prepare_request(RequestDraft {
+        method: "HEAD".to_owned(),
+        url: format!("http://{address}/head"),
+        headers: Vec::new(),
+        body: Vec::new(),
+    })
+    .expect("prepared request");
+
+    let run = engine
+        .run(
+            request,
+            RunOptions::default(),
+            &RunCancellation::new(),
+            |_| StreamControl::Continue,
+        )
+        .await
+        .expect("HEAD carries no body to decode");
+
+    assert_eq!(run.status, 200);
+    assert_eq!(run.bytes_received, 0);
+    server.await.expect("HTTP server task");
+}
+
+#[tokio::test]
+async fn a_compressed_body_cut_before_its_first_byte_is_truncated() {
+    let cases = [
+        ("gzip", ""),
+        ("deflate", ""),
+        ("br", ""),
+        ("zstd", ""),
+        // A declared empty body is still no compressed stream at all.
+        ("zstd", "Content-Length: 0\r\n"),
+        ("gzip", "Content-Length: 0\r\n"),
+    ];
+    for (encoding, length) in cases {
+        let response = leak(format!(
+            "HTTP/1.1 200 OK\r\nContent-Encoding: {encoding}\r\n{length}Connection: close\r\n\r\n"
+        ));
+        let (address, server) = spawn_http1_once(response).await;
+        let engine = HttpEngine::new(&HttpEngineConfig::default()).expect("HTTP engine");
+
+        let error = engine
+            .run(
+                get_request(address, "/cut"),
+                RunOptions::default(),
+                &RunCancellation::new(),
+                |_| StreamControl::Continue,
+            )
+            .await
+            .expect_err("a 200 whose compressed body never arrived is truncated");
+
+        assert_eq!(
+            error.kind(),
+            RunErrorKind::ResponseBody,
+            "{encoding} {length:?}"
+        );
+        server.await.expect("HTTP server task");
+    }
+}
+
 fn gzip(bytes: &[u8]) -> Vec<u8> {
     use std::io::Write as _;
 
@@ -856,12 +1172,24 @@ fn gzip(bytes: &[u8]) -> Vec<u8> {
     encoder.finish().expect("finish gzip body")
 }
 
+/// `brotli -c` of `wirebolt brotli body`; brotli-decompressor ships no encoder.
+fn brotli_fixture() -> Vec<u8> {
+    vec![
+        0x8f, 0x09, 0x80, 0x77, 0x69, 0x72, 0x65, 0x62, 0x6f, 0x6c, 0x74, 0x20, 0x62, 0x72, 0x6f,
+        0x74, 0x6c, 0x69, 0x20, 0x62, 0x6f, 0x64, 0x79, 0x03,
+    ]
+}
+
+fn leak(bytes: impl Into<Vec<u8>>) -> &'static [u8] {
+    Box::leak(bytes.into().into_boxed_slice())
+}
+
 fn gzip_response(wire: &[u8]) -> &'static [u8] {
     let head = format!(
         "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nContent-Encoding: gzip\r\nConnection: close\r\n\r\n",
         wire.len()
     );
-    Box::leak([head.as_bytes(), wire].concat().into_boxed_slice())
+    leak([head.as_bytes(), wire].concat())
 }
 
 #[derive(Debug)]
@@ -916,6 +1244,52 @@ async fn spawn_http1_script(
             }
         }
         let _ = stream.shutdown().await;
+    });
+    (address, task)
+}
+
+/// Reads the request body 256 KiB at a time with a pause between reads, so
+/// the client's upload is throttled by backpressure rather than finishing
+/// into kernel buffers at once. Returns the body bytes it consumed.
+async fn spawn_slow_reading_server(response: &'static [u8]) -> (SocketAddr, JoinHandle<usize>) {
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind loopback server");
+    let address = listener.local_addr().expect("server address");
+    let task = tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.expect("accept request");
+        let mut buffer = vec![0_u8; 256 * 1024];
+        let mut received = Vec::new();
+        let mut body_start = None;
+        let mut content_length = 0;
+        let mut total = 0;
+        loop {
+            let read = stream.read(&mut buffer).await.expect("read request");
+            assert!(read > 0, "connection closed before the upload completed");
+            total += read;
+            if body_start.is_none() {
+                received.extend_from_slice(&buffer[..read]);
+                if let Some(end) = received.windows(4).position(|window| window == b"\r\n\r\n") {
+                    let head = String::from_utf8_lossy(&received[..end]);
+                    content_length = head
+                        .lines()
+                        .find_map(|line| {
+                            line.to_ascii_lowercase()
+                                .strip_prefix("content-length: ")
+                                .and_then(|value| value.parse::<usize>().ok())
+                        })
+                        .expect("content-length");
+                    body_start = Some(end + 4);
+                }
+            }
+            if body_start.is_some_and(|start| total >= start + content_length) {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        stream.write_all(response).await.expect("write response");
+        let _ = stream.shutdown().await;
+        total - body_start.expect("request head")
     });
     (address, task)
 }

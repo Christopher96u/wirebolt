@@ -13,6 +13,8 @@ enum BridgeSmoke {
         guard handshake.streamAbiVersion == streamABIVersion else {
             fatalError("bridge versions disagree")
         }
+        // A control operation on the UniFFI surface, not the streaming C ABI.
+        resetHttpEngines()
 
         let runner = RustRequestRunner()
         let draft = RequestDraft(url: "not an absolute URL")

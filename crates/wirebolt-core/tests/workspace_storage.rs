@@ -1,4 +1,4 @@
-use std::{collections::BTreeMap, fs};
+use std::{collections::BTreeMap, fs, io::Write as _};
 
 use tempfile::tempdir;
 use wirebolt_core::{
@@ -238,6 +238,72 @@ fn reloads_reflect_external_edits_and_deletions() {
 
     fs::remove_file(&path).expect("delete environment");
     assert!(store.load().expect("third load").environments.is_empty());
+}
+
+#[test]
+fn reloads_reflect_an_edit_that_keeps_the_size_and_modification_time() {
+    let temporary = tempdir().expect("temporary workspace");
+    let store = WorkspaceStore::create(temporary.path(), &Workspace::new("Wirebolt"))
+        .expect("create workspace");
+    let environment = Environment::new(id("local"), "Local".to_owned(), BTreeMap::new());
+    store
+        .save(&WorkspaceDocument::Environment(environment))
+        .expect("save environment");
+    assert_eq!(
+        store.load().expect("first load").environments[0].name,
+        "Local"
+    );
+
+    let path = temporary.path().join("environments/local.toml");
+    let original = fs::read_to_string(&path).expect("environment TOML");
+    let modified = fs::metadata(&path)
+        .expect("environment metadata")
+        .modified()
+        .expect("modification time");
+    let edited = original.replace("\"Local\"", "\"Edits\"");
+    assert_eq!(edited.len(), original.len());
+    let file = fs::OpenOptions::new()
+        .write(true)
+        .open(&path)
+        .expect("open environment for editing");
+    (&file).write_all(edited.as_bytes()).expect("edit in place");
+    file.set_modified(modified)
+        .expect("restore modification time");
+    drop(file);
+
+    assert_eq!(
+        store.load().expect("second load").environments[0].name,
+        "Edits"
+    );
+}
+
+#[test]
+fn a_future_document_with_a_quoted_key_is_never_rewritten_by_migration() {
+    let temporary = tempdir().expect("temporary workspace");
+    let store = WorkspaceStore::create(temporary.path(), &Workspace::new("Wirebolt"))
+        .expect("create workspace");
+    let path = temporary.path().join("environments/future.toml");
+    let future = "\"schema_version\" = 4\nid = \"future\"\nname = \"Future\"\n\n[variables]\n";
+    fs::write(&path, future).expect("write future environment");
+
+    let snapshot = store.load().expect("load tolerates future documents");
+    assert!(snapshot.environments.is_empty());
+    assert_eq!(snapshot.problems.len(), 1);
+    assert_eq!(
+        snapshot.problems[0].kind,
+        DocumentProblemKind::UnsupportedSchema
+    );
+    assert_eq!(
+        store.migrate().expect("migration skips future documents"),
+        wirebolt_core::MigrationReport {
+            migrated_documents: 0,
+        }
+    );
+    assert_eq!(
+        fs::read_to_string(&path).expect("future environment"),
+        future,
+        "a document from the future must not be downgraded"
+    );
 }
 
 #[test]

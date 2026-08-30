@@ -27,7 +27,40 @@ const COLLECTIONS_DIRECTORY: &str = "collections";
 const COLLECTION_FILE: &str = "collection.toml";
 const REQUESTS_DIRECTORY: &str = "requests";
 const ENVIRONMENTS_DIRECTORY: &str = "environments";
+const DOCUMENT_EXTENSION: &str = ".toml";
 const MAX_DOCUMENT_BYTES: u64 = 16 * 1024 * 1024;
+
+/// Whether a workspace-relative path (with `/` separators) names a document
+/// Wirebolt itself writes: the manifest, a collection manifest, a request,
+/// or an environment. Anything else below those directories is unmanaged.
+pub(crate) fn is_managed_document_path(path: &str) -> bool {
+    let mut segments = path.split('/');
+    let first = segments.next();
+    let second = segments.next();
+    let third = segments.next();
+    let fourth = segments.next();
+    if segments.next().is_some() {
+        return false;
+    }
+    match (first, second, third, fourth) {
+        (Some(WORKSPACE_FILE), None, None, None) => true,
+        (Some(ENVIRONMENTS_DIRECTORY), Some(file), None, None) => is_document_file_name(file),
+        (Some(COLLECTIONS_DIRECTORY), Some(id), Some(COLLECTION_FILE), None) => is_document_id(id),
+        (Some(COLLECTIONS_DIRECTORY), Some(id), Some(REQUESTS_DIRECTORY), Some(file)) => {
+            is_document_id(id) && is_document_file_name(file)
+        }
+        _ => false,
+    }
+}
+
+fn is_document_file_name(name: &str) -> bool {
+    name.strip_suffix(DOCUMENT_EXTENSION)
+        .is_some_and(is_document_id)
+}
+
+fn is_document_id(value: &str) -> bool {
+    DocumentId::new(value).is_ok()
+}
 static TEMPORARY_FILE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -102,10 +135,39 @@ enum Durability {
 
 #[derive(Clone, Debug)]
 struct CachedDocument {
-    modified: SystemTime,
-    len: u64,
+    identity: FileIdentity,
     migrated: bool,
     document: CachedKind,
+}
+
+/// Everything one `stat` says about which file bytes are on disk. Size and
+/// mtime alone miss an in-place edit that keeps both; that edit still moves
+/// ctime, which userland cannot set back, and a replace-by-rename changes
+/// the inode. Checking all of them costs no extra I/O on a warm load.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct FileIdentity {
+    len: u64,
+    modified: SystemTime,
+    #[cfg(unix)]
+    changed: (i64, i64),
+    #[cfg(unix)]
+    inode: (u64, u64),
+}
+
+impl FileIdentity {
+    fn of(metadata: &fs::Metadata) -> io::Result<Self> {
+        #[cfg(unix)]
+        use std::os::unix::fs::MetadataExt as _;
+
+        Ok(Self {
+            len: metadata.len(),
+            modified: metadata.modified()?,
+            #[cfg(unix)]
+            changed: (metadata.ctime(), metadata.ctime_nsec()),
+            #[cfg(unix)]
+            inode: (metadata.dev(), metadata.ino()),
+        })
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -118,6 +180,7 @@ enum CachedKind {
 
 /// Documents that can be parsed, cached, and stamped with the current schema.
 trait Document: DeserializeOwned + Clone {
+    fn schema_version(&self) -> u32;
     fn set_schema_version(&mut self, version: u32);
     fn into_cached(self) -> CachedKind;
     fn from_cached(cached: &CachedKind) -> Option<&Self>;
@@ -126,6 +189,10 @@ trait Document: DeserializeOwned + Clone {
 macro_rules! document {
     ($type:ident, $wrap:expr) => {
         impl Document for $type {
+            fn schema_version(&self) -> u32 {
+                self.schema_version
+            }
+
             fn set_schema_version(&mut self, version: u32) {
                 self.schema_version = version;
             }
@@ -408,7 +475,7 @@ impl WorkspaceStore {
     }
 
     /// Reads one document, serving it from the cache when the file's
-    /// modification time and size are unchanged.
+    /// on-disk identity is unchanged.
     fn read<T: Document>(&self, path: &Path) -> Result<(T, bool), StorageError> {
         let metadata = fs::symlink_metadata(path).map_err(|source| {
             if source.kind() == io::ErrorKind::NotFound {
@@ -431,12 +498,10 @@ impl WorkspaceStore {
                 bytes: metadata.len(),
             });
         }
-        let modified = metadata
-            .modified()
+        let identity = FileIdentity::of(&metadata)
             .map_err(|source| StorageError::io("read document metadata", path, source))?;
         if let Some(entry) = self.lock_cache().get(path)
-            && entry.modified == modified
-            && entry.len == metadata.len()
+            && entry.identity == identity
             && let Some(document) = T::from_cached(&entry.document)
         {
             return Ok((document.clone(), entry.migrated));
@@ -448,8 +513,7 @@ impl WorkspaceStore {
         self.lock_cache().insert(
             path.to_owned(),
             CachedDocument {
-                modified,
-                len: metadata.len(),
+                identity,
                 migrated,
                 document: document.clone().into_cached(),
             },
@@ -466,13 +530,12 @@ impl WorkspaceStore {
         let outcome = write_document(path, document, durability)?;
         if outcome != SaveOutcome::Unchanged
             && let Ok(metadata) = fs::symlink_metadata(path)
-            && let Ok(modified) = metadata.modified()
+            && let Ok(identity) = FileIdentity::of(&metadata)
         {
             self.lock_cache().insert(
                 path.to_owned(),
                 CachedDocument {
-                    modified,
-                    len: metadata.len(),
+                    identity,
                     migrated: false,
                     document: document.clone().into_cached(),
                 },
@@ -661,67 +724,76 @@ fn require_matching_id(
     }
 }
 
-/// Parses a document straight into its type. The schema version is read
-/// from the leading top-level keys first, so newer documents are refused
-/// before their unknown fields turn into a misleading TOML error.
+/// Parses a document in one pass. The parsed table is inspected for the root
+/// `schema_version` first, so a newer document is refused before its unknown
+/// fields turn into a misleading TOML error, and only then deserialized.
 fn parse_document<T: Document>(path: &Path, source: &str) -> Result<(T, bool), StorageError> {
-    let version = peek_schema_version(source).map_err(|reason| StorageError::InvalidDocument {
-        path: path.to_owned(),
-        reason,
-    })?;
-    let migrated = match version {
-        None | Some(0..=2) => true,
-        Some(CURRENT_SCHEMA_VERSION) => false,
-        Some(found) => {
-            return Err(StorageError::UnsupportedSchema {
-                path: path.to_owned(),
-                found,
-                supported: CURRENT_SCHEMA_VERSION,
-            });
-        }
-    };
-
-    let mut document: T = toml::from_str(source).map_err(|error| {
-        let (line, column) = error
-            .span()
-            .map(|span| line_and_column(source, span.start))
-            .map_or((None, None), |(line, column)| (Some(line), Some(column)));
-        StorageError::InvalidToml {
+    let table =
+        toml::de::DeTable::parse(source).map_err(|error| invalid_toml(path, source, &error))?;
+    let declared =
+        peek_schema_version(table.get_ref()).map_err(|reason| StorageError::InvalidDocument {
             path: path.to_owned(),
-            line,
-            column,
-        }
-    })?;
+            reason,
+        })?;
+    if let Some(found) = declared
+        && found > CURRENT_SCHEMA_VERSION
+    {
+        return Err(unsupported_schema(path, found));
+    }
+
+    let mut document = T::deserialize(toml::de::Deserializer::from(table))
+        .map_err(|error| invalid_toml(path, source, &error))?;
+    // The deserialized version is authoritative: whatever the peek saw, a
+    // document from the future is never rewritten to an older schema.
+    let found = document.schema_version();
+    if found > CURRENT_SCHEMA_VERSION {
+        return Err(unsupported_schema(path, found));
+    }
+    let migrated = found < CURRENT_SCHEMA_VERSION;
     if migrated {
         document.set_schema_version(CURRENT_SCHEMA_VERSION);
     }
     Ok((document, migrated))
 }
 
-/// Finds `schema_version` among the root keys, which TOML requires to appear
-/// before any `[table]` header. Returns `Ok(None)` when absent.
-fn peek_schema_version(source: &str) -> Result<Option<u32>, &'static str> {
-    for line in source.lines() {
-        let line = line.trim_start();
-        if line.starts_with('[') {
-            break;
-        }
-        let Some(rest) = line.strip_prefix("schema_version") else {
-            continue;
-        };
-        let rest = rest.trim_start();
-        let Some(value) = rest.strip_prefix('=') else {
-            continue;
-        };
-        let value = value.split('#').next().unwrap_or_default().trim();
-        return match value.parse::<i64>() {
-            Ok(version) => u32::try_from(version)
-                .map(Some)
-                .map_err(|_| "schema_version must be a non-negative 32-bit integer"),
-            Err(_) => Err("schema_version must be an integer"),
-        };
+fn invalid_toml(path: &Path, source: &str, error: &toml::de::Error) -> StorageError {
+    let (line, column) = error
+        .span()
+        .map(|span| line_and_column(source, span.start))
+        .map_or((None, None), |(line, column)| (Some(line), Some(column)));
+    StorageError::InvalidToml {
+        path: path.to_owned(),
+        line,
+        column,
     }
-    Ok(None)
+}
+
+fn unsupported_schema(path: &Path, found: u32) -> StorageError {
+    StorageError::UnsupportedSchema {
+        path: path.to_owned(),
+        found,
+        supported: CURRENT_SCHEMA_VERSION,
+    }
+}
+
+/// Reads `schema_version` from the parsed root table, so bare, quoted, and
+/// literal key spellings all count and nothing inside strings or sub-tables
+/// does. Returns `Ok(None)` when absent.
+fn peek_schema_version(table: &toml::de::DeTable<'_>) -> Result<Option<u32>, &'static str> {
+    let Some((_, value)) = table
+        .iter()
+        .find(|(key, _)| key.get_ref().as_ref() == "schema_version")
+    else {
+        return Ok(None);
+    };
+    let toml::de::DeValue::Integer(integer) = value.get_ref() else {
+        return Err("schema_version must be an integer");
+    };
+    let version = i64::from_str_radix(integer.as_str(), integer.radix())
+        .map_err(|_| "schema_version must be an integer")?;
+    u32::try_from(version)
+        .map(Some)
+        .map_err(|_| "schema_version must be a non-negative 32-bit integer")
 }
 
 fn write_document<T: Serialize>(
@@ -930,18 +1002,61 @@ fn line_and_column(source: &str, offset: usize) -> (usize, usize) {
 mod tests {
     use super::*;
 
+    fn peek(source: &str) -> Result<Option<u32>, &'static str> {
+        let table = toml::de::DeTable::parse(source).expect("valid TOML");
+        peek_schema_version(table.get_ref())
+    }
+
     #[test]
     fn peeks_the_root_schema_version_only() {
-        assert_eq!(peek_schema_version("name = \"x\"\n"), Ok(None));
+        assert_eq!(peek("name = \"x\"\n"), Ok(None));
         assert_eq!(
-            peek_schema_version("# comment\nschema_version = 3 # current\nname = \"x\"\n"),
+            peek("# comment\nschema_version = 3 # current\nname = \"x\"\n"),
             Ok(Some(3))
         );
+        assert_eq!(peek("name = \"x\"\n[body]\nschema_version = 9\n"), Ok(None));
+        assert!(peek("schema_version = \"3\"\n").is_err());
+        assert!(peek("schema_version = -1\n").is_err());
+    }
+
+    #[test]
+    fn peeks_quoted_keys_and_ignores_look_alikes_inside_strings() {
+        assert_eq!(peek("\"schema_version\" = 4\n"), Ok(Some(4)));
+        assert_eq!(peek("'schema_version'=5\n"), Ok(Some(5)));
+        assert_eq!(peek("schema_version = 0x10\n"), Ok(Some(16)));
         assert_eq!(
-            peek_schema_version("name = \"x\"\n[body]\nschema_version = 9\n"),
-            Ok(None)
+            peek("name = \"\"\"\nschema_version = 9\n\"\"\"\nschema_version = 3\n"),
+            Ok(Some(3))
         );
-        assert!(peek_schema_version("schema_version = \"3\"\n").is_err());
-        assert!(peek_schema_version("schema_version = -1\n").is_err());
+        assert_eq!(peek("name = [\n  \"schema_version = 9\",\n]\n"), Ok(None));
+    }
+
+    #[test]
+    fn managed_document_paths_follow_the_workspace_layout_exactly() {
+        for managed in [
+            "wirebolt.toml",
+            "environments/dev.toml",
+            "collections/api/collection.toml",
+            "collections/api/requests/list-users.toml",
+        ] {
+            assert!(is_managed_document_path(managed), "{managed}");
+        }
+        for unmanaged in [
+            "notes.txt",
+            "wirebolt.toml.bak",
+            "environments/README.md",
+            "environments/Dev.toml",
+            "environments/nested/dev.toml",
+            "environments/.dev.toml.wirebolt-12-3.tmp",
+            "collections/api/notes.toml",
+            "collections/api/requests/list.json",
+            "collections/api/requests/nested/list.toml",
+            "collections/api/requests/.list.toml.wirebolt-12-3.tmp",
+            "collections/API/collection.toml",
+            "collections/collection.toml",
+            "environments-archive/dev.toml",
+        ] {
+            assert!(!is_managed_document_path(unmanaged), "{unmanaged}");
+        }
     }
 }

@@ -607,12 +607,12 @@ pub extern "C" fn wirebolt_runtime_warmup() -> u8 {
     1
 }
 
-/// Drops every cached HTTP engine so the next run rebuilds its client. Call
+/// Drops every pooled HTTP engine so the next run rebuilds its client. Call
 /// this when the network configuration changes: the system proxy settings
 /// are captured once per engine, and pooled connections may be dead.
-#[unsafe(no_mangle)]
-pub extern "C" fn wirebolt_reset_engines() {
-    reset_http_engines();
+#[uniffi::export]
+pub fn reset_http_engines() {
+    SHARED_HTTP_ENGINES.reset();
 }
 
 #[repr(C)]
@@ -630,14 +630,7 @@ pub struct WireboltRunSession {
     completion: Mutex<Option<mpsc::Receiver<()>>>,
 }
 
-#[derive(Debug, Default)]
-struct SharedHttpEngines {
-    system: Mutex<Option<Arc<HttpEngine>>>,
-    direct: Mutex<Option<Arc<HttpEngine>>>,
-    manual: Mutex<Vec<(ProxyMode, Arc<HttpEngine>)>>,
-}
-
-static SHARED_HTTP_ENGINES: LazyLock<SharedHttpEngines> = LazyLock::new(SharedHttpEngines::default);
+static SHARED_HTTP_ENGINES: LazyLock<HttpEngineCache> = LazyLock::new(HttpEngineCache::default);
 static SHARED_RUNTIME: LazyLock<Option<tokio::runtime::Runtime>> = LazyLock::new(|| {
     tokio::runtime::Builder::new_multi_thread()
         .worker_threads(2)
@@ -646,10 +639,6 @@ static SHARED_RUNTIME: LazyLock<Option<tokio::runtime::Runtime>> = LazyLock::new
         .build()
         .ok()
 });
-
-/// Timeouts of zero mean "no limit"; the engine still needs a finite
-/// deadline, so a day stands in for infinity.
-const UNLIMITED_TIMEOUT: Duration = Duration::from_hours(24);
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -696,12 +685,9 @@ const fn default_decode_content() -> bool {
     true
 }
 
-fn timeout_from_millis(milliseconds: u64) -> Duration {
-    if milliseconds == 0 {
-        UNLIMITED_TIMEOUT
-    } else {
-        Duration::from_millis(milliseconds)
-    }
+/// Zero disables the deadline; the engine then arms no timer at all.
+fn timeout_from_millis(milliseconds: u64) -> Option<Duration> {
+    (milliseconds != 0).then(|| Duration::from_millis(milliseconds))
 }
 
 #[derive(Debug, Serialize)]
@@ -998,71 +984,112 @@ fn shared_http_engine<R: SecretResolver + ?Sized>(
     proxy: &ResolvedProxy,
     secrets: &R,
 ) -> Result<Arc<HttpEngine>, RunError> {
-    let slot = match proxy.mode() {
-        ProxyMode::System => &SHARED_HTTP_ENGINES.system,
-        ProxyMode::Direct => &SHARED_HTTP_ENGINES.direct,
-        ProxyMode::Manual(_) => return shared_manual_http_engine(proxy, secrets),
-    };
-
-    let mut slot = slot
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    if let Some(engine) = slot.as_ref() {
-        return Ok(Arc::clone(engine));
-    }
-    let engine = Arc::new(HttpEngine::with_proxy(
-        &HttpEngineConfig::default(),
-        proxy,
-        secrets,
-    )?);
-    *slot = Some(Arc::clone(&engine));
-    Ok(engine)
-}
-
-/// Manual engines are keyed by proxy mode alone: the same configuration
-/// reached through a workspace policy or a request override shares one pool.
-fn shared_manual_http_engine<R: SecretResolver + ?Sized>(
-    proxy: &ResolvedProxy,
-    secrets: &R,
-) -> Result<Arc<HttpEngine>, RunError> {
-    const MAX_CACHED_MANUAL_ENGINES: usize = 8;
-
-    let mut engines = SHARED_HTTP_ENGINES
-        .manual
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    if let Some((_, engine)) = engines
-        .iter()
-        .find(|(candidate, _)| candidate == proxy.mode())
-    {
-        return Ok(Arc::clone(engine));
-    }
-    let engine = Arc::new(HttpEngine::with_proxy(
-        &HttpEngineConfig::default(),
-        proxy,
-        secrets,
-    )?);
-    if engines.len() == MAX_CACHED_MANUAL_ENGINES {
-        engines.remove(0);
-    }
-    engines.push((proxy.mode().clone(), Arc::clone(&engine)));
-    Ok(engine)
+    SHARED_HTTP_ENGINES.engine(proxy.mode(), || {
+        HttpEngine::with_proxy(&HttpEngineConfig::default(), proxy, secrets)
+    })
 }
 
 fn clear_manual_http_engines() {
-    SHARED_HTTP_ENGINES
-        .manual
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .clear();
+    SHARED_HTTP_ENGINES.clear_manual();
 }
 
-fn reset_http_engines() {
-    clear_manual_http_engines();
-    for slot in [&SHARED_HTTP_ENGINES.system, &SHARED_HTTP_ENGINES.direct] {
-        slot.lock()
+/// Pooled HTTP engines keyed by proxy mode. One lock guards every slot, so a
+/// reset is observed as a whole; clients are built outside the lock, and a
+/// build that a reset overtook serves its own run but is never pooled.
+#[derive(Debug, Default)]
+struct HttpEngineCache {
+    state: Mutex<HttpEngineCacheState>,
+}
+
+#[derive(Debug, Default)]
+struct HttpEngineCacheState {
+    /// Bumped by every reset; a build that started under an older generation
+    /// may have captured proxy or secret state the reset meant to discard.
+    generation: u64,
+    system: Option<Arc<HttpEngine>>,
+    direct: Option<Arc<HttpEngine>>,
+    /// Manual engines are keyed by proxy mode alone: the same configuration
+    /// reached through a workspace policy or a request override shares one
+    /// pool. Least recently created is evicted first.
+    manual: Vec<(ProxyMode, Arc<HttpEngine>)>,
+}
+
+const MAX_CACHED_MANUAL_ENGINES: usize = 8;
+
+impl HttpEngineCache {
+    fn engine(
+        &self,
+        mode: &ProxyMode,
+        build: impl FnOnce() -> Result<HttpEngine, RunError>,
+    ) -> Result<Arc<HttpEngine>, RunError> {
+        let generation = {
+            let state = self.lock();
+            if let Some(engine) = state.lookup(mode) {
+                return Ok(engine);
+            }
+            state.generation
+        };
+        let engine = Arc::new(build()?);
+        let mut state = self.lock();
+        if state.generation != generation {
+            return Ok(engine);
+        }
+        // Another run may have built the same engine meanwhile; keep the
+        // pooled one so both share its connections.
+        Ok(state.insert(mode, engine))
+    }
+
+    fn reset(&self) {
+        let mut state = self.lock();
+        state.generation += 1;
+        state.system = None;
+        state.direct = None;
+        state.manual.clear();
+    }
+
+    /// Manual engines embed proxy credentials, so a changed secret retires
+    /// them; direct and system pools carry nothing secret and stay.
+    fn clear_manual(&self) {
+        let mut state = self.lock();
+        state.generation += 1;
+        state.manual.clear();
+    }
+
+    fn lock(&self) -> std::sync::MutexGuard<'_, HttpEngineCacheState> {
+        self.state
+            .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .take();
+    }
+}
+
+impl HttpEngineCacheState {
+    fn lookup(&self, mode: &ProxyMode) -> Option<Arc<HttpEngine>> {
+        match mode {
+            ProxyMode::System => self.system.clone(),
+            ProxyMode::Direct => self.direct.clone(),
+            ProxyMode::Manual(_) => self
+                .manual
+                .iter()
+                .find(|(candidate, _)| candidate == mode)
+                .map(|(_, engine)| Arc::clone(engine)),
+        }
+    }
+
+    fn insert(&mut self, mode: &ProxyMode, engine: Arc<HttpEngine>) -> Arc<HttpEngine> {
+        if let Some(existing) = self.lookup(mode) {
+            return existing;
+        }
+        match mode {
+            ProxyMode::System => self.system = Some(Arc::clone(&engine)),
+            ProxyMode::Direct => self.direct = Some(Arc::clone(&engine)),
+            ProxyMode::Manual(_) => {
+                if self.manual.len() == MAX_CACHED_MANUAL_ENGINES {
+                    self.manual.remove(0);
+                }
+                self.manual.push((mode.clone(), Arc::clone(&engine)));
+            }
+        }
+        engine
     }
 }
 
@@ -1389,45 +1416,144 @@ mod tests {
         assert_eq!(operation["status"]["changes"], serde_json::json!([]));
     }
 
+    /// Each test owns its cache, so resets in one test cannot race lookups
+    /// in another the way a shared static would.
+    fn engine_for(cache: &HttpEngineCache, proxy: &ResolvedProxy) -> Arc<HttpEngine> {
+        cache
+            .engine(proxy.mode(), || {
+                HttpEngine::with_proxy(
+                    &HttpEngineConfig::default(),
+                    proxy,
+                    &wirebolt_core::NoSecrets,
+                )
+            })
+            .expect("HTTP engine")
+    }
+
+    fn manual_proxy_mode() -> ProxyMode {
+        let route = wirebolt_core::ProxyRoute::new(
+            wirebolt_core::ProxyDestination::All,
+            wirebolt_core::ProxyEndpoint::new("http://proxy.internal:8080")
+                .expect("proxy endpoint"),
+        );
+        ProxyMode::Manual(wirebolt_core::ManualProxy::new(vec![route]).expect("manual proxy"))
+    }
+
     #[test]
     fn shared_direct_engine_reuses_the_same_client_pool() {
+        let cache = HttpEngineCache::default();
         let proxy = ProxyPolicy::with_workspace(ProxyMode::Direct).resolve(None);
 
-        let first = shared_http_engine(&proxy, &wirebolt_core::NoSecrets).expect("first engine");
-        let second = shared_http_engine(&proxy, &wirebolt_core::NoSecrets).expect("second engine");
+        let first = engine_for(&cache, &proxy);
+        let second = engine_for(&cache, &proxy);
 
         assert!(Arc::ptr_eq(&first, &second));
     }
 
     #[test]
     fn shared_manual_engine_is_keyed_by_mode_and_reset_on_demand() {
-        let route = wirebolt_core::ProxyRoute::new(
-            wirebolt_core::ProxyDestination::All,
-            wirebolt_core::ProxyEndpoint::new("http://proxy.internal:8080")
-                .expect("proxy endpoint"),
-        );
-        let manual =
-            ProxyMode::Manual(wirebolt_core::ManualProxy::new(vec![route]).expect("manual proxy"));
+        let cache = HttpEngineCache::default();
+        let manual = manual_proxy_mode();
         let from_workspace = ProxyPolicy::with_workspace(manual.clone()).resolve(None);
         let from_request = ProxyPolicy::default().resolve(Some(&manual));
 
-        clear_manual_http_engines();
-        let first =
-            shared_http_engine(&from_workspace, &wirebolt_core::NoSecrets).expect("first engine");
-        let second =
-            shared_http_engine(&from_request, &wirebolt_core::NoSecrets).expect("second engine");
+        let first = engine_for(&cache, &from_workspace);
+        let second = engine_for(&cache, &from_request);
         assert!(Arc::ptr_eq(&first, &second));
 
-        wirebolt_reset_engines();
-        let replacement = shared_http_engine(&from_workspace, &wirebolt_core::NoSecrets)
-            .expect("replacement engine");
+        cache.reset();
+        let replacement = engine_for(&cache, &from_workspace);
         assert!(!Arc::ptr_eq(&first, &replacement));
     }
 
     #[test]
-    fn zero_timeouts_mean_unlimited() {
-        assert_eq!(timeout_from_millis(0), UNLIMITED_TIMEOUT);
-        assert_eq!(timeout_from_millis(250), Duration::from_millis(250));
+    fn reset_retires_every_slot_at_once() {
+        let cache = HttpEngineCache::default();
+        let direct = ProxyPolicy::with_workspace(ProxyMode::Direct).resolve(None);
+        let system = ProxyPolicy::with_workspace(ProxyMode::System).resolve(None);
+        let manual = ProxyPolicy::with_workspace(manual_proxy_mode()).resolve(None);
+        let before = [
+            engine_for(&cache, &direct),
+            engine_for(&cache, &system),
+            engine_for(&cache, &manual),
+        ];
+
+        cache.reset();
+
+        let after = [
+            engine_for(&cache, &direct),
+            engine_for(&cache, &system),
+            engine_for(&cache, &manual),
+        ];
+        for (old, new) in before.iter().zip(&after) {
+            assert!(!Arc::ptr_eq(old, new));
+        }
+        for (old, new) in after.iter().zip([
+            engine_for(&cache, &direct),
+            engine_for(&cache, &system),
+            engine_for(&cache, &manual),
+        ]) {
+            assert!(Arc::ptr_eq(old, &new));
+        }
+    }
+
+    #[test]
+    fn an_engine_built_while_a_reset_ran_is_used_once_but_never_pooled() {
+        let cache = HttpEngineCache::default();
+        let proxy = ProxyPolicy::with_workspace(ProxyMode::Direct).resolve(None);
+
+        let raced = cache
+            .engine(proxy.mode(), || {
+                // Simulates a network change landing while the client is
+                // still being built with the pre-change proxy settings.
+                cache.reset();
+                HttpEngine::with_proxy(
+                    &HttpEngineConfig::default(),
+                    &proxy,
+                    &wirebolt_core::NoSecrets,
+                )
+            })
+            .expect("engine for this run");
+
+        let pooled = engine_for(&cache, &proxy);
+        assert!(!Arc::ptr_eq(&raced, &pooled));
+        assert!(Arc::ptr_eq(&pooled, &engine_for(&cache, &proxy)));
+    }
+
+    #[test]
+    fn concurrent_lookups_and_resets_never_hand_out_a_retired_engine() {
+        let cache = Arc::new(HttpEngineCache::default());
+        let proxy = ProxyPolicy::with_workspace(ProxyMode::Direct).resolve(None);
+        let workers: Vec<_> = (0..4)
+            .map(|_| {
+                let cache = Arc::clone(&cache);
+                let proxy = proxy.clone();
+                thread::spawn(move || {
+                    for _ in 0..50 {
+                        drop(engine_for(&cache, &proxy));
+                    }
+                })
+            })
+            .collect();
+        for _ in 0..20 {
+            cache.reset();
+            thread::sleep(Duration::from_millis(1));
+        }
+        for worker in workers {
+            worker.join().expect("worker thread");
+        }
+
+        let retired = engine_for(&cache, &proxy);
+        cache.reset();
+        let fresh = engine_for(&cache, &proxy);
+        assert!(!Arc::ptr_eq(&retired, &fresh));
+        assert!(Arc::ptr_eq(&fresh, &engine_for(&cache, &proxy)));
+    }
+
+    #[test]
+    fn zero_timeouts_disable_the_deadline() {
+        assert_eq!(timeout_from_millis(0), None);
+        assert_eq!(timeout_from_millis(250), Some(Duration::from_millis(250)));
     }
 
     fn run_to_completion(input: &str) -> (Vec<String>, *mut CallbackState) {

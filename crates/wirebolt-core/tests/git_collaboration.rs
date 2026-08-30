@@ -119,6 +119,56 @@ fn commit_skips_wirebolt_temporary_files_and_reports_the_revision() {
 }
 
 #[test]
+fn commit_ignores_files_nested_where_no_document_belongs() {
+    let repository = TestRepository::new();
+    repository.write("wirebolt.toml", "name = \"Before\"\n");
+    repository.commit_all("initial workspace");
+    repository.write("collections/api/collection.toml", "name = \"API\"\n");
+    repository.write("collections/api/requests/list.toml", "method = \"GET\"\n");
+    repository.write("collections/api/README.md", "docs\n");
+    repository.write(
+        "collections/api/requests/drafts/wip.toml",
+        "method = \"GET\"\n",
+    );
+    repository.write("collections/api/requests/list.json", "{}\n");
+    repository.write("environments/dev.toml", "name = \"Dev\"\n");
+    repository.write("environments/secrets/prod.toml", "name = \"Prod\"\n");
+    repository.write("environments/notes.txt", "not a document\n");
+
+    let result = GitWorkspace::open(repository.path())
+        .expect("open Git workspace")
+        .commit("add documents")
+        .expect("commit workspace");
+
+    assert_eq!(result.outcome, GitOperationOutcome::Committed);
+    assert_eq!(
+        repository.git_lines(["show", "--format=", "--name-only", "HEAD"]),
+        [
+            "collections/api/collection.toml",
+            "collections/api/requests/list.toml",
+            "environments/dev.toml",
+        ]
+    );
+    let untracked: Vec<_> = result
+        .status
+        .changes
+        .iter()
+        .filter(|change| change.unstaged == GitDelta::Untracked)
+        .map(|change| change.path.as_str())
+        .collect();
+    assert_eq!(
+        untracked,
+        [
+            "collections/api/README.md",
+            "collections/api/requests/drafts/wip.toml",
+            "collections/api/requests/list.json",
+            "environments/notes.txt",
+            "environments/secrets/prod.toml",
+        ]
+    );
+}
+
+#[test]
 fn commit_with_only_unmanaged_changes_touches_nothing() {
     let repository = TestRepository::new();
     repository.write("wirebolt.toml", "name = \"Shared\"\n");

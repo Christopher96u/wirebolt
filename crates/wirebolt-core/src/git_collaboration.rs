@@ -4,15 +4,22 @@ use std::{
     io::Read,
     path::{Path, PathBuf},
     process::{Child, Command, Output, Stdio},
+    sync::mpsc::{self, RecvTimeoutError},
     thread,
     time::{Duration, Instant},
 };
 
-const MANAGED_FILE: &str = "wirebolt.toml";
-const MANAGED_DIRECTORIES: [&str; 2] = ["collections/", "environments/"];
+use crate::storage::is_managed_document_path;
+
 const MAX_COMMIT_MESSAGE_BYTES: usize = 4 * 1024;
 const DEFAULT_NETWORK_TIMEOUT: Duration = Duration::from_secs(120);
 const CHILD_POLL_INTERVAL: Duration = Duration::from_millis(10);
+/// How long a timed-out Git gets to act on SIGTERM (and drop its lock
+/// files) before the whole process group is killed outright.
+const TERMINATION_GRACE: Duration = Duration::from_secs(1);
+/// How long to wait for the output pipes to close after a timed-out tree
+/// was killed before giving up on reclaiming the drain threads.
+const DRAIN_GRACE: Duration = Duration::from_secs(1);
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum GitDelta {
@@ -348,35 +355,19 @@ impl GitWorkspace {
 }
 
 /// Paths of managed documents that differ from HEAD, including the old side
-/// of renames so both halves are committed together. Wirebolt's own
-/// temporary files are never committed.
+/// of renames so both halves are committed together. Only files at the exact
+/// places Wirebolt writes documents qualify, so notes, temporary files, and
+/// anything nested where no document belongs are never committed.
 fn managed_change_paths(status: &GitStatus) -> Vec<String> {
     let mut paths = Vec::new();
     for change in &status.changes {
         for path in std::iter::once(&change.path).chain(change.previous_path.as_ref()) {
-            if is_managed_path(path) && !is_temporary_file(path) && !paths.contains(path) {
+            if is_managed_document_path(path) && !paths.contains(path) {
                 paths.push(path.clone());
             }
         }
     }
     paths
-}
-
-fn is_managed_path(path: &str) -> bool {
-    path == MANAGED_FILE
-        || MANAGED_DIRECTORIES
-            .iter()
-            .any(|directory| path.starts_with(directory))
-}
-
-fn is_temporary_file(path: &str) -> bool {
-    path.rsplit('/').next().is_some_and(|name| {
-        name.starts_with('.')
-            && name.contains(".wirebolt-")
-            && Path::new(name)
-                .extension()
-                .is_some_and(|extension| extension == "tmp")
-    })
 }
 
 fn git_output<const N: usize>(
@@ -393,12 +384,26 @@ fn git_output<const N: usize>(
         .env("GIT_TERMINAL_PROMPT", "0")
         .env("GIT_MERGE_AUTOEDIT", "no")
         .env("GIT_OPTIONAL_LOCKS", "0")
-        .env("LC_ALL", "C")
+        .env("LC_ALL", "C");
+    if !paths.is_empty() {
+        command.arg("--").args(paths);
+    }
+    run_command(command, timeout)
+}
+
+/// Runs a command with both pipes drained on helper threads so a chatty
+/// command never deadlocks. The child leads its own process group, so the
+/// helpers Git spawns (ssh, credential and remote helpers) can be ended with
+/// it when the timeout elapses.
+fn run_command(mut command: Command, timeout: Option<Duration>) -> Result<Output, GitError> {
+    command
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-    if !paths.is_empty() {
-        command.arg("--").args(paths);
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt as _;
+        command.process_group(0);
     }
     let child = command
         .spawn()
@@ -406,12 +411,14 @@ fn git_output<const N: usize>(
     wait_with_timeout(child, timeout)
 }
 
-/// Drains both pipes on helper threads so a chatty command never deadlocks.
 /// Local commands block on `wait`; only network commands poll, so the poll
-/// interval never adds latency to a status check.
+/// interval never adds latency to a status check. On timeout the process
+/// tree is ended first and each drain is then joined within a bounded grace:
+/// once the last pipe writer is gone it finishes at once, and a writer that
+/// somehow escaped the group cannot hold the caller hostage.
 fn wait_with_timeout(mut child: Child, timeout: Option<Duration>) -> Result<Output, GitError> {
-    let stdout = child.stdout.take().map(drain);
-    let stderr = child.stderr.take().map(drain);
+    let stdout = child.stdout.take().map(Drain::spawn);
+    let stderr = child.stderr.take().map(Drain::spawn);
     let failed = || GitError::new(GitErrorKind::CommandFailed, "wait for Git");
     let status = match timeout {
         None => child.wait().map_err(|_| failed())?,
@@ -422,16 +429,18 @@ fn wait_with_timeout(mut child: Child, timeout: Option<Duration>) -> Result<Outp
                     break status;
                 }
                 if started.elapsed() >= timeout {
-                    let _ = child.kill();
-                    let _ = child.wait();
+                    terminate_process_tree(&mut child);
+                    for drain in [stdout, stderr].into_iter().flatten() {
+                        drain.join_within(DRAIN_GRACE);
+                    }
                     return Err(GitError::new(GitErrorKind::TimedOut, "wait for Git"));
                 }
                 thread::sleep(CHILD_POLL_INTERVAL);
             }
         }
     };
-    let stdout = stdout.map_or_else(Vec::new, |handle| handle.join().unwrap_or_default());
-    let stderr = stderr.map_or_else(Vec::new, |handle| handle.join().unwrap_or_default());
+    let stdout = stdout.map_or_else(Vec::new, Drain::join);
+    let stderr = stderr.map_or_else(Vec::new, Drain::join);
     Ok(Output {
         status,
         stdout,
@@ -439,11 +448,89 @@ fn wait_with_timeout(mut child: Child, timeout: Option<Duration>) -> Result<Outp
     })
 }
 
-fn drain<R: Read + Send + 'static>(mut reader: R) -> thread::JoinHandle<Vec<u8>> {
-    thread::spawn(move || {
-        let mut bytes = Vec::new();
-        let _ = reader.read_to_end(&mut bytes);
+/// One pipe being read to its end on a helper thread. The bytes arrive on
+/// the channel; the handle is joined once they have, so the thread is
+/// reclaimed rather than left to finish on its own.
+struct Drain {
+    output: mpsc::Receiver<Vec<u8>>,
+    thread: thread::JoinHandle<()>,
+}
+
+impl Drain {
+    fn spawn<R: Read + Send + 'static>(mut reader: R) -> Self {
+        let (sender, output) = mpsc::channel();
+        let thread = thread::spawn(move || {
+            let mut bytes = Vec::new();
+            let _ = reader.read_to_end(&mut bytes);
+            let _ = sender.send(bytes);
+        });
+        Self { output, thread }
+    }
+
+    /// Waits for the pipe to close and reclaims the thread.
+    fn join(self) -> Vec<u8> {
+        let bytes = self.output.recv().unwrap_or_default();
+        let _ = self.thread.join();
         bytes
+    }
+
+    /// Reclaims the thread if the pipe closes within `grace`; only when the
+    /// grace elapses is the thread detached, to end whenever the last writer
+    /// goes away. A disconnected channel means the thread already finished
+    /// (sending is its last act), so it is joined too.
+    fn join_within(self, grace: Duration) {
+        match self.output.recv_timeout(grace) {
+            Ok(_) | Err(RecvTimeoutError::Disconnected) => {
+                let _ = self.thread.join();
+            }
+            Err(RecvTimeoutError::Timeout) => {}
+        }
+    }
+}
+
+/// Stops the child and everything it spawned: SIGTERM first so Git can
+/// remove its lock files, SIGKILL for whatever is still there afterwards.
+/// When the group cannot be signalled at all, the leader is killed directly
+/// so the caller is never left with a live `git`.
+fn terminate_process_tree(child: &mut Child) {
+    #[cfg(unix)]
+    {
+        let group_reached = signal_process_group(child.id(), "TERM");
+        if !group_reached {
+            let _ = child.kill();
+        }
+        let grace_deadline = Instant::now() + TERMINATION_GRACE;
+        while Instant::now() < grace_deadline && !matches!(child.try_wait(), Ok(Some(_))) {
+            thread::sleep(CHILD_POLL_INTERVAL);
+        }
+        // Helpers may outlive the leader and either process may ignore
+        // SIGTERM; the group id stays valid while any member remains, and
+        // signalling an empty group is harmless.
+        if !signal_process_group(child.id(), "KILL") {
+            let _ = child.kill();
+        }
+    }
+    #[cfg(not(unix))]
+    let _ = child.kill();
+    let _ = child.wait();
+}
+
+/// The child is its own group leader, so its pid doubles as the group id.
+/// `kill(1)` does the signalling because this crate forbids unsafe code and
+/// therefore cannot call `killpg` directly; `/bin/kill` is tried first and
+/// whichever `kill` is on `PATH` second.
+#[cfg(unix)]
+fn signal_process_group(group: u32, signal: &str) -> bool {
+    ["/bin/kill", "kill"].iter().any(|program| {
+        Command::new(program)
+            .arg(format!("-{signal}"))
+            .arg("--")
+            .arg(format!("-{group}"))
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .is_ok_and(|status| status.success())
     })
 }
 
@@ -666,6 +753,9 @@ mod tests {
                     "collections/api/requests/new.toml",
                     Some("collections/api/requests/old.toml"),
                 ),
+                change("collections/api/requests/drafts/wip.toml", None),
+                change("collections/api/README.md", None),
+                change("environments/secrets/prod.toml", None),
                 change("environments-archive/dev.toml", None),
             ],
         };
@@ -677,6 +767,133 @@ mod tests {
                 "collections/api/requests/new.toml",
                 "collections/api/requests/old.toml",
             ]
+        );
+    }
+
+    /// Runs `script` under the network timeout and checks that the command
+    /// timed out promptly and that the helper whose pid the script wrote to
+    /// `$0` is gone afterwards.
+    #[cfg(unix)]
+    fn assert_timeout_ends_helper(script: &str) {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let pid_file = directory.path().join("helper.pid");
+        let mut command = Command::new("sh");
+        command.arg("-c").arg(script).arg(&pid_file);
+        let started = Instant::now();
+
+        let error = run_command(command, Some(Duration::from_millis(200)))
+            .expect_err("command must time out");
+
+        assert_eq!(error.kind, GitErrorKind::TimedOut);
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "timeout took {:?}",
+            started.elapsed()
+        );
+        let helper = fs::read_to_string(&pid_file).expect("helper pid file");
+        let helper = helper.trim();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            let alive = Command::new("kill")
+                .args(["-0", helper])
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status()
+                .is_ok_and(|status| status.success());
+            if !alive {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "helper process {helper} survived the timeout"
+            );
+            thread::sleep(Duration::from_millis(20));
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_timed_out_command_takes_its_helper_processes_with_it() {
+        // A stand-in for `git push` spawning ssh: the helper inherits the
+        // output pipe and would otherwise keep it, and itself, alive.
+        assert_timeout_ends_helper("sleep 30 & echo $! > \"$0\"; wait");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_helper_that_ignores_sigterm_is_still_killed_after_the_grace_period() {
+        // Ignoring TERM before forking makes the helper inherit that
+        // disposition, so only the KILL escalation can end either process.
+        assert_timeout_ends_helper("trap '' TERM; sleep 30 & echo $! > \"$0\"; wait");
+    }
+
+    #[test]
+    fn a_drain_whose_sender_is_gone_is_joined_not_detached() {
+        use std::sync::{
+            Arc,
+            atomic::{AtomicBool, Ordering},
+        };
+
+        // The channel disconnects as soon as the sender drops, well before
+        // the thread exits; only a real join observes the exit.
+        let (sender, output) = mpsc::channel::<Vec<u8>>();
+        let exited = Arc::new(AtomicBool::new(false));
+        let thread = thread::spawn({
+            let exited = Arc::clone(&exited);
+            move || {
+                drop(sender);
+                thread::sleep(Duration::from_millis(200));
+                exited.store(true, Ordering::SeqCst);
+            }
+        });
+
+        Drain { output, thread }.join_within(Duration::from_secs(5));
+
+        assert!(
+            exited.load(Ordering::SeqCst),
+            "a disconnected channel must still join the drain thread"
+        );
+    }
+
+    #[test]
+    fn a_drain_that_outlives_the_grace_is_detached() {
+        let (_sender, output) = mpsc::channel::<Vec<u8>>();
+        let (release, hold) = mpsc::channel::<()>();
+        let stuck = Drain {
+            output,
+            thread: thread::spawn(move || {
+                let _ = hold.recv();
+            }),
+        };
+        let started = Instant::now();
+
+        stuck.join_within(Duration::from_millis(50));
+
+        assert!(
+            started.elapsed() < Duration::from_secs(2),
+            "join_within blocked on a thread that will not finish: {:?}",
+            started.elapsed()
+        );
+        drop(release);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_timed_out_command_returns_once_its_pipes_are_closed() {
+        // The helper keeps stdout open; the timeout path must still return
+        // after the tree is gone rather than waiting on the drain forever.
+        let mut command = Command::new("sh");
+        command.arg("-c").arg("sleep 30 & echo started; wait");
+        let started = Instant::now();
+
+        let error = run_command(command, Some(Duration::from_millis(100)))
+            .expect_err("command must time out");
+
+        assert_eq!(error.kind, GitErrorKind::TimedOut);
+        assert!(
+            started.elapsed() < TERMINATION_GRACE + DRAIN_GRACE + Duration::from_secs(1),
+            "timeout path took {:?}",
+            started.elapsed()
         );
     }
 }

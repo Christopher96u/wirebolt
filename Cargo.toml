@@ -18,6 +18,7 @@ bytes = "=1.12.1"
 criterion = { version = "=0.8.2", default-features = false, features = ["async_tokio", "cargo_bench_support"] }
 flate2 = "=1.1.10"
 http = "=1.5.0"
+http-body = "=1.1.0"
 http-body-util = "=0.1.5"
 hyper = { version = "=1.11.1", features = ["http1", "http2", "server"] }
 hyper-util = { version = "=0.1.20", features = ["tokio"] }

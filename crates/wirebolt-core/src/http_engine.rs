@@ -1,17 +1,33 @@
-use std::{error::Error, fmt, io, net::SocketAddr, time::Duration};
+use std::{
+    convert::Infallible,
+    error::Error,
+    fmt,
+    future::Future,
+    io,
+    net::SocketAddr,
+    pin::Pin,
+    sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+    },
+    task::{Context, Poll},
+    time::Duration,
+};
 
+use bytes::Bytes;
 use http::{
-    HeaderMap, HeaderValue, Version,
+    HeaderMap, HeaderValue, Method, Version,
     header::{ACCEPT, ACCEPT_ENCODING, CONTENT_ENCODING},
 };
+use http_body::{Frame, SizeHint};
 use reqwest::{Client, ClientBuilder, Proxy, redirect, retry};
-use tokio::time::{Instant, sleep, sleep_until};
+use tokio::time::{Instant, Sleep, sleep_until};
 use tokio_util::sync::CancellationToken;
 
 use crate::{
     NoSecrets, PreparedRequest, ProxyConfigurationError, ProxyDestination, ProxyMode, ProxyPolicy,
     ResolvedProxy, SecretResolver,
-    body_decoder::{BodyDecoder, ContentEncoding},
+    body_decoder::{BodyStream, ChunkSink, ContentEncoding, SinkRefusal},
 };
 
 pub const DEFAULT_USER_AGENT: &str = concat!("Wirebolt/", env!("CARGO_PKG_VERSION"));
@@ -155,7 +171,7 @@ impl HttpEngine {
         options: RunOptions,
         cancellation: &RunCancellation,
         mut on_headers: H,
-        mut on_chunk: F,
+        on_chunk: F,
     ) -> Result<Run, RunError>
     where
         H: FnMut(&RunHead),
@@ -163,6 +179,7 @@ impl HttpEngine {
     {
         let started = Instant::now();
         let (method, url, mut headers, body) = request.into_parts();
+        let head_request = method == Method::HEAD;
         let auto_decode = options.decode_content && !headers.contains_key(ACCEPT_ENCODING);
         if auto_decode {
             headers.insert(
@@ -170,22 +187,39 @@ impl HttpEngine {
                 HeaderValue::from_static(ContentEncoding::ACCEPT),
             );
         }
+        let progress = Arc::new(SendProgress::new(started));
         let mut request = reqwest::Request::new(method, url);
         *request.headers_mut() = headers;
-        *request.body_mut() = Some(body.into());
+        *request.body_mut() = Some(reqwest::Body::wrap(RequestBody {
+            remaining: Bytes::from(body),
+            progress: Arc::clone(&progress),
+        }));
 
         // One deadline timer and one cancellation future serve the whole run;
-        // only the stall timer is reset per chunk.
-        let deadline = sleep_until(after(started, options.total_timeout));
+        // only the stall timer is re-armed as bytes move in either direction.
+        let deadline = options
+            .total_timeout
+            .map(|timeout| sleep_until(after(started, timeout)));
         tokio::pin!(deadline);
+        let stall = options
+            .read_timeout
+            .map(|timeout| sleep_until(after(started, timeout)));
+        tokio::pin!(stall);
         let cancelled = cancellation.cancelled();
         tokio::pin!(cancelled);
 
-        let mut response = tokio::select! {
-            () = &mut cancelled => return Err(RunError::new(RunErrorKind::Cancelled)),
-            () = &mut deadline => return Err(RunError::new(RunErrorKind::TotalTimeout)),
-            result = self.client.execute(request) => result.map_err(RunError::transport)?,
-        };
+        let mut response = self
+            .send(
+                request,
+                RunTimers {
+                    read_timeout: options.read_timeout,
+                    progress: &progress,
+                    deadline: deadline.as_mut(),
+                    stall: stall.as_mut(),
+                    cancelled: cancelled.as_mut(),
+                },
+            )
+            .await?;
 
         let content_encoding = if auto_decode {
             response
@@ -210,44 +244,33 @@ impl HttpEngine {
         {
             return Err(RunError::response_too_large(limit));
         }
+        let bodyless = is_bodyless(head_request, head.status);
 
-        let mut decoder = match content_encoding {
-            Some(encoding) => Some(BodyDecoder::new(encoding).map_err(RunError::decode)?),
-            None => None,
-        };
-        let stall = sleep(options.read_timeout);
-        tokio::pin!(stall);
+        // Decoded pieces flow straight from the decoder into the callback;
+        // nothing is buffered beyond the decoder's fixed working buffer.
+        let sink = ChunkSink::new(on_chunk, options.max_response_bytes);
+        let mut body = BodyStream::new(content_encoding, sink).map_err(RunError::decode)?;
         let mut bytes_received = 0_u64;
-        let mut bytes_decoded = 0_u64;
         loop {
-            stall
-                .as_mut()
-                .reset(after(Instant::now(), options.read_timeout));
+            if let Some(timeout) = options.read_timeout {
+                rearm(stall.as_mut(), after(Instant::now(), timeout));
+            }
             let chunk = tokio::select! {
                 () = &mut cancelled => return Err(RunError::new(RunErrorKind::Cancelled)),
-                () = &mut deadline => return Err(RunError::new(RunErrorKind::TotalTimeout)),
-                () = &mut stall => return Err(RunError::new(RunErrorKind::ReadTimeout)),
+                () = fired(deadline.as_mut()) => return Err(RunError::new(RunErrorKind::TotalTimeout)),
+                () = fired(stall.as_mut()) => return Err(RunError::new(RunErrorKind::ReadTimeout)),
                 result = response.chunk() => result.map_err(RunError::transport)?,
             };
             let Some(chunk) = chunk else {
                 break;
             };
             bytes_received = add_within_limit(bytes_received, chunk.len(), options)?;
-            let delivered: &[u8] = match decoder.as_mut() {
-                Some(decoder) => decoder.decode(&chunk).map_err(RunError::decode)?,
-                None => &chunk,
-            };
-            bytes_decoded = add_within_limit(bytes_decoded, delivered.len(), options)?;
-            if !delivered.is_empty() && on_chunk(delivered) == StreamControl::Stop {
-                return Err(RunError::new(RunErrorKind::StreamStopped));
+            if let Err(error) = body.write_chunk(&chunk) {
+                return Err(body_error(body.sink().refusal(), error, options));
             }
         }
-        if let Some(decoder) = decoder.as_mut() {
-            let tail = decoder.finish().map_err(RunError::decode)?;
-            bytes_decoded = add_within_limit(bytes_decoded, tail.len(), options)?;
-            if !tail.is_empty() && on_chunk(tail) == StreamControl::Stop {
-                return Err(RunError::new(RunErrorKind::StreamStopped));
-            }
+        if !bodyless && let Err(error) = body.finish() {
+            return Err(body_error(body.sink().refusal(), error, options));
         }
 
         Ok(Run {
@@ -257,11 +280,52 @@ impl HttpEngine {
             remote_addr: head.remote_addr,
             content_encoding: head.content_encoding,
             bytes_received,
-            bytes_decoded,
+            bytes_decoded: body.sink().delivered(),
             time_to_headers: head.time_to_headers,
             total_time: started.elapsed(),
         })
     }
+}
+
+impl HttpEngine {
+    /// Sends the request and waits for response headers under the run's
+    /// timers. Request bytes the transport is still taking count as
+    /// progress, so only a genuine stall trips the read timeout.
+    async fn send<C: Future<Output = ()>>(
+        &self,
+        request: reqwest::Request,
+        mut timers: RunTimers<'_, C>,
+    ) -> Result<reqwest::Response, RunError> {
+        let execute = self.client.execute(request);
+        tokio::pin!(execute);
+        loop {
+            tokio::select! {
+                () = &mut timers.cancelled => return Err(RunError::new(RunErrorKind::Cancelled)),
+                () = fired(timers.deadline.as_mut()) => {
+                    return Err(RunError::new(RunErrorKind::TotalTimeout));
+                }
+                () = fired(timers.stall.as_mut()) => {
+                    let due = timers.read_timeout.map_or(Instant::now(), |timeout| {
+                        after(timers.progress.last_activity(), timeout)
+                    });
+                    if due <= Instant::now() {
+                        return Err(RunError::new(RunErrorKind::ReadTimeout));
+                    }
+                    rearm(timers.stall.as_mut(), due);
+                }
+                result = &mut execute => return result.map_err(RunError::transport),
+            }
+        }
+    }
+}
+
+/// The per-run timers, borrowed for the send phase.
+struct RunTimers<'a, C> {
+    read_timeout: Option<Duration>,
+    progress: &'a SendProgress,
+    deadline: Pin<&'a mut Option<Sleep>>,
+    stall: Pin<&'a mut Option<Sleep>>,
+    cancelled: Pin<&'a mut C>,
 }
 
 /// Deadlines far enough to overflow the clock are clamped to a year out,
@@ -273,6 +337,28 @@ fn after(instant: Instant, duration: Duration) -> Instant {
         .unwrap_or_else(|| instant + ONE_YEAR)
 }
 
+/// Whether a response carries no body by definition: a `HEAD` reply or a
+/// 1xx/204/304 status. Only such a response may end a compressed stream at
+/// zero bytes; any other one, a declared zero length included, was cut
+/// short of its end marker.
+const fn is_bodyless(head_request: bool, status: u16) -> bool {
+    head_request || matches!(status, 100..=199 | 204 | 304)
+}
+
+/// Resolves when an armed timer elapses; a disabled timer never resolves.
+async fn fired(timer: Pin<&mut Option<Sleep>>) {
+    match timer.as_pin_mut() {
+        Some(sleep) => sleep.await,
+        None => std::future::pending().await,
+    }
+}
+
+fn rearm(timer: Pin<&mut Option<Sleep>>, at: Instant) {
+    if let Some(sleep) = timer.as_pin_mut() {
+        sleep.reset(at);
+    }
+}
+
 fn add_within_limit(total: u64, added: usize, options: RunOptions) -> Result<u64, RunError> {
     let limit = options.max_response_bytes.unwrap_or(u64::MAX);
     let next = total
@@ -282,6 +368,80 @@ fn add_within_limit(total: u64, added: usize, options: RunOptions) -> Result<u64
         return Err(RunError::response_too_large(limit));
     }
     Ok(next)
+}
+
+/// Maps a decoder failure back to what actually happened at the sink.
+fn body_error(refusal: Option<SinkRefusal>, error: io::Error, options: RunOptions) -> RunError {
+    match refusal {
+        Some(SinkRefusal::Stopped) => RunError::new(RunErrorKind::StreamStopped),
+        Some(SinkRefusal::TooLarge) => {
+            RunError::response_too_large(options.max_response_bytes.unwrap_or(u64::MAX))
+        }
+        None => RunError::decode(error),
+    }
+}
+
+/// When the transport last pulled request bytes, as nanoseconds after the
+/// run started. Lets the stall timer treat an upload still moving as
+/// progress while waiting for response headers.
+#[derive(Debug)]
+struct SendProgress {
+    started: Instant,
+    last_activity_nanos: AtomicU64,
+}
+
+impl SendProgress {
+    const fn new(started: Instant) -> Self {
+        Self {
+            started,
+            last_activity_nanos: AtomicU64::new(0),
+        }
+    }
+
+    fn touch(&self) {
+        let elapsed = u64::try_from(self.started.elapsed().as_nanos()).unwrap_or(u64::MAX);
+        self.last_activity_nanos.store(elapsed, Ordering::Relaxed);
+    }
+
+    fn last_activity(&self) -> Instant {
+        self.started + Duration::from_nanos(self.last_activity_nanos.load(Ordering::Relaxed))
+    }
+}
+
+/// The request body handed to hyper in bounded frames, so each frame the
+/// transport pulls is a progress signal rather than one opaque blob.
+struct RequestBody {
+    remaining: Bytes,
+    progress: Arc<SendProgress>,
+}
+
+const REQUEST_FRAME_BYTES: usize = 64 * 1024;
+
+impl http_body::Body for RequestBody {
+    type Data = Bytes;
+    type Error = Infallible;
+
+    fn poll_frame(
+        self: Pin<&mut Self>,
+        _: &mut Context<'_>,
+    ) -> Poll<Option<Result<Frame<Bytes>, Infallible>>> {
+        let this = self.get_mut();
+        if this.remaining.is_empty() {
+            return Poll::Ready(None);
+        }
+        let take = this.remaining.len().min(REQUEST_FRAME_BYTES);
+        let frame = this.remaining.split_to(take);
+        this.progress.touch();
+        Poll::Ready(Some(Ok(Frame::data(frame))))
+    }
+
+    fn is_end_stream(&self) -> bool {
+        self.remaining.is_empty()
+    }
+
+    fn size_hint(&self) -> SizeHint {
+        SizeHint::with_exact(u64::try_from(self.remaining.len()).unwrap_or(u64::MAX))
+    }
 }
 
 fn configure_proxy<R>(
@@ -334,10 +494,16 @@ where
     }
 }
 
+/// Per-run limits. A timeout of `None` is disabled outright: the run then
+/// ends only through cancellation, the other deadline, or the transport.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct RunOptions {
-    pub total_timeout: Duration,
-    pub read_timeout: Duration,
+    /// Bounds the whole run from send to the last body byte.
+    pub total_timeout: Option<Duration>,
+    /// Fails the run when nothing moves for this long: no request bytes
+    /// taken by the transport while waiting for response headers, and no
+    /// body bytes arriving between chunks.
+    pub read_timeout: Option<Duration>,
     pub max_response_bytes: Option<u64>,
     /// Advertise and decode compressed bodies when the request sets no
     /// `Accept-Encoding` of its own.
@@ -347,8 +513,8 @@ pub struct RunOptions {
 impl Default for RunOptions {
     fn default() -> Self {
         Self {
-            total_timeout: Duration::from_secs(30),
-            read_timeout: Duration::from_secs(10),
+            total_timeout: Some(Duration::from_secs(30)),
+            read_timeout: Some(Duration::from_secs(10)),
             max_response_bytes: None,
             decode_content: true,
         }
