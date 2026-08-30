@@ -1,11 +1,16 @@
 #![forbid(unsafe_code)]
 
+mod git_collaboration;
 mod http_engine;
 mod proxy;
 mod request;
 mod request_pipeline;
 mod storage;
 
+pub use git_collaboration::{
+    GitChange, GitDelta, GitError, GitErrorKind, GitOperation, GitOperationOutcome, GitStatus,
+    GitWorkspace,
+};
 pub use http_engine::{
     HttpEngine, HttpEngineConfig, HttpVersion, HttpVersionPolicy, Run, RunCancellation, RunError,
     RunErrorKind, RunHead, RunHeader, RunOptions, StreamControl,

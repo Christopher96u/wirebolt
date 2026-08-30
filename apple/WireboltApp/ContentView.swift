@@ -29,6 +29,11 @@ struct ContentView: View {
                 .disabled(model.draft.name.isEmpty)
                 .help("Save Request (⌘S)")
 
+                Button("Git Collaboration", systemImage: "arrow.triangle.branch") {
+                    model.isShowingGitCollaboration = true
+                }
+                .help("Git Collaboration (⇧⌘G)")
+
                 if model.isRunning {
                     Button("Cancel", systemImage: "stop.fill", action: model.cancel)
                         .help("Cancel Request")
@@ -49,6 +54,9 @@ struct ContentView: View {
                     .first(where: { $0.id == model.selectedEnvironmentID })
                     ?? model.makeNewEnvironment()
             )
+        }
+        .sheet(isPresented: $model.isShowingGitCollaboration) {
+            GitCollaborationView(model: model)
         }
         .onAppear {
             PerformanceProbe.markReady()
@@ -150,14 +158,14 @@ private struct WorkspaceSidebar: View {
     private func createWorkspace() {
         chooseWorkspace(prompt: "Create", message: "Choose an empty folder for the new Wirebolt workspace.") { url in
             guard let persistence = try? RustWorkspacePersistence(path: url, mode: .create) else { return }
-            Task { await model.openWorkspace(using: persistence) }
+            Task { await model.openWorkspace(using: persistence, gitCollaboration: persistence) }
         }
     }
 
     private func openWorkspace() {
         chooseWorkspace(prompt: "Open", message: "Choose a Wirebolt workspace folder.") { url in
             guard let persistence = try? RustWorkspacePersistence(path: url, mode: .open) else { return }
-            Task { await model.openWorkspace(using: persistence) }
+            Task { await model.openWorkspace(using: persistence, gitCollaboration: persistence) }
         }
     }
 

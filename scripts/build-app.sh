@@ -26,6 +26,7 @@ swiftc \
   apple/WireboltApp/WireboltApp.swift \
   apple/WireboltApp/ContentView.swift \
   apple/WireboltApp/EnvironmentEditor.swift \
+  apple/WireboltApp/GitCollaborationView.swift \
   apple/WireboltApp/PerformanceProbe.swift \
   apple/WireboltApp/ResponseViewer.swift \
   apple/WireboltApp/ResponseViewport.swift \

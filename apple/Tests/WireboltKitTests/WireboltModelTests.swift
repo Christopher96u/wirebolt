@@ -139,6 +139,83 @@ struct WireboltModelTests {
         #expect(decoded == proxy)
         #expect(!String(decoding: data, as: UTF8.self).contains("secret material"))
     }
+
+    @Test("decodes the stable Git bridge document")
+    func decodesGitBridgeDocument() throws {
+        let data = Data(#"{"branch":"main","upstream":"origin/main","ahead":1,"behind":2,"changes":[{"path":"wirebolt.toml","previous_path":null,"staged":"type_changed","unstaged":"none","conflicted":false}]}"#.utf8)
+
+        let status = try JSONDecoder().decode(GitStatusSnapshot.self, from: data)
+
+        #expect(status.branch == "main")
+        #expect(status.ahead == 1)
+        #expect(status.behind == 2)
+        #expect(status.changes.first?.staged == .typeChanged)
+    }
+
+    @Test("runs Git actions only when explicitly requested")
+    @MainActor
+    func runsGitActionsExplicitly() async {
+        let collaboration = GitRecorder()
+        let model = WireboltModel(runner: StubRunner(), gitCollaboration: collaboration)
+
+        #expect(await collaboration.calls == [])
+
+        await model.refreshGitStatus()
+        await model.commitGit(message: "save workspace")
+        await model.pushGit()
+
+        #expect(await collaboration.calls == ["status", "commit:save workspace", "push"])
+        #expect(model.gitStatus?.branch == "main")
+        #expect(model.gitOperation?.outcome == .pushed)
+        #expect(!model.isGitBusy)
+    }
+
+    @Test("refuses to pull over unsaved request edits")
+    @MainActor
+    func protectsUnsavedRequestEdits() async {
+        let request = RequestDraft(id: "health", name: "Health", url: "https://example.com")
+        let workspace = WorkspaceDraft(
+            name: "Demo",
+            collections: [CollectionDraft(
+                id: "api",
+                name: "API",
+                requests: [RequestLocation(collectionID: "api", request: request)]
+            )]
+        )
+        let collaboration = GitRecorder()
+        let model = WireboltModel(
+            runner: StubRunner(),
+            persistence: StubPersistence(workspace: workspace),
+            gitCollaboration: collaboration
+        )
+        await model.loadWorkspace()
+        model.draft.url = "https://edited.example.com"
+
+        await model.pullGit()
+
+        #expect(await collaboration.calls == [])
+        #expect(model.gitFailure?.kind == "unsaved_request")
+    }
+
+    @Test("reloads workspace after a successful pull")
+    @MainActor
+    func reloadsAfterPull() async {
+        let initial = WorkspaceDraft(name: "Before")
+        let updated = WorkspaceDraft(name: "After")
+        let persistence = SequencedPersistence(workspaces: [initial, updated])
+        let collaboration = GitRecorder(pullOutcome: .updated)
+        let model = WireboltModel(
+            runner: StubRunner(),
+            persistence: persistence,
+            gitCollaboration: collaboration
+        )
+        await model.loadWorkspace()
+
+        await model.pullGit()
+
+        #expect(model.workspace.name == "After")
+        #expect(model.gitOperation?.outcome == .updated)
+    }
 }
 
 private struct StubRunner: RequestRunner {
@@ -182,4 +259,62 @@ private actor PersistenceRecorder: WorkspacePersistence {
 
     func save(environment _: EnvironmentDraft) async throws {}
     func saveSecret(name _: String, value _: String) async throws {}
+}
+
+private actor SequencedPersistence: WorkspacePersistence {
+    private var workspaces: [WorkspaceDraft]
+
+    init(workspaces: [WorkspaceDraft]) {
+        self.workspaces = workspaces
+    }
+
+    func load() async throws -> WorkspaceDraft {
+        if workspaces.count > 1 {
+            return workspaces.removeFirst()
+        }
+        return workspaces[0]
+    }
+
+    func save(request _: RequestDraft, in _: String) async throws {}
+    func save(environment _: EnvironmentDraft) async throws {}
+    func saveSecret(name _: String, value _: String) async throws {}
+}
+
+private actor GitRecorder: GitCollaboration {
+    private(set) var calls: [String] = []
+    private let pullOutcome: GitOperationOutcome
+
+    init(pullOutcome: GitOperationOutcome = .upToDate) {
+        self.pullOutcome = pullOutcome
+    }
+
+    func status() async throws -> GitStatusSnapshot {
+        calls.append("status")
+        return .cleanMain
+    }
+
+    func pull() async throws -> GitOperationSnapshot {
+        calls.append("pull")
+        return GitOperationSnapshot(outcome: pullOutcome, revision: "abc", status: .cleanMain)
+    }
+
+    func commit(message: String) async throws -> GitOperationSnapshot {
+        calls.append("commit:\(message)")
+        return GitOperationSnapshot(outcome: .committed, revision: "abc", status: .cleanMain)
+    }
+
+    func push() async throws -> GitOperationSnapshot {
+        calls.append("push")
+        return GitOperationSnapshot(outcome: .pushed, revision: "abc", status: .cleanMain)
+    }
+}
+
+private extension GitStatusSnapshot {
+    static let cleanMain = GitStatusSnapshot(
+        branch: "main",
+        upstream: "origin/main",
+        ahead: 0,
+        behind: 0,
+        changes: []
+    )
 }

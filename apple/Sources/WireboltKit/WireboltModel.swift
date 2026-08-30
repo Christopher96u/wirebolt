@@ -13,6 +13,13 @@ public protocol WorkspacePersistence: Sendable {
     func saveSecret(name: String, value: String) async throws
 }
 
+public protocol GitCollaboration: Sendable {
+    func status() async throws -> GitStatusSnapshot
+    func pull() async throws -> GitOperationSnapshot
+    func commit(message: String) async throws -> GitOperationSnapshot
+    func push() async throws -> GitOperationSnapshot
+}
+
 @MainActor
 @Observable
 public final class WireboltModel {
@@ -30,20 +37,42 @@ public final class WireboltModel {
     public private(set) var failure: RunFailure?
     public private(set) var isRunning = false
     public private(set) var isLoadingWorkspace = false
+    public private(set) var gitStatus: GitStatusSnapshot?
+    public private(set) var gitOperation: GitOperationSnapshot?
+    public private(set) var gitFailure: GitFailure?
+    public private(set) var isGitBusy = false
+    public var isShowingGitCollaboration = false
 
     @ObservationIgnored private let runner: any RequestRunner
     @ObservationIgnored private var persistence: (any WorkspacePersistence)?
+    @ObservationIgnored private var gitCollaboration: (any GitCollaboration)?
     @ObservationIgnored private var presentedBodyBytes = 0
 
-    public init(runner: any RequestRunner, persistence: (any WorkspacePersistence)? = nil) {
+    public init(
+        runner: any RequestRunner,
+        persistence: (any WorkspacePersistence)? = nil,
+        gitCollaboration: (any GitCollaboration)? = nil
+    ) {
         self.runner = runner
         self.persistence = persistence
+        self.gitCollaboration = gitCollaboration
     }
 
     public var activeVariables: [String: ValueSource] {
         workspace.environments
             .first(where: { $0.id == selectedEnvironmentID })?
             .variables ?? [:]
+    }
+
+    public var hasUnsavedRequestChanges: Bool {
+        if let selectedRequestID,
+           let saved = workspace.collections
+               .flatMap(\.requests)
+               .first(where: { $0.id == selectedRequestID })
+        {
+            return saved.request != draft
+        }
+        return draft != RequestDraft()
     }
 
     public func send() async {
@@ -90,9 +119,52 @@ public final class WireboltModel {
         }
     }
 
-    public func openWorkspace(using persistence: any WorkspacePersistence) async {
+    public func openWorkspace(
+        using persistence: any WorkspacePersistence,
+        gitCollaboration: (any GitCollaboration)? = nil
+    ) async {
         self.persistence = persistence
+        self.gitCollaboration = gitCollaboration
+        gitStatus = nil
+        gitOperation = nil
+        gitFailure = nil
         await loadWorkspace()
+    }
+
+    public func refreshGitStatus() async {
+        await performGitOperation { collaboration in
+            let status = try await collaboration.status()
+            self.gitStatus = status
+        }
+    }
+
+    public func pullGit() async {
+        guard !hasUnsavedRequestChanges else {
+            gitFailure = GitFailure(
+                kind: "unsaved_request",
+                reason: "Save or discard request edits before pulling."
+            )
+            return
+        }
+        await performGitOperation { collaboration in
+            let operation = try await collaboration.pull()
+            self.apply(operation)
+            if operation.outcome == .updated {
+                await self.reloadWorkspaceAfterGitUpdate()
+            }
+        }
+    }
+
+    public func commitGit(message: String) async {
+        await performGitOperation { collaboration in
+            self.apply(try await collaboration.commit(message: message))
+        }
+    }
+
+    public func pushGit() async {
+        await performGitOperation { collaboration in
+            self.apply(try await collaboration.push())
+        }
     }
 
     public func select(_ location: RequestLocation) {
@@ -179,5 +251,58 @@ public final class WireboltModel {
         completion = nil
         failure = nil
         presentedBodyBytes = 0
+    }
+
+    private func performGitOperation(
+        _ operation: (any GitCollaboration) async throws -> Void
+    ) async {
+        guard !isGitBusy else { return }
+        guard let gitCollaboration else {
+            gitFailure = GitFailure(
+                kind: "not_configured",
+                reason: "Open a workspace before using Git collaboration."
+            )
+            return
+        }
+        gitFailure = nil
+        isGitBusy = true
+        defer { isGitBusy = false }
+        do {
+            try await operation(gitCollaboration)
+        } catch let failure as GitFailure {
+            gitFailure = failure
+        } catch {
+            gitFailure = GitFailure(kind: "bridge", reason: "Git operation failed.")
+        }
+    }
+
+    private func apply(_ operation: GitOperationSnapshot) {
+        gitOperation = operation
+        gitStatus = operation.status
+    }
+
+    private func reloadWorkspaceAfterGitUpdate() async {
+        guard let persistence else { return }
+        do {
+            workspace = try await persistence.load()
+            selectedEnvironmentID = workspace.environments.first?.id
+            if let selectedRequestID,
+               let selected = workspace.collections
+                   .flatMap(\.requests)
+                   .first(where: { $0.id == selectedRequestID })
+            {
+                select(selected)
+            } else if let first = workspace.collections.flatMap(\.requests).first {
+                select(first)
+            } else {
+                selectedRequestID = nil
+                draft = RequestDraft()
+            }
+        } catch {
+            gitFailure = GitFailure(
+                kind: "workspace_reload",
+                reason: "Git updated the workspace, but Wirebolt could not reload it."
+            )
+        }
     }
 }

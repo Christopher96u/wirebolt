@@ -271,6 +271,103 @@ public struct WorkspaceDraft: Equatable, Sendable {
     }
 }
 
+public enum GitDeltaSnapshot: String, Codable, Equatable, Sendable {
+    case none
+    case added
+    case modified
+    case deleted
+    case renamed
+    case copied
+    case typeChanged = "type_changed"
+    case untracked
+    case unmerged
+}
+
+public struct GitChangeSnapshot: Codable, Equatable, Identifiable, Sendable {
+    public var id: String { previousPath.map { "\($0)\u{0}\(path)" } ?? path }
+    public let path: String
+    public let previousPath: String?
+    public let staged: GitDeltaSnapshot
+    public let unstaged: GitDeltaSnapshot
+    public let conflicted: Bool
+
+    enum CodingKeys: String, CodingKey {
+        case path, staged, unstaged, conflicted
+        case previousPath = "previous_path"
+    }
+
+    public init(
+        path: String,
+        previousPath: String? = nil,
+        staged: GitDeltaSnapshot,
+        unstaged: GitDeltaSnapshot,
+        conflicted: Bool
+    ) {
+        self.path = path
+        self.previousPath = previousPath
+        self.staged = staged
+        self.unstaged = unstaged
+        self.conflicted = conflicted
+    }
+}
+
+public struct GitStatusSnapshot: Codable, Equatable, Sendable {
+    public let branch: String?
+    public let upstream: String?
+    public let ahead: UInt64
+    public let behind: UInt64
+    public let changes: [GitChangeSnapshot]
+
+    public init(
+        branch: String?,
+        upstream: String?,
+        ahead: UInt64,
+        behind: UInt64,
+        changes: [GitChangeSnapshot]
+    ) {
+        self.branch = branch
+        self.upstream = upstream
+        self.ahead = ahead
+        self.behind = behind
+        self.changes = changes
+    }
+}
+
+public enum GitOperationOutcome: String, Codable, Equatable, Sendable {
+    case nothingToCommit = "nothing_to_commit"
+    case committed
+    case updated
+    case upToDate = "up_to_date"
+    case pushed
+    case conflicted
+}
+
+public struct GitOperationSnapshot: Codable, Equatable, Sendable {
+    public let outcome: GitOperationOutcome
+    public let revision: String?
+    public let status: GitStatusSnapshot
+
+    public init(
+        outcome: GitOperationOutcome,
+        revision: String?,
+        status: GitStatusSnapshot
+    ) {
+        self.outcome = outcome
+        self.revision = revision
+        self.status = status
+    }
+}
+
+public struct GitFailure: Error, Equatable, Sendable {
+    public let kind: String
+    public let reason: String
+
+    public init(kind: String, reason: String) {
+        self.kind = kind
+        self.reason = reason
+    }
+}
+
 public struct ResponseHeader: Codable, Equatable, Identifiable, Sendable {
     public let name: String
     public let value: String
