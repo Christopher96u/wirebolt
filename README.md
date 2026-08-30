@@ -11,3 +11,9 @@ Requirements: macOS, `mise`, Rust 1.98.0, and Xcode 26.6.
 ./scripts/build-app.sh
 open build/Wirebolt.app
 ```
+
+Measure the performance contract on an idle Apple Silicon Mac:
+
+```sh
+./scripts/performance.sh check
+```

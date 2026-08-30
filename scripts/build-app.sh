@@ -22,6 +22,8 @@ swiftc \
   apple/Generated/wirebolt_ffi.swift \
   apple/WireboltApp/WireboltApp.swift \
   apple/WireboltApp/ContentView.swift \
+  apple/WireboltApp/PerformanceProbe.swift \
+  apple/WireboltApp/ResponseViewport.swift \
   apple/WireboltApp/RustCore.swift \
   -Xcc -fmodule-map-file=apple/Generated/wirebolt_ffiFFI.modulemap \
   -Xcc -fmodule-map-file=crates/wirebolt-ffi/include/module.modulemap \

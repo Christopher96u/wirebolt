@@ -1,5 +1,11 @@
 #![forbid(unsafe_code)]
 
+mod request;
+
+pub use request::{
+    HeaderField, PreparedRequest, RequestDraft, RequestPreparationError, prepare_request,
+};
+
 pub const STREAM_ABI_VERSION: u32 = 1;
 
 #[derive(Debug, Eq, PartialEq)]

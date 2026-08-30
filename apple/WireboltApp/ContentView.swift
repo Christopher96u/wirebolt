@@ -17,5 +17,8 @@ struct ContentView: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .padding(40)
+        .onAppear {
+            PerformanceProbe.markReady()
+        }
     }
 }

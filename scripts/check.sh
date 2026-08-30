@@ -6,4 +6,5 @@ cd "$repo_dir"
 
 scripts/lint.sh
 scripts/test.sh
+scripts/performance.sh smoke
 scripts/build-app.sh
