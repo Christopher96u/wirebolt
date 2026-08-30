@@ -2,8 +2,10 @@ use std::{collections::BTreeMap, fs};
 
 use tempfile::tempdir;
 use wirebolt_core::{
-    Collection, DocumentId, Environment, Request, RequestBody, RequestHeader, SaveOutcome,
-    SecretName, StorageError, ValueSource, Workspace, WorkspaceDocument, WorkspaceStore,
+    Collection, DocumentId, Environment, ManualProxy, ProxyCredentials, ProxyDestination,
+    ProxyEndpoint, ProxyMode, ProxyPolicy, ProxyRoute, ProxySource, Request, RequestBody,
+    RequestHeader, SaveOutcome, SecretName, StorageError, ValueSource, Workspace,
+    WorkspaceDocument, WorkspaceStore,
 };
 
 fn id(value: &str) -> DocumentId {
@@ -170,7 +172,7 @@ fn rejects_future_schema_versions() {
         error,
         StorageError::UnsupportedSchema {
             found: 999,
-            supported: 1,
+            supported: 2,
             ..
         }
     ));
@@ -221,6 +223,77 @@ fn explicitly_migrates_unversioned_documents_and_is_restartable() {
     let collection_toml =
         fs::read_to_string(temporary.path().join("collections/users/collection.toml"))
             .expect("collection TOML");
-    assert!(workspace_toml.starts_with("schema_version = 1\n"));
-    assert!(collection_toml.starts_with("schema_version = 1\n"));
+    assert!(workspace_toml.starts_with("schema_version = 2\n"));
+    assert!(collection_toml.starts_with("schema_version = 2\n"));
+}
+
+#[test]
+fn migrates_schema_one_workspaces_before_proxy_fields_existed() {
+    let temporary = tempdir().expect("temporary workspace");
+    fs::write(
+        temporary.path().join("wirebolt.toml"),
+        "schema_version = 1\nname = \"Before proxy policy\"\n",
+    )
+    .expect("write schema-one workspace");
+    let store = WorkspaceStore::open(temporary.path()).expect("open schema-one workspace");
+
+    let snapshot = store.load().expect("load schema-one workspace");
+    assert_eq!(snapshot.workspace.proxy, None);
+    assert_eq!(
+        store
+            .migrate()
+            .expect("migrate schema-one workspace")
+            .migrated_documents,
+        1
+    );
+
+    let workspace_toml =
+        fs::read_to_string(temporary.path().join("wirebolt.toml")).expect("workspace TOML");
+    assert!(workspace_toml.starts_with("schema_version = 2\n"));
+}
+
+#[test]
+fn round_trips_workspace_and_request_proxy_overrides_without_secret_values() {
+    let temporary = tempdir().expect("temporary workspace");
+    let username = SecretName::new("CORP_PROXY_USER").expect("username secret name");
+    let password = SecretName::new("CORP_PROXY_PASSWORD").expect("password secret name");
+    let route = ProxyRoute::new(
+        ProxyDestination::All,
+        ProxyEndpoint::new("socks5h://proxy.internal:1080").expect("proxy endpoint"),
+    )
+    .with_credentials(ProxyCredentials::new(username, password));
+    let mut workspace = Workspace::new("Corporate API");
+    workspace.proxy = Some(ProxyMode::Manual(
+        ManualProxy::new(vec![route]).expect("manual proxy"),
+    ));
+    let store = WorkspaceStore::create(temporary.path(), &workspace).expect("create workspace");
+    let collection = Collection::new(id("status"), "Status".to_owned());
+    store
+        .save(&WorkspaceDocument::Collection(collection.clone()))
+        .expect("save collection");
+    let mut request = Request::new(id("health"), "Health", "GET", "https://api.internal/health");
+    request.proxy_override = Some(ProxyMode::Direct);
+    store
+        .save(&WorkspaceDocument::Request {
+            collection_id: collection.id,
+            request: request.clone(),
+        })
+        .expect("save request");
+
+    let snapshot = WorkspaceStore::open(temporary.path())
+        .expect("open workspace")
+        .load()
+        .expect("load workspace");
+
+    assert_eq!(snapshot.workspace, workspace);
+    assert_eq!(snapshot.collections[0].requests, vec![request]);
+    let policy = ProxyPolicy::new(snapshot.workspace.proxy.clone());
+    let resolved = policy.resolve(snapshot.collections[0].requests[0].proxy_override.as_ref());
+    assert_eq!(resolved.source(), ProxySource::Request);
+    assert_eq!(resolved.mode(), &ProxyMode::Direct);
+    let workspace_toml =
+        fs::read_to_string(temporary.path().join("wirebolt.toml")).expect("workspace TOML");
+    assert!(workspace_toml.contains("CORP_PROXY_USER"));
+    assert!(workspace_toml.contains("CORP_PROXY_PASSWORD"));
+    assert!(!workspace_toml.contains("super-secret"));
 }

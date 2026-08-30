@@ -2,7 +2,9 @@ use std::{collections::BTreeMap, error::Error, fmt, str::FromStr};
 
 use serde::{Deserialize, Deserializer, Serialize, Serializer, de};
 
-pub const CURRENT_SCHEMA_VERSION: u32 = 1;
+use crate::proxy::ProxyMode;
+
+pub const CURRENT_SCHEMA_VERSION: u32 = 2;
 
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub struct DocumentId(String);
@@ -162,6 +164,8 @@ impl Error for IdentifierError {}
 pub struct Workspace {
     pub(super) schema_version: u32,
     pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub proxy: Option<ProxyMode>,
 }
 
 impl Workspace {
@@ -170,6 +174,7 @@ impl Workspace {
         Self {
             schema_version: CURRENT_SCHEMA_VERSION,
             name: name.into(),
+            proxy: None,
         }
     }
 
@@ -214,6 +219,8 @@ pub struct Request {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub headers: Vec<RequestHeader>,
     pub body: RequestBody,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub proxy_override: Option<ProxyMode>,
 }
 
 impl Request {
@@ -232,6 +239,7 @@ impl Request {
             url: url.into(),
             headers: Vec::new(),
             body: RequestBody::Empty,
+            proxy_override: None,
         }
     }
 

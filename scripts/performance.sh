@@ -29,7 +29,9 @@ swiftc \
   apple/Benchmarks/PerformanceContract.swift \
   -Xcc -fmodule-map-file=apple/Generated/wirebolt_ffiFFI.modulemap \
   target/release/libwirebolt_ffi.a \
-  -framework AppKit
+  -framework AppKit \
+  -framework Security \
+  -framework SystemConfiguration
 
 if [[ "$mode" == "smoke" ]]; then
   exec build/performance-contract --smoke

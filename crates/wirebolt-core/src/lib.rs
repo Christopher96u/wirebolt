@@ -1,12 +1,21 @@
 #![forbid(unsafe_code)]
 
 mod http_engine;
+mod proxy;
 mod request;
 mod storage;
 
 pub use http_engine::{
     HttpEngine, HttpEngineConfig, HttpVersion, HttpVersionPolicy, Run, RunCancellation, RunError,
     RunErrorKind, RunHeader, RunOptions, StreamControl,
+};
+#[cfg(target_vendor = "apple")]
+pub use proxy::KeychainSecretResolver;
+pub use proxy::{
+    ManualProxy, NoSecrets, ProxyConfigurationError, ProxyConfigurationErrorKind, ProxyCredentials,
+    ProxyDestination, ProxyDiagnostic, ProxyEndpoint, ProxyMode, ProxyModeKind, ProxyPolicy,
+    ProxyProtocol, ProxyRoute, ProxyRouteDiagnostic, ProxySource, ResolvedProxy, ResolvedSecret,
+    SecretResolutionError, SecretResolutionErrorKind, SecretResolver,
 };
 pub use request::{
     HeaderField, PreparedRequest, RequestDraft, RequestPreparationError, prepare_request,

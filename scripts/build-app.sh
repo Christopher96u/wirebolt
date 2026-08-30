@@ -29,6 +29,8 @@ swiftc \
   -Xcc -fmodule-map-file=crates/wirebolt-ffi/include/module.modulemap \
   target/release/libwirebolt_ffi.a \
   -framework AppKit \
+  -framework Security \
+  -framework SystemConfiguration \
   -framework SwiftUI
 
 codesign --force --sign - --timestamp=none "$app_dir"

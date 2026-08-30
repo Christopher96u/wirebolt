@@ -19,6 +19,8 @@ swiftc \
   apple/Tests/BridgeSmoke.swift \
   -Xcc -fmodule-map-file=apple/Generated/wirebolt_ffiFFI.modulemap \
   -Xcc -fmodule-map-file=crates/wirebolt-ffi/include/module.modulemap \
-  target/release/libwirebolt_ffi.a
+  target/release/libwirebolt_ffi.a \
+  -framework Security \
+  -framework SystemConfiguration
 
 build/bridge-smoke

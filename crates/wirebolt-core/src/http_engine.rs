@@ -1,11 +1,14 @@
 use std::{error::Error, fmt, time::Duration};
 
 use http::Version;
-use reqwest::{Client, redirect, retry};
+use reqwest::{Client, ClientBuilder, Proxy, redirect, retry};
 use tokio::time::{Instant, timeout, timeout_at};
 use tokio_util::sync::CancellationToken;
 
-use crate::PreparedRequest;
+use crate::{
+    NoSecrets, PreparedRequest, ProxyConfigurationError, ProxyDestination, ProxyMode, ProxyPolicy,
+    ResolvedProxy, SecretResolver,
+};
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum HttpVersionPolicy {
@@ -30,32 +33,55 @@ impl Default for HttpEngineConfig {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct HttpEngine {
     client: Client,
 }
 
+impl fmt::Debug for HttpEngine {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("HttpEngine")
+            .field("client", &"[REDACTED]")
+            .finish()
+    }
+}
+
 impl HttpEngine {
-    /// Builds a pooled HTTP client with redirects, retries, and proxies disabled.
-    ///
-    /// Proxy behavior is deliberately added by the separate proxy policy
-    /// module. TLS uses Rustls with platform certificate verification.
+    /// Builds a pooled HTTP client in direct mode.
     ///
     /// # Errors
     ///
-    /// Returns [`RunError`] when the TLS backend or system resolver cannot be
-    /// initialized.
+    /// Returns [`RunError`] when the TLS backend or resolver cannot be initialized.
     pub fn new(config: HttpEngineConfig) -> Result<Self, RunError> {
+        let proxy = ProxyPolicy::with_workspace(ProxyMode::Direct).resolve(None);
+        Self::with_proxy(config, &proxy, &NoSecrets)
+    }
+
+    /// Builds a pooled HTTP client for one resolved proxy policy.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RunError`] when proxy configuration, TLS, or the resolver
+    /// cannot be initialized.
+    pub fn with_proxy<R>(
+        config: HttpEngineConfig,
+        proxy: &ResolvedProxy,
+        secrets: &R,
+    ) -> Result<Self, RunError>
+    where
+        R: SecretResolver + ?Sized,
+    {
         let mut builder = Client::builder()
             .connect_timeout(config.connect_timeout)
             .redirect(redirect::Policy::none())
-            .retry(retry::never())
-            .no_proxy();
+            .retry(retry::never());
         builder = match config.version_policy {
             HttpVersionPolicy::Automatic => builder,
             HttpVersionPolicy::Http1Only => builder.http1_only(),
             HttpVersionPolicy::Http2PriorKnowledge => builder.http2_prior_knowledge(),
         };
+        builder = configure_proxy(builder, proxy, secrets)?;
 
         builder
             .build()
@@ -163,6 +189,49 @@ impl HttpEngine {
     }
 }
 
+fn configure_proxy<R>(
+    builder: ClientBuilder,
+    resolved: &ResolvedProxy,
+    secrets: &R,
+) -> Result<ClientBuilder, RunError>
+where
+    R: SecretResolver + ?Sized,
+{
+    match resolved.mode() {
+        ProxyMode::System => Ok(builder),
+        ProxyMode::Direct => Ok(builder.no_proxy()),
+        ProxyMode::Manual(manual) => {
+            let mut builder = builder.no_proxy();
+            for route in manual.routes() {
+                let endpoint = route.endpoint().normalized();
+                let mut proxy = match route.destination() {
+                    ProxyDestination::All => Proxy::all(&endpoint),
+                    ProxyDestination::Http => Proxy::http(&endpoint),
+                    ProxyDestination::Https => Proxy::https(&endpoint),
+                }
+                .map_err(|_| RunError::proxy(ProxyConfigurationError::invalid_endpoint()))?;
+                if let Some(credentials) = route.credentials() {
+                    let username = secrets.resolve(credentials.username()).map_err(|error| {
+                        RunError::proxy(ProxyConfigurationError::secret(
+                            credentials.username(),
+                            &error,
+                        ))
+                    })?;
+                    let password = secrets.resolve(credentials.password()).map_err(|error| {
+                        RunError::proxy(ProxyConfigurationError::secret(
+                            credentials.password(),
+                            &error,
+                        ))
+                    })?;
+                    proxy = proxy.basic_auth(username.expose(), password.expose());
+                }
+                builder = builder.proxy(proxy);
+            }
+            Ok(builder)
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct RunOptions {
     pub total_timeout: Duration,
@@ -260,6 +329,7 @@ pub enum RunErrorKind {
     Connection,
     Request,
     ResponseBody,
+    Proxy,
     Transport,
 }
 
@@ -267,7 +337,13 @@ pub enum RunErrorKind {
 pub struct RunError {
     kind: RunErrorKind,
     response_limit: Option<u64>,
-    source: Option<reqwest::Error>,
+    source: Option<RunErrorSource>,
+}
+
+#[derive(Debug)]
+enum RunErrorSource {
+    Transport(reqwest::Error),
+    Proxy(ProxyConfigurationError),
 }
 
 impl RunError {
@@ -302,7 +378,15 @@ impl RunError {
         Self {
             kind,
             response_limit: None,
-            source: Some(error.without_url()),
+            source: Some(RunErrorSource::Transport(error.without_url())),
+        }
+    }
+
+    const fn proxy(error: ProxyConfigurationError) -> Self {
+        Self {
+            kind: RunErrorKind::Proxy,
+            response_limit: None,
+            source: Some(RunErrorSource::Proxy(error)),
         }
     }
 
@@ -314,6 +398,14 @@ impl RunError {
     #[must_use]
     pub const fn response_limit(&self) -> Option<u64> {
         self.response_limit
+    }
+
+    #[must_use]
+    pub const fn proxy_configuration_error(&self) -> Option<&ProxyConfigurationError> {
+        match self.source.as_ref() {
+            Some(RunErrorSource::Proxy(error)) => Some(error),
+            Some(RunErrorSource::Transport(_)) | None => None,
+        }
     }
 }
 
@@ -334,6 +426,7 @@ impl fmt::Display for RunError {
             RunErrorKind::ResponseBody => {
                 formatter.write_str("response body failed while streaming")
             }
+            RunErrorKind::Proxy => formatter.write_str("proxy setup failed"),
             RunErrorKind::Transport => formatter.write_str("HTTP transport failed"),
         }
     }
@@ -341,6 +434,10 @@ impl fmt::Display for RunError {
 
 impl Error for RunError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
-        self.source.as_ref().map(|source| source as _)
+        match self.source.as_ref() {
+            Some(RunErrorSource::Transport(source)) => Some(source),
+            Some(RunErrorSource::Proxy(source)) => Some(source),
+            None => None,
+        }
     }
 }

@@ -450,7 +450,15 @@ fn read_document<T: DeserializeOwned>(path: &Path) -> Result<(T, bool), StorageE
                 path: path.to_owned(),
                 reason: "schema_version must be a non-negative 32-bit integer",
             })?;
-            (version, false)
+            if version == 1 {
+                table.insert(
+                    "schema_version".to_owned(),
+                    Value::Integer(i64::from(CURRENT_SCHEMA_VERSION)),
+                );
+                (CURRENT_SCHEMA_VERSION, true)
+            } else {
+                (version, false)
+            }
         }
         Some(_) => {
             return Err(StorageError::InvalidDocument {

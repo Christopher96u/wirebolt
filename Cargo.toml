@@ -18,7 +18,9 @@ http = "=1.5.0"
 http-body-util = "=0.1.5"
 hyper = { version = "=1.11.1", features = ["http1", "http2", "server"] }
 hyper-util = { version = "=0.1.20", features = ["tokio"] }
-reqwest = { version = "=0.13.4", default-features = false, features = ["http2", "rustls"] }
+reqwest = { version = "=0.13.4", default-features = false, features = ["http2", "rustls", "socks", "system-proxy"] }
+security-framework = "=3.7.0"
+security-framework-sys = "=2.17.0"
 serde = { version = "=1.0.229", features = ["derive"] }
 tempfile = "=3.27.0"
 tokio = { version = "=1.53.1", features = ["io-util", "macros", "net", "rt-multi-thread", "time"] }
