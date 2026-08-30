@@ -1,6 +1,17 @@
 import AppKit
 import Darwin
 import Foundation
+import WireboltStreamFFI
+
+private let performanceHeadCallback: @convention(c) (
+    UnsafeMutableRawPointer?, UnsafePointer<UInt8>?, UInt
+) -> Void = { _, _, _ in }
+private let performanceChunkCallback: @convention(c) (
+    UnsafeMutableRawPointer?, UnsafePointer<UInt8>?, UInt
+) -> UInt8 = { _, _, _ in 1 }
+private let performanceTerminalCallback: @convention(c) (
+    UnsafeMutableRawPointer?, UnsafePointer<UInt8>?, UInt
+) -> Void = { _, _, _ in }
 
 private struct PerformanceBudgets: Decodable {
     let referenceMachine: String
@@ -8,6 +19,7 @@ private struct PerformanceBudgets: Decodable {
     let idleRssP95Mebibytes: Double
     let bridgeHandshakeP95Microseconds: Double
     let requestSetupP95Microseconds: Double
+    let requestDispatchP95Microseconds: Double
     let responseColdFirstViewportMilliseconds: Double
     let responseWarmFirstViewportP95Milliseconds: Double
     let responseWarmMaximumMainThreadSliceMilliseconds: Double
@@ -27,6 +39,8 @@ private struct PerformanceResults: Encodable {
     let bridgeHandshakeP95Microseconds: Double
     let requestSetupP50Microseconds: Double
     let requestSetupP95Microseconds: Double
+    let requestDispatchP50Microseconds: Double
+    let requestDispatchP95Microseconds: Double
     let responseColdFirstViewportMilliseconds: Double
     let responseWarmFirstViewportP50Milliseconds: Double
     let responseWarmFirstViewportP95Milliseconds: Double
@@ -39,6 +53,7 @@ private struct PerformanceResults: Encodable {
         let idleRssMebibytes: [Double]
         let bridgeHandshakeMicroseconds: [Double]
         let requestSetupMicroseconds: [Double]
+        let requestDispatchMicroseconds: [Double]
         let responseFirstViewportMilliseconds: [Double]
     }
 }
@@ -161,6 +176,7 @@ private enum PerformanceContract {
         let launch = try measureLaunch(executable: appExecutable, count: launchSamples)
         let bridge = try measureBridge()
         let request = try measureRequestSetup()
+        let dispatch = try measureRequestDispatch()
         let response = try measureResponseFirstViewport()
 
         let warmResponse = Array(response.dropFirst())
@@ -173,6 +189,8 @@ private enum PerformanceContract {
             bridgeP95: percentile(bridge, 0.95),
             requestP50: percentile(request, 0.50),
             requestP95: percentile(request, 0.95),
+            dispatchP50: percentile(dispatch, 0.50),
+            dispatchP95: percentile(dispatch, 0.95),
             responseCold: response[0],
             responseWarmP50: percentile(warmResponse, 0.50),
             responseWarmP95: percentile(warmResponse, 0.95),
@@ -193,6 +211,8 @@ private enum PerformanceContract {
             bridgeHandshakeP95Microseconds: values.bridgeP95,
             requestSetupP50Microseconds: values.requestP50,
             requestSetupP95Microseconds: values.requestP95,
+            requestDispatchP50Microseconds: values.dispatchP50,
+            requestDispatchP95Microseconds: values.dispatchP95,
             responseColdFirstViewportMilliseconds: values.responseCold,
             responseWarmFirstViewportP50Milliseconds: values.responseWarmP50,
             responseWarmFirstViewportP95Milliseconds: values.responseWarmP95,
@@ -202,6 +222,7 @@ private enum PerformanceContract {
                 idleRssMebibytes: launch.rssMebibytes,
                 bridgeHandshakeMicroseconds: bridge,
                 requestSetupMicroseconds: request,
+                requestDispatchMicroseconds: dispatch,
                 responseFirstViewportMilliseconds: response
             ),
             violations: violations(values: values, budgets: budgets)
@@ -217,6 +238,8 @@ private enum PerformanceContract {
         let bridgeP95: Double
         let requestP50: Double
         let requestP95: Double
+        let dispatchP50: Double
+        let dispatchP95: Double
         let responseCold: Double
         let responseWarmP50: Double
         let responseWarmP95: Double
@@ -236,6 +259,7 @@ private enum PerformanceContract {
             ("idle RSS p95 (MiB)", values.idleRssP95, budgets.idleRssP95Mebibytes),
             ("bridge handshake p95 (us)", values.bridgeP95, budgets.bridgeHandshakeP95Microseconds),
             ("request setup p95 (us)", values.requestP95, budgets.requestSetupP95Microseconds),
+            ("request dispatch p95 (us)", values.dispatchP95, budgets.requestDispatchP95Microseconds),
             ("response cold first viewport (ms)", values.responseCold, budgets.responseColdFirstViewportMilliseconds),
             ("response warm first viewport p95 (ms)", values.responseWarmP95, budgets.responseWarmFirstViewportP95Milliseconds),
             ("response warm maximum main-thread slice (ms)", values.responseWarmMaximum, budgets.responseWarmMaximumMainThreadSliceMilliseconds),
@@ -296,6 +320,37 @@ private enum PerformanceContract {
         return samples
     }
 
+    private static func measureRequestDispatch() throws -> [Double] {
+        guard wirebolt_runtime_warmup() == 1 else {
+            throw HarnessError.invalidMeasurement("shared HTTP runtime failed to start")
+        }
+        let input = Data("{}".utf8)
+        let callbacks = wirebolt_run_callbacks(
+            on_head: performanceHeadCallback,
+            on_chunk: performanceChunkCallback,
+            on_complete: performanceTerminalCallback,
+            on_error: performanceTerminalCallback
+        )
+
+        return try (0 ..< metricSamples).map { _ in
+            let started = DispatchTime.now().uptimeNanoseconds
+            let session = input.withUnsafeBytes { bytes in
+                wirebolt_run_start(
+                    bytes.bindMemory(to: UInt8.self).baseAddress,
+                    UInt(bytes.count),
+                    callbacks,
+                    nil
+                )
+            }
+            let elapsed = DispatchTime.now().uptimeNanoseconds - started
+            guard let session else {
+                throw HarnessError.invalidMeasurement("request dispatch failed")
+            }
+            wirebolt_run_free(session)
+            return Double(elapsed) / 1_000
+        }
+    }
+
     private static func measureResponseFirstViewport() throws -> [Double] {
         let body = representativeResponseBody()
         var checksum = 0
@@ -323,8 +378,8 @@ private enum PerformanceContract {
         return samples
     }
 
-    private static func representativeRequest() -> RequestDraft {
-        RequestDraft(
+    private static func representativeRequest() -> BridgeRequestDraft {
+        BridgeRequestDraft(
             method: "POST",
             url: "https://api.example.com/v1/items?limit=50&sort=created_at",
             headers: [

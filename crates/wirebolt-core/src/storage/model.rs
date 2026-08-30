@@ -4,7 +4,7 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer, de};
 
 use crate::proxy::ProxyMode;
 
-pub const CURRENT_SCHEMA_VERSION: u32 = 2;
+pub const CURRENT_SCHEMA_VERSION: u32 = 3;
 
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub struct DocumentId(String);
@@ -217,7 +217,11 @@ pub struct Request {
     pub method: String,
     pub url: String,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub query: Vec<RequestValueField>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub headers: Vec<RequestHeader>,
+    #[serde(default, skip_serializing_if = "RequestAuthentication::is_none")]
+    pub authentication: RequestAuthentication,
     pub body: RequestBody,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub proxy_override: Option<ProxyMode>,
@@ -237,7 +241,9 @@ impl Request {
             name: name.into(),
             method: method.into(),
             url: url.into(),
+            query: Vec::new(),
             headers: Vec::new(),
+            authentication: RequestAuthentication::None,
             body: RequestBody::Empty,
             proxy_override: None,
         }
@@ -251,10 +257,72 @@ impl Request {
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+pub struct RequestValueField {
+    pub name: String,
+    pub value: ValueSource,
+    pub enabled: bool,
+}
+
+impl RequestValueField {
+    #[must_use]
+    pub fn enabled(name: impl Into<String>, value: ValueSource) -> Self {
+        Self {
+            name: name.into(),
+            value,
+            enabled: true,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct RequestHeader {
     pub name: String,
     pub value: ValueSource,
     pub enabled: bool,
+}
+
+impl RequestHeader {
+    #[must_use]
+    pub fn enabled(name: impl Into<String>, value: ValueSource) -> Self {
+        Self {
+            name: name.into(),
+            value,
+            enabled: true,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "snake_case", tag = "kind")]
+pub enum RequestAuthentication {
+    #[default]
+    None,
+    Basic {
+        username: ValueSource,
+        password: ValueSource,
+    },
+    Bearer {
+        token: ValueSource,
+    },
+    ApiKey {
+        placement: ApiKeyPlacement,
+        name: String,
+        value: ValueSource,
+    },
+}
+
+impl RequestAuthentication {
+    fn is_none(&self) -> bool {
+        matches!(self, Self::None)
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ApiKeyPlacement {
+    Header,
+    Query,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -265,6 +333,12 @@ pub enum RequestBody {
         #[serde(skip_serializing_if = "Option::is_none")]
         content_type: Option<String>,
         value: String,
+    },
+    Json {
+        value: String,
+    },
+    FormUrlEncoded {
+        fields: Vec<RequestValueField>,
     },
 }
 
@@ -317,6 +391,7 @@ impl Environment {
     }
 }
 
+#[allow(clippy::large_enum_variant)]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum WorkspaceDocument {
     Workspace(Workspace),

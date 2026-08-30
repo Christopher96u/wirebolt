@@ -15,22 +15,30 @@ cp apple/WireboltApp/Info.plist "$app_dir/Contents/Info.plist"
 
 swiftc \
   -O \
+  -whole-module-optimization \
   -parse-as-library \
   -swift-version 6 \
   -target arm64-apple-macosx15.0 \
   -o "$executable_dir/Wirebolt" \
   apple/Generated/wirebolt_ffi.swift \
+  apple/Sources/WireboltKit/Models.swift \
+  apple/Sources/WireboltKit/WireboltModel.swift \
   apple/WireboltApp/WireboltApp.swift \
   apple/WireboltApp/ContentView.swift \
+  apple/WireboltApp/EnvironmentEditor.swift \
   apple/WireboltApp/PerformanceProbe.swift \
+  apple/WireboltApp/ResponseViewer.swift \
   apple/WireboltApp/ResponseViewport.swift \
   apple/WireboltApp/RustCore.swift \
+  apple/WireboltApp/RustRequestRunner.swift \
+  apple/WireboltApp/RustWorkspacePersistence.swift \
   -Xcc -fmodule-map-file=apple/Generated/wirebolt_ffiFFI.modulemap \
   -Xcc -fmodule-map-file=crates/wirebolt-ffi/include/module.modulemap \
   target/release/libwirebolt_ffi.a \
   -framework AppKit \
   -framework Security \
   -framework SystemConfiguration \
-  -framework SwiftUI
+  -framework SwiftUI \
+  -Xlinker -dead_strip
 
 codesign --force --sign - --timestamp=none "$app_dir"

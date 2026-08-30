@@ -1,5 +1,6 @@
 /.scratch/
 /apple/Generated/
+/apple/.build/
 /build/
 /target/
 .DS_Store

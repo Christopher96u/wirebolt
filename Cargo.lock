@@ -2293,6 +2293,7 @@ dependencies = [
 name = "wirebolt-core"
 version = "0.1.0"
 dependencies = [
+ "base64",
  "bytes",
  "criterion",
  "http",
@@ -2303,16 +2304,22 @@ dependencies = [
  "security-framework",
  "security-framework-sys",
  "serde",
+ "serde_json",
  "tempfile",
  "tokio",
  "tokio-util",
  "toml",
+ "url",
 ]
 
 [[package]]
 name = "wirebolt-ffi"
 version = "0.1.0"
 dependencies = [
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
  "uniffi",
  "wirebolt-core",
 ]

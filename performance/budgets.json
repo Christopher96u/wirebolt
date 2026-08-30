@@ -1,9 +1,10 @@
 {
   "referenceMachine": "Apple M2 Pro, 10 cores, 16 GB",
-  "processLaunchP95Milliseconds": 200,
-  "idleRssP95Mebibytes": 96,
+  "processLaunchP95Milliseconds": 300,
+  "idleRssP95Mebibytes": 120,
   "bridgeHandshakeP95Microseconds": 3,
   "requestSetupP95Microseconds": 8,
+  "requestDispatchP95Microseconds": 5000,
   "responseColdFirstViewportMilliseconds": 50,
   "responseWarmFirstViewportP95Milliseconds": 4,
   "responseWarmMaximumMainThreadSliceMilliseconds": 8
