@@ -13,6 +13,9 @@ rust-version = "1.98"
 
 [workspace.dependencies]
 http = "=1.5.0"
+serde = { version = "=1.0.229", features = ["derive"] }
+tempfile = "=3.27.0"
+toml = "=1.1.4"
 uniffi = "=0.32.0"
 wirebolt-core = { path = "crates/wirebolt-core" }
 

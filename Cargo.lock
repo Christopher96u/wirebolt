@@ -753,6 +753,9 @@ name = "wirebolt-core"
 version = "0.1.0"
 dependencies = [
  "http",
+ "serde",
+ "tempfile",
+ "toml",
 ]
 
 [[package]]

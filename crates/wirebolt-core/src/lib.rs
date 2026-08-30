@@ -1,9 +1,15 @@
 #![forbid(unsafe_code)]
 
 mod request;
+mod storage;
 
 pub use request::{
     HeaderField, PreparedRequest, RequestDraft, RequestPreparationError, prepare_request,
+};
+pub use storage::{
+    CURRENT_SCHEMA_VERSION, Collection, CollectionSnapshot, DocumentId, Environment,
+    IdentifierError, MigrationReport, Request, RequestBody, RequestHeader, SaveOutcome, SecretName,
+    StorageError, ValueSource, Workspace, WorkspaceDocument, WorkspaceSnapshot, WorkspaceStore,
 };
 
 pub const STREAM_ABI_VERSION: u32 = 1;
