@@ -15,10 +15,11 @@ use serde::{Deserialize, Serialize};
 #[cfg(not(target_vendor = "apple"))]
 use wirebolt_core::NoSecrets;
 use wirebolt_core::{
-    Collection, DocumentId, Environment, HttpEngine, HttpEngineConfig, HttpVersion, ProxyMode,
-    ProxyPolicy, Request, RequestAuthentication, RequestBody, RequestHeader, RequestIssueKind,
-    RequestPipeline, RequestValueField, RunCancellation, RunError, RunErrorKind, RunHead,
-    RunOptions, SecretName, SecretResolver, StreamControl, ValueSource, Workspace,
+    Collection, DocumentId, Environment, GitChange, GitDelta, GitError, GitErrorKind, GitOperation,
+    GitOperationOutcome, GitStatus, GitWorkspace, HttpEngine, HttpEngineConfig, HttpVersion,
+    ProxyMode, ProxyPolicy, Request, RequestAuthentication, RequestBody, RequestHeader,
+    RequestIssueKind, RequestPipeline, RequestValueField, RunCancellation, RunError, RunErrorKind,
+    RunHead, RunOptions, SecretName, SecretResolver, StreamControl, ValueSource, Workspace,
     WorkspaceDocument, WorkspaceSnapshot, WorkspaceStore,
 };
 
@@ -81,6 +82,21 @@ impl fmt::Display for WorkspaceBridgeError {
 
 impl Error for WorkspaceBridgeError {}
 
+#[derive(Clone, Debug, Eq, PartialEq, uniffi::Error)]
+pub enum GitBridgeError {
+    OperationFailed { kind: String, reason: String },
+}
+
+impl fmt::Display for GitBridgeError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::OperationFailed { reason, .. } => formatter.write_str(reason),
+        }
+    }
+}
+
+impl Error for GitBridgeError {}
+
 #[derive(Debug, uniffi::Object)]
 pub struct WorkspaceBridge {
     store: WorkspaceStore,
@@ -119,6 +135,31 @@ struct EnvironmentSnapshotDocument<'a> {
     id: &'a str,
     name: &'a str,
     variables: &'a BTreeMap<String, ValueSource>,
+}
+
+#[derive(Debug, Serialize)]
+struct GitStatusDocument<'a> {
+    branch: &'a Option<String>,
+    upstream: &'a Option<String>,
+    ahead: u64,
+    behind: u64,
+    changes: Vec<GitChangeDocument<'a>>,
+}
+
+#[derive(Debug, Serialize)]
+struct GitChangeDocument<'a> {
+    path: &'a str,
+    previous_path: &'a Option<String>,
+    staged: &'static str,
+    unstaged: &'static str,
+    conflicted: bool,
+}
+
+#[derive(Debug, Serialize)]
+struct GitOperationDocument<'a> {
+    outcome: &'static str,
+    revision: &'a Option<String>,
+    status: GitStatusDocument<'a>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -271,6 +312,55 @@ impl WorkspaceBridge {
             ))
         }
     }
+
+    /// Returns a read-only Git status snapshot without fetching.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`GitBridgeError`] when this workspace is not a repository or
+    /// Git cannot inspect it.
+    pub fn git_status_json(&self) -> Result<String, GitBridgeError> {
+        let status = self.git_workspace()?.status()?;
+        encode_git_document(&GitStatusDocument::from(&status))
+    }
+
+    /// Pulls the configured upstream explicitly and leaves conflicts intact.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`GitBridgeError`] when Git rejects or cannot run the pull.
+    pub fn git_pull_json(&self) -> Result<String, GitBridgeError> {
+        let operation = self.git_workspace()?.pull()?;
+        encode_git_document(&GitOperationDocument::from(&operation))
+    }
+
+    /// Commits only Wirebolt-managed workspace documents.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`GitBridgeError`] for invalid messages, missing Git identity,
+    /// or another failed Git operation.
+    pub fn git_commit_json(&self, message: &str) -> Result<String, GitBridgeError> {
+        let operation = self.git_workspace()?.commit(message)?;
+        encode_git_document(&GitOperationDocument::from(&operation))
+    }
+
+    /// Pushes the current branch using the user's Git credentials.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`GitBridgeError`] when the repository has no usable branch or
+    /// remote, authentication fails, or the update is rejected.
+    pub fn git_push_json(&self) -> Result<String, GitBridgeError> {
+        let operation = self.git_workspace()?.push()?;
+        encode_git_document(&GitOperationDocument::from(&operation))
+    }
+}
+
+impl WorkspaceBridge {
+    fn git_workspace(&self) -> Result<GitWorkspace, GitBridgeError> {
+        GitWorkspace::open(self.store.root()).map_err(Into::into)
+    }
 }
 
 impl WorkspaceBridgeError {
@@ -278,6 +368,98 @@ impl WorkspaceBridgeError {
         Self::OperationFailed {
             reason: reason.to_owned(),
         }
+    }
+}
+
+impl From<GitError> for GitBridgeError {
+    fn from(error: GitError) -> Self {
+        Self::OperationFailed {
+            kind: git_error_kind(error.kind).to_owned(),
+            reason: error.to_string(),
+        }
+    }
+}
+
+impl<'a> From<&'a GitStatus> for GitStatusDocument<'a> {
+    fn from(status: &'a GitStatus) -> Self {
+        Self {
+            branch: &status.branch,
+            upstream: &status.upstream,
+            ahead: status.ahead,
+            behind: status.behind,
+            changes: status.changes.iter().map(Into::into).collect(),
+        }
+    }
+}
+
+impl<'a> From<&'a GitChange> for GitChangeDocument<'a> {
+    fn from(change: &'a GitChange) -> Self {
+        Self {
+            path: &change.path,
+            previous_path: &change.previous_path,
+            staged: git_delta(change.staged),
+            unstaged: git_delta(change.unstaged),
+            conflicted: change.conflicted,
+        }
+    }
+}
+
+impl<'a> From<&'a GitOperation> for GitOperationDocument<'a> {
+    fn from(operation: &'a GitOperation) -> Self {
+        Self {
+            outcome: git_operation_outcome(operation.outcome),
+            revision: &operation.revision,
+            status: GitStatusDocument::from(&operation.status),
+        }
+    }
+}
+
+fn encode_git_document(document: &impl Serialize) -> Result<String, GitBridgeError> {
+    serde_json::to_string(document).map_err(|_| GitBridgeError::OperationFailed {
+        kind: "encoding".to_owned(),
+        reason: "Git result could not be encoded".to_owned(),
+    })
+}
+
+const fn git_delta(delta: GitDelta) -> &'static str {
+    match delta {
+        GitDelta::None => "none",
+        GitDelta::Added => "added",
+        GitDelta::Modified => "modified",
+        GitDelta::Deleted => "deleted",
+        GitDelta::Renamed => "renamed",
+        GitDelta::Copied => "copied",
+        GitDelta::TypeChanged => "type_changed",
+        GitDelta::Untracked => "untracked",
+        GitDelta::Unmerged => "unmerged",
+    }
+}
+
+const fn git_operation_outcome(outcome: GitOperationOutcome) -> &'static str {
+    match outcome {
+        GitOperationOutcome::NothingToCommit => "nothing_to_commit",
+        GitOperationOutcome::Committed => "committed",
+        GitOperationOutcome::Updated => "updated",
+        GitOperationOutcome::UpToDate => "up_to_date",
+        GitOperationOutcome::Pushed => "pushed",
+        GitOperationOutcome::Conflicted => "conflicted",
+    }
+}
+
+const fn git_error_kind(kind: GitErrorKind) -> &'static str {
+    match kind {
+        GitErrorKind::GitUnavailable => "git_unavailable",
+        GitErrorKind::NotRepository => "not_repository",
+        GitErrorKind::WorkspaceNotRepositoryRoot => "workspace_not_repository_root",
+        GitErrorKind::CommandFailed => "command_failed",
+        GitErrorKind::InvalidOutput => "invalid_output",
+        GitErrorKind::InvalidCommitMessage => "invalid_commit_message",
+        GitErrorKind::IdentityMissing => "identity_missing",
+        GitErrorKind::AuthenticationRequired => "authentication_required",
+        GitErrorKind::DirtyWorkspace => "dirty_workspace",
+        GitErrorKind::MissingUpstream => "missing_upstream",
+        GitErrorKind::MissingRemote => "missing_remote",
+        GitErrorKind::DetachedHead => "detached_head",
     }
 }
 
@@ -889,6 +1071,7 @@ mod tests {
     use std::{
         io::{Read, Write},
         net::TcpListener,
+        process::Command,
         sync::{Condvar, Mutex},
         thread,
         time::Duration,
@@ -1012,6 +1195,47 @@ mod tests {
             "api.token"
         );
         assert!(!snapshot.contains("secret-value"));
+    }
+
+    #[test]
+    fn workspace_bridge_exposes_git_operations_as_stable_json() {
+        let temporary = tempfile::tempdir().expect("temporary workspace");
+        WorkspaceStore::create(temporary.path(), &Workspace::new("Demo"))
+            .expect("create workspace");
+        let bridge = WorkspaceBridge::open_or_create(
+            temporary.path().to_string_lossy().into_owned(),
+            "Demo".to_owned(),
+        )
+        .expect("workspace bridge");
+        for arguments in [
+            &["init", "-b", "main"][..],
+            &["config", "user.name", "Wirebolt Tests"][..],
+            &["config", "user.email", "wirebolt@example.invalid"][..],
+        ] {
+            let output = Command::new("git")
+                .arg("-C")
+                .arg(temporary.path())
+                .args(arguments)
+                .output()
+                .expect("run Git");
+            assert!(output.status.success());
+        }
+
+        let before: serde_json::Value =
+            serde_json::from_str(&bridge.git_status_json().expect("Git status JSON"))
+                .expect("decode Git status");
+        assert_eq!(before["branch"], "main");
+        assert_eq!(before["changes"][0]["path"], "wirebolt.toml");
+        assert_eq!(before["changes"][0]["unstaged"], "untracked");
+
+        let operation: serde_json::Value = serde_json::from_str(
+            &bridge
+                .git_commit_json("initial workspace")
+                .expect("Git commit JSON"),
+        )
+        .expect("decode Git operation");
+        assert_eq!(operation["outcome"], "committed");
+        assert_eq!(operation["status"]["changes"], serde_json::json!([]));
     }
 
     #[test]

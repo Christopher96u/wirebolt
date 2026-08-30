@@ -2,10 +2,16 @@ import SwiftUI
 
 @main
 struct WireboltApp: App {
-    @State private var model = WireboltModel(
-        runner: RustRequestRunner(),
-        persistence: try? RustWorkspacePersistence()
-    )
+    @State private var model: WireboltModel
+
+    init() {
+        let persistence = try? RustWorkspacePersistence()
+        _model = State(initialValue: WireboltModel(
+            runner: RustRequestRunner(),
+            persistence: persistence,
+            gitCollaboration: persistence
+        ))
+    }
 
     var body: some Scene {
         WindowGroup {
@@ -17,6 +23,12 @@ struct WireboltApp: App {
             CommandGroup(after: .newItem) {
                 Button("New Request") { model.makeNewRequest() }
                     .keyboardShortcut("n", modifiers: .command)
+            }
+            CommandMenu("Git") {
+                Button("Git Collaboration…") {
+                    model.isShowingGitCollaboration = true
+                }
+                .keyboardShortcut("g", modifiers: [.command, .shift])
             }
         }
     }

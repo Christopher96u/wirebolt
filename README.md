@@ -3,14 +3,17 @@
 A blazing-fast, native HTTP client for macOS: offline-first, Git-friendly, and free of telemetry.
 
 Wirebolt currently includes a native request composer, incremental response viewer, versioned
-file-based workspaces, environment variables, Keychain-backed secrets, and layered proxy policy.
-Workspaces live locally and remain readable, deterministic TOML suitable for optional Git sync.
+file-based workspaces, environment variables, Keychain-backed secrets, layered proxy policy, and
+explicit Git collaboration. Workspaces live locally and remain readable, deterministic TOML.
+Git status, pull, commit, and push run only when requested; conflicts are surfaced without automatic
+resolution, and commits created by Wirebolt include only its managed workspace documents.
 
 Keyboard shortcuts:
 
 - `⌘↩` sends the current request.
 - `⌘S` saves it to the workspace.
 - `⌘N` creates a new request draft.
+- `⇧⌘G` opens Git collaboration.
 
 ## Development
 

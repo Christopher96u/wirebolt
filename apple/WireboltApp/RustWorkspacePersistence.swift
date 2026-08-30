@@ -1,6 +1,6 @@
 import Foundation
 
-struct RustWorkspacePersistence: WorkspacePersistence {
+struct RustWorkspacePersistence: WorkspacePersistence, GitCollaboration {
     private let bridge: WorkspaceBridge
 
     init(
@@ -58,6 +58,42 @@ struct RustWorkspacePersistence: WorkspacePersistence {
         }.value
     }
 
+    func status() async throws -> GitStatusSnapshot {
+        let bridge = bridge
+        return try await Task.detached(priority: .userInitiated) {
+            try Self.decodeGitDocument(GitStatusSnapshot.self) {
+                try bridge.gitStatusJson()
+            }
+        }.value
+    }
+
+    func pull() async throws -> GitOperationSnapshot {
+        let bridge = bridge
+        return try await Task.detached(priority: .userInitiated) {
+            try Self.decodeGitDocument(GitOperationSnapshot.self) {
+                try bridge.gitPullJson()
+            }
+        }.value
+    }
+
+    func commit(message: String) async throws -> GitOperationSnapshot {
+        let bridge = bridge
+        return try await Task.detached(priority: .userInitiated) {
+            try Self.decodeGitDocument(GitOperationSnapshot.self) {
+                try bridge.gitCommitJson(message: message)
+            }
+        }.value
+    }
+
+    func push() async throws -> GitOperationSnapshot {
+        let bridge = bridge
+        return try await Task.detached(priority: .userInitiated) {
+            try Self.decodeGitDocument(GitOperationSnapshot.self) {
+                try bridge.gitPushJson()
+            }
+        }.value
+    }
+
     static var defaultWorkspaceURL: URL {
         let applicationSupport = FileManager.default.urls(
             for: .applicationSupportDirectory,
@@ -67,6 +103,22 @@ struct RustWorkspacePersistence: WorkspacePersistence {
             .appending(path: "Wirebolt", directoryHint: .isDirectory)
             .appending(path: "Workspaces", directoryHint: .isDirectory)
             .appending(path: "Default", directoryHint: .isDirectory)
+    }
+
+    private static func decodeGitDocument<Value: Decodable>(
+        _ type: Value.Type,
+        operation: () throws -> String
+    ) throws -> Value {
+        do {
+            let json = try operation()
+            return try JSONDecoder().decode(type, from: Data(json.utf8))
+        } catch let GitBridgeError.OperationFailed(kind, reason) {
+            throw GitFailure(kind: kind, reason: reason)
+        } catch let error as GitFailure {
+            throw error
+        } catch {
+            throw GitFailure(kind: "invalid_bridge_response", reason: "Git returned an invalid response.")
+        }
     }
 }
 
