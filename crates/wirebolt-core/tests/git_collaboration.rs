@@ -88,6 +88,58 @@ fn commit_includes_only_wirebolt_managed_documents() {
 }
 
 #[test]
+fn commit_skips_wirebolt_temporary_files_and_reports_the_revision() {
+    let repository = TestRepository::new();
+    repository.write("wirebolt.toml", "name = \"Before\"\n");
+    repository.commit_all("initial workspace");
+    repository.write(
+        "collections/api/requests/.list.toml.wirebolt-12-3.tmp",
+        "partial\n",
+    );
+    repository.write("collections/api/requests/list.toml", "method = \"GET\"\n");
+
+    let result = GitWorkspace::open(repository.path())
+        .expect("open Git workspace")
+        .commit("add list")
+        .expect("commit workspace");
+
+    assert_eq!(result.outcome, GitOperationOutcome::Committed);
+    assert_eq!(
+        result.revision.as_deref(),
+        Some(repository.git_text(["rev-parse", "HEAD"]).as_str())
+    );
+    assert_eq!(
+        repository.git_lines(["show", "--format=", "--name-only", "HEAD"]),
+        ["collections/api/requests/list.toml"]
+    );
+    assert!(result.status.changes.iter().any(|change| {
+        change.path == "collections/api/requests/.list.toml.wirebolt-12-3.tmp"
+            && change.unstaged == GitDelta::Untracked
+    }));
+}
+
+#[test]
+fn commit_with_only_unmanaged_changes_touches_nothing() {
+    let repository = TestRepository::new();
+    repository.write("wirebolt.toml", "name = \"Shared\"\n");
+    repository.commit_all("initial workspace");
+    let before = repository.git_text(["rev-parse", "HEAD"]);
+    repository.write("notes.txt", "not managed\n");
+
+    let result = GitWorkspace::open(repository.path())
+        .expect("open Git workspace")
+        .commit("nothing managed")
+        .expect("commit workspace");
+
+    assert_eq!(result.outcome, GitOperationOutcome::NothingToCommit);
+    assert_eq!(repository.git_text(["rev-parse", "HEAD"]), before);
+    assert_eq!(
+        repository.git_lines(["status", "--porcelain"]),
+        ["?? notes.txt"]
+    );
+}
+
+#[test]
 fn push_sets_up_origin_and_publishes_the_current_branch() {
     let remote = BareRepository::new();
     let repository = TestRepository::new();

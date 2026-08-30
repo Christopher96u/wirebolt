@@ -52,7 +52,7 @@ fn prepares_basic_auth_and_urlencoded_form_without_disabled_fields() {
         .prepare(&request)
         .expect("valid form request");
 
-    assert_eq!(prepared.uri().to_string(), "https://api.example.com/users");
+    assert_eq!(prepared.url().to_string(), "https://api.example.com/users");
     assert_eq!(
         prepared.headers()["authorization"],
         "Basic Q2hyaXM6d2lyZWJvbHQ="
@@ -83,8 +83,8 @@ fn prepares_an_api_key_in_the_query() {
         .expect("valid API-key request");
 
     assert_eq!(
-        prepared.uri().to_string(),
-        "https://api.example.com/health?api+key=secret+value"
+        prepared.url().to_string(),
+        "https://api.example.com/health?api%20key=secret%20value"
     );
 }
 
@@ -159,7 +159,7 @@ fn deeply_nested_variables_are_rejected_before_exhausting_the_stack() {
 }
 
 #[test]
-fn invalid_json_is_scoped_to_the_body() {
+fn invalid_json_is_sent_verbatim_with_a_body_scoped_warning() {
     let mut request = Request::new(
         id("invalid-json"),
         "Invalid JSON",
@@ -170,17 +170,136 @@ fn invalid_json_is_scoped_to_the_body() {
         value: "{not-json}".to_owned(),
     };
 
-    let error = RequestPipeline::new(None, &FixtureSecrets::default())
+    let prepared = RequestPipeline::new(None, &FixtureSecrets::default())
         .prepare(&request)
-        .expect_err("invalid JSON must fail");
+        .expect("invalid JSON is a warning, not an error");
 
+    assert_eq!(prepared.body(), b"{not-json}");
+    assert_eq!(prepared.headers()["content-type"], "application/json");
     assert_eq!(
-        error.issues,
-        vec![RequestIssue {
+        prepared.warnings(),
+        [RequestIssue {
             path: "body".to_owned(),
             kind: RequestIssueKind::InvalidJson,
             reference: None,
         }]
+    );
+}
+
+#[test]
+fn header_issues_point_at_the_saved_field_not_the_resolved_position() {
+    let mut request = Request::new(id("headers"), "Headers", "GET", "https://api.example.com");
+    request.headers.push(RequestHeader {
+        name: "x-disabled".to_owned(),
+        value: ValueSource::literal("skipped"),
+        enabled: false,
+    });
+    request.headers.push(RequestHeader::enabled(
+        "x-broken",
+        ValueSource::literal("new\nline"),
+    ));
+    request.headers.push(RequestHeader::enabled(
+        "bad name",
+        ValueSource::literal("value"),
+    ));
+    request.authentication = RequestAuthentication::Bearer {
+        token: ValueSource::literal("token\r\nleak"),
+    };
+
+    let error = RequestPipeline::new(None, &FixtureSecrets::default())
+        .prepare(&request)
+        .expect_err("invalid headers must fail");
+
+    assert_eq!(
+        error.issues,
+        vec![
+            RequestIssue {
+                path: "headers[1].value".to_owned(),
+                kind: RequestIssueKind::InvalidHeaderValue,
+                reference: None,
+            },
+            RequestIssue {
+                path: "headers[2].name".to_owned(),
+                kind: RequestIssueKind::InvalidHeaderName,
+                reference: None,
+            },
+            RequestIssue {
+                path: "authentication.token".to_owned(),
+                kind: RequestIssueKind::InvalidHeaderValue,
+                reference: None,
+            },
+        ]
+    );
+}
+
+#[test]
+fn methods_are_upper_cased_and_invalid_methods_are_scoped() {
+    let request = Request::new(id("lower"), "Lower", "patch", "https://api.example.com");
+    let prepared = RequestPipeline::new(None, &FixtureSecrets::default())
+        .prepare(&request)
+        .expect("lowercase method is normalized");
+    assert_eq!(prepared.method().as_str(), "PATCH");
+
+    let request = Request::new(id("bad"), "Bad", "GE T", "https://api.example.com");
+    let error = RequestPipeline::new(None, &FixtureSecrets::default())
+        .prepare(&request)
+        .expect_err("method with a space must fail");
+    assert_eq!(error.issues[0].path, "method");
+    assert_eq!(error.issues[0].kind, RequestIssueKind::InvalidMethod);
+}
+
+#[test]
+fn stray_closing_braces_are_rejected_wherever_they_appear() {
+    for url in ["https://a}}b.example.com", "https://a}}b{{x}}.example.com"] {
+        let request = Request::new(id("stray"), "Stray", "GET", url);
+        let error = RequestPipeline::new(None, &FixtureSecrets::default())
+            .prepare(&request)
+            .expect_err("stray braces must fail");
+        assert_eq!(
+            error.issues[0].kind,
+            RequestIssueKind::InvalidTemplate,
+            "{url}"
+        );
+    }
+}
+
+#[test]
+fn a_missing_variable_used_twice_in_one_field_reports_once() {
+    let request = Request::new(
+        id("twice"),
+        "Twice",
+        "GET",
+        "https://{{host}}.example.com/{{host}}",
+    );
+
+    let error = RequestPipeline::new(None, &FixtureSecrets::default())
+        .prepare(&request)
+        .expect_err("missing variable must fail");
+
+    assert_eq!(error.issues.len(), 1);
+    assert_eq!(error.issues[0].reference.as_deref(), Some("host"));
+}
+
+#[test]
+fn literal_values_are_borrowed_and_percent_encoded_in_the_query() {
+    let mut request = Request::new(
+        id("encode"),
+        "Encode",
+        "GET",
+        "https://api.example.com/search?existing=1",
+    );
+    request.query.push(RequestValueField::enabled(
+        "q",
+        ValueSource::literal("a b&c=d+e/ñ"),
+    ));
+
+    let prepared = RequestPipeline::new(None, &FixtureSecrets::default())
+        .prepare(&request)
+        .expect("valid request");
+
+    assert_eq!(
+        prepared.url().as_str(),
+        "https://api.example.com/search?existing=1&q=a%20b%26c%3Dd%2Be%2F%C3%B1"
     );
 }
 
@@ -247,10 +366,14 @@ fn prepares_environment_query_bearer_and_json_as_one_request() {
         .expect("valid request");
 
     assert_eq!(
-        prepared.uri().to_string(),
-        "https://api.example.com/users?display+name=Chris+M."
+        prepared.url().to_string(),
+        "https://api.example.com/users?display%20name=Chris%20M."
     );
     assert_eq!(prepared.headers()["authorization"], "Bearer super-secret");
     assert_eq!(prepared.headers()["content-type"], "application/json");
     assert_eq!(prepared.body(), br#"{"user":"Chris M."}"#);
+    assert!(
+        !format!("{prepared:?}").contains("super-secret"),
+        "secret-derived headers must not appear in Debug output"
+    );
 }

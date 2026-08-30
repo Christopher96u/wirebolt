@@ -2,9 +2,9 @@ use std::{collections::BTreeMap, fs};
 
 use tempfile::tempdir;
 use wirebolt_core::{
-    Collection, DocumentId, Environment, ManualProxy, ProxyCredentials, ProxyDestination,
-    ProxyEndpoint, ProxyMode, ProxyPolicy, ProxyRoute, ProxySource, Request, RequestBody,
-    RequestHeader, SaveOutcome, SecretName, StorageError, ValueSource, Workspace,
+    Collection, DocumentId, DocumentProblemKind, Environment, ManualProxy, ProxyCredentials,
+    ProxyDestination, ProxyEndpoint, ProxyMode, ProxyPolicy, ProxyRoute, ProxySource, Request,
+    RequestBody, RequestHeader, SaveOutcome, SecretName, StorageError, ValueSource, Workspace,
     WorkspaceDocument, WorkspaceStore,
 };
 
@@ -141,20 +141,103 @@ fn identifiers_cannot_escape_the_workspace() {
 }
 
 #[test]
-fn corrupt_toml_errors_never_echo_document_contents() {
+fn broken_documents_are_reported_without_hiding_the_rest_of_the_workspace() {
     let temporary = tempdir().expect("temporary workspace");
     let store = WorkspaceStore::create(temporary.path(), &Workspace::new("Wirebolt"))
         .expect("create workspace");
+    let collection = Collection::new(id("users"), "Users".to_owned());
+    store
+        .save(&WorkspaceDocument::Collection(collection.clone()))
+        .expect("save collection");
+    let request = Request::new(id("list"), "List", "GET", "https://example.com/users");
+    store
+        .save(&WorkspaceDocument::Request {
+            collection_id: collection.id.clone(),
+            request: request.clone(),
+        })
+        .expect("save request");
     fs::write(
         temporary.path().join("environments/broken.toml"),
-        "schema_version = 1\nid = \"broken\"\nname = \"TOP-SECRET\"\nvariables = [",
+        "<<<<<<< HEAD\nschema_version = 3\nid = \"broken\"\nname = \"TOP-SECRET\"\n=======\n",
     )
-    .expect("write corrupt fixture");
+    .expect("write conflicted fixture");
+    fs::write(
+        temporary
+            .path()
+            .join("collections/users/requests/future.toml"),
+        "schema_version = 999\nid = \"future\"\nname = \"Future\"\nnew_field = 1\n",
+    )
+    .expect("write future fixture");
 
-    let error = store.load().expect_err("corrupt TOML must fail");
+    let snapshot = store.load().expect("load tolerates broken documents");
 
-    assert!(matches!(error, StorageError::InvalidToml { .. }));
-    assert!(!error.to_string().contains("TOP-SECRET"));
+    assert_eq!(snapshot.collections[0].requests, vec![request]);
+    assert!(snapshot.environments.is_empty());
+    let kinds: Vec<_> = snapshot
+        .problems
+        .iter()
+        .map(|problem| (problem.path.to_string_lossy().into_owned(), problem.kind))
+        .collect();
+    assert_eq!(
+        kinds,
+        [
+            (
+                "collections/users/requests/future.toml".to_owned(),
+                DocumentProblemKind::UnsupportedSchema
+            ),
+            (
+                "environments/broken.toml".to_owned(),
+                DocumentProblemKind::InvalidToml
+            ),
+        ]
+    );
+    assert!(
+        snapshot
+            .problems
+            .iter()
+            .all(|problem| !problem.reason.contains("TOP-SECRET"))
+    );
+    assert_eq!(
+        store.migrate().expect("migration skips broken documents"),
+        wirebolt_core::MigrationReport {
+            migrated_documents: 0,
+        }
+    );
+    assert!(
+        fs::read_to_string(temporary.path().join("environments/broken.toml"))
+            .expect("conflicted fixture")
+            .starts_with("<<<<<<< HEAD"),
+        "broken documents must be left untouched"
+    );
+}
+
+#[test]
+fn reloads_reflect_external_edits_and_deletions() {
+    let temporary = tempdir().expect("temporary workspace");
+    let store = WorkspaceStore::create(temporary.path(), &Workspace::new("Wirebolt"))
+        .expect("create workspace");
+    let environment = Environment::new(id("local"), "Local".to_owned(), BTreeMap::new());
+    store
+        .save(&WorkspaceDocument::Environment(environment))
+        .expect("save environment");
+    assert_eq!(
+        store.load().expect("first load").environments[0].name,
+        "Local"
+    );
+
+    let path = temporary.path().join("environments/local.toml");
+    fs::write(
+        &path,
+        "schema_version = 3\nid = \"local\"\nname = \"Edited by hand\"\n\n[variables]\n",
+    )
+    .expect("edit environment externally");
+    assert_eq!(
+        store.load().expect("second load").environments[0].name,
+        "Edited by hand"
+    );
+
+    fs::remove_file(&path).expect("delete environment");
+    assert!(store.load().expect("third load").environments.is_empty());
 }
 
 #[test]

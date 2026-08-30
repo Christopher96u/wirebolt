@@ -1,5 +1,6 @@
 #![forbid(unsafe_code)]
 
+mod body_decoder;
 mod git_collaboration;
 mod http_engine;
 mod proxy;
@@ -7,13 +8,14 @@ mod request;
 mod request_pipeline;
 mod storage;
 
+pub use body_decoder::ContentEncoding;
 pub use git_collaboration::{
     GitChange, GitDelta, GitError, GitErrorKind, GitOperation, GitOperationOutcome, GitStatus,
     GitWorkspace,
 };
 pub use http_engine::{
-    HttpEngine, HttpEngineConfig, HttpVersion, HttpVersionPolicy, Run, RunCancellation, RunError,
-    RunErrorKind, RunHead, RunHeader, RunOptions, StreamControl,
+    DEFAULT_USER_AGENT, HttpEngine, HttpEngineConfig, HttpVersion, HttpVersionPolicy, Run,
+    RunCancellation, RunError, RunErrorKind, RunHead, RunOptions, StreamControl,
 };
 #[cfg(target_vendor = "apple")]
 pub use proxy::{KeychainSecretResolver, KeychainSecretStore};
@@ -29,9 +31,9 @@ pub use request::{
 pub use request_pipeline::{RequestIssue, RequestIssueKind, RequestPipeline, RequestPipelineError};
 pub use storage::{
     ApiKeyPlacement, CURRENT_SCHEMA_VERSION, Collection, CollectionSnapshot, DocumentId,
-    Environment, IdentifierError, MigrationReport, Request, RequestAuthentication, RequestBody,
-    RequestHeader, RequestValueField, SaveOutcome, SecretName, StorageError, ValueSource,
-    Workspace, WorkspaceDocument, WorkspaceSnapshot, WorkspaceStore,
+    DocumentProblem, DocumentProblemKind, Environment, IdentifierError, MigrationReport, Request,
+    RequestAuthentication, RequestBody, RequestHeader, RequestValueField, SaveOutcome, SecretName,
+    StorageError, ValueSource, Workspace, WorkspaceDocument, WorkspaceSnapshot, WorkspaceStore,
 };
 
 pub const STREAM_ABI_VERSION: u32 = 2;

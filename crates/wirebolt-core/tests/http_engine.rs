@@ -10,11 +10,11 @@ use tokio::{
     task::JoinHandle,
 };
 use wirebolt_core::{
-    HeaderField, HttpEngine, HttpEngineConfig, HttpVersion, HttpVersionPolicy, ManualProxy,
-    NoSecrets, ProxyConfigurationErrorKind, ProxyCredentials, ProxyDestination, ProxyEndpoint,
-    ProxyMode, ProxyPolicy, ProxyRoute, RequestDraft, ResolvedSecret, RunCancellation,
-    RunErrorKind, RunOptions, SecretName, SecretResolutionError, SecretResolutionErrorKind,
-    SecretResolver, StreamControl, prepare_request,
+    ContentEncoding, HeaderField, HttpEngine, HttpEngineConfig, HttpVersion, HttpVersionPolicy,
+    ManualProxy, NoSecrets, ProxyConfigurationErrorKind, ProxyCredentials, ProxyDestination,
+    ProxyEndpoint, ProxyMode, ProxyPolicy, ProxyRoute, RequestDraft, ResolvedSecret,
+    RunCancellation, RunErrorKind, RunOptions, SecretName, SecretResolutionError,
+    SecretResolutionErrorKind, SecretResolver, StreamControl, prepare_request,
 };
 
 #[tokio::test]
@@ -27,7 +27,7 @@ async fn reports_response_headers_before_streaming_body_chunks() {
         ],
     )
     .await;
-    let engine = HttpEngine::new(HttpEngineConfig::default()).expect("HTTP engine");
+    let engine = HttpEngine::new(&HttpEngineConfig::default()).expect("HTTP engine");
     let events = std::cell::RefCell::new(Vec::new());
 
     let run = engine
@@ -38,9 +38,11 @@ async fn reports_response_headers_before_streaming_body_chunks() {
             |head| {
                 assert_eq!(head.status, 202);
                 assert_eq!(head.version, HttpVersion::Http11);
-                assert!(head.headers.iter().any(|header| {
-                    header.name == "x-wirebolt-test" && header.value == b"observed"
-                }));
+                assert!(
+                    head.headers
+                        .get("x-wirebolt-test")
+                        .is_some_and(|value| value == "observed")
+                );
                 events.borrow_mut().push("headers");
             },
             |chunk| {
@@ -63,7 +65,7 @@ async fn runs_an_http1_request_through_the_public_interface() {
         b"HTTP/1.1 201 Created\r\nContent-Length: 4\r\nX-Wirebolt-Test: yes\r\nConnection: close\r\n\r\npong",
     )
     .await;
-    let engine = HttpEngine::new(HttpEngineConfig::default()).expect("HTTP engine");
+    let engine = HttpEngine::new(&HttpEngineConfig::default()).expect("HTTP engine");
     let request = prepare_request(RequestDraft {
         method: "POST".to_owned(),
         url: format!("http://{address}/echo?from=wirebolt"),
@@ -95,15 +97,21 @@ async fn runs_an_http1_request_through_the_public_interface() {
     assert_eq!(body, b"pong");
     assert!(run.time_to_headers <= run.total_time);
     assert!(
-        run.headers.iter().any(|header| {
-            header.name == "x-wirebolt-test" && header.value.as_slice() == b"yes"
-        })
+        run.headers
+            .get("x-wirebolt-test")
+            .is_some_and(|value| value == "yes")
     );
+    assert_eq!(run.bytes_decoded, 4);
+    assert_eq!(run.content_encoding, None);
+    assert_eq!(run.remote_addr, Some(address));
 
     let raw_request = received_request.await.expect("HTTP server task");
     let raw_request = String::from_utf8(raw_request).expect("ASCII request");
     assert!(raw_request.starts_with("POST /echo?from=wirebolt HTTP/1.1\r\n"));
     assert!(raw_request.contains("x-client: wirebolt\r\n"));
+    assert!(raw_request.contains("user-agent: Wirebolt/0.1.0\r\n"));
+    assert!(raw_request.contains("accept: */*\r\n"));
+    assert!(raw_request.contains("accept-encoding: gzip, deflate, br, zstd\r\n"));
     assert!(raw_request.ends_with("\r\n\r\nhello"));
 }
 
@@ -118,7 +126,7 @@ async fn streams_a_chunked_response_without_building_a_body() {
         ],
     )
     .await;
-    let engine = HttpEngine::new(HttpEngineConfig::default()).expect("HTTP engine");
+    let engine = HttpEngine::new(&HttpEngineConfig::default()).expect("HTTP engine");
     let request = get_request(address, "/stream");
     let mut chunks = Vec::new();
 
@@ -152,7 +160,7 @@ async fn rejects_a_response_before_delivering_a_chunk_past_the_byte_limit() {
         ],
     )
     .await;
-    let engine = HttpEngine::new(HttpEngineConfig::default()).expect("HTTP engine");
+    let engine = HttpEngine::new(&HttpEngineConfig::default()).expect("HTTP engine");
     let mut delivered = Vec::new();
 
     let error = engine
@@ -188,7 +196,7 @@ async fn stops_streaming_when_the_caller_requests_it() {
         ],
     )
     .await;
-    let engine = HttpEngine::new(HttpEngineConfig::default()).expect("HTTP engine");
+    let engine = HttpEngine::new(&HttpEngineConfig::default()).expect("HTTP engine");
     let mut callback_count = 0;
 
     let error = engine
@@ -219,7 +227,7 @@ async fn enforces_the_read_timeout_between_body_chunks() {
         ],
     )
     .await;
-    let engine = HttpEngine::new(HttpEngineConfig::default()).expect("HTTP engine");
+    let engine = HttpEngine::new(&HttpEngineConfig::default()).expect("HTTP engine");
 
     let error = engine
         .run(
@@ -242,7 +250,7 @@ async fn enforces_the_read_timeout_between_body_chunks() {
 #[tokio::test]
 async fn enforces_the_total_timeout_before_response_headers() {
     let (address, server) = spawn_stalled_http1_server().await;
-    let engine = HttpEngine::new(HttpEngineConfig::default()).expect("HTTP engine");
+    let engine = HttpEngine::new(&HttpEngineConfig::default()).expect("HTTP engine");
 
     let error = engine
         .run(
@@ -265,7 +273,7 @@ async fn enforces_the_total_timeout_before_response_headers() {
 #[tokio::test]
 async fn cancels_a_run_while_waiting_for_response_headers() {
     let (address, server) = spawn_stalled_http1_server().await;
-    let engine = HttpEngine::new(HttpEngineConfig::default()).expect("HTTP engine");
+    let engine = HttpEngine::new(&HttpEngineConfig::default()).expect("HTTP engine");
     let cancellation = RunCancellation::new();
     let cancellation_trigger = cancellation.clone();
     let trigger = tokio::spawn(async move {
@@ -296,7 +304,7 @@ async fn leaves_redirects_visible_to_the_caller() {
         b"HTTP/1.1 302 Found\r\nLocation: http://127.0.0.1:1/not-followed\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
     )
     .await;
-    let engine = HttpEngine::new(HttpEngineConfig::default()).expect("HTTP engine");
+    let engine = HttpEngine::new(&HttpEngineConfig::default()).expect("HTTP engine");
 
     let run = engine
         .run(
@@ -319,7 +327,7 @@ async fn classifies_a_refused_connection_without_exposing_the_url() {
         .expect("reserve loopback address");
     let address = listener.local_addr().expect("loopback address");
     drop(listener);
-    let engine = HttpEngine::new(HttpEngineConfig::default()).expect("HTTP engine");
+    let engine = HttpEngine::new(&HttpEngineConfig::default()).expect("HTTP engine");
 
     let error = engine
         .run(
@@ -338,7 +346,7 @@ async fn classifies_a_refused_connection_without_exposing_the_url() {
 #[tokio::test]
 async fn rejects_an_invalid_tls_peer_without_exposing_the_url() {
     let (address, server) = spawn_invalid_tls_server().await;
-    let engine = HttpEngine::new(HttpEngineConfig::default()).expect("HTTP engine");
+    let engine = HttpEngine::new(&HttpEngineConfig::default()).expect("HTTP engine");
     let request = prepare_request(RequestDraft {
         method: "GET".to_owned(),
         url: format!("https://{address}/private-value"),
@@ -365,7 +373,7 @@ async fn rejects_an_invalid_tls_peer_without_exposing_the_url() {
 #[tokio::test]
 async fn runs_an_http2_prior_knowledge_request() {
     let (address, server) = spawn_http2_once().await;
-    let engine = HttpEngine::new(HttpEngineConfig {
+    let engine = HttpEngine::new(&HttpEngineConfig {
         version_policy: HttpVersionPolicy::Http2PriorKnowledge,
         ..HttpEngineConfig::default()
     })
@@ -409,7 +417,7 @@ async fn routes_an_http_request_through_a_manual_proxy() {
     )])
     .expect("manual proxy");
     let resolved = ProxyPolicy::with_workspace(ProxyMode::Manual(manual)).resolve(None);
-    let engine = HttpEngine::with_proxy(HttpEngineConfig::default(), &resolved, &NoSecrets)
+    let engine = HttpEngine::with_proxy(&HttpEngineConfig::default(), &resolved, &NoSecrets)
         .expect("proxied HTTP engine");
     let mut body = Vec::new();
 
@@ -450,7 +458,7 @@ async fn direct_request_override_bypasses_the_workspace_proxy() {
     .expect("manual proxy");
     let policy = ProxyPolicy::with_workspace(ProxyMode::Manual(manual));
     let resolved = policy.resolve(Some(&ProxyMode::Direct));
-    let engine = HttpEngine::with_proxy(HttpEngineConfig::default(), &resolved, &NoSecrets)
+    let engine = HttpEngine::with_proxy(&HttpEngineConfig::default(), &resolved, &NoSecrets)
         .expect("direct HTTP engine");
     let mut body = Vec::new();
 
@@ -523,7 +531,7 @@ async fn system_proxy_child() {
         return;
     };
     let resolved = ProxyPolicy::default().resolve(None);
-    let engine = HttpEngine::with_proxy(HttpEngineConfig::default(), &resolved, &NoSecrets)
+    let engine = HttpEngine::with_proxy(&HttpEngineConfig::default(), &resolved, &NoSecrets)
         .expect("system proxy engine");
     let mut body = Vec::new();
 
@@ -559,7 +567,7 @@ async fn loads_manual_proxy_credentials_without_exposing_them() {
     .with_credentials(credentials);
     let manual = ManualProxy::new(vec![route]).expect("manual proxy");
     let resolved = ProxyPolicy::with_workspace(ProxyMode::Manual(manual)).resolve(None);
-    let engine = HttpEngine::with_proxy(HttpEngineConfig::default(), &resolved, &TestSecrets)
+    let engine = HttpEngine::with_proxy(&HttpEngineConfig::default(), &resolved, &TestSecrets)
         .expect("authenticated proxy engine");
 
     engine
@@ -599,7 +607,7 @@ fn reports_the_missing_proxy_secret_by_reference_name() {
     let manual = ManualProxy::new(vec![route]).expect("manual proxy");
     let resolved = ProxyPolicy::with_workspace(ProxyMode::Manual(manual)).resolve(None);
 
-    let error = HttpEngine::with_proxy(HttpEngineConfig::default(), &resolved, &NoSecrets)
+    let error = HttpEngine::with_proxy(&HttpEngineConfig::default(), &resolved, &NoSecrets)
         .expect_err("missing proxy secret must fail");
 
     assert_eq!(error.kind(), RunErrorKind::Proxy);
@@ -622,7 +630,7 @@ async fn routes_a_request_through_a_socks5_proxy_with_remote_dns() {
     )])
     .expect("manual SOCKS proxy");
     let resolved = ProxyPolicy::with_workspace(ProxyMode::Manual(manual)).resolve(None);
-    let engine = HttpEngine::with_proxy(HttpEngineConfig::default(), &resolved, &NoSecrets)
+    let engine = HttpEngine::with_proxy(&HttpEngineConfig::default(), &resolved, &NoSecrets)
         .expect("SOCKS HTTP engine");
     let mut body = Vec::new();
 
@@ -655,7 +663,7 @@ async fn tunnels_an_https_request_through_the_https_proxy_route() {
     )])
     .expect("manual HTTPS proxy");
     let resolved = ProxyPolicy::with_workspace(ProxyMode::Manual(manual)).resolve(None);
-    let engine = HttpEngine::with_proxy(HttpEngineConfig::default(), &resolved, &NoSecrets)
+    let engine = HttpEngine::with_proxy(&HttpEngineConfig::default(), &resolved, &NoSecrets)
         .expect("HTTPS proxy engine");
 
     let error = engine
@@ -671,6 +679,189 @@ async fn tunnels_an_https_request_through_the_https_proxy_route() {
     assert_eq!(error.kind(), RunErrorKind::Connection);
     let request = proxy.await.expect("CONNECT proxy task");
     assert!(request.starts_with(b"CONNECT wirebolt.invalid:443 HTTP/1.1\r\n"));
+}
+
+#[tokio::test]
+async fn decodes_gzip_bodies_while_keeping_the_wire_headers() {
+    let wire = gzip(b"compressed body");
+    let (address, received_request) = spawn_http1_once(gzip_response(&wire)).await;
+    let engine = HttpEngine::new(&HttpEngineConfig::default()).expect("HTTP engine");
+    let mut body = Vec::new();
+
+    let run = engine
+        .run(
+            get_request(address, "/gzip"),
+            RunOptions::default(),
+            &RunCancellation::new(),
+            |chunk| {
+                body.extend_from_slice(chunk);
+                StreamControl::Continue
+            },
+        )
+        .await
+        .expect("decoded run");
+
+    assert_eq!(body, b"compressed body");
+    assert_eq!(run.content_encoding, Some(ContentEncoding::Gzip));
+    assert_eq!(run.bytes_received, wire.len() as u64);
+    assert_eq!(run.bytes_decoded, 15);
+    assert_eq!(run.headers["content-encoding"], "gzip");
+    assert_eq!(run.headers["content-length"], wire.len().to_string());
+    let raw_request = String::from_utf8(received_request.await.expect("HTTP server task"))
+        .expect("ASCII request");
+    assert!(raw_request.contains("accept-encoding: gzip, deflate, br, zstd\r\n"));
+}
+
+#[tokio::test]
+async fn an_explicit_accept_encoding_keeps_the_body_verbatim() {
+    let wire = gzip(b"compressed body");
+    let (address, _) = spawn_http1_once(gzip_response(&wire)).await;
+    let engine = HttpEngine::new(&HttpEngineConfig::default()).expect("HTTP engine");
+    let request = prepare_request(RequestDraft {
+        method: "GET".to_owned(),
+        url: format!("http://{address}/raw"),
+        headers: vec![HeaderField {
+            name: "accept-encoding".to_owned(),
+            value: "gzip".to_owned(),
+        }],
+        body: Vec::new(),
+    })
+    .expect("prepared request");
+    let mut body = Vec::new();
+
+    let run = engine
+        .run(
+            request,
+            RunOptions::default(),
+            &RunCancellation::new(),
+            |chunk| {
+                body.extend_from_slice(chunk);
+                StreamControl::Continue
+            },
+        )
+        .await
+        .expect("verbatim run");
+
+    assert_eq!(body, wire);
+    assert_eq!(run.content_encoding, None);
+    assert_eq!(run.bytes_decoded, run.bytes_received);
+}
+
+#[tokio::test]
+async fn rejects_an_oversized_content_length_before_reading_the_body() {
+    let (address, server) = spawn_http1_script(
+        b"HTTP/1.1 200 OK\r\nContent-Length: 1000\r\nConnection: close\r\n\r\n",
+        vec![(Duration::from_millis(50), b"0123456789")],
+    )
+    .await;
+    let engine = HttpEngine::new(&HttpEngineConfig::default()).expect("HTTP engine");
+    let mut saw_headers = false;
+    let mut delivered = 0;
+
+    let error = engine
+        .run_observed(
+            get_request(address, "/huge"),
+            RunOptions {
+                max_response_bytes: Some(10),
+                ..RunOptions::default()
+            },
+            &RunCancellation::new(),
+            |head| {
+                assert_eq!(head.status, 200);
+                saw_headers = true;
+            },
+            |_| {
+                delivered += 1;
+                StreamControl::Continue
+            },
+        )
+        .await
+        .expect_err("declared length exceeds the limit");
+
+    assert_eq!(error.kind(), RunErrorKind::ResponseTooLarge);
+    assert!(saw_headers, "headers are still reported before failing");
+    assert_eq!(
+        delivered, 0,
+        "no body chunk is read once the length is known"
+    );
+    server.abort();
+    let _ = server.await;
+}
+
+#[tokio::test]
+async fn a_connect_timeout_is_not_reported_as_the_total_timeout() {
+    let engine = HttpEngine::new(&HttpEngineConfig {
+        connect_timeout: Duration::from_millis(50),
+        ..HttpEngineConfig::default()
+    })
+    .expect("HTTP engine");
+
+    // TEST-NET-1 is never routable; the connect either times out or is
+    // refused by the local stack, never reaching the 5 s total deadline.
+    let error = engine
+        .run(
+            get_url("http://192.0.2.1:81/blackhole"),
+            RunOptions {
+                total_timeout: Duration::from_secs(5),
+                ..RunOptions::default()
+            },
+            &RunCancellation::new(),
+            |_| StreamControl::Continue,
+        )
+        .await
+        .expect_err("connect must fail");
+
+    assert!(
+        matches!(
+            error.kind(),
+            RunErrorKind::ConnectTimeout | RunErrorKind::Connection
+        ),
+        "{:?}",
+        error.kind()
+    );
+}
+
+#[tokio::test]
+async fn the_engine_read_timeout_covers_the_wait_for_headers() {
+    let (address, server) = spawn_stalled_http1_server().await;
+    let engine = HttpEngine::new(&HttpEngineConfig {
+        read_timeout: Some(Duration::from_millis(30)),
+        ..HttpEngineConfig::default()
+    })
+    .expect("HTTP engine");
+
+    let error = engine
+        .run(
+            get_request(address, "/silent"),
+            RunOptions {
+                total_timeout: Duration::from_secs(5),
+                ..RunOptions::default()
+            },
+            &RunCancellation::new(),
+            |_| StreamControl::Continue,
+        )
+        .await
+        .expect_err("silent server must trip the stall guard");
+
+    assert_eq!(error.kind(), RunErrorKind::ReadTimeout);
+    server.abort();
+    let _ = server.await;
+}
+
+fn gzip(bytes: &[u8]) -> Vec<u8> {
+    use std::io::Write as _;
+
+    let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+    encoder.write_all(bytes).expect("gzip body");
+    encoder.finish().expect("finish gzip body")
+}
+
+fn gzip_response(wire: &[u8]) -> &'static [u8] {
+    let head = format!(
+        "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nContent-Encoding: gzip\r\nConnection: close\r\n\r\n",
+        wire.len()
+    );
+    Box::leak([head.as_bytes(), wire].concat().into_boxed_slice())
 }
 
 #[derive(Debug)]

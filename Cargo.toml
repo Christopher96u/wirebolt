@@ -13,12 +13,15 @@ rust-version = "1.98"
 
 [workspace.dependencies]
 base64 = "=0.22.1"
+brotli-decompressor = "=5.0.3"
 bytes = "=1.12.1"
 criterion = { version = "=0.8.2", default-features = false, features = ["async_tokio", "cargo_bench_support"] }
+flate2 = "=1.1.10"
 http = "=1.5.0"
 http-body-util = "=0.1.5"
 hyper = { version = "=1.11.1", features = ["http1", "http2", "server"] }
 hyper-util = { version = "=0.1.20", features = ["tokio"] }
+percent-encoding = "=2.3.2"
 reqwest = { version = "=0.13.4", default-features = false, features = ["http2", "rustls", "socks", "system-proxy"] }
 security-framework = "=3.7.0"
 security-framework-sys = "=2.17.0"
@@ -31,6 +34,7 @@ toml = "=1.1.4"
 uniffi = "=0.32.0"
 url = "=2.5.8"
 wirebolt-core = { path = "crates/wirebolt-core" }
+zstd = "=0.13.3"
 
 [workspace.lints.rust]
 missing_debug_implementations = "warn"
@@ -41,5 +45,5 @@ pedantic = { level = "warn", priority = -1 }
 
 [profile.release]
 codegen-units = 1
-lto = "thin"
+lto = "fat"
 strip = "debuginfo"

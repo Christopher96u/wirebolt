@@ -15,12 +15,13 @@ use serde::{Deserialize, Serialize};
 #[cfg(not(target_vendor = "apple"))]
 use wirebolt_core::NoSecrets;
 use wirebolt_core::{
-    Collection, DocumentId, Environment, GitChange, GitDelta, GitError, GitErrorKind, GitOperation,
-    GitOperationOutcome, GitStatus, GitWorkspace, HttpEngine, HttpEngineConfig, HttpVersion,
-    ProxyMode, ProxyPolicy, Request, RequestAuthentication, RequestBody, RequestHeader,
-    RequestIssueKind, RequestPipeline, RequestValueField, RunCancellation, RunError, RunErrorKind,
-    RunHead, RunOptions, SecretName, SecretResolver, StreamControl, ValueSource, Workspace,
-    WorkspaceDocument, WorkspaceSnapshot, WorkspaceStore,
+    Collection, DocumentId, DocumentProblem, DocumentProblemKind, Environment, GitChange, GitDelta,
+    GitError, GitErrorKind, GitOperation, GitOperationOutcome, GitStatus, GitWorkspace, HttpEngine,
+    HttpEngineConfig, HttpVersion, ProxyMode, ProxyPolicy, Request, RequestAuthentication,
+    RequestBody, RequestHeader, RequestIssue, RequestIssueKind, RequestPipeline, RequestValueField,
+    ResolvedProxy, RunCancellation, RunError, RunErrorKind, RunHead, RunOptions, SecretName,
+    SecretResolver, StreamControl, ValueSource, Workspace, WorkspaceDocument, WorkspaceSnapshot,
+    WorkspaceStore,
 };
 
 #[derive(Debug, Eq, PartialEq, uniffi::Record)]
@@ -108,6 +109,7 @@ struct WorkspaceSnapshotDocument<'a> {
     proxy: &'a Option<ProxyMode>,
     collections: Vec<CollectionSnapshotDocument<'a>>,
     environments: Vec<EnvironmentSnapshotDocument<'a>>,
+    problems: Vec<DocumentProblemDocument<'a>>,
 }
 
 #[derive(Debug, Serialize)]
@@ -138,11 +140,19 @@ struct EnvironmentSnapshotDocument<'a> {
 }
 
 #[derive(Debug, Serialize)]
+struct DocumentProblemDocument<'a> {
+    path: String,
+    kind: &'static str,
+    reason: &'a str,
+}
+
+#[derive(Debug, Serialize)]
 struct GitStatusDocument<'a> {
     branch: &'a Option<String>,
     upstream: &'a Option<String>,
     ahead: u64,
     behind: u64,
+    revision: &'a Option<String>,
     changes: Vec<GitChangeDocument<'a>>,
 }
 
@@ -194,6 +204,10 @@ struct SavedEnvironmentDocument {
 impl WorkspaceBridge {
     #[uniffi::constructor]
     /// Opens an existing workspace or creates an empty one.
+    ///
+    /// Documents that cannot be migrated are skipped and reported through
+    /// the snapshot's `problems`; they never prevent the workspace from
+    /// opening.
     ///
     /// # Errors
     ///
@@ -387,6 +401,7 @@ impl<'a> From<&'a GitStatus> for GitStatusDocument<'a> {
             upstream: &status.upstream,
             ahead: status.ahead,
             behind: status.behind,
+            revision: &status.revision,
             changes: status.changes.iter().map(Into::into).collect(),
         }
     }
@@ -460,6 +475,17 @@ const fn git_error_kind(kind: GitErrorKind) -> &'static str {
         GitErrorKind::MissingUpstream => "missing_upstream",
         GitErrorKind::MissingRemote => "missing_remote",
         GitErrorKind::DetachedHead => "detached_head",
+        GitErrorKind::TimedOut => "timed_out",
+    }
+}
+
+const fn document_problem_kind(kind: DocumentProblemKind) -> &'static str {
+    match kind {
+        DocumentProblemKind::InvalidToml => "invalid_toml",
+        DocumentProblemKind::InvalidDocument => "invalid_document",
+        DocumentProblemKind::UnsupportedSchema => "unsupported_schema",
+        DocumentProblemKind::DocumentTooLarge => "document_too_large",
+        DocumentProblemKind::Io => "io",
     }
 }
 
@@ -494,6 +520,21 @@ impl<'a> From<&'a WorkspaceSnapshot> for WorkspaceSnapshotDocument<'a> {
                     variables: &environment.variables,
                 })
                 .collect(),
+            problems: snapshot
+                .problems
+                .iter()
+                .map(DocumentProblemDocument::from)
+                .collect(),
+        }
+    }
+}
+
+impl<'a> From<&'a DocumentProblem> for DocumentProblemDocument<'a> {
+    fn from(problem: &'a DocumentProblem) -> Self {
+        Self {
+            path: problem.path.to_string_lossy().into_owned(),
+            kind: document_problem_kind(problem.kind),
+            reason: &problem.reason,
         }
     }
 }
@@ -538,7 +579,7 @@ pub fn prepare_request(
 
     Ok(PreparedRequestSummary {
         method: prepared.method().to_string(),
-        url: prepared.uri().to_string(),
+        url: prepared.url().to_string(),
         header_count: prepared.headers().len().try_into().unwrap_or(u64::MAX),
         body_bytes: prepared.body().len().try_into().unwrap_or(u64::MAX),
     })
@@ -549,9 +590,29 @@ pub extern "C" fn wirebolt_stream_abi_version() -> u32 {
     wirebolt_core::STREAM_ABI_VERSION
 }
 
+/// Starts the shared runtime and warms the direct and system HTTP engines in
+/// the background, so the first request does not pay for TLS and proxy
+/// discovery. Returns 1 when the runtime is available.
 #[unsafe(no_mangle)]
 pub extern "C" fn wirebolt_runtime_warmup() -> u8 {
-    u8::from(SHARED_RUNTIME.is_some())
+    let Some(runtime) = SHARED_RUNTIME.as_ref() else {
+        return 0;
+    };
+    runtime.spawn_blocking(|| {
+        for mode in [ProxyMode::Direct, ProxyMode::System] {
+            let proxy = ProxyPolicy::with_workspace(mode).resolve(None);
+            let _ = shared_http_engine(&proxy, &wirebolt_core::NoSecrets);
+        }
+    });
+    1
+}
+
+/// Drops every cached HTTP engine so the next run rebuilds its client. Call
+/// this when the network configuration changes: the system proxy settings
+/// are captured once per engine, and pooled connections may be dead.
+#[unsafe(no_mangle)]
+pub extern "C" fn wirebolt_reset_engines() {
+    reset_http_engines();
 }
 
 #[repr(C)]
@@ -573,7 +634,7 @@ pub struct WireboltRunSession {
 struct SharedHttpEngines {
     system: Mutex<Option<Arc<HttpEngine>>>,
     direct: Mutex<Option<Arc<HttpEngine>>>,
-    manual: Mutex<Vec<(wirebolt_core::ResolvedProxy, Arc<HttpEngine>)>>,
+    manual: Mutex<Vec<(ProxyMode, Arc<HttpEngine>)>>,
 }
 
 static SHARED_HTTP_ENGINES: LazyLock<SharedHttpEngines> = LazyLock::new(SharedHttpEngines::default);
@@ -585,6 +646,10 @@ static SHARED_RUNTIME: LazyLock<Option<tokio::runtime::Runtime>> = LazyLock::new
         .build()
         .ok()
 });
+
+/// Timeouts of zero mean "no limit"; the engine still needs a finite
+/// deadline, so a day stands in for infinity.
+const UNLIMITED_TIMEOUT: Duration = Duration::from_hours(24);
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -611,6 +676,8 @@ struct RunInput {
     read_timeout_ms: u64,
     #[serde(default)]
     max_response_bytes: Option<u64>,
+    #[serde(default = "default_decode_content")]
+    decode_content: bool,
 }
 
 const fn empty_body() -> RequestBody {
@@ -625,30 +692,47 @@ const fn default_read_timeout_ms() -> u64 {
     10_000
 }
 
+const fn default_decode_content() -> bool {
+    true
+}
+
+fn timeout_from_millis(milliseconds: u64) -> Duration {
+    if milliseconds == 0 {
+        UNLIMITED_TIMEOUT
+    } else {
+        Duration::from_millis(milliseconds)
+    }
+}
+
 #[derive(Debug, Serialize)]
-struct ResponseHeadDocument {
+struct ResponseHeadDocument<'a> {
     status: u16,
     version: &'static str,
-    headers: Vec<ResponseHeaderDocument>,
+    headers: Vec<ResponseHeaderDocument<'a>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    remote_addr: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    content_encoding: Option<&'static str>,
+    warnings: &'a [RequestIssueDocument],
     time_to_headers_ns: u64,
 }
 
 #[derive(Debug, Serialize)]
-struct ResponseHeaderDocument {
-    name: String,
-    value: String,
+struct ResponseHeaderDocument<'a> {
+    name: &'a str,
+    value: std::borrow::Cow<'a, str>,
 }
 
 #[derive(Debug, Serialize)]
 struct RunCompleteDocument {
     bytes_received: u64,
+    bytes_decoded: u64,
     total_time_ns: u64,
 }
 
 #[derive(Debug, Serialize)]
 struct RunFailureDocument {
     kind: &'static str,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
     issues: Vec<RequestIssueDocument>,
 }
 
@@ -658,6 +742,16 @@ struct RequestIssueDocument {
     kind: &'static str,
     #[serde(skip_serializing_if = "Option::is_none")]
     reference: Option<String>,
+}
+
+impl From<RequestIssue> for RequestIssueDocument {
+    fn from(issue: RequestIssue) -> Self {
+        Self {
+            path: issue.path,
+            kind: request_issue_kind(issue.kind),
+            reference: issue.reference,
+        }
+    }
 }
 
 /// Starts one asynchronous HTTP run.
@@ -702,7 +796,21 @@ pub unsafe extern "C" fn wirebolt_run_start(
     let context_address = context as usize;
     let (completion_sender, completion) = mpsc::sync_channel(1);
     runtime.spawn(async move {
-        execute_run(&input, &worker_cancellation, callbacks, context_address).await;
+        // The run executes in its own task so that a panic anywhere inside
+        // it still ends with a terminal callback instead of a silent hang.
+        let worker = tokio::spawn(execute_run(
+            input,
+            worker_cancellation,
+            callbacks,
+            context_address,
+        ));
+        if worker.await.is_err() {
+            emit_failure(
+                &callbacks,
+                context_address,
+                &RunFailureDocument::new("internal"),
+            );
+        }
         let _ = completion_sender.send(());
     });
 
@@ -752,12 +860,12 @@ pub unsafe extern "C" fn wirebolt_run_free(session: *mut WireboltRunSession) {
 }
 
 async fn execute_run(
-    input: &[u8],
-    cancellation: &RunCancellation,
+    input: Vec<u8>,
+    cancellation: RunCancellation,
     callbacks: WireboltRunCallbacks,
     context: usize,
 ) {
-    let parsed = serde_json::from_slice::<RunInput>(input);
+    let parsed = serde_json::from_slice::<RunInput>(&input);
     let Ok(input) = parsed else {
         emit_failure(
             &callbacks,
@@ -773,82 +881,55 @@ async fn execute_run(
         cancellation,
         callbacks,
         context,
-        &wirebolt_core::KeychainSecretResolver::default(),
+        wirebolt_core::KeychainSecretResolver::default(),
     )
     .await;
     #[cfg(not(target_vendor = "apple"))]
-    execute_run_with_secrets(input, cancellation, callbacks, context, &NoSecrets).await;
+    execute_run_with_secrets(input, cancellation, callbacks, context, NoSecrets).await;
 }
 
-async fn execute_run_with_secrets<R: SecretResolver + ?Sized>(
+async fn execute_run_with_secrets<R>(
     input: RunInput,
-    cancellation: &RunCancellation,
+    cancellation: RunCancellation,
     callbacks: WireboltRunCallbacks,
     context: usize,
-    secrets: &R,
-) {
-    let mut request = Request::new(
-        DocumentId::new("draft").expect("static document ID"),
-        "Draft",
-        input.method,
-        input.url,
-    );
-    request.query = input.query;
-    request.headers = input.headers;
-    request.authentication = input.authentication;
-    request.body = input.body;
-    request.proxy_override = input.request_proxy;
-    let environment = Environment::new(
-        DocumentId::new("active").expect("static document ID"),
-        "Active".to_owned(),
-        input.variables,
-    );
-    let prepared = RequestPipeline::new(Some(&environment), secrets).prepare(&request);
-    let prepared = match prepared {
-        Ok(prepared) => prepared,
-        Err(error) => {
-            emit_failure(
-                &callbacks,
-                context,
-                &RunFailureDocument {
-                    kind: "invalid_request",
-                    issues: error
-                        .issues
-                        .into_iter()
-                        .map(|issue| RequestIssueDocument {
-                            path: issue.path,
-                            kind: request_issue_kind(issue.kind),
-                            reference: issue.reference,
-                        })
-                        .collect(),
-                },
-            );
-            return;
-        }
-    };
-    let proxy = ProxyPolicy::new(input.workspace_proxy).resolve(request.proxy_override.as_ref());
-    let engine = match shared_http_engine(&proxy, secrets) {
-        Ok(engine) => engine,
-        Err(error) => {
-            emit_failure(
-                &callbacks,
-                context,
-                &RunFailureDocument::from_run_error(&error),
-            );
-            return;
-        }
-    };
+    secrets: R,
+) where
+    R: SecretResolver + Clone + Send + 'static,
+{
     let options = RunOptions {
-        total_timeout: Duration::from_millis(input.total_timeout_ms),
-        read_timeout: Duration::from_millis(input.read_timeout_ms),
+        total_timeout: timeout_from_millis(input.total_timeout_ms),
+        read_timeout: timeout_from_millis(input.read_timeout_ms),
         max_response_bytes: input.max_response_bytes,
+        decode_content: input.decode_content,
     };
+    // Secret lookups can block on Keychain (even prompting the user) and
+    // building a client loads TLS and proxy state, so neither runs on the
+    // two async workers that stream every other response.
+    let prepared = tokio::task::spawn_blocking(move || prepare_run(input, &secrets)).await;
+    let (prepared, engine) = match prepared {
+        Ok(Ok(prepared)) => prepared,
+        Ok(Err(failure)) => {
+            emit_failure(&callbacks, context, &failure);
+            return;
+        }
+        Err(_) => {
+            emit_failure(&callbacks, context, &RunFailureDocument::new("internal"));
+            return;
+        }
+    };
+    let warnings: Vec<RequestIssueDocument> = prepared
+        .warnings()
+        .iter()
+        .cloned()
+        .map(Into::into)
+        .collect();
     let result = engine
         .run_observed(
             prepared,
             options,
-            cancellation,
-            |head| emit_head(&callbacks, context, head),
+            &cancellation,
+            |head| emit_head(&callbacks, context, head, &warnings),
             |chunk| {
                 let should_continue = callbacks.on_chunk.map_or(0, |callback| {
                     callback(context as *mut c_void, chunk.as_ptr(), chunk.len())
@@ -867,6 +948,7 @@ async fn execute_run_with_secrets<R: SecretResolver + ?Sized>(
             context,
             &RunCompleteDocument {
                 bytes_received: run.bytes_received,
+                bytes_decoded: run.bytes_decoded,
                 total_time_ns: duration_ns(run.total_time),
             },
         ),
@@ -878,17 +960,48 @@ async fn execute_run_with_secrets<R: SecretResolver + ?Sized>(
     }
 }
 
+type PreparedRun = (wirebolt_core::PreparedRequest, Arc<HttpEngine>);
+
+fn prepare_run<R: SecretResolver + ?Sized>(
+    input: RunInput,
+    secrets: &R,
+) -> Result<PreparedRun, RunFailureDocument> {
+    let mut request = Request::new(
+        DocumentId::new("draft").expect("static document ID"),
+        "Draft",
+        input.method,
+        input.url,
+    );
+    request.query = input.query;
+    request.headers = input.headers;
+    request.authentication = input.authentication;
+    request.body = input.body;
+    request.proxy_override = input.request_proxy;
+    let environment = Environment::new(
+        DocumentId::new("active").expect("static document ID"),
+        "Active".to_owned(),
+        input.variables,
+    );
+    let prepared = RequestPipeline::new(Some(&environment), secrets)
+        .prepare(&request)
+        .map_err(|error| RunFailureDocument {
+            kind: "invalid_request",
+            issues: error.issues.into_iter().map(Into::into).collect(),
+        })?;
+    let proxy = ProxyPolicy::new(input.workspace_proxy).resolve(request.proxy_override.as_ref());
+    let engine = shared_http_engine(&proxy, secrets)
+        .map_err(|error| RunFailureDocument::from_run_error(&error))?;
+    Ok((prepared, engine))
+}
+
 fn shared_http_engine<R: SecretResolver + ?Sized>(
-    proxy: &wirebolt_core::ResolvedProxy,
+    proxy: &ResolvedProxy,
     secrets: &R,
 ) -> Result<Arc<HttpEngine>, RunError> {
     let slot = match proxy.mode() {
-        ProxyMode::System => Some(&SHARED_HTTP_ENGINES.system),
-        ProxyMode::Direct => Some(&SHARED_HTTP_ENGINES.direct),
+        ProxyMode::System => &SHARED_HTTP_ENGINES.system,
+        ProxyMode::Direct => &SHARED_HTTP_ENGINES.direct,
         ProxyMode::Manual(_) => return shared_manual_http_engine(proxy, secrets),
-    };
-    let Some(slot) = slot else {
-        return HttpEngine::with_proxy(HttpEngineConfig::default(), proxy, secrets).map(Arc::new);
     };
 
     let mut slot = slot
@@ -898,7 +1011,7 @@ fn shared_http_engine<R: SecretResolver + ?Sized>(
         return Ok(Arc::clone(engine));
     }
     let engine = Arc::new(HttpEngine::with_proxy(
-        HttpEngineConfig::default(),
+        &HttpEngineConfig::default(),
         proxy,
         secrets,
     )?);
@@ -906,8 +1019,10 @@ fn shared_http_engine<R: SecretResolver + ?Sized>(
     Ok(engine)
 }
 
+/// Manual engines are keyed by proxy mode alone: the same configuration
+/// reached through a workspace policy or a request override shares one pool.
 fn shared_manual_http_engine<R: SecretResolver + ?Sized>(
-    proxy: &wirebolt_core::ResolvedProxy,
+    proxy: &ResolvedProxy,
     secrets: &R,
 ) -> Result<Arc<HttpEngine>, RunError> {
     const MAX_CACHED_MANUAL_ENGINES: usize = 8;
@@ -916,18 +1031,21 @@ fn shared_manual_http_engine<R: SecretResolver + ?Sized>(
         .manual
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    if let Some((_, engine)) = engines.iter().find(|(candidate, _)| candidate == proxy) {
+    if let Some((_, engine)) = engines
+        .iter()
+        .find(|(candidate, _)| candidate == proxy.mode())
+    {
         return Ok(Arc::clone(engine));
     }
     let engine = Arc::new(HttpEngine::with_proxy(
-        HttpEngineConfig::default(),
+        &HttpEngineConfig::default(),
         proxy,
         secrets,
     )?);
     if engines.len() == MAX_CACHED_MANUAL_ENGINES {
         engines.remove(0);
     }
-    engines.push((proxy.clone(), Arc::clone(&engine)));
+    engines.push((proxy.mode().clone(), Arc::clone(&engine)));
     Ok(engine)
 }
 
@@ -939,7 +1057,21 @@ fn clear_manual_http_engines() {
         .clear();
 }
 
-fn emit_head(callbacks: &WireboltRunCallbacks, context: usize, head: &RunHead) {
+fn reset_http_engines() {
+    clear_manual_http_engines();
+    for slot in [&SHARED_HTTP_ENGINES.system, &SHARED_HTTP_ENGINES.direct] {
+        slot.lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take();
+    }
+}
+
+fn emit_head(
+    callbacks: &WireboltRunCallbacks,
+    context: usize,
+    head: &RunHead,
+    warnings: &[RequestIssueDocument],
+) {
     emit_json(
         callbacks.on_head,
         context,
@@ -949,11 +1081,16 @@ fn emit_head(callbacks: &WireboltRunCallbacks, context: usize, head: &RunHead) {
             headers: head
                 .headers
                 .iter()
-                .map(|header| ResponseHeaderDocument {
-                    name: header.name.clone(),
-                    value: String::from_utf8_lossy(&header.value).into_owned(),
+                .map(|(name, value)| ResponseHeaderDocument {
+                    name: name.as_str(),
+                    value: String::from_utf8_lossy(value.as_bytes()),
                 })
                 .collect(),
+            remote_addr: head.remote_addr.map(|address| address.to_string()),
+            content_encoding: head
+                .content_encoding
+                .map(wirebolt_core::ContentEncoding::token),
+            warnings,
             time_to_headers_ns: duration_ns(head.time_to_headers),
         },
     );
@@ -993,6 +1130,7 @@ const fn run_error_kind(kind: RunErrorKind) -> &'static str {
         RunErrorKind::Cancelled => "cancelled",
         RunErrorKind::TotalTimeout => "total_timeout",
         RunErrorKind::ReadTimeout => "read_timeout",
+        RunErrorKind::ConnectTimeout => "connect_timeout",
         RunErrorKind::StreamStopped => "stream_stopped",
         RunErrorKind::ResponseTooLarge => "response_too_large",
         RunErrorKind::Connection => "connection",
@@ -1124,30 +1262,34 @@ mod tests {
             "workspace_proxy": { "mode": "direct" }
         })
         .to_string();
-        let state = Box::new(CallbackState::default());
-        let state_pointer = Box::into_raw(state);
-        let callbacks = WireboltRunCallbacks {
-            on_head: Some(record_head),
-            on_chunk: Some(record_chunk),
-            on_complete: Some(record_complete),
-            on_error: Some(record_error),
-        };
-
-        // SAFETY: The input and callback context outlive the run session.
-        let session = unsafe {
-            wirebolt_run_start(input.as_ptr(), input.len(), callbacks, state_pointer.cast())
-        };
-        assert!(!session.is_null());
-        // SAFETY: `state_pointer` remains owned by this test until after join.
-        let state = unsafe { &*state_pointer };
-        let events = state.wait_for_terminal();
-
-        // SAFETY: The worker reached a terminal callback and this is the sole free.
-        unsafe { wirebolt_run_free(session) };
+        let (events, state_pointer) = run_to_completion(&input);
         server.join().expect("HTTP server");
         assert_eq!(events, ["head", "chunk:pong", "complete"]);
         // SAFETY: The callback context is no longer used after session join.
         drop(unsafe { Box::from_raw(state_pointer) });
+    }
+
+    #[test]
+    fn failure_documents_always_carry_an_issues_array() {
+        let input = serde_json::json!({
+            "method": "GET",
+            "url": "http://127.0.0.1:1/refused",
+            "workspace_proxy": { "mode": "direct" }
+        })
+        .to_string();
+        let (events, state_pointer) = run_to_completion(&input);
+        // SAFETY: The callback context is no longer used after session join.
+        let state = unsafe { Box::from_raw(state_pointer) };
+
+        assert_eq!(events, ["error"]);
+        let failure = state
+            .failure
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+            .expect("failure document");
+        assert!(failure["issues"].is_array(), "{failure}");
+        assert_eq!(failure["kind"], "connection");
     }
 
     #[test]
@@ -1182,6 +1324,11 @@ mod tests {
                 .as_str(),
             )
             .expect("save request");
+        std::fs::write(
+            temporary.path().join("environments/broken.toml"),
+            "<<<<<<< HEAD\nid = \"broken\"\n=======\n",
+        )
+        .expect("write conflicted environment");
 
         let snapshot = bridge.snapshot_json().expect("workspace snapshot");
         let document: serde_json::Value = serde_json::from_str(&snapshot).expect("snapshot JSON");
@@ -1194,6 +1341,8 @@ mod tests {
             document["collections"][0]["requests"][0]["authentication"]["token"]["secret"],
             "api.token"
         );
+        assert_eq!(document["problems"][0]["path"], "environments/broken.toml");
+        assert_eq!(document["problems"][0]["kind"], "invalid_toml");
         assert!(!snapshot.contains("secret-value"));
     }
 
@@ -1225,6 +1374,7 @@ mod tests {
             serde_json::from_str(&bridge.git_status_json().expect("Git status JSON"))
                 .expect("decode Git status");
         assert_eq!(before["branch"], "main");
+        assert_eq!(before["revision"], serde_json::Value::Null);
         assert_eq!(before["changes"][0]["path"], "wirebolt.toml");
         assert_eq!(before["changes"][0]["unstaged"], "untracked");
 
@@ -1235,6 +1385,7 @@ mod tests {
         )
         .expect("decode Git operation");
         assert_eq!(operation["outcome"], "committed");
+        assert!(operation["revision"].is_string());
         assert_eq!(operation["status"]["changes"], serde_json::json!([]));
     }
 
@@ -1249,29 +1400,63 @@ mod tests {
     }
 
     #[test]
-    fn shared_manual_engine_reuses_until_credentials_change() {
+    fn shared_manual_engine_is_keyed_by_mode_and_reset_on_demand() {
         let route = wirebolt_core::ProxyRoute::new(
             wirebolt_core::ProxyDestination::All,
             wirebolt_core::ProxyEndpoint::new("http://proxy.internal:8080")
                 .expect("proxy endpoint"),
         );
-        let manual = wirebolt_core::ManualProxy::new(vec![route]).expect("manual proxy");
-        let proxy = ProxyPolicy::with_workspace(ProxyMode::Manual(manual)).resolve(None);
+        let manual =
+            ProxyMode::Manual(wirebolt_core::ManualProxy::new(vec![route]).expect("manual proxy"));
+        let from_workspace = ProxyPolicy::with_workspace(manual.clone()).resolve(None);
+        let from_request = ProxyPolicy::default().resolve(Some(&manual));
 
         clear_manual_http_engines();
-        let first = shared_http_engine(&proxy, &wirebolt_core::NoSecrets).expect("first engine");
-        let second = shared_http_engine(&proxy, &wirebolt_core::NoSecrets).expect("second engine");
+        let first =
+            shared_http_engine(&from_workspace, &wirebolt_core::NoSecrets).expect("first engine");
+        let second =
+            shared_http_engine(&from_request, &wirebolt_core::NoSecrets).expect("second engine");
         assert!(Arc::ptr_eq(&first, &second));
 
-        clear_manual_http_engines();
-        let replacement =
-            shared_http_engine(&proxy, &wirebolt_core::NoSecrets).expect("replacement engine");
+        wirebolt_reset_engines();
+        let replacement = shared_http_engine(&from_workspace, &wirebolt_core::NoSecrets)
+            .expect("replacement engine");
         assert!(!Arc::ptr_eq(&first, &replacement));
+    }
+
+    #[test]
+    fn zero_timeouts_mean_unlimited() {
+        assert_eq!(timeout_from_millis(0), UNLIMITED_TIMEOUT);
+        assert_eq!(timeout_from_millis(250), Duration::from_millis(250));
+    }
+
+    fn run_to_completion(input: &str) -> (Vec<String>, *mut CallbackState) {
+        let state_pointer = Box::into_raw(Box::new(CallbackState::default()));
+        let callbacks = WireboltRunCallbacks {
+            on_head: Some(record_head),
+            on_chunk: Some(record_chunk),
+            on_complete: Some(record_complete),
+            on_error: Some(record_error),
+        };
+
+        // SAFETY: The input and callback context outlive the run session.
+        let session = unsafe {
+            wirebolt_run_start(input.as_ptr(), input.len(), callbacks, state_pointer.cast())
+        };
+        assert!(!session.is_null());
+        // SAFETY: `state_pointer` remains owned by the caller until after join.
+        let state = unsafe { &*state_pointer };
+        let events = state.wait_for_terminal();
+
+        // SAFETY: The worker reached a terminal callback and this is the sole free.
+        unsafe { wirebolt_run_free(session) };
+        (events, state_pointer)
     }
 
     #[derive(Debug, Default)]
     struct CallbackState {
         events: Mutex<Vec<String>>,
+        failure: Mutex<Option<serde_json::Value>>,
         terminal: Condvar,
     }
 
@@ -1299,6 +1484,7 @@ mod tests {
         let document = callback_bytes(json, length);
         let head: serde_json::Value = serde_json::from_slice(document).expect("head JSON");
         assert_eq!(head["status"], 200);
+        assert!(head["warnings"].is_array());
         state
             .events
             .lock()
@@ -1322,6 +1508,7 @@ mod tests {
         let document: serde_json::Value =
             serde_json::from_slice(callback_bytes(json, length)).expect("completion JSON");
         assert_eq!(document["bytes_received"], 4);
+        assert_eq!(document["bytes_decoded"], 4);
         state
             .events
             .lock()
@@ -1330,8 +1517,14 @@ mod tests {
         state.terminal.notify_all();
     }
 
-    extern "C" fn record_error(context: *mut c_void, _: *const u8, _: usize) {
+    extern "C" fn record_error(context: *mut c_void, json: *const u8, length: usize) {
         let state = callback_state(context);
+        let document: serde_json::Value =
+            serde_json::from_slice(callback_bytes(json, length)).expect("failure JSON");
+        *state
+            .failure
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(document);
         state
             .events
             .lock()

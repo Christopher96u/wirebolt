@@ -58,6 +58,39 @@ fn rejects_proxy_endpoints_that_could_embed_secrets() {
 }
 
 #[test]
+fn rejects_credentials_on_socks4_routes_which_cannot_carry_them() {
+    let credentials = || {
+        wirebolt_core::ProxyCredentials::new(
+            wirebolt_core::SecretName::new("proxy.user").expect("username"),
+            wirebolt_core::SecretName::new("proxy.password").expect("password"),
+        )
+    };
+    for endpoint in [
+        "socks4://proxy.internal:1080",
+        "socks4a://proxy.internal:1080",
+    ] {
+        let route = ProxyRoute::new(
+            ProxyDestination::All,
+            ProxyEndpoint::new(endpoint).expect("proxy endpoint"),
+        )
+        .with_credentials(credentials());
+        let error = ManualProxy::new(vec![route]).expect_err("SOCKS4 credentials must fail");
+        assert_eq!(
+            error.kind(),
+            ProxyConfigurationErrorKind::UnsupportedCredentials,
+            "{endpoint}"
+        );
+    }
+
+    let route = ProxyRoute::new(
+        ProxyDestination::All,
+        ProxyEndpoint::new("socks5h://proxy.internal:1080").expect("proxy endpoint"),
+    )
+    .with_credentials(credentials());
+    ManualProxy::new(vec![route]).expect("SOCKS5 carries credentials");
+}
+
+#[test]
 fn rejects_overlapping_manual_proxy_routes() {
     let endpoint = || ProxyEndpoint::new("http://proxy.internal:8080").expect("proxy endpoint");
     ManualProxy::new(vec![

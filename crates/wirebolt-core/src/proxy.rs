@@ -188,7 +188,9 @@ impl ManualProxy {
     ///
     /// # Errors
     ///
-    /// Returns [`ProxyConfigurationError`] when no routes are provided.
+    /// Returns [`ProxyConfigurationError`] when no routes are provided, routes
+    /// overlap, or credentials are attached to a SOCKS4 endpoint, which cannot
+    /// carry them.
     pub fn new(routes: Vec<ProxyRoute>) -> Result<Self, ProxyConfigurationError> {
         if routes.is_empty() {
             return Err(ProxyConfigurationError::new(
@@ -198,6 +200,11 @@ impl ManualProxy {
         let mut covers_http = false;
         let mut covers_https = false;
         for route in &routes {
+            if route.credentials.is_some() && !route.endpoint.protocol().supports_credentials() {
+                return Err(ProxyConfigurationError::new(
+                    ProxyConfigurationErrorKind::UnsupportedCredentials,
+                ));
+            }
             let overlaps = match route.destination {
                 ProxyDestination::All => covers_http || covers_https,
                 ProxyDestination::Http => covers_http,
@@ -380,6 +387,14 @@ pub enum ProxyProtocol {
     Socks5h,
 }
 
+impl ProxyProtocol {
+    /// SOCKS4 has no authentication exchange, so credentials cannot be sent.
+    #[must_use]
+    pub const fn supports_credentials(self) -> bool {
+        !matches!(self, Self::Socks4 | Self::Socks4a)
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ProxyRouteDiagnostic {
     destination: ProxyDestination,
@@ -426,6 +441,7 @@ pub enum ProxyConfigurationErrorKind {
     InvalidEndpoint,
     NoRoutes,
     OverlappingRoutes,
+    UnsupportedCredentials,
     SecretNotFound,
     SecretUnavailable,
     InvalidSecretEncoding,
@@ -452,6 +468,10 @@ impl ProxyConfigurationError {
 
     pub(crate) const fn invalid_endpoint() -> Self {
         Self::new(ProxyConfigurationErrorKind::InvalidEndpoint)
+    }
+
+    pub(crate) const fn unsupported_credentials() -> Self {
+        Self::new(ProxyConfigurationErrorKind::UnsupportedCredentials)
     }
 
     pub(crate) fn secret(name: &SecretName, error: &SecretResolutionError) -> Self {
@@ -487,6 +507,9 @@ impl fmt::Display for ProxyConfigurationError {
             }
             ProxyConfigurationErrorKind::OverlappingRoutes => {
                 formatter.write_str("manual proxy routes overlap")
+            }
+            ProxyConfigurationErrorKind::UnsupportedCredentials => {
+                formatter.write_str("SOCKS4 proxies cannot carry credentials")
             }
             ProxyConfigurationErrorKind::SecretNotFound => write!(
                 formatter,

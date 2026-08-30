@@ -18,7 +18,18 @@ typedef struct wirebolt_run_callbacks {
 } wirebolt_run_callbacks;
 
 uint32_t wirebolt_stream_abi_version(void);
+
+/*
+ * Starts the shared runtime and warms the direct and system HTTP engines in
+ * the background. Returns 1 when the runtime is available.
+ */
 uint8_t wirebolt_runtime_warmup(void);
+
+/*
+ * Drops every cached HTTP engine so the next run rebuilds its client. Call
+ * this when the network path or system proxy configuration changes.
+ */
+void wirebolt_reset_engines(void);
 
 /*
  * Starts one request on a dedicated worker. Callback buffers are borrowed and
