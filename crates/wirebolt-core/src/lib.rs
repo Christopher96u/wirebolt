@@ -3,14 +3,15 @@
 mod http_engine;
 mod proxy;
 mod request;
+mod request_pipeline;
 mod storage;
 
 pub use http_engine::{
     HttpEngine, HttpEngineConfig, HttpVersion, HttpVersionPolicy, Run, RunCancellation, RunError,
-    RunErrorKind, RunHeader, RunOptions, StreamControl,
+    RunErrorKind, RunHead, RunHeader, RunOptions, StreamControl,
 };
 #[cfg(target_vendor = "apple")]
-pub use proxy::KeychainSecretResolver;
+pub use proxy::{KeychainSecretResolver, KeychainSecretStore};
 pub use proxy::{
     ManualProxy, NoSecrets, ProxyConfigurationError, ProxyConfigurationErrorKind, ProxyCredentials,
     ProxyDestination, ProxyDiagnostic, ProxyEndpoint, ProxyMode, ProxyModeKind, ProxyPolicy,
@@ -20,13 +21,15 @@ pub use proxy::{
 pub use request::{
     HeaderField, PreparedRequest, RequestDraft, RequestPreparationError, prepare_request,
 };
+pub use request_pipeline::{RequestIssue, RequestIssueKind, RequestPipeline, RequestPipelineError};
 pub use storage::{
-    CURRENT_SCHEMA_VERSION, Collection, CollectionSnapshot, DocumentId, Environment,
-    IdentifierError, MigrationReport, Request, RequestBody, RequestHeader, SaveOutcome, SecretName,
-    StorageError, ValueSource, Workspace, WorkspaceDocument, WorkspaceSnapshot, WorkspaceStore,
+    ApiKeyPlacement, CURRENT_SCHEMA_VERSION, Collection, CollectionSnapshot, DocumentId,
+    Environment, IdentifierError, MigrationReport, Request, RequestAuthentication, RequestBody,
+    RequestHeader, RequestValueField, SaveOutcome, SecretName, StorageError, ValueSource,
+    Workspace, WorkspaceDocument, WorkspaceSnapshot, WorkspaceStore,
 };
 
-pub const STREAM_ABI_VERSION: u32 = 1;
+pub const STREAM_ABI_VERSION: u32 = 2;
 
 #[derive(Debug, Eq, PartialEq)]
 pub struct CoreHandshake {
@@ -55,7 +58,7 @@ mod tests {
             CoreHandshake {
                 product: "Wirebolt",
                 core_version: "0.1.0",
-                stream_abi_version: 1,
+                stream_abi_version: 2,
             }
         );
     }

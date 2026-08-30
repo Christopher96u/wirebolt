@@ -555,7 +555,7 @@ impl fmt::Display for SecretResolutionError {
 
 impl Error for SecretResolutionError {}
 
-pub trait SecretResolver {
+pub trait SecretResolver: Send + Sync {
     /// Resolves a named secret without exposing it through diagnostics.
     ///
     /// # Errors
@@ -638,5 +638,42 @@ impl SecretResolver for KeychainSecretResolver {
                 SecretResolutionErrorKind::Unavailable,
             )),
         }
+    }
+}
+
+#[cfg(target_vendor = "apple")]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct KeychainSecretStore {
+    service: String,
+}
+
+#[cfg(target_vendor = "apple")]
+impl KeychainSecretStore {
+    #[must_use]
+    pub fn new(service: impl Into<String>) -> Self {
+        Self {
+            service: service.into(),
+        }
+    }
+
+    /// Creates or replaces a named secret in the user's Keychain.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SecretResolutionError`] when Keychain is unavailable.
+    pub fn save(&self, name: &SecretName, value: &str) -> Result<(), SecretResolutionError> {
+        security_framework::passwords::set_generic_password(
+            &self.service,
+            name.as_str(),
+            value.as_bytes(),
+        )
+        .map_err(|_| SecretResolutionError::new(SecretResolutionErrorKind::Unavailable))
+    }
+}
+
+#[cfg(target_vendor = "apple")]
+impl Default for KeychainSecretStore {
+    fn default() -> Self {
+        Self::new("local.wirebolt.app")
     }
 }

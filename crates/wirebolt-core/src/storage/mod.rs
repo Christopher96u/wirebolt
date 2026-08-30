@@ -13,9 +13,9 @@ use serde::{Serialize, de::DeserializeOwned};
 use toml::Value;
 
 pub use model::{
-    CURRENT_SCHEMA_VERSION, Collection, CollectionSnapshot, DocumentId, Environment,
-    IdentifierError, Request, RequestBody, RequestHeader, SecretName, ValueSource, Workspace,
-    WorkspaceDocument, WorkspaceSnapshot,
+    ApiKeyPlacement, CURRENT_SCHEMA_VERSION, Collection, CollectionSnapshot, DocumentId,
+    Environment, IdentifierError, Request, RequestAuthentication, RequestBody, RequestHeader,
+    RequestValueField, SecretName, ValueSource, Workspace, WorkspaceDocument, WorkspaceSnapshot,
 };
 
 const WORKSPACE_FILE: &str = "wirebolt.toml";
@@ -450,7 +450,7 @@ fn read_document<T: DeserializeOwned>(path: &Path) -> Result<(T, bool), StorageE
                 path: path.to_owned(),
                 reason: "schema_version must be a non-negative 32-bit integer",
             })?;
-            if version == 1 {
+            if matches!(version, 1 | 2) {
                 table.insert(
                     "schema_version".to_owned(),
                     Value::Integer(i64::from(CURRENT_SCHEMA_VERSION)),

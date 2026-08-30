@@ -10,9 +10,10 @@ struct RustCore: Sendable {
     func status() -> CoreStatus {
         let handshake = coreHandshake()
         let streamABIVersion = wirebolt_stream_abi_version()
+        let runtimeReady = wirebolt_runtime_warmup()
 
         precondition(
-            handshake.streamAbiVersion == streamABIVersion,
+            handshake.streamAbiVersion == streamABIVersion && runtimeReady == 1,
             "Swift bindings and stream ABI are out of sync"
         )
 

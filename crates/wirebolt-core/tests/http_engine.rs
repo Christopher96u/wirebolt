@@ -18,6 +18,46 @@ use wirebolt_core::{
 };
 
 #[tokio::test]
+async fn reports_response_headers_before_streaming_body_chunks() {
+    let (address, server) = spawn_http1_script(
+        b"HTTP/1.1 202 Accepted\r\nTransfer-Encoding: chunked\r\nX-Wirebolt-Test: observed\r\nConnection: close\r\n\r\n",
+        vec![
+            (Duration::ZERO, b"4\r\nbody\r\n"),
+            (Duration::ZERO, b"0\r\n\r\n"),
+        ],
+    )
+    .await;
+    let engine = HttpEngine::new(HttpEngineConfig::default()).expect("HTTP engine");
+    let events = std::cell::RefCell::new(Vec::new());
+
+    let run = engine
+        .run_observed(
+            get_request(address, "/observed"),
+            RunOptions::default(),
+            &RunCancellation::new(),
+            |head| {
+                assert_eq!(head.status, 202);
+                assert_eq!(head.version, HttpVersion::Http11);
+                assert!(head.headers.iter().any(|header| {
+                    header.name == "x-wirebolt-test" && header.value == b"observed"
+                }));
+                events.borrow_mut().push("headers");
+            },
+            |chunk| {
+                assert_eq!(chunk, b"body");
+                events.borrow_mut().push("chunk");
+                StreamControl::Continue
+            },
+        )
+        .await
+        .expect("observed response");
+
+    assert_eq!(run.bytes_received, 4);
+    assert_eq!(*events.borrow(), ["headers", "chunk"]);
+    server.await.expect("HTTP server task");
+}
+
+#[tokio::test]
 async fn runs_an_http1_request_through_the_public_interface() {
     let (address, received_request) = spawn_http1_once(
         b"HTTP/1.1 201 Created\r\nContent-Length: 4\r\nX-Wirebolt-Test: yes\r\nConnection: close\r\n\r\npong",

@@ -104,9 +104,35 @@ impl HttpEngine {
         request: PreparedRequest,
         options: RunOptions,
         cancellation: &RunCancellation,
+        on_chunk: F,
+    ) -> Result<Run, RunError>
+    where
+        F: FnMut(&[u8]) -> StreamControl,
+    {
+        self.run_observed(request, options, cancellation, |_| {}, on_chunk)
+            .await
+    }
+
+    /// Executes one request while exposing response metadata before body chunks.
+    ///
+    /// The metadata callback is invoked exactly once after response headers are
+    /// available and before the first body chunk is delivered. Both callbacks
+    /// borrow their inputs only for the duration of the call.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RunError`] for cancellation, timeouts, transport failures,
+    /// callback stops, or a configured response-size limit.
+    pub async fn run_observed<H, F>(
+        &self,
+        request: PreparedRequest,
+        options: RunOptions,
+        cancellation: &RunCancellation,
+        mut on_headers: H,
         mut on_chunk: F,
     ) -> Result<Run, RunError>
     where
+        H: FnMut(&RunHead),
         F: FnMut(&[u8]) -> StreamControl,
     {
         let started = Instant::now();
@@ -128,17 +154,20 @@ impl HttpEngine {
                     .map_err(RunError::transport)?
             }
         };
-        let time_to_headers = started.elapsed();
-        let status = response.status().as_u16();
-        let version = HttpVersion::from(response.version());
-        let headers = response
-            .headers()
-            .iter()
-            .map(|(name, value)| RunHeader {
-                name: name.as_str().to_owned(),
-                value: value.as_bytes().to_vec(),
-            })
-            .collect();
+        let head = RunHead {
+            status: response.status().as_u16(),
+            version: HttpVersion::from(response.version()),
+            headers: response
+                .headers()
+                .iter()
+                .map(|(name, value)| RunHeader {
+                    name: name.as_str().to_owned(),
+                    value: value.as_bytes().to_vec(),
+                })
+                .collect(),
+            time_to_headers: started.elapsed(),
+        };
+        on_headers(&head);
 
         let mut response = response;
         let mut bytes_received = 0_u64;
@@ -179,11 +208,11 @@ impl HttpEngine {
         }
 
         Ok(Run {
-            status,
-            version,
-            headers,
+            status: head.status,
+            version: head.version,
+            headers: head.headers,
             bytes_received,
-            time_to_headers,
+            time_to_headers: head.time_to_headers,
             total_time: started.elapsed(),
         })
     }
@@ -307,6 +336,14 @@ impl From<Version> for HttpVersion {
 pub struct RunHeader {
     pub name: String,
     pub value: Vec<u8>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RunHead {
+    pub status: u16,
+    pub version: HttpVersion,
+    pub headers: Vec<RunHeader>,
+    pub time_to_headers: Duration,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]

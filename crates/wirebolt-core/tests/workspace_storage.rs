@@ -172,7 +172,7 @@ fn rejects_future_schema_versions() {
         error,
         StorageError::UnsupportedSchema {
             found: 999,
-            supported: 2,
+            supported: 3,
             ..
         }
     ));
@@ -223,8 +223,8 @@ fn explicitly_migrates_unversioned_documents_and_is_restartable() {
     let collection_toml =
         fs::read_to_string(temporary.path().join("collections/users/collection.toml"))
             .expect("collection TOML");
-    assert!(workspace_toml.starts_with("schema_version = 2\n"));
-    assert!(collection_toml.starts_with("schema_version = 2\n"));
+    assert!(workspace_toml.starts_with("schema_version = 3\n"));
+    assert!(collection_toml.starts_with("schema_version = 3\n"));
 }
 
 #[test]
@@ -249,7 +249,62 @@ fn migrates_schema_one_workspaces_before_proxy_fields_existed() {
 
     let workspace_toml =
         fs::read_to_string(temporary.path().join("wirebolt.toml")).expect("workspace TOML");
-    assert!(workspace_toml.starts_with("schema_version = 2\n"));
+    assert!(workspace_toml.starts_with("schema_version = 3\n"));
+}
+
+#[test]
+fn migrates_schema_two_requests_before_composer_fields_existed() {
+    let temporary = tempdir().expect("temporary workspace");
+    fs::create_dir_all(temporary.path().join("collections/users/requests"))
+        .expect("create request directory");
+    fs::write(
+        temporary.path().join("wirebolt.toml"),
+        "schema_version = 2\nname = \"Legacy\"\n",
+    )
+    .expect("write workspace");
+    fs::write(
+        temporary.path().join("collections/users/collection.toml"),
+        "schema_version = 2\nid = \"users\"\nname = \"Users\"\n",
+    )
+    .expect("write collection");
+    fs::write(
+        temporary
+            .path()
+            .join("collections/users/requests/get-user.toml"),
+        concat!(
+            "schema_version = 2\n",
+            "id = \"get-user\"\n",
+            "name = \"Get user\"\n",
+            "method = \"GET\"\n",
+            "url = \"https://api.example.com/users\"\n",
+            "[body]\n",
+            "kind = \"empty\"\n",
+        ),
+    )
+    .expect("write request");
+
+    let store = WorkspaceStore::open(temporary.path()).expect("open schema-two workspace");
+    let snapshot = store.load().expect("load schema-two request");
+    let request = &snapshot.collections[0].requests[0];
+    assert!(request.query.is_empty());
+    assert_eq!(
+        request.authentication,
+        wirebolt_core::RequestAuthentication::None
+    );
+    assert_eq!(
+        store.migrate().expect("migrate schema-two documents"),
+        wirebolt_core::MigrationReport {
+            migrated_documents: 3,
+        }
+    );
+
+    let request_toml = fs::read_to_string(
+        temporary
+            .path()
+            .join("collections/users/requests/get-user.toml"),
+    )
+    .expect("migrated request TOML");
+    assert!(request_toml.starts_with("schema_version = 3\n"));
 }
 
 #[test]
