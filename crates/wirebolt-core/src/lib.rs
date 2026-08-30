@@ -1,0 +1,36 @@
+#![forbid(unsafe_code)]
+
+pub const STREAM_ABI_VERSION: u32 = 1;
+
+#[derive(Debug, Eq, PartialEq)]
+pub struct CoreHandshake {
+    pub product: &'static str,
+    pub core_version: &'static str,
+    pub stream_abi_version: u32,
+}
+
+#[must_use]
+pub const fn handshake() -> CoreHandshake {
+    CoreHandshake {
+        product: "Wirebolt",
+        core_version: env!("CARGO_PKG_VERSION"),
+        stream_abi_version: STREAM_ABI_VERSION,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn handshake_describes_the_core_contract() {
+        assert_eq!(
+            handshake(),
+            CoreHandshake {
+                product: "Wirebolt",
+                core_version: "0.1.0",
+                stream_abi_version: 1,
+            }
+        );
+    }
+}

@@ -1,0 +1,4 @@
+module WireboltStreamFFI {
+    header "wirebolt_stream.h"
+    export *
+}
