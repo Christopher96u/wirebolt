@@ -3,6 +3,7 @@
 mod body_decoder;
 mod git_collaboration;
 mod http_engine;
+mod import_engine;
 mod proxy;
 mod request;
 mod request_pipeline;
@@ -16,6 +17,10 @@ pub use git_collaboration::{
 pub use http_engine::{
     DEFAULT_USER_AGENT, HttpEngine, HttpEngineConfig, HttpVersion, HttpVersionPolicy, Run,
     RunCancellation, RunError, RunErrorKind, RunHead, RunOptions, StreamControl,
+    TlsConfigurationError,
+};
+pub use import_engine::{
+    ImportEngine, ImportError, ImportFormat, ImportedCollection, ImportedGroup, ImportedRequest,
 };
 #[cfg(target_vendor = "apple")]
 pub use proxy::{KeychainSecretResolver, KeychainSecretStore};
@@ -31,12 +36,14 @@ pub use request::{
 pub use request_pipeline::{RequestIssue, RequestIssueKind, RequestPipeline, RequestPipelineError};
 pub use storage::{
     ApiKeyPlacement, CURRENT_SCHEMA_VERSION, Collection, CollectionSnapshot, DocumentId,
-    DocumentProblem, DocumentProblemKind, Environment, IdentifierError, MigrationReport, Request,
+    DocumentProblem, DocumentProblemKind, Environment, EnvironmentVariable, Group, IdentifierError,
+    MigrationReport, MultipartPart, MultipartPartKind, Oauth2Configuration, Oauth2Grant, Request,
     RequestAuthentication, RequestBody, RequestHeader, RequestValueField, SaveOutcome, SecretName,
-    StorageError, ValueSource, Workspace, WorkspaceDocument, WorkspaceSnapshot, WorkspaceStore,
+    StorageError, TransportSettings, ValueSource, Workspace, WorkspaceDocument, WorkspaceSnapshot,
+    WorkspaceStore,
 };
 
-pub const STREAM_ABI_VERSION: u32 = 2;
+pub const STREAM_ABI_VERSION: u32 = 3;
 
 #[derive(Debug, Eq, PartialEq)]
 pub struct CoreHandshake {
@@ -65,7 +72,7 @@ mod tests {
             CoreHandshake {
                 product: "Wirebolt",
                 core_version: "0.1.0",
-                stream_abi_version: 2,
+                stream_abi_version: 3,
             }
         );
     }

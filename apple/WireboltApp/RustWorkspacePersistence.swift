@@ -58,6 +58,48 @@ struct RustWorkspacePersistence: WorkspacePersistence, GitCollaboration {
         }.value
     }
 
+    func apply(_ command: WorkspaceCommand) async throws -> WorkspaceDelta {
+        let bridge = bridge
+        let document = WorkspaceCommandDocument(command)
+        return try await Task.detached(priority: .userInitiated) {
+            let encoded = try JSONEncoder.wirebolt.encode(document)
+            let response = try bridge.applyWorkspaceCommand(
+                commandJson: String(decoding: encoded, as: UTF8.self)
+            )
+            return try JSONDecoder().decode(WorkspaceDelta.self, from: Data(response.utf8))
+        }.value
+    }
+
+    func previewImport(format: ImportFormat, source: String) async throws -> ImportPreview {
+        let bridge = bridge
+        return try await Task.detached(priority: .userInitiated) {
+            let json = try bridge.previewImport(format: format.rawValue, source: source)
+            return try JSONDecoder().decode(ImportPreview.self, from: Data(json.utf8))
+        }.value
+    }
+
+    func commitImport(format: ImportFormat, source: String) async throws -> WorkspaceDelta {
+        let bridge = bridge
+        return try await Task.detached(priority: .userInitiated) {
+            let json = try bridge.commitImport(format: format.rawValue, source: source)
+            return try JSONDecoder().decode(WorkspaceDelta.self, from: Data(json.utf8))
+        }.value
+    }
+
+    func exportCollection(id: String) async throws -> String {
+        let bridge = bridge
+        return try await Task.detached(priority: .userInitiated) {
+            try bridge.exportCollectionJson(id: id)
+        }.value
+    }
+
+    func exportRequest(collectionID: String, id: String) async throws -> String {
+        let bridge = bridge
+        return try await Task.detached(priority: .userInitiated) {
+            try bridge.exportRequestJson(collectionId: collectionID, id: id)
+        }.value
+    }
+
     func status() async throws -> GitStatusSnapshot {
         let bridge = bridge
         return try await Task.detached(priority: .userInitiated) {
@@ -136,13 +178,29 @@ private enum WorkspaceSelectionError: Error {
 private struct WorkspaceSnapshotDocument: Decodable {
     let name: String
     let proxy: ProxyDocument?
+    let transport: TransportSettings
     let collections: [CollectionSnapshotDocument]
     let environments: [EnvironmentDraft]
+
+    private enum CodingKeys: String, CodingKey {
+        case name, proxy, transport, collections, environments
+    }
+
+    init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        name = try container.decode(String.self, forKey: .name)
+        proxy = try container.decodeIfPresent(ProxyDocument.self, forKey: .proxy)
+        transport = try container.decodeIfPresent(TransportSettings.self, forKey: .transport)
+            ?? TransportSettings()
+        collections = try container.decode([CollectionSnapshotDocument].self, forKey: .collections)
+        environments = try container.decode([EnvironmentDraft].self, forKey: .environments)
+    }
 
     var workspace: WorkspaceDraft {
         WorkspaceDraft(
             name: name,
             proxy: proxy,
+            transport: transport,
             collections: collections.map(\.collection),
             environments: environments
         )
@@ -152,14 +210,34 @@ private struct WorkspaceSnapshotDocument: Decodable {
 private struct CollectionSnapshotDocument: Decodable {
     let id: String
     let name: String
+    let order: Int
+    let groups: [GroupDraft]
     let requests: [SavedRequestDocument]
+
+    private enum CodingKeys: String, CodingKey { case id, name, order, groups, requests }
+
+    init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(String.self, forKey: .id)
+        name = try container.decode(String.self, forKey: .name)
+        order = try container.decodeIfPresent(Int.self, forKey: .order) ?? 0
+        groups = try container.decodeIfPresent([GroupDraft].self, forKey: .groups) ?? []
+        requests = try container.decode([SavedRequestDocument].self, forKey: .requests)
+    }
 
     var collection: CollectionDraft {
         CollectionDraft(
             id: id,
             name: name,
+            order: order,
+            groups: groups,
             requests: requests.map {
-                RequestLocation(collectionID: id, request: $0.request)
+                RequestLocation(
+                    collectionID: id,
+                    groupID: $0.groupID,
+                    order: $0.order,
+                    request: $0.request
+                )
             }
         )
     }
@@ -168,6 +246,8 @@ private struct CollectionSnapshotDocument: Decodable {
 private struct SavedRequestDocument: Codable {
     let id: String
     let name: String
+    var groupID: String?
+    var order: Int
     let method: String
     let url: String
     let query: [RequestField]
@@ -175,10 +255,20 @@ private struct SavedRequestDocument: Codable {
     let authentication: RequestAuthentication
     let body: RequestBody
     let proxy: ProxyDocument?
+    let transport: TransportSettings
+    let inheritsWorkspaceTransport: Bool
+
+    private enum CodingKeys: String, CodingKey {
+        case id, name, order, method, url, query, headers, authentication, body, proxy, transport
+        case inheritsWorkspaceTransport = "inherits_workspace_transport"
+        case groupID = "group_id"
+    }
 
     init(request: RequestDraft) {
         id = request.id
         name = request.name
+        groupID = nil
+        order = 0
         method = request.method.rawValue
         url = request.url
         query = request.query
@@ -191,6 +281,14 @@ private struct SavedRequestDocument: Codable {
         case .direct: .direct
         case let .manual(document): document
         }
+        transport = request.transport
+        inheritsWorkspaceTransport = request.inheritsWorkspaceTransport
+    }
+
+    init(location: RequestLocation) {
+        self.init(request: location.request)
+        groupID = location.groupID
+        order = location.order
     }
 
     var request: RequestDraft {
@@ -209,8 +307,97 @@ private struct SavedRequestDocument: Codable {
             headers: headers,
             authentication: authentication,
             body: body,
-            proxy: proxySelection
+            proxy: proxySelection,
+            transport: transport,
+            inheritsWorkspaceTransport: inheritsWorkspaceTransport
         )
+    }
+}
+
+private struct WorkspaceCommandDocument: Encodable {
+    private let command: WorkspaceCommand
+
+    init(_ command: WorkspaceCommand) {
+        self.command = command
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case kind, id, name, order, groups, requests, group, location, request, transport
+        case environment
+        case collectionID = "collection_id"
+        case parentID = "parent_id"
+        case newID = "new_id"
+        case fromCollectionID = "from_collection_id"
+        case requestID = "request_id"
+        case toCollectionID = "to_collection_id"
+        case groupID = "group_id"
+    }
+
+    func encode(to encoder: any Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        switch command {
+        case let .saveWorkspaceSettings(transport):
+            try container.encode("save_workspace_settings", forKey: .kind)
+            try container.encode(transport, forKey: .transport)
+        case let .createCollection(collection):
+            try container.encode("create_collection", forKey: .kind)
+            try container.encode(collection.id, forKey: .id)
+            try container.encode(collection.name, forKey: .name)
+            try container.encode(collection.order, forKey: .order)
+        case let .renameCollection(id, name):
+            try container.encode("rename_collection", forKey: .kind)
+            try container.encode(id, forKey: .id)
+            try container.encode(name, forKey: .name)
+        case let .deleteCollection(id):
+            try container.encode("delete_collection", forKey: .kind)
+            try container.encode(id, forKey: .id)
+        case let .createGroup(collectionID, group):
+            try container.encode("create_group", forKey: .kind)
+            try container.encode(collectionID, forKey: .collectionID)
+            try container.encode(group, forKey: .group)
+        case let .renameGroup(collectionID, id, name):
+            try container.encode("rename_group", forKey: .kind)
+            try container.encode(collectionID, forKey: .collectionID)
+            try container.encode(id, forKey: .id)
+            try container.encode(name, forKey: .name)
+        case let .deleteGroup(collectionID, id):
+            try container.encode("delete_group", forKey: .kind)
+            try container.encode(collectionID, forKey: .collectionID)
+            try container.encode(id, forKey: .id)
+        case let .moveGroup(collectionID, id, parentID, order):
+            try container.encode("move_group", forKey: .kind)
+            try container.encode(collectionID, forKey: .collectionID)
+            try container.encode(id, forKey: .id)
+            try container.encodeIfPresent(parentID, forKey: .parentID)
+            try container.encode(order, forKey: .order)
+        case let .saveRequest(collectionID, location):
+            try container.encode("save_request", forKey: .kind)
+            try container.encode(collectionID, forKey: .collectionID)
+            try container.encode(SavedRequestDocument(location: location), forKey: .request)
+        case let .deleteRequest(collectionID, id):
+            try container.encode("delete_request", forKey: .kind)
+            try container.encode(collectionID, forKey: .collectionID)
+            try container.encode(id, forKey: .id)
+        case let .duplicateRequest(collectionID, id, newID, name):
+            try container.encode("duplicate_request", forKey: .kind)
+            try container.encode(collectionID, forKey: .collectionID)
+            try container.encode(id, forKey: .id)
+            try container.encode(newID, forKey: .newID)
+            try container.encode(name, forKey: .name)
+        case let .moveRequest(fromCollectionID, requestID, toCollectionID, groupID, order):
+            try container.encode("move_request", forKey: .kind)
+            try container.encode(fromCollectionID, forKey: .fromCollectionID)
+            try container.encode(requestID, forKey: .requestID)
+            try container.encode(toCollectionID, forKey: .toCollectionID)
+            try container.encodeIfPresent(groupID, forKey: .groupID)
+            try container.encode(order, forKey: .order)
+        case let .saveEnvironment(environment):
+            try container.encode("save_environment", forKey: .kind)
+            try container.encode(environment, forKey: .environment)
+        case let .deleteEnvironment(id):
+            try container.encode("delete_environment", forKey: .kind)
+            try container.encode(id, forKey: .id)
+        }
     }
 }
 

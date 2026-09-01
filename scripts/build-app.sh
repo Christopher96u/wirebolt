@@ -22,8 +22,12 @@ swiftc \
   -o "$executable_dir/Wirebolt" \
   apple/Generated/wirebolt_ffi.swift \
   apple/Sources/WireboltKit/Models.swift \
+  apple/Sources/WireboltKit/DocumentSessions.swift \
+  apple/Sources/WireboltKit/ResponseStorage.swift \
+  apple/Sources/WireboltKit/OAuth2Service.swift \
   apple/Sources/WireboltKit/WireboltModel.swift \
   apple/WireboltApp/WireboltApp.swift \
+  apple/WireboltApp/WorkspaceUIState.swift \
   apple/WireboltApp/ContentView.swift \
   apple/WireboltApp/EnvironmentEditor.swift \
   apple/WireboltApp/GitCollaborationView.swift \
@@ -37,9 +41,12 @@ swiftc \
   -Xcc -fmodule-map-file=crates/wirebolt-ffi/include/module.modulemap \
   target/release/libwirebolt_ffi.a \
   -framework AppKit \
+  -framework AuthenticationServices \
+  -framework CryptoKit \
   -framework Security \
   -framework SystemConfiguration \
   -framework SwiftUI \
+  -framework WebKit \
   -Xlinker -dead_strip
 
 codesign --force --sign - --timestamp=none "$app_dir"

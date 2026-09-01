@@ -19,7 +19,10 @@ enum BridgeSmoke {
         let runner = RustRequestRunner()
         let draft = RequestDraft(url: "not an absolute URL")
         do {
-            for try await _ in runner.events(for: RunInput(draft: draft, variables: [:])) {}
+            for try await _ in runner.events(
+                for: RunInput(draft: draft, variables: [:]),
+                runID: RunID()
+            ) {}
             fatalError("invalid request unexpectedly succeeded")
         } catch let failure as RunFailure {
             guard failure.kind == "invalid_request",

@@ -18,13 +18,20 @@ swiftc \
   -o build/bridge-smoke \
   apple/Generated/wirebolt_ffi.swift \
   apple/Sources/WireboltKit/Models.swift \
+  apple/Sources/WireboltKit/DocumentSessions.swift \
+  apple/Sources/WireboltKit/ResponseStorage.swift \
+  apple/Sources/WireboltKit/OAuth2Service.swift \
   apple/Sources/WireboltKit/WireboltModel.swift \
   apple/Tests/BridgeSmoke.swift \
+  apple/WireboltApp/PerformanceProbe.swift \
   apple/WireboltApp/RustRequestRunner.swift \
   apple/WireboltApp/RustWorkspacePersistence.swift \
   -Xcc -fmodule-map-file=apple/Generated/wirebolt_ffiFFI.modulemap \
   -Xcc -fmodule-map-file=crates/wirebolt-ffi/include/module.modulemap \
   target/release/libwirebolt_ffi.a \
+  -framework AppKit \
+  -framework AuthenticationServices \
+  -framework CryptoKit \
   -framework Security \
   -framework SystemConfiguration
 

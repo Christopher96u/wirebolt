@@ -12,6 +12,17 @@
     <string>6.0</string>
     <key>CFBundleName</key>
     <string>Wirebolt</string>
+    <key>CFBundleURLTypes</key>
+    <array>
+        <dict>
+            <key>CFBundleURLName</key>
+            <string>Wirebolt OAuth Callback</string>
+            <key>CFBundleURLSchemes</key>
+            <array>
+                <string>wirebolt</string>
+            </array>
+        </dict>
+    </array>
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleShortVersionString</key>
