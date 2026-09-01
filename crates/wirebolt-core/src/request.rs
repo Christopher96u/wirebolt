@@ -1,6 +1,9 @@
 use std::{error::Error, fmt};
 
-use http::{HeaderMap, HeaderName, HeaderValue, Method, Uri};
+use http::{HeaderMap, HeaderName, HeaderValue, Method};
+use url::Url;
+
+use crate::RequestIssue;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct HeaderField {
@@ -16,23 +19,61 @@ pub struct RequestDraft {
     pub body: Vec<u8>,
 }
 
-#[derive(Clone, Debug)]
+/// A validated request that the HTTP engine can send without re-parsing.
+///
+/// The URL is kept as a [`Url`] because that is the representation the
+/// transport consumes directly; converting through strings or `http::Uri`
+/// would parse the same text again on every run.
+///
+/// `Debug` output is safe to log: sensitive header values print as
+/// `Sensitive`, the header map is withheld entirely when a secret went into a
+/// header name, a URL that carries secret material is redacted, and the body
+/// is reported by length only.
+#[derive(Clone)]
 pub struct PreparedRequest {
     method: Method,
-    uri: Uri,
+    url: Url,
     headers: HeaderMap,
     body: Vec<u8>,
+    warnings: Vec<RequestIssue>,
+    redaction: Redaction,
+}
+
+/// Which parts of a prepared request carry secret material that `Debug`
+/// must not print. Header values track this per value on `HeaderValue`.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(crate) struct Redaction {
+    pub(crate) url: bool,
+    pub(crate) header_names: bool,
 }
 
 impl PreparedRequest {
+    pub(crate) fn from_parts(
+        method: Method,
+        url: Url,
+        headers: HeaderMap,
+        body: Vec<u8>,
+        warnings: Vec<RequestIssue>,
+        redaction: Redaction,
+    ) -> Self {
+        Self {
+            method,
+            url,
+            headers,
+            body,
+            warnings,
+            redaction,
+        }
+    }
+
     #[must_use]
-    pub fn method(&self) -> &Method {
+    pub const fn method(&self) -> &Method {
         &self.method
     }
 
     #[must_use]
-    pub fn uri(&self) -> &Uri {
-        &self.uri
+    pub const fn url(&self) -> &Url {
+        &self.url
     }
 
     #[must_use]
@@ -45,8 +86,39 @@ impl PreparedRequest {
         &self.body
     }
 
-    pub(crate) fn into_parts(self) -> (Method, Uri, HeaderMap, Vec<u8>) {
-        (self.method, self.uri, self.headers, self.body)
+    /// Non-fatal findings recorded while preparing the request, such as a
+    /// JSON body that does not parse but is sent verbatim anyway.
+    #[must_use]
+    pub fn warnings(&self) -> &[RequestIssue] {
+        &self.warnings
+    }
+
+    pub(crate) fn into_parts(self) -> (Method, Url, HeaderMap, Vec<u8>) {
+        (self.method, self.url, self.headers, self.body)
+    }
+}
+
+impl fmt::Debug for PreparedRequest {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let mut debug = formatter.debug_struct("PreparedRequest");
+        debug.field("method", &self.method);
+        if self.redaction.url {
+            debug.field("url", &"[REDACTED]");
+        } else {
+            debug.field("url", &self.url.as_str());
+        }
+        if self.redaction.header_names {
+            debug.field(
+                "headers",
+                &format_args!("[REDACTED {} headers]", self.headers.len()),
+            );
+        } else {
+            debug.field("headers", &self.headers);
+        }
+        debug
+            .field("body", &format_args!("[{} bytes]", self.body.len()))
+            .field("warnings", &self.warnings)
+            .finish()
     }
 }
 
@@ -82,16 +154,8 @@ impl Error for RequestPreparationError {}
 /// Returns [`RequestPreparationError`] when the method, absolute HTTP URL, or
 /// any header cannot be represented safely by the HTTP engine.
 pub fn prepare_request(draft: RequestDraft) -> Result<PreparedRequest, RequestPreparationError> {
-    let method = Method::from_bytes(draft.method.as_bytes())
-        .map_err(|_| RequestPreparationError::InvalidMethod)?;
-    let uri = draft
-        .url
-        .parse::<Uri>()
-        .map_err(|_| RequestPreparationError::InvalidUrl)?;
-
-    if !matches!(uri.scheme_str(), Some("http" | "https")) || uri.authority().is_none() {
-        return Err(RequestPreparationError::InvalidUrl);
-    }
+    let method = parse_method(&draft.method)?;
+    let url = parse_http_url(&draft.url).ok_or(RequestPreparationError::InvalidUrl)?;
 
     let mut headers = HeaderMap::with_capacity(draft.headers.len());
     for (index, field) in draft.headers.into_iter().enumerate() {
@@ -102,12 +166,35 @@ pub fn prepare_request(draft: RequestDraft) -> Result<PreparedRequest, RequestPr
         headers.append(name, value);
     }
 
-    Ok(PreparedRequest {
+    Ok(PreparedRequest::from_parts(
         method,
-        uri,
+        url,
         headers,
-        body: draft.body,
-    })
+        draft.body,
+        Vec::new(),
+        Redaction::default(),
+    ))
+}
+
+/// Parses a method token. ASCII letters are upper-cased first so that a
+/// hand-typed `get` is sent as `GET`, which is what every server expects.
+pub(crate) fn parse_method(method: &str) -> Result<Method, RequestPreparationError> {
+    let method = method.trim();
+    if method.bytes().any(|byte| byte.is_ascii_lowercase()) {
+        Method::from_bytes(method.to_ascii_uppercase().as_bytes())
+    } else {
+        Method::from_bytes(method.as_bytes())
+    }
+    .map_err(|_| RequestPreparationError::InvalidMethod)
+}
+
+/// Parses an absolute `http` or `https` URL with a host.
+pub(crate) fn parse_http_url(value: &str) -> Option<Url> {
+    let url = Url::parse(value.trim()).ok()?;
+    if !matches!(url.scheme(), "http" | "https") || url.host_str().is_none() {
+        return None;
+    }
+    Some(url)
 }
 
 #[cfg(test)]
@@ -137,9 +224,20 @@ mod tests {
         let prepared = prepare_request(representative_draft()).expect("valid request");
 
         assert_eq!(prepared.method(), Method::POST);
-        assert_eq!(prepared.uri().scheme_str(), Some("https"));
+        assert_eq!(prepared.url().scheme(), "https");
         assert_eq!(prepared.headers().len(), 2);
         assert_eq!(prepared.body(), br#"{"name":"wirebolt"}"#);
+        assert!(prepared.warnings().is_empty());
+    }
+
+    #[test]
+    fn upper_cases_hand_typed_methods() {
+        let mut draft = representative_draft();
+        draft.method = " get ".to_owned();
+
+        let prepared = prepare_request(draft).expect("valid request");
+
+        assert_eq!(prepared.method(), Method::GET);
     }
 
     #[test]
@@ -151,6 +249,30 @@ mod tests {
             prepare_request(draft).expect_err("relative URLs must fail"),
             RequestPreparationError::InvalidUrl
         );
+    }
+
+    #[test]
+    fn rejects_non_http_schemes_and_missing_hosts() {
+        for url in ["ftp://example.com/file", "http://", "mailto:x@y"] {
+            let mut draft = representative_draft();
+            draft.url = url.to_owned();
+            assert_eq!(
+                prepare_request(draft).expect_err("must fail"),
+                RequestPreparationError::InvalidUrl,
+                "{url}"
+            );
+        }
+    }
+
+    #[test]
+    fn debug_output_reports_the_body_by_length_only() {
+        let mut draft = representative_draft();
+        draft.body = b"sk-live-do-not-print".to_vec();
+
+        let rendered = format!("{:?}", prepare_request(draft).expect("valid request"));
+
+        assert!(!rendered.contains("sk-live-do-not-print"), "{rendered}");
+        assert!(rendered.contains("[20 bytes]"), "{rendered}");
     }
 
     #[test]

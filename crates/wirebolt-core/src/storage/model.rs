@@ -162,6 +162,7 @@ impl Error for IdentifierError {}
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Workspace {
+    #[serde(default)]
     pub(super) schema_version: u32,
     pub name: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -187,6 +188,7 @@ impl Workspace {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Collection {
+    #[serde(default)]
     pub(super) schema_version: u32,
     pub id: DocumentId,
     pub name: String,
@@ -211,6 +213,7 @@ impl Collection {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Request {
+    #[serde(default)]
     pub(super) schema_version: u32,
     pub id: DocumentId,
     pub name: String,
@@ -364,6 +367,7 @@ impl ValueSource {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Environment {
+    #[serde(default)]
     pub(super) schema_version: u32,
     pub id: DocumentId,
     pub name: String,
@@ -414,4 +418,6 @@ pub struct WorkspaceSnapshot {
     pub workspace: Workspace,
     pub collections: Vec<CollectionSnapshot>,
     pub environments: Vec<Environment>,
+    /// Documents that were skipped because they could not be loaded.
+    pub problems: Vec<super::DocumentProblem>,
 }

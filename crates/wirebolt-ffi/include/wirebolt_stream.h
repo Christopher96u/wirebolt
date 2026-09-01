@@ -18,6 +18,14 @@ typedef struct wirebolt_run_callbacks {
 } wirebolt_run_callbacks;
 
 uint32_t wirebolt_stream_abi_version(void);
+
+/*
+ * Starts the shared runtime and warms the direct and system HTTP engines in
+ * the background. Returns 1 when the runtime is available.
+ *
+ * Dropping the pooled engines after a network change is a control
+ * operation and lives on the UniFFI surface as `resetHttpEngines()`.
+ */
 uint8_t wirebolt_runtime_warmup(void);
 
 /*
