@@ -26,6 +26,7 @@ swiftc \
   -o build/performance-contract \
   apple/Generated/wirebolt_ffi.swift \
   apple/WireboltApp/ResponseViewport.swift \
+  apple/Benchmarks/FeatureWorkloads.swift \
   apple/Benchmarks/PerformanceContract.swift \
   -Xcc -fmodule-map-file=apple/Generated/wirebolt_ffiFFI.modulemap \
   -Xcc -fmodule-map-file=crates/wirebolt-ffi/include/module.modulemap \
