@@ -438,7 +438,12 @@ final class WorkspaceUIState {
 }
 
 enum WireboltTheme {
-    static let actionBlue = Color.blue
+    /// Brand indigo sampled from the approved UI reference: #6159E5.
+    static let primaryAccent = Color(
+        red: 97.0 / 255.0,
+        green: 89.0 / 255.0,
+        blue: 229.0 / 255.0
+    )
     static let paneBackground = Color(nsColor: .textBackgroundColor)
     static let barBackground = AnyShapeStyle(.bar)
     static let separator = Color(nsColor: .separatorColor)

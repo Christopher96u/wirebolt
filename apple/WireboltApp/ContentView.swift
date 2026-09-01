@@ -19,7 +19,7 @@ struct ContentView: View {
         .navigationSplitViewStyle(.prominentDetail)
         .navigationTitle("")
         .frame(minWidth: 900, minHeight: 520)
-        .tint(WireboltTheme.actionBlue)
+        .tint(WireboltTheme.primaryAccent)
         .toolbar { getAPIToolbar }
         .toolbar(removing: .sidebarToggle)
         .preferredColorScheme(preferredColorScheme)
@@ -416,7 +416,7 @@ private struct SidebarRequestButton: View {
 
     private var selectionBackground: Color {
         guard isSelected else { return .clear }
-        return WireboltTheme.actionBlue.opacity(colorScheme == .dark ? 0.82 : 0.90)
+        return WireboltTheme.primaryAccent.opacity(colorScheme == .dark ? 0.82 : 0.90)
     }
 }
 
@@ -739,7 +739,7 @@ private struct RequestURLBar: View {
                     .buttonStyle(GetAPIActionButtonStyle(color: .red))
             } else {
                 Button("SEND ⌘↩", action: send)
-                .buttonStyle(GetAPIActionButtonStyle(color: WireboltTheme.actionBlue))
+                .buttonStyle(GetAPIActionButtonStyle(color: WireboltTheme.primaryAccent))
                 .keyboardShortcut(.return, modifiers: .command)
                 .disabled(model.draft.url.isEmpty)
                 .help("Send Request (⌘↩)")
@@ -900,7 +900,7 @@ struct PanelTabButton: View {
         .buttonStyle(.plain)
         .overlay(alignment: .bottom) {
             Rectangle()
-                .fill(isSelected ? WireboltTheme.actionBlue : .clear)
+                .fill(isSelected ? WireboltTheme.primaryAccent : .clear)
                 .frame(height: 2)
         }
         .accessibilityAddTraits(isSelected ? .isSelected : [])
@@ -975,7 +975,7 @@ private struct FieldTableRow: View {
                     .symbolRenderingMode(.palette)
                     .foregroundStyle(
                         field.enabled ? Color.white : Color.secondary,
-                        field.enabled ? WireboltTheme.actionBlue : Color.clear
+                        field.enabled ? WireboltTheme.primaryAccent : Color.clear
                     )
                     .font(.system(size: 16))
             }
@@ -1043,7 +1043,7 @@ private struct NewFieldTableRow: View {
                             .symbolRenderingMode(.palette)
                             .foregroundStyle(
                                 isEnabled ? Color.white : Color.secondary,
-                                isEnabled ? WireboltTheme.actionBlue : Color.clear
+                                isEnabled ? WireboltTheme.primaryAccent : Color.clear
                             )
                             .font(.system(size: 16))
                     }
