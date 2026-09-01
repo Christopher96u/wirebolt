@@ -1,10 +1,11 @@
 use std::collections::BTreeMap;
+use std::fs::File;
 
 use wirebolt_core::{
-    ApiKeyPlacement, DocumentId, Environment, Request, RequestAuthentication, RequestBody,
-    RequestHeader, RequestIssue, RequestIssueKind, RequestPipeline, RequestValueField,
-    ResolvedSecret, SecretName, SecretResolutionError, SecretResolutionErrorKind, SecretResolver,
-    ValueSource,
+    ApiKeyPlacement, DocumentId, Environment, Oauth2Configuration, Oauth2Grant, Request,
+    RequestAuthentication, RequestBody, RequestHeader, RequestIssue, RequestIssueKind,
+    RequestPipeline, RequestValueField, ResolvedSecret, SecretName, SecretResolutionError,
+    SecretResolutionErrorKind, SecretResolver, ValueSource,
 };
 
 #[derive(Default)]
@@ -33,17 +34,21 @@ fn prepares_basic_auth_and_urlencoded_form_without_disabled_fields() {
         password: ValueSource::literal("wirebolt"),
     };
     request.query.push(RequestValueField {
+        id: "ignored-query".to_owned(),
         name: "ignored".to_owned(),
         value: ValueSource::literal("ignored"),
         enabled: false,
+        sensitive: false,
     });
     request.body = RequestBody::FormUrlEncoded {
         fields: vec![
             RequestValueField::enabled("display name", ValueSource::literal("Chris M.")),
             RequestValueField {
+                id: "ignored-body".to_owned(),
                 name: "ignored".to_owned(),
                 value: ValueSource::literal("ignored"),
                 enabled: false,
+                sensitive: false,
             },
         ],
     };
@@ -114,6 +119,81 @@ fn missing_secret_reports_only_its_reference_and_field() {
         }]
     );
     assert_eq!(error.to_string(), "request has 1 issue(s)");
+}
+
+#[test]
+fn oauth_uses_only_the_keychain_token_reference_and_marks_the_header_sensitive() {
+    let access_token = SecretName::new("oauth.access-token").expect("secret name");
+    let client_secret = SecretName::new("oauth.client-secret").expect("secret name");
+    let secrets = FixtureSecrets(BTreeMap::from([(
+        access_token.as_str().to_owned(),
+        "oauth-material".to_owned(),
+    )]));
+    let mut request = Request::new(id("oauth"), "OAuth", "GET", "https://api.example.com");
+    request.authentication = RequestAuthentication::Oauth2 {
+        configuration: Oauth2Configuration {
+            grant: Oauth2Grant::ClientCredentials,
+            authorization_url: String::new(),
+            token_url: "https://identity.example.com/token".to_owned(),
+            client_id: "wirebolt".to_owned(),
+            client_secret_reference: client_secret,
+            scopes: "read".to_owned(),
+            audience: String::new(),
+            redirect_uri: "wirebolt://oauth/callback".to_owned(),
+            access_token_reference: access_token,
+        },
+    };
+
+    let prepared = RequestPipeline::new(None, &secrets)
+        .prepare(&request)
+        .expect("OAuth token resolves");
+
+    assert_eq!(prepared.headers()["authorization"], "Bearer oauth-material");
+    assert!(prepared.headers()["authorization"].is_sensitive());
+    assert!(!format!("{prepared:?}").contains("oauth-material"));
+}
+
+#[test]
+fn explicitly_sensitive_cookie_headers_are_redacted_from_snapshots_and_debug() {
+    let mut request = Request::new(id("cookie"), "Cookie", "GET", "https://api.example.com");
+    let mut cookie = RequestHeader::enabled("Cookie", ValueSource::literal("session=private"));
+    cookie.sensitive = true;
+    request.headers.push(cookie);
+
+    let prepared = RequestPipeline::new(None, &FixtureSecrets::default())
+        .prepare(&request)
+        .expect("prepare cookie request");
+
+    assert_eq!(prepared.headers()["cookie"], "session=private");
+    assert!(prepared.headers()["cookie"].is_sensitive());
+    assert!(!format!("{prepared:?}").contains("session=private"));
+}
+
+#[test]
+fn file_bodies_are_prepared_as_streams_without_reading_the_file_into_memory() {
+    let directory = tempfile::tempdir().expect("temporary directory");
+    let path = directory.path().join("large-upload.bin");
+    let file = File::create(&path).expect("create sparse upload");
+    file.set_len(100 * 1024 * 1024).expect("size sparse upload");
+    let mut request = Request::new(
+        id("upload"),
+        "Upload",
+        "PUT",
+        "https://api.example.com/upload",
+    );
+    request.body = RequestBody::File {
+        path: path.to_string_lossy().into_owned(),
+        content_type: Some("application/octet-stream".to_owned()),
+    };
+
+    let prepared = RequestPipeline::new(None, &FixtureSecrets::default())
+        .prepare(&request)
+        .expect("prepare file body");
+
+    assert!(prepared.body_is_file_backed());
+    assert_eq!(prepared.body_byte_count(), 100 * 1024 * 1024);
+    assert!(prepared.body().is_empty());
+    assert_eq!(prepared.headers()["content-length"], "104857600");
 }
 
 #[test]
@@ -190,9 +270,11 @@ fn invalid_json_is_sent_verbatim_with_a_body_scoped_warning() {
 fn header_issues_point_at_the_saved_field_not_the_resolved_position() {
     let mut request = Request::new(id("headers"), "Headers", "GET", "https://api.example.com");
     request.headers.push(RequestHeader {
+        id: "disabled-header".to_owned(),
         name: "x-disabled".to_owned(),
         value: ValueSource::literal("skipped"),
         enabled: false,
+        sensitive: false,
     });
     request.headers.push(RequestHeader::enabled(
         "x-broken",

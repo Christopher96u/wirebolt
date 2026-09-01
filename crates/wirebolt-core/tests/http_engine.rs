@@ -10,9 +10,10 @@ use tokio::{
     task::JoinHandle,
 };
 use wirebolt_core::{
-    ContentEncoding, HeaderField, HttpEngine, HttpEngineConfig, HttpVersion, HttpVersionPolicy,
-    ManualProxy, NoSecrets, ProxyConfigurationErrorKind, ProxyCredentials, ProxyDestination,
-    ProxyEndpoint, ProxyMode, ProxyPolicy, ProxyRoute, RequestDraft, ResolvedSecret,
+    ContentEncoding, DocumentId, HeaderField, HttpEngine, HttpEngineConfig, HttpVersion,
+    HttpVersionPolicy, ManualProxy, NoSecrets, ProxyConfigurationErrorKind, ProxyCredentials,
+    ProxyDestination, ProxyEndpoint, ProxyMode, ProxyPolicy, ProxyRoute, Request as SavedRequest,
+    RequestBody as SavedRequestBody, RequestDraft, RequestPipeline, ResolvedSecret,
     RunCancellation, RunErrorKind, RunOptions, SecretName, SecretResolutionError,
     SecretResolutionErrorKind, SecretResolver, StreamControl, prepare_request,
 };
@@ -113,6 +114,48 @@ async fn runs_an_http1_request_through_the_public_interface() {
     assert!(raw_request.contains("accept: */*\r\n"));
     assert!(raw_request.contains("accept-encoding: gzip, deflate, br, zstd\r\n"));
     assert!(raw_request.ends_with("\r\n\r\nhello"));
+}
+
+#[tokio::test]
+async fn streams_a_file_upload_from_disk() {
+    let (address, received_request) =
+        spawn_http1_once(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok")
+            .await;
+    let directory = tempfile::tempdir().expect("temporary directory");
+    let path = directory.path().join("upload.bin");
+    let payload = vec![0x5a; 512 * 1024];
+    std::fs::write(&path, &payload).expect("write upload fixture");
+    let mut request = SavedRequest::new(
+        DocumentId::new("file-upload").expect("request ID"),
+        "File upload",
+        "PUT",
+        format!("http://{address}/upload"),
+    );
+    request.body = SavedRequestBody::File {
+        path: path.to_string_lossy().into_owned(),
+        content_type: Some("application/octet-stream".to_owned()),
+    };
+    let prepared = RequestPipeline::new(None, &NoSecrets)
+        .prepare(&request)
+        .expect("prepare streamed upload");
+
+    HttpEngine::new(&HttpEngineConfig::default())
+        .expect("HTTP engine")
+        .run(
+            prepared,
+            RunOptions::default(),
+            &RunCancellation::new(),
+            |_| StreamControl::Continue,
+        )
+        .await
+        .expect("send streamed upload");
+
+    let raw = received_request.await.expect("HTTP server task");
+    assert!(raw.ends_with(&payload));
+    assert!(
+        String::from_utf8_lossy(&raw[..raw.len() - payload.len()])
+            .contains("content-length: 524288\r\n")
+    );
 }
 
 #[tokio::test]

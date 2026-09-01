@@ -3,24 +3,35 @@ import WireboltStreamFFI
 
 final class RustRequestRunner: @unchecked Sendable, RequestRunner {
     private let lock = NSLock()
-    private var session: OpaquePointer?
-    private var terminalBeforeInstall = false
+    private var sessions: [RunID: OpaquePointer] = [:]
+    private var terminalBeforeInstall: Set<RunID> = []
 
-    func events(for input: RunInput) -> AsyncThrowingStream<RunEvent, any Error> {
+    func events(
+        for input: RunInput,
+        runID: RunID
+    ) -> AsyncThrowingStream<RunEvent, any Error> {
         AsyncThrowingStream { continuation in
+            PerformanceProbe.beginPrepare(runID: runID.description)
             let encoded: Data
             do {
                 let encoder = JSONEncoder()
                 encoder.outputFormatting = [.sortedKeys]
                 encoded = try encoder.encode(input)
             } catch {
+                PerformanceProbe.endPrepare(runID: runID.description)
                 continuation.finish(throwing: RustBridgeFailure.encoding)
                 return
             }
+            PerformanceProbe.endPrepare(runID: runID.description)
 
-            let callbackBox = RunCallbackBox(continuation: continuation, runner: self)
+            let callbackBox = RunCallbackBox(
+                runID: runID,
+                continuation: continuation,
+                runner: self
+            )
             let context = Unmanaged.passRetained(callbackBox).toOpaque()
             let callbacks = wirebolt_run_callbacks(
+                on_prepared: wireboltOnPrepared,
                 on_head: wireboltOnHead,
                 on_chunk: wireboltOnChunk,
                 on_complete: wireboltOnComplete,
@@ -39,24 +50,24 @@ final class RustRequestRunner: @unchecked Sendable, RequestRunner {
                 continuation.finish(throwing: RustBridgeFailure.start)
                 return
             }
-            install(startedSession)
-            continuation.onTermination = { [weak self] _ in self?.cancel() }
+            PerformanceProbe.dispatched(runID: runID.description)
+            install(startedSession, runID: runID)
+            continuation.onTermination = { [weak self] _ in self?.cancel(runID: runID) }
         }
     }
 
-    func cancel() {
+    func cancel(runID: RunID) {
         lock.withLock {
-            if let session { wirebolt_run_cancel(session) }
+            if let session = sessions[runID] { wirebolt_run_cancel(session) }
         }
     }
 
-    fileprivate func finishFromCallback() {
+    fileprivate func finishFromCallback(runID: RunID) {
         let active: OpaquePointer? = lock.withLock {
-            guard let session else {
-                terminalBeforeInstall = true
+            guard let session = sessions.removeValue(forKey: runID) else {
+                terminalBeforeInstall.insert(runID)
                 return nil
             }
-            self.session = nil
             return session
         }
         if let active {
@@ -69,49 +80,55 @@ final class RustRequestRunner: @unchecked Sendable, RequestRunner {
         }
     }
 
-    private func install(_ newSession: OpaquePointer) {
+    private func install(_ newSession: OpaquePointer, runID: RunID) {
         let shouldFree = lock.withLock {
-            if terminalBeforeInstall {
-                terminalBeforeInstall = false
+            if terminalBeforeInstall.remove(runID) != nil {
                 return true
             }
-            session = newSession
+            sessions[runID] = newSession
             return false
         }
         if shouldFree { wirebolt_run_free(newSession) }
     }
 
     deinit {
-        let active = lock.withLock { () -> OpaquePointer? in
-            defer { session = nil }
-            return session
+        let active = lock.withLock { () -> [OpaquePointer] in
+            defer { sessions.removeAll() }
+            return Array(sessions.values)
         }
-        if let active { wirebolt_run_free(active) }
+        for session in active { wirebolt_run_free(session) }
     }
 }
 
 private final class RunCallbackBox: @unchecked Sendable {
+    let runID: RunID
     let continuation: AsyncThrowingStream<RunEvent, any Error>.Continuation
     let runner: RustRequestRunner
     private let bufferLock = NSLock()
     private var pendingBody = Data()
+    private var emittedFirstViewport = false
 
     init(
+        runID: RunID,
         continuation: AsyncThrowingStream<RunEvent, any Error>.Continuation,
         runner: RustRequestRunner
     ) {
+        self.runID = runID
         self.continuation = continuation
         self.runner = runner
     }
 
     func append(_ data: Data) {
-        let batch: Data? = bufferLock.withLock {
+        let result: (Data?, Bool) = bufferLock.withLock {
             pendingBody.append(data)
-            guard pendingBody.count >= 32 * 1024 else { return nil }
+            let isFirstViewport = !emittedFirstViewport && !data.isEmpty
+            emittedFirstViewport = emittedFirstViewport || isFirstViewport
+            guard pendingBody.count >= 32 * 1024 else { return (nil, isFirstViewport) }
             defer { pendingBody.removeAll(keepingCapacity: true) }
-            return pendingBody
+            return (pendingBody, isFirstViewport)
         }
-        if let batch { continuation.yield(.chunk(batch)) }
+        if result.1 { PerformanceProbe.firstViewport(runID: runID.description) }
+        if let batch = result.0 { continuation.yield(.chunk(batch)) }
     }
 
     func flush() {
@@ -130,6 +147,21 @@ private enum RustBridgeFailure: Error {
     case invalidCallback
 }
 
+private let wireboltOnPrepared: @convention(c) (
+    UnsafeMutableRawPointer?,
+    UnsafePointer<UInt8>?,
+    UInt
+) -> Void = { context, bytes, length in
+    guard let box = callbackBox(context), let data = copiedData(bytes, length) else { return }
+    do {
+        box.continuation.yield(.prepared(
+            try JSONDecoder().decode(PreparedRunSnapshot.self, from: data)
+        ))
+    } catch {
+        box.runner.cancel(runID: box.runID)
+    }
+}
+
 private let wireboltOnHead: @convention(c) (
     UnsafeMutableRawPointer?,
     UnsafePointer<UInt8>?,
@@ -137,9 +169,10 @@ private let wireboltOnHead: @convention(c) (
 ) -> Void = { context, bytes, length in
     guard let box = callbackBox(context), let data = copiedData(bytes, length) else { return }
     do {
+        PerformanceProbe.firstHead(runID: box.runID.description)
         box.continuation.yield(.head(try JSONDecoder().decode(ResponseHead.self, from: data)))
     } catch {
-        box.runner.cancel()
+        box.runner.cancel(runID: box.runID)
     }
 }
 
@@ -160,7 +193,7 @@ private let wireboltOnComplete: @convention(c) (
 ) -> Void = { context, bytes, length in
     guard let context else { return }
     let box = Unmanaged<RunCallbackBox>.fromOpaque(context).takeRetainedValue()
-    defer { box.runner.finishFromCallback() }
+    defer { box.runner.finishFromCallback(runID: box.runID) }
     box.flush()
     guard let data = copiedData(bytes, length),
           let completion = try? JSONDecoder().decode(RunCompletion.self, from: data)
@@ -179,7 +212,7 @@ private let wireboltOnError: @convention(c) (
 ) -> Void = { context, bytes, length in
     guard let context else { return }
     let box = Unmanaged<RunCallbackBox>.fromOpaque(context).takeRetainedValue()
-    defer { box.runner.finishFromCallback() }
+    defer { box.runner.finishFromCallback(runID: box.runID) }
     box.flush()
     guard let data = copiedData(bytes, length),
           let failure = try? JSONDecoder().decode(RunFailure.self, from: data)

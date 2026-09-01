@@ -2,10 +2,10 @@ use std::{collections::BTreeMap, fs, io::Write as _};
 
 use tempfile::tempdir;
 use wirebolt_core::{
-    Collection, DocumentId, DocumentProblemKind, Environment, ManualProxy, ProxyCredentials,
-    ProxyDestination, ProxyEndpoint, ProxyMode, ProxyPolicy, ProxyRoute, ProxySource, Request,
-    RequestBody, RequestHeader, SaveOutcome, SecretName, StorageError, ValueSource, Workspace,
-    WorkspaceDocument, WorkspaceStore,
+    CURRENT_SCHEMA_VERSION, Collection, DocumentId, DocumentProblemKind, Environment, ManualProxy,
+    ProxyCredentials, ProxyDestination, ProxyEndpoint, ProxyMode, ProxyPolicy, ProxyRoute,
+    ProxySource, Request, RequestBody, RequestHeader, SaveOutcome, SecretName, StorageError,
+    TransportSettings, ValueSource, Workspace, WorkspaceDocument, WorkspaceStore,
 };
 
 fn id(value: &str) -> DocumentId {
@@ -15,7 +15,13 @@ fn id(value: &str) -> DocumentId {
 #[test]
 fn round_trips_a_stable_git_friendly_workspace() {
     let temporary = tempdir().expect("temporary workspace");
-    let workspace = Workspace::new("Wirebolt API");
+    let mut workspace = Workspace::new("Wirebolt API");
+    workspace.transport = TransportSettings {
+        validate_tls: false,
+        follow_redirects: true,
+        maximum_redirects: 4,
+        ..TransportSettings::default()
+    };
     let store = WorkspaceStore::create(temporary.path(), &workspace).expect("create workspace");
 
     let collection = Collection::new(id("users"), "Users".to_owned());
@@ -34,20 +40,25 @@ fn round_trips_a_stable_git_friendly_workspace() {
     );
     request.headers = vec![
         RequestHeader {
+            id: "content-type".to_owned(),
             name: "content-type".to_owned(),
             value: ValueSource::literal("application/json"),
             enabled: true,
+            sensitive: false,
         },
         RequestHeader {
+            id: "authorization".to_owned(),
             name: "authorization".to_owned(),
             value: ValueSource::secret(SecretName::new("API_TOKEN").expect("secret name")),
             enabled: true,
+            sensitive: true,
         },
     ];
     request.body = RequestBody::Text {
         content_type: Some("application/json".to_owned()),
         value: "{\n  \"name\": \"Chris\"\n}".to_owned(),
     };
+    request.inherits_workspace_transport = false;
     let request_document = WorkspaceDocument::Request {
         collection_id: collection.id.clone(),
         request: request.clone(),
@@ -283,7 +294,7 @@ fn a_future_document_with_a_quoted_key_is_never_rewritten_by_migration() {
     let store = WorkspaceStore::create(temporary.path(), &Workspace::new("Wirebolt"))
         .expect("create workspace");
     let path = temporary.path().join("environments/future.toml");
-    let future = "\"schema_version\" = 4\nid = \"future\"\nname = \"Future\"\n\n[variables]\n";
+    let future = "\"schema_version\" = 999\nid = \"future\"\nname = \"Future\"\n\n[variables]\n";
     fs::write(&path, future).expect("write future environment");
 
     let snapshot = store.load().expect("load tolerates future documents");
@@ -321,7 +332,7 @@ fn rejects_future_schema_versions() {
         error,
         StorageError::UnsupportedSchema {
             found: 999,
-            supported: 3,
+            supported: CURRENT_SCHEMA_VERSION,
             ..
         }
     ));
@@ -372,8 +383,8 @@ fn explicitly_migrates_unversioned_documents_and_is_restartable() {
     let collection_toml =
         fs::read_to_string(temporary.path().join("collections/users/collection.toml"))
             .expect("collection TOML");
-    assert!(workspace_toml.starts_with("schema_version = 3\n"));
-    assert!(collection_toml.starts_with("schema_version = 3\n"));
+    assert!(workspace_toml.starts_with(&format!("schema_version = {CURRENT_SCHEMA_VERSION}\n")));
+    assert!(collection_toml.starts_with(&format!("schema_version = {CURRENT_SCHEMA_VERSION}\n")));
 }
 
 #[test]
@@ -398,7 +409,7 @@ fn migrates_schema_one_workspaces_before_proxy_fields_existed() {
 
     let workspace_toml =
         fs::read_to_string(temporary.path().join("wirebolt.toml")).expect("workspace TOML");
-    assert!(workspace_toml.starts_with("schema_version = 3\n"));
+    assert!(workspace_toml.starts_with(&format!("schema_version = {CURRENT_SCHEMA_VERSION}\n")));
 }
 
 #[test]
@@ -453,7 +464,7 @@ fn migrates_schema_two_requests_before_composer_fields_existed() {
             .join("collections/users/requests/get-user.toml"),
     )
     .expect("migrated request TOML");
-    assert!(request_toml.starts_with("schema_version = 3\n"));
+    assert!(request_toml.starts_with(&format!("schema_version = {CURRENT_SCHEMA_VERSION}\n")));
 }
 
 #[test]

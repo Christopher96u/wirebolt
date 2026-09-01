@@ -9,6 +9,7 @@ base64.workspace = true
 brotli-decompressor.workspace = true
 bytes.workspace = true
 flate2.workspace = true
+futures-util.workspace = true
 http.workspace = true
 http-body.workspace = true
 percent-encoding.workspace = true

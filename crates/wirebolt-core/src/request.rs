@@ -1,4 +1,4 @@
-use std::{error::Error, fmt};
+use std::{error::Error, fmt, path::PathBuf};
 
 use http::{HeaderMap, HeaderName, HeaderValue, Method};
 use url::Url;
@@ -34,7 +34,7 @@ pub struct PreparedRequest {
     method: Method,
     url: Url,
     headers: HeaderMap,
-    body: Vec<u8>,
+    body: PreparedBodySource,
     warnings: Vec<RequestIssue>,
     redaction: Redaction,
 }
@@ -45,6 +45,13 @@ pub struct PreparedRequest {
 pub(crate) struct Redaction {
     pub(crate) url: bool,
     pub(crate) header_names: bool,
+    pub(crate) body: bool,
+}
+
+#[derive(Clone)]
+pub(crate) enum PreparedBodySource {
+    Bytes(Vec<u8>),
+    File { path: PathBuf, byte_count: u64 },
 }
 
 impl PreparedRequest {
@@ -53,6 +60,24 @@ impl PreparedRequest {
         url: Url,
         headers: HeaderMap,
         body: Vec<u8>,
+        warnings: Vec<RequestIssue>,
+        redaction: Redaction,
+    ) -> Self {
+        Self {
+            method,
+            url,
+            headers,
+            body: PreparedBodySource::Bytes(body),
+            warnings,
+            redaction,
+        }
+    }
+
+    pub(crate) fn from_body_source(
+        method: Method,
+        url: Url,
+        headers: HeaderMap,
+        body: PreparedBodySource,
         warnings: Vec<RequestIssue>,
         redaction: Redaction,
     ) -> Self {
@@ -83,7 +108,38 @@ impl PreparedRequest {
 
     #[must_use]
     pub fn body(&self) -> &[u8] {
-        &self.body
+        match &self.body {
+            PreparedBodySource::Bytes(bytes) => bytes,
+            PreparedBodySource::File { .. } => &[],
+        }
+    }
+
+    #[must_use]
+    pub fn body_byte_count(&self) -> u64 {
+        match &self.body {
+            PreparedBodySource::Bytes(bytes) => u64::try_from(bytes.len()).unwrap_or(u64::MAX),
+            PreparedBodySource::File { byte_count, .. } => *byte_count,
+        }
+    }
+
+    #[must_use]
+    pub const fn body_is_file_backed(&self) -> bool {
+        matches!(&self.body, PreparedBodySource::File { .. })
+    }
+
+    #[must_use]
+    pub fn url_is_sensitive(&self) -> bool {
+        self.redaction.url
+    }
+
+    #[must_use]
+    pub fn header_names_are_sensitive(&self) -> bool {
+        self.redaction.header_names
+    }
+
+    #[must_use]
+    pub fn body_is_sensitive(&self) -> bool {
+        self.redaction.body
     }
 
     /// Non-fatal findings recorded while preparing the request, such as a
@@ -93,7 +149,7 @@ impl PreparedRequest {
         &self.warnings
     }
 
-    pub(crate) fn into_parts(self) -> (Method, Url, HeaderMap, Vec<u8>) {
+    pub(crate) fn into_parts(self) -> (Method, Url, HeaderMap, PreparedBodySource) {
         (self.method, self.url, self.headers, self.body)
     }
 }
@@ -116,7 +172,7 @@ impl fmt::Debug for PreparedRequest {
             debug.field("headers", &self.headers);
         }
         debug
-            .field("body", &format_args!("[{} bytes]", self.body.len()))
+            .field("body", &format_args!("[{} bytes]", self.body_byte_count()))
             .field("warnings", &self.warnings)
             .finish()
     }

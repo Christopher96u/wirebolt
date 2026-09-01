@@ -4,14 +4,11 @@ struct EnvironmentEditor: View {
     @Bindable var model: WireboltModel
     @Environment(\.dismiss) private var dismiss
     @State private var environment: EnvironmentDraft
-    @State private var rows: [EnvironmentRow]
+    @State private var secretMaterialByRowID: [String: String] = [:]
 
     init(model: WireboltModel, environment: EnvironmentDraft) {
         self.model = model
         _environment = State(initialValue: environment)
-        _rows = State(initialValue: environment.variables.map {
-            EnvironmentRow(name: $0.key, source: $0.value)
-        }.sorted { $0.name < $1.name })
     }
 
     var body: some View {
@@ -20,37 +17,37 @@ struct EnvironmentEditor: View {
                 TextField("Name", text: $environment.name)
                 LabeledContent("Variables") {
                     Button("Add Variable", systemImage: "plus") {
-                        rows.append(EnvironmentRow())
+                        environment.variables.append(EnvironmentVariableDraft(
+                            order: environment.variables.count
+                        ))
                     }
                 }
 
-                ForEach($rows) { $row in
-                    HStack {
-                        TextField("Name", text: $row.name)
-                        Picker("Storage", selection: $row.isSecret) {
-                            Text("Literal").tag(false)
-                            Text("Keychain").tag(true)
+                ForEach($environment.variables) { $variable in
+                    EnvironmentVariableRow(
+                        variable: $variable,
+                        secretMaterial: Binding(
+                            get: { secretMaterialByRowID[variable.id, default: ""] },
+                            set: { secretMaterialByRowID[variable.id] = $0 }
+                        ),
+                        canMoveUp: variable.order > 0,
+                        canMoveDown: variable.order < environment.variables.count - 1,
+                        moveUp: { move(variable.id, offset: -1) },
+                        moveDown: { move(variable.id, offset: 1) },
+                        remove: {
+                            environment.variables.removeAll { $0.id == variable.id }
+                            normalizeOrder()
                         }
-                        .labelsHidden()
-                        .frame(width: 100)
-                        if row.isSecret {
-                            TextField("Reference", text: $row.value)
-                            SecureField("Secret value", text: $row.secretMaterial)
-                        } else {
-                            TextField("Value", text: $row.value)
-                        }
-                        Button("Remove", systemImage: "minus.circle") {
-                            rows.removeAll { $0.id == row.id }
-                        }
-                        .labelStyle(.iconOnly)
-                        .buttonStyle(.borderless)
-                    }
+                    )
                 }
             }
             .formStyle(.grouped)
 
             Divider()
             HStack {
+                Text("Secret values are stored in Keychain; only their reference is saved.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
                 Spacer()
                 Button("Cancel", role: .cancel, action: dismiss.callAsFunction)
                     .keyboardShortcut(.cancelAction)
@@ -60,42 +57,106 @@ struct EnvironmentEditor: View {
             }
             .padding(12)
         }
-        .frame(minWidth: 680, minHeight: 360)
+        .frame(minWidth: 760, minHeight: 420)
+    }
+
+    private func move(_ id: String, offset: Int) {
+        guard let source = environment.variables.firstIndex(where: { $0.id == id }) else { return }
+        let destination = source + offset
+        guard environment.variables.indices.contains(destination) else { return }
+        environment.variables.swapAt(source, destination)
+        normalizeOrder()
+    }
+
+    private func normalizeOrder() {
+        for index in environment.variables.indices {
+            environment.variables[index].order = index
+        }
     }
 
     private func save() async {
-        for row in rows where row.isSecret && !row.secretMaterial.isEmpty {
-            await model.saveSecret(name: row.value, value: row.secretMaterial)
+        for variable in environment.variables {
+            guard case let .secret(reference) = variable.value,
+                  let material = secretMaterialByRowID[variable.id],
+                  material.isEmpty == false
+            else { continue }
+            await model.saveSecret(name: reference, value: material)
         }
-        var variables: [String: ValueSource] = [:]
-        for row in rows {
-            variables[row.name] = row.isSecret ? .secret(row.value) : .literal(row.value)
-        }
-        environment.variables = variables
+        normalizeOrder()
         await model.saveEnvironment(environment)
         dismiss()
     }
 
     private var hasInvalidRows: Bool {
-        rows.contains { $0.name.isEmpty || $0.value.isEmpty }
-            || Set(rows.map(\.name)).count != rows.count
+        let enabledKeys = environment.variables.filter(\.enabled).map(\.key)
+        return environment.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            || environment.variables.contains { variable in
+                variable.key.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                    || variable.value.editableValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            }
+            || Set(enabledKeys).count != enabledKeys.count
     }
 }
 
-private struct EnvironmentRow: Identifiable {
-    let id = UUID()
-    var name = ""
-    var value = ""
-    var isSecret = false
-    var secretMaterial = ""
+private struct EnvironmentVariableRow: View {
+    @Binding var variable: EnvironmentVariableDraft
+    @Binding var secretMaterial: String
+    let canMoveUp: Bool
+    let canMoveDown: Bool
+    let moveUp: () -> Void
+    let moveDown: () -> Void
+    let remove: () -> Void
 
-    init(name: String = "", source: ValueSource = .literal("")) {
-        self.name = name
-        switch source {
-        case let .literal(value): self.value = value
-        case let .secret(name):
-            value = name
-            isSecret = true
+    var body: some View {
+        HStack(spacing: 8) {
+            Toggle("Enabled", isOn: $variable.enabled)
+                .labelsHidden()
+            TextField("Name", text: $variable.key)
+            Picker("Storage", selection: isSecret) {
+                Text("Literal").tag(false)
+                Text("Keychain").tag(true)
+            }
+            .labelsHidden()
+            .frame(width: 100)
+            if isSecret.wrappedValue {
+                TextField("Keychain reference", text: editableValue)
+                SecureField("New secret value (optional)", text: $secretMaterial)
+            } else {
+                TextField("Value", text: editableValue)
+            }
+            Button("Move Up", systemImage: "chevron.up", action: moveUp)
+                .labelStyle(.iconOnly)
+                .buttonStyle(.borderless)
+                .disabled(!canMoveUp)
+            Button("Move Down", systemImage: "chevron.down", action: moveDown)
+                .labelStyle(.iconOnly)
+                .buttonStyle(.borderless)
+                .disabled(!canMoveDown)
+            Button("Remove", systemImage: "minus.circle", action: remove)
+                .labelStyle(.iconOnly)
+                .buttonStyle(.borderless)
         }
+    }
+
+    private var isSecret: Binding<Bool> {
+        Binding(
+            get: {
+                if case .secret = variable.value { true } else { false }
+            },
+            set: { secret in
+                variable.value = secret
+                    ? .secret(variable.value.editableValue)
+                    : .literal(variable.value.editableValue)
+            }
+        )
+    }
+
+    private var editableValue: Binding<String> {
+        Binding(
+            get: { variable.value.editableValue },
+            set: { value in
+                variable.value = isSecret.wrappedValue ? .secret(value) : .literal(value)
+            }
+        )
     }
 }

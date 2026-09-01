@@ -1,10 +1,17 @@
-use std::{collections::BTreeMap, error::Error, fmt, str::FromStr};
+use std::{
+    collections::BTreeMap,
+    error::Error,
+    fmt,
+    str::FromStr,
+    sync::atomic::{AtomicU64, Ordering},
+};
 
 use serde::{Deserialize, Deserializer, Serialize, Serializer, de};
 
 use crate::proxy::ProxyMode;
 
-pub const CURRENT_SCHEMA_VERSION: u32 = 3;
+pub const CURRENT_SCHEMA_VERSION: u32 = 6;
+static ROW_ID_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub struct DocumentId(String);
@@ -167,6 +174,8 @@ pub struct Workspace {
     pub name: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub proxy: Option<ProxyMode>,
+    #[serde(default)]
+    pub transport: TransportSettings,
 }
 
 impl Workspace {
@@ -176,6 +185,7 @@ impl Workspace {
             schema_version: CURRENT_SCHEMA_VERSION,
             name: name.into(),
             proxy: None,
+            transport: TransportSettings::default(),
         }
     }
 
@@ -192,6 +202,10 @@ pub struct Collection {
     pub(super) schema_version: u32,
     pub id: DocumentId,
     pub name: String,
+    #[serde(default)]
+    pub order: i64,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub groups: Vec<Group>,
 }
 
 impl Collection {
@@ -201,6 +215,8 @@ impl Collection {
             schema_version: CURRENT_SCHEMA_VERSION,
             id,
             name,
+            order: 0,
+            groups: Vec::new(),
         }
     }
 
@@ -212,11 +228,43 @@ impl Collection {
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+pub struct Group {
+    pub id: DocumentId,
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_id: Option<DocumentId>,
+    #[serde(default)]
+    pub order: i64,
+}
+
+impl Group {
+    #[must_use]
+    pub const fn new(
+        id: DocumentId,
+        name: String,
+        parent_id: Option<DocumentId>,
+        order: i64,
+    ) -> Self {
+        Self {
+            id,
+            name,
+            parent_id,
+            order,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Request {
     #[serde(default)]
     pub(super) schema_version: u32,
     pub id: DocumentId,
     pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub group_id: Option<DocumentId>,
+    #[serde(default)]
+    pub order: i64,
     pub method: String,
     pub url: String,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -228,6 +276,10 @@ pub struct Request {
     pub body: RequestBody,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub proxy_override: Option<ProxyMode>,
+    #[serde(default)]
+    pub transport: TransportSettings,
+    #[serde(default = "enabled_by_default")]
+    pub inherits_workspace_transport: bool,
 }
 
 impl Request {
@@ -242,6 +294,8 @@ impl Request {
             schema_version: CURRENT_SCHEMA_VERSION,
             id,
             name: name.into(),
+            group_id: None,
+            order: 0,
             method: method.into(),
             url: url.into(),
             query: Vec::new(),
@@ -249,6 +303,8 @@ impl Request {
             authentication: RequestAuthentication::None,
             body: RequestBody::Empty,
             proxy_override: None,
+            transport: TransportSettings::default(),
+            inherits_workspace_transport: true,
         }
     }
 
@@ -260,19 +316,68 @@ impl Request {
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+pub struct TransportSettings {
+    #[serde(default = "enabled_by_default")]
+    pub validate_tls: bool,
+    #[serde(default)]
+    pub follow_redirects: bool,
+    #[serde(default = "default_maximum_redirects")]
+    pub maximum_redirects: u8,
+    #[serde(default = "default_total_timeout_ms")]
+    pub total_timeout_ms: u64,
+    #[serde(default = "default_read_timeout_ms")]
+    pub read_timeout_ms: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub client_certificate_reference: Option<SecretName>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub custom_ca_path: Option<String>,
+}
+
+impl Default for TransportSettings {
+    fn default() -> Self {
+        Self {
+            validate_tls: true,
+            follow_redirects: false,
+            maximum_redirects: 10,
+            total_timeout_ms: 30_000,
+            read_timeout_ms: 10_000,
+            client_certificate_reference: None,
+            custom_ca_path: None,
+        }
+    }
+}
+
+const fn default_maximum_redirects() -> u8 {
+    10
+}
+const fn default_total_timeout_ms() -> u64 {
+    30_000
+}
+const fn default_read_timeout_ms() -> u64 {
+    10_000
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct RequestValueField {
+    #[serde(default = "new_row_id")]
+    pub id: String,
     pub name: String,
     pub value: ValueSource,
     pub enabled: bool,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub sensitive: bool,
 }
 
 impl RequestValueField {
     #[must_use]
     pub fn enabled(name: impl Into<String>, value: ValueSource) -> Self {
         Self {
+            id: new_row_id(),
             name: name.into(),
             value,
             enabled: true,
+            sensitive: false,
         }
     }
 }
@@ -280,20 +385,31 @@ impl RequestValueField {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RequestHeader {
+    #[serde(default = "new_row_id")]
+    pub id: String,
     pub name: String,
     pub value: ValueSource,
     pub enabled: bool,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub sensitive: bool,
 }
 
 impl RequestHeader {
     #[must_use]
     pub fn enabled(name: impl Into<String>, value: ValueSource) -> Self {
         Self {
+            id: new_row_id(),
             name: name.into(),
             value,
             enabled: true,
+            sensitive: false,
         }
     }
+}
+
+fn new_row_id() -> String {
+    let sequence = ROW_ID_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+    format!("row-{}-{sequence}", std::process::id())
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
@@ -313,6 +429,9 @@ pub enum RequestAuthentication {
         name: String,
         value: ValueSource,
     },
+    Oauth2 {
+        configuration: Oauth2Configuration,
+    },
 }
 
 impl RequestAuthentication {
@@ -328,6 +447,27 @@ pub enum ApiKeyPlacement {
     Query,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Oauth2Grant {
+    AuthorizationCodePkce,
+    ClientCredentials,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Oauth2Configuration {
+    pub grant: Oauth2Grant,
+    pub authorization_url: String,
+    pub token_url: String,
+    pub client_id: String,
+    pub client_secret_reference: SecretName,
+    pub scopes: String,
+    pub audience: String,
+    pub redirect_uri: String,
+    pub access_token_reference: SecretName,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "snake_case", tag = "kind")]
 pub enum RequestBody {
@@ -340,9 +480,50 @@ pub enum RequestBody {
     Json {
         value: String,
     },
+    Xml {
+        value: String,
+    },
+    Html {
+        value: String,
+    },
+    Raw {
+        #[serde(skip_serializing_if = "Option::is_none")]
+        content_type: Option<String>,
+        value: String,
+    },
     FormUrlEncoded {
         fields: Vec<RequestValueField>,
     },
+    Multipart {
+        parts: Vec<MultipartPart>,
+    },
+    File {
+        path: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        content_type: Option<String>,
+    },
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MultipartPart {
+    pub id: String,
+    pub name: String,
+    pub kind: MultipartPartKind,
+    pub value: ValueSource,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub file_path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub content_type: Option<String>,
+    #[serde(default = "enabled_by_default")]
+    pub enabled: bool,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MultipartPartKind {
+    Text,
+    File,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -371,15 +552,46 @@ pub struct Environment {
     pub(super) schema_version: u32,
     pub id: DocumentId,
     pub name: String,
-    pub variables: BTreeMap<String, ValueSource>,
+    #[serde(default, deserialize_with = "deserialize_environment_variables")]
+    pub variables: Vec<EnvironmentVariable>,
 }
 
 impl Environment {
     #[must_use]
-    pub const fn new(
+    pub fn new(id: DocumentId, name: String, variables: BTreeMap<String, ValueSource>) -> Self {
+        Self::from_values(id, name, variables)
+    }
+
+    #[must_use]
+    pub fn from_values(
         id: DocumentId,
         name: String,
         variables: BTreeMap<String, ValueSource>,
+    ) -> Self {
+        let variables = variables
+            .into_iter()
+            .enumerate()
+            .map(|(order, (key, value))| EnvironmentVariable {
+                id: format!("variable-{order}"),
+                key,
+                value,
+                enabled: true,
+                order: i64::try_from(order).unwrap_or(i64::MAX),
+            })
+            .collect();
+        Self {
+            schema_version: CURRENT_SCHEMA_VERSION,
+            id,
+            name,
+            variables,
+        }
+    }
+
+    #[must_use]
+    pub const fn from_rows(
+        id: DocumentId,
+        name: String,
+        variables: Vec<EnvironmentVariable>,
     ) -> Self {
         Self {
             schema_version: CURRENT_SCHEMA_VERSION,
@@ -392,6 +604,51 @@ impl Environment {
     #[must_use]
     pub const fn schema_version(&self) -> u32 {
         self.schema_version
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct EnvironmentVariable {
+    pub id: String,
+    pub key: String,
+    pub value: ValueSource,
+    #[serde(default = "enabled_by_default")]
+    pub enabled: bool,
+    #[serde(default)]
+    pub order: i64,
+}
+
+const fn enabled_by_default() -> bool {
+    true
+}
+
+fn deserialize_environment_variables<'de, D>(
+    deserializer: D,
+) -> Result<Vec<EnvironmentVariable>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum StoredVariables {
+        Rows(Vec<EnvironmentVariable>),
+        Legacy(BTreeMap<String, ValueSource>),
+    }
+
+    match StoredVariables::deserialize(deserializer)? {
+        StoredVariables::Rows(rows) => Ok(rows),
+        StoredVariables::Legacy(values) => Ok(values
+            .into_iter()
+            .enumerate()
+            .map(|(order, (key, value))| EnvironmentVariable {
+                id: format!("variable-{order}"),
+                key,
+                value,
+                enabled: true,
+                order: i64::try_from(order).unwrap_or(i64::MAX),
+            })
+            .collect()),
     }
 }
 

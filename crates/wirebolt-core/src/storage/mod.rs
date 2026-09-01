@@ -18,8 +18,10 @@ use serde::{Serialize, de::DeserializeOwned};
 
 pub use model::{
     ApiKeyPlacement, CURRENT_SCHEMA_VERSION, Collection, CollectionSnapshot, DocumentId,
-    Environment, IdentifierError, Request, RequestAuthentication, RequestBody, RequestHeader,
-    RequestValueField, SecretName, ValueSource, Workspace, WorkspaceDocument, WorkspaceSnapshot,
+    Environment, EnvironmentVariable, Group, IdentifierError, MultipartPart, MultipartPartKind,
+    Oauth2Configuration, Oauth2Grant, Request, RequestAuthentication, RequestBody, RequestHeader,
+    RequestValueField, SecretName, TransportSettings, ValueSource, Workspace, WorkspaceDocument,
+    WorkspaceSnapshot,
 };
 
 const WORKSPACE_FILE: &str = "wirebolt.toml";
@@ -351,6 +353,63 @@ impl WorkspaceStore {
                 self.write(&path, environment, Durability::Fast)
             }
         }
+    }
+
+    /// Deletes one collection and its managed request documents.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StorageError`] if the collection does not exist or cannot be removed.
+    pub fn delete_collection(&self, id: &DocumentId) -> Result<(), StorageError> {
+        let path = self.collection_path(id);
+        if !path.join(COLLECTION_FILE).is_file() {
+            return Err(StorageError::Missing { path });
+        }
+        fs::remove_dir_all(&path)
+            .map_err(|source| StorageError::io("delete collection", &path, source))?;
+        self.lock_cache()
+            .retain(|cached_path, _| !cached_path.starts_with(&path));
+        Ok(())
+    }
+
+    /// Deletes one request document without touching its collection.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StorageError`] if the request does not exist or cannot be removed.
+    pub fn delete_request(
+        &self,
+        collection_id: &DocumentId,
+        request_id: &DocumentId,
+    ) -> Result<(), StorageError> {
+        let path = self.request_path(collection_id, request_id);
+        fs::remove_file(&path).map_err(|source| {
+            if source.kind() == io::ErrorKind::NotFound {
+                StorageError::Missing { path: path.clone() }
+            } else {
+                StorageError::io("delete request", &path, source)
+            }
+        })?;
+        self.lock_cache().remove(&path);
+        Ok(())
+    }
+
+    /// Deletes one environment document.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StorageError`] if the environment does not exist or cannot be removed.
+    pub fn delete_environment(&self, id: &DocumentId) -> Result<(), StorageError> {
+        let path = self.environment_path(id);
+        fs::remove_file(&path).map_err(|source| {
+            if source.kind() == io::ErrorKind::NotFound {
+                StorageError::Missing { path: path.clone() }
+            } else {
+                StorageError::io("delete environment", &path, source)
+            }
+        })?;
+        self.lock_cache().remove(&path);
+        Ok(())
     }
 
     /// Rewrites only documents loaded from an older supported schema.

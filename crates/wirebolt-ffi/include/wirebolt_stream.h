@@ -5,12 +5,14 @@
 
 typedef struct wirebolt_run_session wirebolt_run_session;
 
+typedef void (*wirebolt_on_prepared_fn)(void *context, const uint8_t *json, uintptr_t length);
 typedef void (*wirebolt_on_head_fn)(void *context, const uint8_t *json, uintptr_t length);
 typedef uint8_t (*wirebolt_on_chunk_fn)(void *context, const uint8_t *bytes, uintptr_t length);
 typedef void (*wirebolt_on_complete_fn)(void *context, const uint8_t *json, uintptr_t length);
 typedef void (*wirebolt_on_error_fn)(void *context, const uint8_t *json, uintptr_t length);
 
 typedef struct wirebolt_run_callbacks {
+    wirebolt_on_prepared_fn on_prepared;
     wirebolt_on_head_fn on_head;
     wirebolt_on_chunk_fn on_chunk;
     wirebolt_on_complete_fn on_complete;
@@ -32,7 +34,8 @@ uint8_t wirebolt_runtime_warmup(void);
  * Starts one request on a dedicated worker. Callback buffers are borrowed and
  * remain valid only for the duration of each callback. Callbacks are serialized
  * in head -> chunks -> complete/error order. Do not free the session from a
- * callback; schedule cleanup after the terminal callback returns.
+ * callback; schedule cleanup after the terminal callback returns. Successful
+ * runs are serialized as prepared -> head -> chunks -> complete.
  */
 wirebolt_run_session *wirebolt_run_start(
     const uint8_t *input_json,

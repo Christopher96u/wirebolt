@@ -2,21 +2,22 @@ use std::{
     borrow::Cow,
     collections::{BTreeMap, BTreeSet},
     error::Error,
-    fmt,
+    fmt, fs,
 };
 
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use http::{
     HeaderMap, HeaderName, HeaderValue,
-    header::{AUTHORIZATION, CONTENT_TYPE},
+    header::{AUTHORIZATION, CONTENT_LENGTH, CONTENT_TYPE},
 };
 use percent_encoding::{AsciiSet, NON_ALPHANUMERIC, utf8_percent_encode};
 use url::Url;
 
 use crate::{
-    ApiKeyPlacement, Environment, PreparedRequest, Request, RequestAuthentication, RequestBody,
-    RequestHeader, RequestValueField, SecretResolver, ValueSource,
-    request::{Redaction, parse_http_url, parse_method},
+    ApiKeyPlacement, Environment, MultipartPartKind, PreparedRequest, Request,
+    RequestAuthentication, RequestBody, RequestHeader, RequestValueField, SecretResolver,
+    ValueSource,
+    request::{PreparedBodySource, Redaction, parse_http_url, parse_method},
 };
 
 const MAX_TEMPLATE_DEPTH: usize = 64;
@@ -100,10 +101,12 @@ impl<'a, R: SecretResolver + ?Sized> RequestPipeline<'a, R> {
             &mut headers,
         );
         query.apply(&mut url);
+        let body_mark = resolver.secret_mark();
         let body = prepare_body(&request.body, &mut resolver, &mut headers);
+        resolver.redaction.body |= resolver.used_secret_since(body_mark);
 
         match (method, resolver.issues.is_empty()) {
-            (Some(method), true) => Ok(PreparedRequest::from_parts(
+            (Some(method), true) => Ok(PreparedRequest::from_body_source(
                 method,
                 url,
                 headers,
@@ -179,7 +182,7 @@ fn resolve_headers<R: SecretResolver + ?Sized>(
         // field names the secret directly or reaches it through `{{var}}`.
         let value_mark = resolver.secret_mark();
         let value = resolver.resolve_source(&field.value, value_path);
-        let sensitive = resolver.used_secret_since(value_mark);
+        let sensitive = field.sensitive || resolver.used_secret_since(value_mark);
         let (Some(name), Some(value)) = (name, value) else {
             continue;
         };
@@ -242,6 +245,18 @@ fn apply_authentication<R: SecretResolver + ?Sized>(
             name,
             value,
         } => apply_api_key(*placement, name, value, resolver, query, headers),
+        RequestAuthentication::Oauth2 { configuration } => {
+            let path = FieldPath::Fixed("authentication.configuration.access_token_reference");
+            let token = ValueSource::Secret {
+                secret: configuration.access_token_reference.clone(),
+            };
+            if let Some(token) = resolver.resolve_source(&token, path)
+                && let Some(mut value) = resolver.header_value(&format!("Bearer {token}"), path)
+            {
+                value.set_sensitive(true);
+                headers.insert(AUTHORIZATION, value);
+            }
+        }
     }
 }
 
@@ -284,8 +299,32 @@ fn prepare_body<R: SecretResolver + ?Sized>(
     body: &RequestBody,
     resolver: &mut TemplateResolver<'_, R>,
     headers: &mut HeaderMap,
-) -> Vec<u8> {
-    match body {
+) -> PreparedBodySource {
+    if let RequestBody::File { path, content_type } = body {
+        apply_optional_content_type(content_type.as_deref(), resolver, headers);
+        return match fs::metadata(path) {
+            Ok(metadata) if metadata.is_file() => {
+                if !headers.contains_key(CONTENT_LENGTH)
+                    && let Ok(value) = HeaderValue::from_str(&metadata.len().to_string())
+                {
+                    headers.insert(CONTENT_LENGTH, value);
+                }
+                PreparedBodySource::File {
+                    path: path.into(),
+                    byte_count: metadata.len(),
+                }
+            }
+            Ok(_) | Err(_) => {
+                resolver.issue(
+                    FieldPath::Fixed("body.path"),
+                    RequestIssueKind::FileUnavailable,
+                    None,
+                );
+                PreparedBodySource::Bytes(Vec::new())
+            }
+        };
+    }
+    let bytes = match body {
         RequestBody::Empty => Vec::new(),
         RequestBody::Text {
             content_type,
@@ -305,7 +344,7 @@ fn prepare_body<R: SecretResolver + ?Sized>(
         RequestBody::Json { value } => {
             ensure_content_type(headers, "application/json");
             let Some(value) = resolver.resolve_template(value, FieldPath::Fixed("body")) else {
-                return Vec::new();
+                return PreparedBodySource::Bytes(Vec::new());
             };
             // Validation only walks the document; nothing is built from it.
             if serde_json::from_str::<serde::de::IgnoredAny>(&value).is_err() {
@@ -317,13 +356,135 @@ fn prepare_body<R: SecretResolver + ?Sized>(
             }
             value.into_owned().into_bytes()
         }
+        RequestBody::Xml { value } => {
+            ensure_content_type(headers, "application/xml");
+            resolve_text_body(value, resolver)
+        }
+        RequestBody::Html { value } => {
+            ensure_content_type(headers, "text/html; charset=utf-8");
+            resolve_text_body(value, resolver)
+        }
+        RequestBody::Raw {
+            content_type,
+            value,
+        } => {
+            apply_optional_content_type(content_type.as_deref(), resolver, headers);
+            resolve_text_body(value, resolver)
+        }
         RequestBody::FormUrlEncoded { fields } => {
             ensure_content_type(headers, "application/x-www-form-urlencoded");
             let mut serializer = url::form_urlencoded::Serializer::new(String::new());
             append_form_fields(fields, resolver, &mut serializer);
             serializer.finish().into_bytes()
         }
+        RequestBody::Multipart { parts } => prepare_multipart(parts, resolver, headers),
+        RequestBody::File { .. } => unreachable!("file bodies return before byte preparation"),
+    };
+    PreparedBodySource::Bytes(bytes)
+}
+
+fn resolve_text_body<R: SecretResolver + ?Sized>(
+    value: &str,
+    resolver: &mut TemplateResolver<'_, R>,
+) -> Vec<u8> {
+    resolver
+        .resolve_template(value, FieldPath::Fixed("body"))
+        .map_or_else(Vec::new, |value| value.into_owned().into_bytes())
+}
+
+fn apply_optional_content_type<R: SecretResolver + ?Sized>(
+    content_type: Option<&str>,
+    resolver: &mut TemplateResolver<'_, R>,
+    headers: &mut HeaderMap,
+) {
+    if let Some(content_type) = content_type
+        && !headers.contains_key(CONTENT_TYPE)
+        && let Some(value) =
+            resolver.header_value(content_type, FieldPath::Fixed("body.content_type"))
+    {
+        headers.insert(CONTENT_TYPE, value);
     }
+}
+
+fn prepare_multipart<R: SecretResolver + ?Sized>(
+    parts: &[crate::MultipartPart],
+    resolver: &mut TemplateResolver<'_, R>,
+    headers: &mut HeaderMap,
+) -> Vec<u8> {
+    let boundary = "wirebolt-boundary-7MA4YWxkTrZu0gW";
+    if !headers.contains_key(CONTENT_TYPE) {
+        headers.insert(
+            CONTENT_TYPE,
+            HeaderValue::from_static(
+                "multipart/form-data; boundary=wirebolt-boundary-7MA4YWxkTrZu0gW",
+            ),
+        );
+    }
+    let mut body = Vec::new();
+    for (index, part) in parts.iter().enumerate().filter(|(_, part)| part.enabled) {
+        let Some(name) =
+            resolver.resolve_template(&part.name, FieldPath::indexed("body.parts", index, "name"))
+        else {
+            continue;
+        };
+        let escaped_name = name.replace(['"', '\r', '\n'], "_");
+        body.extend_from_slice(format!("--{boundary}\r\n").as_bytes());
+        match part.kind {
+            MultipartPartKind::Text => {
+                body.extend_from_slice(
+                    format!("Content-Disposition: form-data; name=\"{escaped_name}\"\r\n\r\n")
+                        .as_bytes(),
+                );
+                if let Some(value) = resolver.resolve_source(
+                    &part.value,
+                    FieldPath::indexed("body.parts", index, "value"),
+                ) {
+                    body.extend_from_slice(value.as_bytes());
+                }
+            }
+            MultipartPartKind::File => {
+                let Some(path) = part.file_path.as_deref() else {
+                    resolver.issue(
+                        FieldPath::indexed("body.parts", index, "file_path"),
+                        RequestIssueKind::FileUnavailable,
+                        None,
+                    );
+                    continue;
+                };
+                let filename = std::path::Path::new(path)
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .unwrap_or("file")
+                    .replace(['"', '\r', '\n'], "_");
+                body.extend_from_slice(
+                    format!(
+                        "Content-Disposition: form-data; name=\"{escaped_name}\"; filename=\"{filename}\"\r\n"
+                    )
+                    .as_bytes(),
+                );
+                body.extend_from_slice(
+                    format!(
+                        "Content-Type: {}\r\n\r\n",
+                        part.content_type
+                            .as_deref()
+                            .unwrap_or("application/octet-stream")
+                    )
+                    .as_bytes(),
+                );
+                match fs::read(path) {
+                    Ok(bytes) => body.extend_from_slice(&bytes),
+                    Err(_) => resolver.issue(
+                        FieldPath::indexed("body.parts", index, "file_path"),
+                        RequestIssueKind::FileUnavailable,
+                        None,
+                    ),
+                }
+            }
+        }
+        body.extend_from_slice(b"\r\n");
+    }
+    body.extend_from_slice(format!("--{boundary}--\r\n").as_bytes());
+    body
 }
 
 fn append_form_fields<R: SecretResolver + ?Sized>(
@@ -406,6 +567,7 @@ impl<'a, R: SecretResolver + ?Sized> TemplateResolver<'a, R> {
             redaction: Redaction {
                 url: false,
                 header_names: false,
+                body: false,
             },
             issues: Vec::new(),
             warnings: Vec::new(),
@@ -511,10 +673,13 @@ impl<'a, R: SecretResolver + ?Sized> TemplateResolver<'a, R> {
             }
             return Some(value.clone());
         }
-        let Some(source) = self
-            .environment
-            .and_then(|environment| environment.variables.get(name))
-        else {
+        let Some(source) = self.environment.and_then(|environment| {
+            environment
+                .variables
+                .iter()
+                .find(|variable| variable.enabled && variable.key == name)
+                .map(|variable| &variable.value)
+        }) else {
             self.issue(path, RequestIssueKind::MissingVariable, Some(name));
             return None;
         };
@@ -593,6 +758,7 @@ pub enum RequestIssueKind {
     InvalidHeaderValue,
     ConflictingHeader,
     InvalidJson,
+    FileUnavailable,
     InvalidTemplate,
     TemplateTooDeep,
     ResolvedValueTooLarge,

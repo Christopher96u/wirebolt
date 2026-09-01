@@ -12,7 +12,7 @@ Keyboard shortcuts:
 
 - `⌘↩` sends the current request.
 - `⌘S` saves it to the workspace.
-- `⌘N` creates a new request draft.
+- `⇧⌘N` creates a new request draft (`⌘N` keeps the native New Window behavior).
 - `⇧⌘G` opens Git collaboration.
 
 ## Development

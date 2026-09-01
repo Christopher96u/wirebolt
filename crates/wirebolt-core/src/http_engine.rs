@@ -1,7 +1,7 @@
 use std::{
     convert::Infallible,
     error::Error,
-    fmt,
+    fmt, fs,
     future::Future,
     io,
     net::SocketAddr,
@@ -15,19 +15,21 @@ use std::{
 };
 
 use bytes::Bytes;
+use futures_util::TryStreamExt;
 use http::{
     HeaderMap, HeaderValue, Method, Version,
     header::{ACCEPT, ACCEPT_ENCODING, CONTENT_ENCODING},
 };
 use http_body::{Frame, SizeHint};
-use reqwest::{Client, ClientBuilder, Proxy, redirect, retry};
+use reqwest::{Certificate, Client, ClientBuilder, Identity, Proxy, redirect, retry};
 use tokio::time::{Instant, Sleep, sleep_until};
-use tokio_util::sync::CancellationToken;
+use tokio_util::{io::ReaderStream, sync::CancellationToken};
 
 use crate::{
     NoSecrets, PreparedRequest, ProxyConfigurationError, ProxyDestination, ProxyMode, ProxyPolicy,
-    ResolvedProxy, SecretResolver,
+    ResolvedProxy, SecretName, SecretResolver,
     body_decoder::{BodyStream, ChunkSink, ContentEncoding, SinkRefusal},
+    request::PreparedBodySource,
 };
 
 pub const DEFAULT_USER_AGENT: &str = concat!("Wirebolt/", env!("CARGO_PKG_VERSION"));
@@ -40,7 +42,7 @@ pub enum HttpVersionPolicy {
     Http2PriorKnowledge,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Eq, PartialEq)]
 pub struct HttpEngineConfig {
     pub connect_timeout: Duration,
     /// Fails a run when the connection produces no bytes for this long,
@@ -51,6 +53,35 @@ pub struct HttpEngineConfig {
     /// Sent unless the request carries its own `User-Agent`. `None` sends
     /// nothing, which some APIs reject outright.
     pub user_agent: Option<String>,
+    pub validate_tls: bool,
+    pub maximum_redirects: Option<u8>,
+    /// PEM certificate chain plus private key loaded from Keychain for mTLS.
+    /// This material participates in pool identity but is always redacted from Debug.
+    pub client_identity_pem: Option<Vec<u8>>,
+    /// PEM root bundle selected for this request.
+    pub root_certificates_pem: Option<Vec<u8>>,
+}
+
+impl fmt::Debug for HttpEngineConfig {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("HttpEngineConfig")
+            .field("connect_timeout", &self.connect_timeout)
+            .field("read_timeout", &self.read_timeout)
+            .field("version_policy", &self.version_policy)
+            .field("user_agent", &self.user_agent)
+            .field("validate_tls", &self.validate_tls)
+            .field("maximum_redirects", &self.maximum_redirects)
+            .field(
+                "client_identity_pem",
+                &self.client_identity_pem.as_ref().map(|_| "[REDACTED]"),
+            )
+            .field(
+                "root_certificates_pem",
+                &self.root_certificates_pem.as_ref().map(|_| "[CONFIGURED]"),
+            )
+            .finish()
+    }
 }
 
 impl Default for HttpEngineConfig {
@@ -60,9 +91,63 @@ impl Default for HttpEngineConfig {
             read_timeout: None,
             version_policy: HttpVersionPolicy::Automatic,
             user_agent: Some(DEFAULT_USER_AGENT.to_owned()),
+            validate_tls: true,
+            maximum_redirects: None,
+            client_identity_pem: None,
+            root_certificates_pem: None,
         }
     }
 }
+
+impl HttpEngineConfig {
+    /// Resolves mTLS identity material from the secret store and reads an optional
+    /// public custom CA bundle. Neither source is included in diagnostics.
+    ///
+    /// # Errors
+    ///
+    /// Returns a redacted configuration error when either source is unavailable.
+    pub fn resolve_tls<R: SecretResolver + ?Sized>(
+        mut self,
+        identity: Option<&SecretName>,
+        custom_ca_path: Option<&str>,
+        secrets: &R,
+    ) -> Result<Self, TlsConfigurationError> {
+        if let Some(identity) = identity {
+            self.client_identity_pem = Some(
+                secrets
+                    .resolve(identity)
+                    .map_err(|_| TlsConfigurationError::ClientIdentityUnavailable)?
+                    .expose()
+                    .as_bytes()
+                    .to_vec(),
+            );
+        }
+        if let Some(path) = custom_ca_path.filter(|path| !path.is_empty()) {
+            self.root_certificates_pem =
+                Some(fs::read(path).map_err(|_| TlsConfigurationError::CustomCaUnavailable)?);
+        }
+        Ok(self)
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum TlsConfigurationError {
+    ClientIdentityUnavailable,
+    CustomCaUnavailable,
+}
+
+impl fmt::Display for TlsConfigurationError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::ClientIdentityUnavailable => {
+                formatter.write_str("client identity is unavailable")
+            }
+            Self::CustomCaUnavailable => formatter.write_str("custom CA bundle is unavailable"),
+        }
+    }
+}
+
+impl Error for TlsConfigurationError {}
 
 #[derive(Clone)]
 pub struct HttpEngine {
@@ -107,7 +192,14 @@ impl HttpEngine {
         default_headers.insert(ACCEPT, HeaderValue::from_static("*/*"));
         let mut builder = Client::builder()
             .connect_timeout(config.connect_timeout)
-            .redirect(redirect::Policy::none())
+            .redirect(
+                config
+                    .maximum_redirects
+                    .map_or_else(redirect::Policy::none, |maximum| {
+                        redirect::Policy::limited(usize::from(maximum.min(10)))
+                    }),
+            )
+            .danger_accept_invalid_certs(!config.validate_tls)
             .retry(retry::never())
             .default_headers(default_headers);
         if let Some(user_agent) = &config.user_agent {
@@ -115,6 +207,15 @@ impl HttpEngine {
         }
         if let Some(read_timeout) = config.read_timeout {
             builder = builder.read_timeout(read_timeout);
+        }
+        if let Some(pem) = &config.client_identity_pem {
+            let identity = Identity::from_pem(pem).map_err(RunError::transport)?;
+            builder = builder.identity(identity);
+        }
+        if let Some(pem) = &config.root_certificates_pem {
+            for certificate in Certificate::from_pem_bundle(pem).map_err(RunError::transport)? {
+                builder = builder.add_root_certificate(certificate);
+            }
         }
         builder = match config.version_policy {
             HttpVersionPolicy::Automatic => builder,
@@ -190,10 +291,7 @@ impl HttpEngine {
         let progress = Arc::new(SendProgress::new(started));
         let mut request = reqwest::Request::new(method, url);
         *request.headers_mut() = headers;
-        *request.body_mut() = Some(reqwest::Body::wrap(RequestBody {
-            remaining: Bytes::from(body),
-            progress: Arc::clone(&progress),
-        }));
+        *request.body_mut() = Some(upload_body(body, Arc::clone(&progress)).await?);
 
         // One deadline timer and one cancellation future serve the whole run;
         // only the stall timer is re-armed as bytes move in either direction.
@@ -388,6 +486,25 @@ fn body_error(refusal: Option<SinkRefusal>, error: io::Error, options: RunOption
 struct SendProgress {
     started: Instant,
     last_activity_nanos: AtomicU64,
+}
+
+async fn upload_body(
+    source: PreparedBodySource,
+    progress: Arc<SendProgress>,
+) -> Result<reqwest::Body, RunError> {
+    match source {
+        PreparedBodySource::Bytes(bytes) => Ok(reqwest::Body::wrap(RequestBody {
+            remaining: Bytes::from(bytes),
+            progress,
+        })),
+        PreparedBodySource::File { path, .. } => {
+            let file = tokio::fs::File::open(path)
+                .await
+                .map_err(RunError::upload)?;
+            let stream = ReaderStream::new(file).inspect_ok(move |_chunk| progress.touch());
+            Ok(reqwest::Body::wrap_stream(stream))
+        }
+    }
 }
 
 impl SendProgress {
@@ -630,6 +747,7 @@ enum RunErrorSource {
     Transport(reqwest::Error),
     Proxy(ProxyConfigurationError),
     Decode(io::Error),
+    Upload(io::Error),
 }
 
 impl RunError {
@@ -690,6 +808,14 @@ impl RunError {
         }
     }
 
+    const fn upload(error: io::Error) -> Self {
+        Self {
+            kind: RunErrorKind::Request,
+            response_limit: None,
+            source: Some(RunErrorSource::Upload(error)),
+        }
+    }
+
     #[must_use]
     pub const fn kind(&self) -> RunErrorKind {
         self.kind
@@ -704,7 +830,12 @@ impl RunError {
     pub const fn proxy_configuration_error(&self) -> Option<&ProxyConfigurationError> {
         match self.source.as_ref() {
             Some(RunErrorSource::Proxy(error)) => Some(error),
-            Some(RunErrorSource::Transport(_) | RunErrorSource::Decode(_)) | None => None,
+            Some(
+                RunErrorSource::Transport(_)
+                | RunErrorSource::Decode(_)
+                | RunErrorSource::Upload(_),
+            )
+            | None => None,
         }
     }
 }
@@ -738,7 +869,7 @@ impl Error for RunError {
         match self.source.as_ref() {
             Some(RunErrorSource::Transport(source)) => Some(source),
             Some(RunErrorSource::Proxy(source)) => Some(source),
-            Some(RunErrorSource::Decode(source)) => Some(source),
+            Some(RunErrorSource::Decode(source) | RunErrorSource::Upload(source)) => Some(source),
             None => None,
         }
     }
