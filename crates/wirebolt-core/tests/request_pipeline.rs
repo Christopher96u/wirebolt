@@ -11,6 +11,111 @@ use wirebolt_core::{
 #[derive(Default)]
 struct FixtureSecrets(BTreeMap<String, String>);
 
+#[test]
+fn embedded_multipart_keeps_non_utf8_bytes_and_rejects_bad_encoding() {
+    let mut request = Request::new(id("upload"), "Upload", "POST", "http://localhost/echo");
+    let part = wirebolt_core::MultipartPart {
+        id: "binary".into(),
+        name: "file".into(),
+        kind: wirebolt_core::MultipartPartKind::Binary,
+        value: ValueSource::literal("AAH/"),
+        file_path: None,
+        file_name: Some("upload.bin".into()),
+        content_type: Some("application/octet-stream".into()),
+        enabled: true,
+    };
+    request.body = RequestBody::Multipart {
+        parts: vec![part.clone()],
+    };
+    let secrets = FixtureSecrets::default();
+    let pipeline = RequestPipeline::new(None, &secrets);
+    let prepared = pipeline.prepare(&request).unwrap();
+    assert!(
+        prepared
+            .body()
+            .windows(7)
+            .any(|bytes| bytes == b"\r\n\0\x01\xff\r\n")
+    );
+    request.body = RequestBody::Multipart {
+        parts: vec![wirebolt_core::MultipartPart {
+            value: ValueSource::literal("not-base64"),
+            ..part
+        }],
+    };
+    assert!(pipeline.prepare(&request).is_err());
+}
+
+#[test]
+fn websocket_scheme_is_resolved_after_environment_substitution() {
+    let environment = Environment::new(
+        id("local"),
+        "Local".to_owned(),
+        BTreeMap::from([(
+            "endpoint".to_owned(),
+            ValueSource::literal("wss://example.com:8443/echo"),
+        )]),
+    );
+    let mut request = Request::new(id("socket"), "Socket", "GET", "{{endpoint}}");
+    request.query.push(RequestValueField::enabled(
+        "message",
+        ValueSource::literal("café & 1"),
+    ));
+    let secrets = FixtureSecrets::default();
+    let pipeline = RequestPipeline::new(Some(&environment), &secrets);
+    let prepared = pipeline.prepare_websocket(&request).unwrap();
+    assert_eq!(
+        prepared.url().as_str(),
+        "https://example.com:8443/echo?message=caf%C3%A9%20%26%201"
+    );
+    assert!(pipeline.prepare(&request).is_err());
+    "https://example.com/".clone_into(&mut request.url);
+    assert!(pipeline.prepare_websocket(&request).is_err());
+}
+
+#[test]
+fn multipart_preserves_file_bytes_custom_filename_and_text_content_type() {
+    let directory = tempfile::tempdir().unwrap();
+    let file = directory.path().join("actual.bin");
+    std::fs::write(&file, [0_u8, 1, 128, 255]).unwrap();
+    let mut request = Request::new(id("upload"), "Upload", "POST", "https://example.com/upload");
+    request.body = serde_json::from_value(serde_json::json!({
+        "kind": "multipart", "parts": [
+            {"id":"metadata", "name": "metadata", "kind": "text", "value":"{\"n\":1}", "content_type": "application/json", "file_name": "metadata.json", "enabled":true},
+            {"id":"payload", "name": "payload", "kind": "file", "value":"", "file_path": file, "file_name": "export.bin", "enabled":true}
+        ]
+    })).unwrap();
+    request.headers.push(RequestHeader::enabled(
+        "Content-Type",
+        ValueSource::literal("multipart/form-data; boundary=imported-boundary"),
+    ));
+    let prepared = RequestPipeline::new(None, &FixtureSecrets::default())
+        .prepare(&request)
+        .unwrap();
+    assert_eq!(
+        prepared.headers().get("content-type").unwrap(),
+        "multipart/form-data; boundary=wirebolt-boundary-7MA4YWxkTrZu0gW"
+    );
+    let body = prepared.body();
+    assert!(body.windows(4).any(|window| window == [0, 1, 128, 255]));
+    let text = String::from_utf8_lossy(body);
+    assert!(text.contains("name=\"metadata\"; filename=\"metadata.json\"\r\nContent-Type: application/json\r\n\r\n{\"n\":1}"));
+    assert!(text.contains(
+        "name=\"payload\"; filename=\"export.bin\"\r\nContent-Type: application/octet-stream"
+    ));
+    if let RequestBody::Multipart { parts } = &mut request.body {
+        parts[0].content_type = Some("text/plain\r\nInjected: yes".into());
+    }
+    let error = RequestPipeline::new(None, &FixtureSecrets::default())
+        .prepare(&request)
+        .unwrap_err();
+    assert!(
+        error
+            .issues
+            .iter()
+            .any(|issue| issue.kind == RequestIssueKind::InvalidHeaderValue)
+    );
+}
+
 impl SecretResolver for FixtureSecrets {
     fn resolve(&self, name: &SecretName) -> Result<ResolvedSecret, SecretResolutionError> {
         self.0

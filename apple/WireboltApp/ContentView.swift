@@ -8,12 +8,15 @@ struct ContentView: View {
 
     @AppStorage("interfaceAppearance") private var interfaceAppearance = "system"
     @State private var workspaceSurfacePhase = 0
+    @AppStorage("workspace.sidebarWidth") private var sidebarWidth = 250.0
+    @State private var sidebarDragOrigin: Double?
+    private var toolbarGap: Double { max(0, sidebarWidth - 184) }
 
     var body: some View {
-        workspaceSurface
+        workspaceWithDialogs
     }
 
-    private var workspaceSurface: some View {
+    private var workspacePanels: some View {
         HStack(spacing: 0) {
             if interface.columnVisibility != .detailOnly {
                 WorkspaceSidebar(
@@ -21,8 +24,20 @@ struct ContentView: View {
                     interface: interface,
                     showsMaterial: workspaceSurfacePhase >= 1
                 )
-                    .frame(width: 242)
-                Divider()
+                    .frame(width: sidebarWidth - 1)
+                Rectangle().fill(WireboltTheme.separator).frame(width: 1)
+                    .overlay {
+                        Color.clear.frame(width: 7).contentShape(.rect)
+                            .gesture(DragGesture(minimumDistance: 1, coordinateSpace: .global)
+                                .onChanged { value in
+                                    if sidebarDragOrigin == nil { sidebarDragOrigin = sidebarWidth }
+                                    sidebarWidth = min(480, max(180, (sidebarDragOrigin ?? sidebarWidth) + value.translation.width))
+                                }
+                                .onEnded { _ in sidebarDragOrigin = nil })
+                            .onHover { inside in
+                                if inside { NSCursor.resizeLeftRight.push() } else { NSCursor.pop() }
+                            }
+                    }
             }
             if workspaceSurfacePhase >= 2 {
                 WorkspaceDeck(model: model, interface: interface)
@@ -30,20 +45,32 @@ struct ContentView: View {
                 InitialDetailPane()
             }
         }
+    }
+
+    private var workspaceSurface: some View {
+        workspacePanels
         .navigationTitle("")
-        .frame(minWidth: 900, minHeight: 520)
+        .frame(minWidth: model.sessions.groups.count > 1
+            ? (interface.columnVisibility == .detailOnly ? 0 : 208) + Double(model.sessions.groups.count * 440 + model.sessions.groups.count - 1)
+            : 720, minHeight: 411)
+        .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { width in
+            if model.sessions.groups.count > 1 {
+                let detailMinimum = Double(model.sessions.groups.count * 440 + model.sessions.groups.count - 1)
+                sidebarWidth = min(sidebarWidth, max(208, width - detailMinimum))
+            }
+        }
         .tint(WireboltTheme.primaryAccent)
-        .toolbar { workspaceToolbar }
+        .toolbar(id: "workspace-toolbar") { workspaceToolbar }
         .toolbar(removing: .sidebarToggle)
         .preferredColorScheme(preferredColorScheme)
-        .background(WindowConfigurator())
+        .background(WindowConfigurator(sidebarWidth: interface.columnVisibility == .detailOnly ? 0 : sidebarWidth))
         .fileImporter(
             isPresented: $interface.isShowingImporter,
-            allowedContentTypes: [.json],
+            allowedContentTypes: [.json, .data],
             allowsMultipleSelection: false,
             onCompletion: handleImport
         )
-        .fileDialogMessage("Choose a Postman Collection v2 JSON document.")
+        .fileDialogMessage("Choose a collection or archive to import.")
         .fileDialogConfirmationLabel("Import")
         .sheet(isPresented: $model.isShowingGitCollaboration) {
             GitCollaborationView(model: model)
@@ -51,11 +78,25 @@ struct ContentView: View {
         .sheet(isPresented: $interface.isShowingCurlImporter) {
             CurlImportSheet(model: model)
         }
-        .sheet(item: Binding(
-            get: { model.importPreview },
-            set: { if $0 == nil { model.cancelPendingImport() } }
-        )) { preview in
-            ImportPreviewSheet(preview: preview, model: model)
+    }
+
+    private var workspaceWithDialogs: some View {
+        workspaceSurface
+        .alert("Import Failed", isPresented: Binding(
+            get: { model.importFailureMessage != nil },
+            set: { if !$0 { model.importFailureMessage = nil } }
+        )) {
+            Button("OK", role: .cancel) { model.importFailureMessage = nil }
+        } message: { Text(model.importFailureMessage ?? "") }
+        .alert("Operation Failed", isPresented: Binding(
+            get: { model.operationFailure != nil && model.importFailureMessage == nil },
+            set: { if !$0 { model.operationFailure = nil } }
+        )) {
+            Button("OK", role: .cancel) { model.operationFailure = nil }
+        } message: {
+            Text(model.operationFailure?.kind == "keychain"
+                ? "The credentials could not be read or saved in Keychain. Check access and try again."
+                : "The operation could not be completed. Check access to the workspace and try again.")
         }
         .sheet(item: $interface.workspaceNamePrompt) { prompt in
             WorkspaceNameEditor(prompt: prompt, model: model)
@@ -69,7 +110,7 @@ struct ContentView: View {
             Text(interface.dirtyCloseRequest?.documentTitles.joined(separator: ", ") ?? "Unsaved request")
         }
         .alert(
-            "Delete \(interface.workspaceDeleteRequest?.title ?? "Item")?",
+            "Are you sure you want to delete the selected item?",
             isPresented: Binding(
                 get: { interface.workspaceDeleteRequest != nil },
                 set: { if $0 == false { interface.workspaceDeleteRequest = nil } }
@@ -78,13 +119,14 @@ struct ContentView: View {
             Button("Cancel", role: .cancel) {
                 interface.workspaceDeleteRequest = nil
             }
-            Button("Delete", role: .destructive) {
+            Button("Yes", role: .destructive) {
                 interface.confirmWorkspaceDelete(model: model)
             }
         } message: {
-            Text("This removes the item from the workspace. This action cannot be undone.")
+            Text("This action cannot be reverted.")
         }
         .onAppear {
+            interface.reopenLastDocument(model: model)
             interface.synchronizeSelection(model: model)
             guard workspaceSurfacePhase == 0 else { return }
             PerformanceProbe.markReady()
@@ -114,34 +156,47 @@ struct ContentView: View {
     }
 
     @ToolbarContentBuilder
-    private var workspaceToolbar: some ToolbarContent {
+    private var workspaceToolbar: some CustomizableToolbarContent {
         if #available(macOS 26.0, *) {
-            ToolbarItem(placement: .navigation) {
-                Color.clear.frame(width: 126, height: 1)
+            ToolbarItem(id: "sidebar", placement: .navigation) { sidebarToggle }
+                .sharedBackgroundVisibility(.hidden)
+            ToolbarItem(id: "new", placement: .navigation) { CollectionActionMenu(model: model, interface: interface).frame(width: 26, height: 30) }
+                .sharedBackgroundVisibility(.hidden)
+        } else {
+            ToolbarItem(id: "sidebar", placement: .navigation) { sidebarToggle }
+            ToolbarItem(id: "new", placement: .navigation) { CollectionActionMenu(model: model, interface: interface).frame(width: 26, height: 30) }
+        }
+        if #available(macOS 26.0, *) {
+            ToolbarItem(id: "sidebar-spacing", placement: .navigation) {
+                ToolbarSpace(width: interface.columnVisibility == .detailOnly ? 0 : toolbarGap)
             }
             .sharedBackgroundVisibility(.hidden)
         }
-        ToolbarItem(placement: .navigation) {
+        ToolbarItem(id: "environment", placement: .navigation) {
             EnvironmentPopup(model: model)
                 .frame(width: 185, height: 34)
+
         }
 
-        ToolbarItem(placement: .primaryAction) {
-            Button(
-                interface.responseOrientation == .bottom
-                    ? "Place Response on Right"
-                    : "Place Response on Bottom",
-                systemImage: interface.responseOrientation == .bottom
-                    ? "rectangle.split.2x1"
-                    : "rectangle.split.1x2"
-            ) {
+        ToolbarItem(id: "response-placement", placement: .primaryAction) {
+            Button {
                 interface.responseOrientation = interface.responseOrientation == .bottom ? .right : .bottom
+            } label: {
+                ResponsePlacementIcon(right: interface.responseOrientation == .right).frame(width: 17, height: 13)
             }
-            .labelStyle(.iconOnly)
+            .accessibilityLabel(interface.responseOrientation == .bottom ? "Place Response on Right" : "Place Response on Bottom")
             .buttonStyle(.borderless)
             .frame(width: 30, height: 30)
             .help(interface.responseOrientation == .bottom ? "Response on Right" : "Response on Bottom")
         }
+    }
+
+    @ViewBuilder
+    private var sidebarToggle: some View {
+        Button("Toggle Sidebar", systemImage: "sidebar.left") {
+            interface.columnVisibility = interface.columnVisibility == .detailOnly ? .all : .detailOnly
+        }
+        .labelStyle(.iconOnly).buttonStyle(.borderless).frame(width: 26, height: 30)
     }
 
     private var preferredColorScheme: ColorScheme? {
@@ -158,12 +213,29 @@ struct ContentView: View {
             guard let url = urls.first else { return }
             let hasAccess = url.startAccessingSecurityScopedResource()
             Task {
-                await model.previewImport(url: url, format: interface.importFormat)
+                await model.importDocument(url: url, format: interface.importFormat)
                 if hasAccess { url.stopAccessingSecurityScopedResource() }
             }
-        case .failure:
-            interface.reportImportFailure()
+        case let .failure(error):
+            if (error as NSError).code != NSUserCancelledError { interface.reportImportFailure() }
         }
+    }
+}
+
+private struct ResponsePlacementIcon: View {
+    let right: Bool
+    var body: some View {
+        ZStack {
+            RoundedRectangle(cornerRadius: 2).stroke(lineWidth: 1)
+            Path { path in
+                path.move(to: right ? CGPoint(x: 11, y: 0) : CGPoint(x: 0, y: 7))
+                path.addLine(to: right ? CGPoint(x: 11, y: 13) : CGPoint(x: 17, y: 7))
+            }.stroke(lineWidth: 1)
+            ForEach(0..<3) { index in
+                Circle().frame(width: 1.5, height: 1.5)
+                    .position(x: right ? 14 : 4 + CGFloat(index) * 4.5, y: right ? 3 + CGFloat(index) * 3.5 : 10)
+            }
+        }.foregroundStyle(.secondary).accessibilityHidden(true)
     }
 }
 
@@ -188,16 +260,38 @@ private struct WorkspaceSidebar: View {
     let showsMaterial: Bool
 
     @FocusState private var filterIsFocused: Bool
+    @FocusState private var sidebarIsFocused: Bool
 
     var body: some View {
-        List {
-            if showsMaterial {
-                WorkspaceSidebarOutline(model: model, interface: interface)
+        VStack(spacing: 0) {
+        ScrollView {
+            LazyVStack(alignment: .leading, spacing: 0) {
+                if showsMaterial { WorkspaceSidebarOutline(model: model, interface: interface) }
+            }
+            .padding(.leading, 18).padding(.trailing, 9)
+            .font(.system(size: 13))
+            .disclosureGroupStyle(SidebarDisclosureStyle())
+        }
+        .scrollIndicators(.never)
+        .clipped()
+        .focusable().focusEffectDisabled().focused($sidebarIsFocused)
+        .onChange(of: interface.focusSidebarTrigger) {
+            if interface.renamingRequestID == nil { sidebarIsFocused = true }
+        }
+        .onMoveCommand { direction in
+            guard interface.renamingRequestID == nil else { return }
+            switch direction {
+            case .up: interface.moveSidebarSelection(-1, model: model)
+            case .down: interface.moveSidebarSelection(1, model: model)
+            default: break
             }
         }
-        .listStyle(.sidebar)
-        .environment(\.defaultMinListRowHeight, 16)
-        .contentMargins(.top, -8, for: .scrollContent)
+        .onKeyPress(.return) {
+            guard interface.renamingRequestID == nil else { return .ignored }
+            interface.renamingRequestID = model.selectedRequestID
+            return .handled
+        }
+        .contentMargins(.top, 0, for: .scrollContent)
         .controlSize(.small)
         .scrollContentBackground(.hidden)
         .background {
@@ -209,7 +303,6 @@ private struct WorkspaceSidebar: View {
                 SidebarMaterialView()
             }
         }
-        .safeAreaInset(edge: .bottom, spacing: 0) {
             if showsMaterial {
                 SidebarFooter(
                     interface: interface,
@@ -220,20 +313,7 @@ private struct WorkspaceSidebar: View {
         .onChange(of: interface.focusSearchTrigger) {
             filterIsFocused = true
         }
-        .toolbar {
-            ToolbarItemGroup(placement: .primaryAction) {
-                Button("Toggle Sidebar", systemImage: "sidebar.left") {
-                    interface.columnVisibility = interface.columnVisibility == .detailOnly ? .all : .detailOnly
-                }
-                .labelStyle(.iconOnly)
-                .buttonStyle(.borderless)
-                .foregroundStyle(.secondary)
-                .help(interface.columnVisibility == .detailOnly ? "Show Sidebar" : "Hide Sidebar")
 
-                CollectionActionMenu(model: model, interface: interface)
-            }
-        }
-        .toolbar(removing: .sidebarToggle)
     }
 
 }
@@ -318,10 +398,11 @@ private struct CurlImportSheet: View {
                 Spacer()
                 Button("Cancel", role: .cancel) { dismiss() }
                     .keyboardShortcut(.cancelAction)
-                Button("Preview") {
-                    let value = source
-                    dismiss()
-                    Task { await model.previewImport(source: value, format: .curl) }
+                Button("Import") {
+                    Task {
+                        await model.importDocument(source: source, format: .curl)
+                        if model.importFailureMessage == nil { dismiss() }
+                    }
                 }
                 .keyboardShortcut(.defaultAction)
                 .disabled(source.trimmingCharacters(in: .whitespacesAndNewlines).hasPrefix("curl ") == false)
@@ -332,81 +413,29 @@ private struct CurlImportSheet: View {
     }
 }
 
-private struct ImportPreviewSheet: View {
-    let preview: ImportPreview
-    @Bindable var model: WireboltModel
-    @Environment(\.dismiss) private var dismiss
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            Text("Import \(preview.collectionName)")
-                .font(.headline)
-            LabeledContent("Requests", value: preview.requestCount.formatted())
-            LabeledContent("Folders", value: preview.groupCount.formatted())
-            if preview.warnings.isEmpty == false {
-                GroupBox("Warnings") {
-                    ScrollView {
-                        VStack(alignment: .leading, spacing: 6) {
-                            ForEach(preview.warnings, id: \.self) { warning in
-                                Label(warning, systemImage: "exclamationmark.triangle")
-                            }
-                        }
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                    }
-                }
-            }
-            HStack {
-                Spacer()
-                Button("Cancel", role: .cancel) {
-                    model.cancelPendingImport()
-                    dismiss()
-                }
-                .keyboardShortcut(.cancelAction)
-                Button("Import") {
-                    dismiss()
-                    Task { await model.commitPendingImport() }
-                }
-                .keyboardShortcut(.defaultAction)
-            }
-        }
-        .padding(20)
-        .frame(width: 460, height: preview.warnings.isEmpty ? 210 : 320)
-    }
-}
-
 private struct CollectionActionMenu: View {
     @Bindable var model: WireboltModel
     @Bindable var interface: WorkspaceUIState
 
     var body: some View {
         Menu {
-            Button("New Collection") { interface.promptForNewCollection() }
             Menu("New Request") {
                 Button("HTTP") { interface.makeNewRequest(model: model) }
                     .keyboardShortcut("n", modifiers: [.command, .shift])
                 Button("WebSocket") { interface.makeNewRequest(model: model, kind: .webSocket) }
             }
             Button("New Folder") {
-                guard let collectionID = model.workspace.collections.first?.id else { return }
-                interface.promptForNewGroup(collectionID: collectionID)
+                interface.makeNewFolder(model: model)
             }
                 .keyboardShortcut("n", modifiers: [.command, .option])
-                .disabled(model.workspace.collections.isEmpty)
-            Menu("Import") {
-                Button("cURL…") { interface.isShowingCurlImporter = true }
-                Button("HAR…") {
-                    interface.importFormat = .har
-                    interface.isShowingImporter = true
-                }
-                Button("Legacy Workspace v1…") {
-                    interface.importFormat = .legacyWorkspaceV1
-                    interface.isShowingImporter = true
-                }
-                Button("Postman Collection v2…") {
-                    interface.importFormat = .postmanV2
-                    interface.isShowingImporter = true
-                }
-            }
+            Divider()
+            WorkspaceImportMenu(interface: interface)
+            Button("Export") {
+                Task { if let document = await model.exportWorkspace() {
+                    saveExportedDocument(named: model.workspace.name, content: document)
+                } }
+            }.disabled(model.workspace.collections.isEmpty)
+
         } label: {
             Image(systemName: "plus")
                 .frame(width: 18, height: 18)
@@ -421,6 +450,36 @@ private struct CollectionActionMenu: View {
     }
 }
 
+private struct WorkspaceImportMenu: View {
+    @Bindable var interface: WorkspaceUIState
+    var body: some View {
+        Menu("Import") {
+            Button("cURL") { interface.isShowingCurlImporter = true }
+            Button("HAR") { open(.har) }
+            Divider()
+            Button("Legacy Collection v1") { open(.legacyWorkspaceV1) }
+            Button("Postman Collection v2") { open(.postmanV2) }
+        }
+    }
+    private func open(_ format: ImportFormat) {
+        interface.importFormat = format
+        interface.isShowingImporter = true
+    }
+}
+
+private struct NewRequestMenu: View {
+    @Bindable var model: WireboltModel
+    @Bindable var interface: WorkspaceUIState
+    let collectionID: String
+    var groupID: String?
+    var body: some View {
+        Menu("New Request") {
+            Button("HTTP") { interface.makeNewRequest(model: model, collectionID: collectionID, groupID: groupID) }
+            Button("WebSocket") { interface.makeNewRequest(model: model, kind: .webSocket, collectionID: collectionID, groupID: groupID) }
+        }
+    }
+}
+
 private struct WorkspaceSidebarOutline: View {
     @Bindable var model: WireboltModel
     @Bindable var interface: WorkspaceUIState
@@ -432,7 +491,7 @@ private struct WorkspaceSidebarOutline: View {
                 selectedID: model.selectedRequestID,
                 model: model,
                 interface: interface,
-                onSelect: { interface.activateSavedRequest($0, model: model) },
+                onSelect: { interface.activateSavedRequest($0, model: model); interface.focusSidebarTrigger += 1 },
                 onSplit: { location in
                     interface.activateSavedRequest(location, model: model)
                     if let tabID = model.sessions.activeSession?.id {
@@ -445,9 +504,10 @@ private struct WorkspaceSidebarOutline: View {
 
     private var visibleCollections: [CollectionDraft] {
         let rawQuery = interface.sidebarFilter.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard rawQuery.isEmpty == false else { return model.workspace.collections }
+        let collections = model.workspace.collections.sorted { ($0.order, $0.name) < ($1.order, $1.name) }
+        guard rawQuery.isEmpty == false else { return collections }
         let query = model.normalizedSearchQuery(rawQuery)
-        return model.workspace.collections.compactMap { collection in
+        return collections.compactMap { collection in
             let requests = collection.requests.filter {
                 model.requestMatches($0, normalizedQuery: query)
             }
@@ -465,6 +525,37 @@ private struct WorkspaceSidebarOutline: View {
     }
 }
 
+private struct SidebarDisclosureStyle: DisclosureGroupStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(spacing: 6) {
+                Button {
+                    configuration.isExpanded.toggle()
+                } label: {
+                    Image(systemName: configuration.isExpanded ? "chevron.down" : "chevron.right")
+                        .font(.system(size: 9, weight: .semibold)).foregroundStyle(.secondary)
+                        .frame(width: 12, height: 24).contentShape(.rect)
+                }.buttonStyle(.plain).accessibilityLabel(configuration.isExpanded ? "Collapse" : "Expand")
+                configuration.label.font(.system(size: 13)).frame(maxWidth: .infinity, alignment: .leading)
+            }.frame(height: 24)
+            if configuration.isExpanded {
+                configuration.content.padding(.leading, 14)
+            }
+        }
+    }
+}
+
+private enum SidebarItem: Identifiable {
+    case group(GroupDraft)
+    case request(RequestLocation)
+    var id: String {
+        switch self { case let .group(group): "group:" + group.id; case let .request(request): "request:" + request.id }
+    }
+    var order: Int {
+        switch self { case let .group(group): group.order; case let .request(request): request.order }
+    }
+}
+
 private struct SidebarFolderLabel: View {
     let title: String
 
@@ -475,7 +566,7 @@ private struct SidebarFolderLabel: View {
     var body: some View {
         HStack(spacing: 7) {
             Image(systemName: "folder.fill")
-                .foregroundStyle(.orange)
+                .font(.system(size: 13)).foregroundStyle(.primary)
             Text(title)
                 .foregroundStyle(.primary)
                 .lineLimit(1)
@@ -502,6 +593,39 @@ private struct CollapsedSidebarFolder: View {
     }
 }
 
+struct InlineSidebarName: View {
+    let title: String
+    @Binding var isEditing: Bool
+    let save: (String) -> Void
+    @State private var value = ""
+    @FocusState private var focused: Bool
+
+    var body: some View {
+        Group {
+            if isEditing {
+                TextField("Name", text: $value)
+                    .textFieldStyle(.plain).focused($focused)
+                    .onSubmit(commit)
+                    .onExitCommand { isEditing = false }
+                    .onChange(of: focused) { _, focused in if !focused && isEditing { commit() } }
+            } else { Text(title).lineLimit(1) }
+        }
+        .task(id: isEditing) {
+            if isEditing {
+                value = title
+                await Task.yield()
+                if isEditing { focused = true }
+            }
+        }
+    }
+
+    private func commit() {
+        let name = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        isEditing = false
+        if !name.isEmpty && name != title { save(name) }
+    }
+}
+
 private struct SavedCollectionDisclosure: View {
     let collection: CollectionDraft
     let selectedID: String?
@@ -511,46 +635,37 @@ private struct SavedCollectionDisclosure: View {
     let onSplit: (RequestLocation) -> Void
 
     @State private var isExpanded = true
+    @State private var isRenaming = false
 
     var body: some View {
+        Group {
+        if collection.id == WorkspaceDraft.rootCollectionID { items }
+        else {
         DisclosureGroup(isExpanded: $isExpanded) {
-            ForEach(rootGroups) { group in
-                SavedGroupDisclosure(
-                    collection: collection,
-                    group: group,
-                    selectedID: selectedID,
-                    model: model,
-                    interface: interface,
-                    onSelect: onSelect,
-                    onSplit: onSplit
-                )
-            }
-            ForEach(rootRequests) { location in requestRow(location) }
+            items
+
         } label: {
-            Label(collection.name, systemImage: "folder")
+            HStack(spacing: 6) {
+                Image(systemName: "folder.fill")
+                InlineSidebarName(title: collection.name, isEditing: $isRenaming) { name in
+                    Task { await model.renameCollection(id: collection.id, name: name) }
+                }
+            }
                 .contextMenu {
-                    Button("New HTTP Request") {
-                        interface.makeNewRequest(model: model, collectionID: collection.id)
-                    }
-                    Button("New WebSocket Request") {
-                        interface.makeNewRequest(
-                            model: model,
-                            kind: .webSocket,
-                            collectionID: collection.id
-                        )
-                    }
+                    NewRequestMenu(model: model, interface: interface, collectionID: collection.id)
                     Button("New Folder") {
-                        interface.promptForNewGroup(collectionID: collection.id)
+                        interface.makeNewFolder(model: model, collectionID: collection.id)
                     }
                     Divider()
-                    Button("Export Collection…") {
+                    WorkspaceImportMenu(interface: interface)
+                    Button("Export") {
                         Task {
                             if let document = await model.exportCollection(id: collection.id) {
                                 saveExportedDocument(named: collection.name, content: document)
                             }
                         }
                     }
-                    Button("Rename…") { interface.promptForCollectionRename(collection) }
+                    Button("Rename") { isRenaming = true }
                     Button("Delete", role: .destructive) {
                         interface.requestDelete(
                             .collection(id: collection.id),
@@ -559,9 +674,26 @@ private struct SavedCollectionDisclosure: View {
                     }
                 }
         }
+        }
+        }
+        .onChange(of: isExpanded) { _, expanded in
+            if expanded { interface.collapsedSidebarCollections.remove(collection.id) }
+            else { interface.collapsedSidebarCollections.insert(collection.id) }
+        }
         .dropDestination(for: String.self) { identifiers, _ in
             handleDrop(identifiers.first, parentID: nil)
         }
+    }
+
+    private var items: some View {
+            ForEach((rootGroups.map(SidebarItem.group) + rootRequests.map(SidebarItem.request)).sorted { $0.order < $1.order }) { item in
+                switch item {
+                case let .group(group):
+                    SavedGroupDisclosure(collection: collection, group: group, selectedID: selectedID,
+                        model: model, interface: interface, onSelect: onSelect, onSplit: onSplit)
+                case let .request(location): requestRow(location)
+                }
+            }
     }
 
     private var rootGroups: [GroupDraft] {
@@ -578,10 +710,12 @@ private struct SavedCollectionDisclosure: View {
 
     private func requestRow(_ location: RequestLocation) -> some View {
         SidebarRequestButton(
+            model: model, interface: interface,
             location: location,
             isSelected: selectedID == location.id,
             action: { onSelect(location) },
             onSplit: { onSplit(location) },
+            onRename: { name in Task { await model.renameRequest(collectionID: collection.id, requestID: location.request.id, name: name) } },
             onDuplicate: {
                 Task {
                     await model.duplicateRequest(
@@ -649,27 +783,26 @@ private struct SavedGroupDisclosure: View {
     let onSelect: (RequestLocation) -> Void
     let onSplit: (RequestLocation) -> Void
 
-    @State private var isExpanded = true
+    @State private var isExpanded = false
+    @State private var isRenaming = false
 
     var body: some View {
-        DisclosureGroup(isExpanded: $isExpanded) {
-            ForEach(childGroups) { child in
-                SavedGroupDisclosure(
-                    collection: collection,
-                    group: child,
-                    selectedID: selectedID,
-                    model: model,
-                    interface: interface,
-                    onSelect: onSelect,
-                    onSplit: onSplit
-                )
-            }
-            ForEach(requests) { location in
+        DisclosureGroup(isExpanded: Binding(
+            get: { isExpanded || !interface.sidebarFilter.isEmpty }, set: { isExpanded = $0 }
+        )) {
+            ForEach((childGroups.map(SidebarItem.group) + requests.map(SidebarItem.request)).sorted { $0.order < $1.order }) { item in
+                switch item {
+                case let .group(child):
+                    SavedGroupDisclosure(collection: collection, group: child, selectedID: selectedID,
+                        model: model, interface: interface, onSelect: onSelect, onSplit: onSplit)
+                case let .request(location):
                 SidebarRequestButton(
+                    model: model, interface: interface,
                     location: location,
                     isSelected: selectedID == location.id,
                     action: { onSelect(location) },
                     onSplit: { onSplit(location) },
+                    onRename: { name in Task { await model.renameRequest(collectionID: collection.id, requestID: location.request.id, name: name) } },
                     onDuplicate: {
                         Task {
                             await model.duplicateRequest(
@@ -695,31 +828,27 @@ private struct SavedGroupDisclosure: View {
                         )
                     }
                 )
+                }
             }
         } label: {
-            SidebarFolderLabel(group.name)
+            HStack(spacing: 6) {
+                Image(systemName: "folder.fill")
+                InlineSidebarName(title: group.name, isEditing: Binding(
+                    get: { isRenaming || interface.renamingGroupID == group.id },
+                    set: { isRenaming = $0; if !$0 && interface.renamingGroupID == group.id { interface.renamingGroupID = nil } }
+                )) { name in
+                    Task { await model.renameGroup(collectionID: collection.id, id: group.id, name: name) }
+                }
+            }
                 .draggable("group|\(collection.id)|\(group.id)")
                 .contextMenu {
-                    Button("New HTTP Request") {
-                        interface.makeNewRequest(
-                            model: model,
-                            collectionID: collection.id,
-                            groupID: group.id
-                        )
-                    }
+                    NewRequestMenu(model: model, interface: interface, collectionID: collection.id, groupID: group.id)
                     Button("New Folder") {
-                        Task {
-                            await model.createGroup(
-                                collectionID: collection.id,
-                                parentID: group.id,
-                                name: "New Folder"
-                            )
-                        }
+                        isExpanded = true
+                        interface.makeNewFolder(model: model, collectionID: collection.id, parentID: group.id)
                     }
                     Divider()
-                    Button("Rename…") {
-                        interface.promptForGroupRename(collectionID: collection.id, group: group)
-                    }
+                    Button("Rename") { isRenaming = true }
                     Button("Delete", role: .destructive) {
                         interface.requestDelete(
                             .group(collectionID: collection.id, id: group.id),
@@ -727,6 +856,11 @@ private struct SavedGroupDisclosure: View {
                         )
                     }
                 }
+        }
+        .onChange(of: isExpanded) { _, expanded in
+            let id = collection.id + ":" + group.id
+            if expanded { interface.expandedSidebarGroups.insert(id) }
+            else { interface.expandedSidebarGroups.remove(id) }
         }
         .dropDestination(for: String.self) { identifiers, _ in
             handleDrop(identifiers.first)
@@ -777,50 +911,68 @@ private struct SavedGroupDisclosure: View {
 }
 
 private struct SidebarRequestButton: View {
+    @Bindable var model: WireboltModel
+    @Bindable var interface: WorkspaceUIState
     @Environment(\.colorScheme) private var colorScheme
 
     let location: RequestLocation
     let isSelected: Bool
     let action: () -> Void
     let onSplit: () -> Void
+    let onRename: (String) -> Void
     let onDuplicate: () -> Void
     let onExport: () -> Void
     let onDelete: () -> Void
+    @State private var isRenaming = false
 
     var body: some View {
-        Button(action: action) {
-            HStack(spacing: 7) {
-                Text(location.request.method.rawValue)
-                    .font(.caption2.monospaced().weight(.semibold))
+            HStack(spacing: 3) {
+                Text(location.request.webSocket ? "WS" : location.request.method.rawValue)
+                    .font(.system(size: 10))
                     .foregroundStyle(WireboltTheme.methodColor(location.request.method))
-                    .frame(width: 46, alignment: .trailing)
-                Text(location.request.name)
+                    .frame(width: 40, alignment: .trailing)
+                InlineSidebarName(title: location.request.name, isEditing: Binding(
+                    get: { isRenaming || interface.renamingRequestID == location.id },
+                    set: { isRenaming = $0; if !$0 && interface.renamingRequestID == location.id { interface.renamingRequestID = nil } }
+                ), save: onRename)
                     .lineLimit(1)
                     .foregroundStyle(isSelected ? Color.white : Color.primary)
                 Spacer(minLength: 0)
             }
-            .padding(.vertical, 1)
-            .padding(.horizontal, 6)
+            .font(.system(size: 13))
+            .padding(.trailing, 6)
+            .frame(height: 24)
             .contentShape(.rect)
             .background {
                 GeometryReader { geometry in
+                    let inset: CGFloat = location.collectionID == WorkspaceDraft.rootCollectionID && location.groupID == nil ? 0 : 14
                     RoundedRectangle(cornerRadius: 5)
                         .fill(selectionBackground)
-                        .frame(width: geometry.size.width + 21)
+                        .frame(width: geometry.size.width + inset)
                         .frame(height: 24)
-                        .offset(x: -16, y: -1)
+                        .offset(x: -inset)
                 }
             }
-        }
         .buttonStyle(.plain)
-        .padding(.leading, -22)
+        .onTapGesture(perform: action)
+        .accessibilityElement(children: .combine)
+        .accessibilityAction(.default, action)
+        .frame(height: 24)
+        .listRowInsets(EdgeInsets(top: 0, leading: 0, bottom: 0, trailing: 0))
         .contextMenu {
-            Button("Open") { action() }
-            Button("Open in New Tab") { action() }
-            Button("Open in New Split", action: onSplit)
+            NewRequestMenu(model: model, interface: interface, collectionID: location.collectionID, groupID: location.groupID)
+            Button("New Folder") { interface.makeNewFolder(model: model, collectionID: location.collectionID, parentID: location.groupID) }
             Divider()
+            Button("Open in new split", action: onSplit)
+            Divider()
+            WorkspaceImportMenu(interface: interface)
+            Button("Export", action: onExport)
+            Divider()
+            Button("Copy cURL") { copyRequestAsCurl(location.request, model: model) }
+            Divider()
+            Button("Rename") { isRenaming = true }
             Button("Duplicate", action: onDuplicate)
-            Button("Export Request…", action: onExport)
+            Divider()
             Button("Delete", role: .destructive, action: onDelete)
         }
         .draggable("request|\(location.collectionID)|\(location.request.id)")
@@ -831,6 +983,16 @@ private struct SidebarRequestButton: View {
     private var selectionBackground: Color {
         guard isSelected else { return .clear }
         return WireboltTheme.primaryAccent.opacity(colorScheme == .dark ? 0.82 : 0.90)
+    }
+}
+
+@MainActor
+func copyRequestAsCurl(_ request: RequestDraft, model: WireboltModel) {
+    Task {
+        for source in request.curlValueSources { await model.loadSecret(source) }
+        let command = request.curlCommand { model.secretMaterial(for: $0) }
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(command, forType: .string)
     }
 }
 
@@ -868,10 +1030,10 @@ private struct SidebarFooter: View {
             Capsule()
                 .stroke(WireboltTheme.separator, lineWidth: 0.5)
         }
-        .padding(.leading, 8)
-        .padding(.trailing, 4)
+        .padding(.leading, 13)
+        .padding(.trailing, 5)
         .padding(.top, 11)
-        .padding(.bottom, 5)
+        .padding(.bottom, 12)
     }
 }
 
@@ -916,7 +1078,7 @@ private struct WorkspaceDeck: View {
                             interface: interface,
                             groupID: group.id
                         )
-                        .frame(minWidth: 430)
+                        .frame(minWidth: 440)
                     }
                 }
             } else if let groupID = model.sessions.groups.first?.id {
@@ -937,27 +1099,34 @@ private struct EditorGroupDeck: View {
         VStack(spacing: 0) {
             DocumentTabBar(model: model, interface: interface, groupID: groupID)
             if let session {
-                ResponseSplit(orientation: interface.responseOrientation) {
+                let presentation = interface.presentation(for: session)
+                RequestURLBar(model: model, interface: interface, session: session, groupID: groupID)
+                    .id(session.id)
+                ResponseSplit(layout: interface.responseLayout(for: groupID), orientation: interface.responseOrientation, minimumResponseWidth: session.kind == .http && session.responseHead == nil ? 330 : 349) {
                     RequestWorkspace(
                         model: model,
                         interface: interface,
+                        presentation: presentation,
                         session: session,
                         groupID: groupID
                     )
                 } response: {
                     if session.kind == .http {
                         ResponseViewer(
-                            interface: interface,
+                            interface: presentation,
                             session: session
                         )
                     } else {
-                        LightweightPlaceholder(
-                            title: "No Connection",
-                            systemImage: "bolt.horizontal.circle",
-                            description: "The WebSocket engine will arrive in its networking milestone."
-                        )
+                        WebSocketResponseView(session: session)
                     }
                 }
+                .environment(\.editorStorage, presentation.editorStorage)
+                .simultaneousGesture(TapGesture().onEnded {
+                    if model.sessions.activeGroupID != groupID {
+                        interface.activateTab(id: session.id, groupID: groupID, model: model)
+                    }
+                })
+                .id(session.id)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
                 LightweightPlaceholder(
@@ -981,10 +1150,16 @@ private struct DocumentTabBar: View {
     @Bindable var model: WireboltModel
     @Bindable var interface: WorkspaceUIState
     let groupID: String
-    @State private var isShowingSettings = false
 
     var body: some View {
         HStack(spacing: 0) {
+            if model.sessions.groups.count > 1 {
+                Button("Close Group", systemImage: "xmark") {
+                    interface.close(.all, model: model, in: groupID)
+                }
+                .labelStyle(.iconOnly).buttonStyle(.borderless)
+                .foregroundStyle(.secondary).frame(width: 30)
+            }
             Button("Back", systemImage: "chevron.left", action: goBack)
                 .labelStyle(.iconOnly)
                 .buttonStyle(.borderless)
@@ -998,36 +1173,45 @@ private struct DocumentTabBar: View {
                 .frame(width: 30)
                 .disabled(group?.forwardTabIDs.isEmpty != false)
 
-            HStack(spacing: 2) {
+            GeometryReader { geometry in
+            ScrollViewReader { scroll in
+            ScrollView(.horizontal) {
+            HStack(spacing: 0) {
                 ForEach(tabs) { tab in
                     DocumentTabButton(
                         tab: tab,
                         isSelected: group?.selectedTabID == tab.id,
                         onSelect: { interface.activateTab(id: tab.id, groupID: groupID, model: model) },
                         onClose: {
-                            interface.activateTab(id: tab.id, groupID: groupID, model: model)
-                            interface.closeTab(id: tab.id, model: model)
+                            interface.close(.one(tab.id), model: model, in: groupID)
                         },
                         onCloseOthers: {
-                            interface.activateTab(id: tab.id, groupID: groupID, model: model)
-                            interface.close(.others(tab.id), model: model)
+                            interface.close(.others(tab.id), model: model, in: groupID)
                         },
                         onCloseRight: {
-                            interface.activateTab(id: tab.id, groupID: groupID, model: model)
-                            interface.close(.rightOf(tab.id), model: model)
+                            interface.close(.rightOf(tab.id), model: model, in: groupID)
                         },
                         onCloseAll: {
-                            interface.activateTab(id: tab.id, groupID: groupID, model: model)
-                            interface.close(.all, model: model)
+                            interface.close(.all, model: model, in: groupID)
                         }
                     )
-                        .frame(minWidth: 120, maxWidth: .infinity)
+                        .frame(width: max(80, geometry.size.width / Double(max(1, tabs.count))))
+                        .id(tab.id)
                 }
+            }
+            }
+            .scrollIndicators(.never)
+            .onChange(of: group?.selectedTabID) { _, selected in
+                if let selected { scroll.scrollTo(selected, anchor: .center) }
+            }
+            }
             }
             .frame(maxWidth: .infinity)
 
-            Button("Request Settings", systemImage: "sidebar.right") {
-                isShowingSettings = true
+            Button("Open in New Split", systemImage: "sidebar.right") {
+                if let selected = group?.selectedTabID {
+                    interface.openInNewSplit(tabID: selected, model: model)
+                }
             }
                 .labelStyle(.iconOnly)
                 .buttonStyle(.borderless)
@@ -1035,18 +1219,12 @@ private struct DocumentTabBar: View {
                 .frame(width: 30)
                 .disabled(group?.selectedTabID == nil)
         }
-        .frame(height: 30)
+        .frame(height: 32)
         .background(WireboltTheme.barBackground)
         .overlay(alignment: .bottom) { Divider() }
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Request tabs")
-        .sheet(isPresented: $isShowingSettings) {
-            if let selected = group?.selectedTabID,
-               let session = model.sessions.session(id: selected)
-            {
-                TransportSettingsEditor(model: model, session: session)
-            }
-        }
+
     }
 
     private var group: EditorGroup? {
@@ -1203,10 +1381,10 @@ private struct DocumentTabButton: View {
     @State private var isHovered = false
 
     var body: some View {
-        HStack(spacing: 5) {
+        ZStack(alignment: .trailing) {
             Button(action: onSelect) {
                 Text(tab.title)
-                    .font(.caption)
+                    .font(.system(size: 12))
                     .fontWeight(isSelected ? .medium : .regular)
                     .lineLimit(1)
                     .frame(maxWidth: .infinity)
@@ -1222,11 +1400,11 @@ private struct DocumentTabButton: View {
                 .opacity(isHovered ? 1 : 0)
                 .accessibilityHidden(!isHovered)
         }
-        .padding(.horizontal, 10)
-        .frame(minWidth: 180, minHeight: 24)
-        .background(isSelected ? Color.primary.opacity(0.055) : .clear, in: .rect(cornerRadius: 7))
+        .padding(.horizontal, 15)
+        .frame(minWidth: 28, minHeight: 28)
+        .background(isSelected ? Color.primary.opacity(0.055) : .clear, in: .rect(cornerRadius: 14))
         .overlay {
-            RoundedRectangle(cornerRadius: 7)
+            RoundedRectangle(cornerRadius: 14)
                 .stroke(isSelected ? WireboltTheme.separator.opacity(0.65) : .clear, lineWidth: 0.5)
         }
         .onHover { isHovered = $0 }
@@ -1245,17 +1423,16 @@ private struct DocumentTabButton: View {
 private struct RequestWorkspace: View {
     @Bindable var model: WireboltModel
     @Bindable var interface: WorkspaceUIState
+    @Bindable var presentation: DocumentPresentationState
     @Bindable var session: DocumentSession
     let groupID: String
 
     var body: some View {
         if session.kind == .webSocket {
-            WebSocketRequestWorkspace(model: model, interface: interface, session: session)
+            WebSocketRequestWorkspace(model: model, interface: presentation, session: session)
         } else {
             VStack(spacing: 0) {
-                RequestURLBar(model: model, interface: interface, session: session, groupID: groupID)
-                Divider()
-                RequestSectionBar(interface: interface, session: session)
+                RequestSectionBar(interface: presentation, session: session, isBulkEditing: $presentation.isBulkEditing)
                 Divider()
                 requestContent
             }
@@ -1265,25 +1442,25 @@ private struct RequestWorkspace: View {
 
     @ViewBuilder
     private var requestContent: some View {
-        switch interface.requestSection {
+        switch presentation.requestSection {
         case .params:
-            FieldEditor(
-                title: "Query Params",
-                fields: $session.draft.query,
-                kind: .query
-            )
+            if presentation.isBulkEditing {
+                BulkFieldEditor(fields: $session.draft.query)
+            } else {
+                FieldEditor(title: "Query Params", fields: $session.draft.query, kind: .query, focusTrigger: presentation.focusNewKeyTrigger)
+            }
         case .headers:
-            FieldEditor(
-                title: "Header List",
-                fields: $session.draft.headers,
-                kind: .header
-            )
+            if presentation.isBulkEditing {
+                BulkFieldEditor(fields: $session.draft.headers)
+            } else {
+                FieldEditor(title: "Header List", fields: $session.draft.headers, kind: .header, focusTrigger: presentation.focusNewKeyTrigger)
+            }
         case .auth:
             AuthenticationEditor(model: model, session: session, authentication: $session.draft.authentication)
         case .body:
-            BodyEditor(requestBody: $session.draft.body)
+            BodyEditor(requestBody: $session.draft.body, headers: $session.draft.headers)
         case .note:
-            BodyTextEditor(text: $session.note)
+            BodyTextEditor(text: $session.note, label: "Note")
         }
     }
 }
@@ -1299,30 +1476,13 @@ private enum WebSocketMessageKind: String, CaseIterable, Identifiable {
 
 private struct WebSocketRequestWorkspace: View {
     @Bindable var model: WireboltModel
-    @Bindable var interface: WorkspaceUIState
+    @Bindable var interface: DocumentPresentationState
     @Bindable var session: DocumentSession
 
     var body: some View {
         VStack(spacing: 0) {
-            HStack(spacing: 7) {
-                Text("WS")
-                    .font(.callout.monospaced().weight(.bold))
-                    .foregroundStyle(WireboltTheme.primaryAccent)
-                TextField("Enter ws:// or wss:// URL", text: $session.draft.url)
-                    .textFieldStyle(.plain)
-                    .font(.callout.monospaced())
-                Button("CONNECT") {}
-                    .buttonStyle(WorkspaceActionButtonStyle(color: WireboltTheme.primaryAccent))
-                    .disabled(true)
-                    .help("WebSocket networking is not installed yet")
-            }
-            .padding(.horizontal, 10)
-            .frame(height: 44)
-            .background(WireboltTheme.barBackground)
-            Divider()
-
-            HStack(spacing: 18) {
-                ForEach(RequestPanelSection.allCases) { section in
+            HStack(spacing: 10) {
+                ForEach([RequestPanelSection.body, .params, .headers, .auth, .note]) { section in
                     PanelTabButton(
                         title: section == .body ? "Message" : section.rawValue,
                         badge: badge(for: section),
@@ -1330,10 +1490,24 @@ private struct WebSocketRequestWorkspace: View {
                         action: { interface.requestSection = section }
                     )
                 }
-                Spacer()
+                Spacer(minLength: 4)
+                if interface.requestSection == .body {
+                    Picker("Content Type", selection: messageKind) {
+                        ForEach(WebSocketMessageKind.allCases) { Text($0.rawValue).tag($0) }
+                    }.font(.system(size: 13)).controlSize(.small).frame(width: 170)
+                    if messageKind.wrappedValue == .binary {
+                        Picker("Binary Encoding", selection: binaryEncoding) {
+                            ForEach(WebSocketBinaryEncoding.allCases, id: \.self) { Text($0.rawValue).tag($0) }
+                        }.labelsHidden().controlSize(.small).frame(width: 80)
+                    }
+                } else if interface.requestSection == .auth {
+                    AuthenticationTypePicker(authentication: $session.draft.authentication)
+                }
+                Menu("Message Actions", systemImage: "ellipsis.circle") { EditorPreferencesMenu() }
+                    .menuStyle(.borderlessButton).menuIndicator(.hidden).labelStyle(.iconOnly).fixedSize()
             }
             .padding(.horizontal, 11)
-            .frame(height: 34)
+            .frame(height: 32)
             .background(WireboltTheme.barBackground)
             Divider()
 
@@ -1346,27 +1520,9 @@ private struct WebSocketRequestWorkspace: View {
     private var content: some View {
         switch interface.requestSection {
         case .body:
-            VStack(spacing: 0) {
-                Picker("Message type", selection: messageKind) {
-                    ForEach(WebSocketMessageKind.allCases) { kind in
-                        Text(kind.rawValue).tag(kind)
-                    }
-                }
-                .labelsHidden()
-                .frame(width: 110)
-                .padding(10)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                Divider()
-                if messageKind.wrappedValue == .file {
-                    LightweightPlaceholder(
-                        title: "No File Selected",
-                        systemImage: "doc",
-                        description: "File messages will activate with the WebSocket engine."
-                    )
-                } else {
-                    BodyTextEditor(text: messageText)
-                }
-            }
+            if case let .file(path, contentType) = session.draft.body {
+                FileBodyEditor(path: path, contentType: contentType) { session.draft.body = .file(path: $0, contentType: $1) }
+            } else { BodyTextEditor(text: messageText, language: messageKind.wrappedValue == .json ? .json : .plain) }
         case .params:
             FieldEditor(title: "Query Params", fields: $session.draft.query, kind: .query)
         case .headers:
@@ -1374,7 +1530,7 @@ private struct WebSocketRequestWorkspace: View {
         case .auth:
             AuthenticationEditor(model: model, session: session, authentication: $session.draft.authentication)
         case .note:
-            BodyTextEditor(text: $session.note)
+            BodyTextEditor(text: $session.note, label: "Note")
         }
     }
 
@@ -1385,7 +1541,7 @@ private struct WebSocketRequestWorkspace: View {
                 case .json: .json
                 case let .text(contentType, _):
                     switch contentType {
-                    case "application/octet-stream": .binary
+                    case "application/octet-stream", "application/octet-stream; encoding=hex": .binary
                     case "application/x-wirebolt-file": .file
                     default: .text
                     }
@@ -1398,8 +1554,26 @@ private struct WebSocketRequestWorkspace: View {
                 case .text: .text(contentType: "text/plain", value: "")
                 case .json: .json(value: "{\n  \n}")
                 case .binary: .text(contentType: "application/octet-stream", value: "")
-                case .file: .text(contentType: "application/x-wirebolt-file", value: "")
+                case .file: .file(path: "", contentType: nil)
                 }
+            }
+        )
+    }
+
+    private var binaryEncoding: Binding<WebSocketBinaryEncoding> {
+        Binding(
+            get: {
+                if case let .text(contentType, _) = session.draft.body,
+                   contentType == WebSocketBinaryEncoding.hex.contentType { return .hex }
+                return .base64
+            },
+            set: { encoding in
+                let old = messageText.wrappedValue
+                let bytes = try? self.binaryEncoding.wrappedValue.decode(old)
+                let value = bytes.map { data in
+                    encoding == .base64 ? data.base64EncodedString() : data.map { String(format: "%02x", $0) }.joined(separator: " ")
+                } ?? old
+                session.draft.body = .text(contentType: encoding.contentType, value: value)
             }
         )
     }
@@ -1416,7 +1590,7 @@ private struct WebSocketRequestWorkspace: View {
             set: { value in
                 switch messageKind.wrappedValue {
                 case .json: session.draft.body = .json(value: value)
-                case .binary: session.draft.body = .text(contentType: "application/octet-stream", value: value)
+                case .binary: session.draft.body = .text(contentType: binaryEncoding.wrappedValue.contentType, value: value)
                 case .file: session.draft.body = .text(contentType: "application/x-wirebolt-file", value: value)
                 case .text: session.draft.body = .text(contentType: "text/plain", value: value)
                 }
@@ -1438,16 +1612,18 @@ private struct RequestURLBar: View {
     @Bindable var interface: WorkspaceUIState
     @Bindable var session: DocumentSession
     let groupID: String
+    @State private var urlIsFocused = false
 
-    @FocusState private var urlIsFocused: Bool
     @State private var isEnteringCustomMethod = false
     @State private var customMethod = ""
     @State private var isEditingLongURL = false
-    @State private var isSynchronizingQuery = false
-    @State private var isShowingHistory = false
+    @State private var urlText = ""
 
     var body: some View {
         HStack(spacing: 7) {
+            if session.kind == .webSocket {
+                Text("WS").font(.system(size: 14, weight: .bold)).foregroundStyle(WireboltTheme.primaryAccent)
+            } else {
             Menu {
                 ForEach(HTTPMethod.allCases, id: \.self) { method in
                     Button(method.rawValue) { session.draft.method = method }
@@ -1461,24 +1637,31 @@ private struct RequestURLBar: View {
                 }
             } label: {
                 Text(session.draft.method.rawValue)
-                    .font(.callout.monospaced().weight(.bold))
+                    .font(.system(size: 15, weight: .bold))
                     .foregroundStyle(WireboltTheme.requestBarMethodColor(session.draft.method))
             }
             .menuStyle(.borderlessButton)
             .menuIndicator(.hidden)
+            .frame(width: ceil((session.draft.method.rawValue as NSString).size(withAttributes: [.font: NSFont.systemFont(ofSize: 15, weight: .bold)]).width) + 1)
             .fixedSize()
             .accessibilityLabel("HTTP method, \(session.draft.method.rawValue)")
 
-            TextField("Enter URL (Focus: ⌘L  |  Send: ⌘↩)", text: $session.draft.url)
-                .textFieldStyle(.plain)
-                .font(.callout.monospaced())
-                .focused($urlIsFocused)
+            }
+
+            NativeRequestURLField(text: Binding(
+                get: { urlText },
+                set: { urlText = $0; session.draft.editURL($0) }
+            ), isEditing: $urlIsFocused, focusTrigger: interface.focusURLTrigger, active: model.sessions.activeGroupID == groupID, submit: send)
                 .onSubmit(send)
                 .accessibilityLabel("Request URL")
 
             InlineResponseStatus(session: session)
+            if session.kind == .webSocket && session.socket.status == .connected {
+                Label("101 Switching Protocols", systemImage: "info.circle.fill")
+                    .font(.system(size: 14)).foregroundStyle(WireboltTheme.primaryAccent).fixedSize()
+            }
 
-            Button("Edit Long URL", systemImage: "curlybraces.square") {
+            Button("Edit Long URL", systemImage: "rectangle.expand.vertical") {
                 isEditingLongURL = true
             }
                 .labelStyle(.iconOnly)
@@ -1487,25 +1670,21 @@ private struct RequestURLBar: View {
                 .frame(width: 24, height: 30)
                 .help("Edit Long URL")
 
-            Button("Request History", systemImage: "clock.arrow.circlepath") {
-                Task {
-                    await model.loadHistory(for: session)
-                    isShowingHistory = true
-                }
-            }
-                .labelStyle(.iconOnly)
-                .buttonStyle(.borderless)
-                .foregroundStyle(.secondary)
+            RequestHistoryMenu(model: model, session: session)
                 .frame(width: 24, height: 30)
-                .help("Request History")
 
-            if session.isRunning {
+            if session.kind == .webSocket {
+                Button(session.socket.status == .disconnected ? "CONNECT ⌘⌃⏎" : "DISCONNECT ⌘⌃⏎") {
+                    if session.socket.status == .disconnected { Task { await model.connectWebSocket(session) } }
+                    else { session.socket.disconnect() }
+                }.buttonStyle(WorkspaceActionButtonStyle(color: WireboltTheme.primaryAccent))
+                    .disabled(session.draft.url.isEmpty)
+            } else if session.isRunning {
                 Button("CANCEL", systemImage: "stop.fill", action: cancel)
                     .buttonStyle(WorkspaceActionButtonStyle(color: .red))
             } else {
-                Button("SEND ⌘↩", action: send)
+                Button("SEND ⌘⏎", action: send)
                 .buttonStyle(WorkspaceActionButtonStyle(color: WireboltTheme.primaryAccent))
-                .keyboardShortcut(.return, modifiers: .command)
                 .disabled(session.draft.url.isEmpty)
                 .help("Send Request (⌘↩)")
             }
@@ -1514,16 +1693,19 @@ private struct RequestURLBar: View {
         .padding(.trailing, 11)
         .frame(height: 44)
         .background(WireboltTheme.barBackground)
-        .onChange(of: interface.focusURLTrigger) {
-            urlIsFocused = true
+        .onAppear { urlText = session.draft.displayURL }
+        .onChange(of: session.draft.query) {
+            if !urlIsFocused { urlText = session.draft.displayURL }
         }
-        .onChange(of: session.draft.url) { synchronizeQueryFromURL() }
-        .onChange(of: session.draft.query) { synchronizeURLFromQuery() }
+        .onChange(of: session.draft.url) {
+            if !urlIsFocused { urlText = session.draft.displayURL }
+        }
+        .onChange(of: session.id) { urlText = session.draft.displayURL }
         .sheet(isPresented: $isEditingLongURL) {
-            LongURLEditor(url: $session.draft.url)
-        }
-        .sheet(isPresented: $isShowingHistory) {
-            RequestHistorySheet(model: model, session: session)
+            LongURLEditor(url: Binding(
+                get: { session.draft.displayURL },
+                set: { session.draft.editURL($0); urlText = $0 }
+            ))
         }
         .alert("Custom HTTP Method", isPresented: $isEnteringCustomMethod) {
             TextField("METHOD", text: $customMethod)
@@ -1540,9 +1722,13 @@ private struct RequestURLBar: View {
 
     private func send() {
         guard session.draft.url.isEmpty == false else { return }
+        NSApp.keyWindow?.makeFirstResponder(nil)
         model.sessions.select(tabID: session.id, in: groupID)
         interface.synchronizeSelection(model: model)
-        Task { await model.send() }
+        if session.kind == .webSocket {
+            if session.socket.status == .connected { Task { await session.socket.send(body: session.draft.body) } }
+            else { Task { await model.connectWebSocket(session) } }
+        } else { Task { await model.send(session) } }
     }
 
     private func cancel() {
@@ -1550,124 +1736,175 @@ private struct RequestURLBar: View {
         model.cancel()
     }
 
-    private func synchronizeQueryFromURL() {
-        guard isSynchronizingQuery == false,
-              var components = URLComponents(string: session.draft.url),
-              let items = components.queryItems
-        else { return }
-        components.query = nil
-        isSynchronizingQuery = true
-        let existing = Dictionary(
-            session.draft.query.enumerated().map { ("\($0.element.name)\u{0}\($0.offset)", $0.element.id) },
-            uniquingKeysWith: { first, _ in first }
-        )
-        session.draft.query = items.enumerated().map { index, item in
-            RequestField(
-                id: existing["\(item.name)\u{0}\(index)"] ?? UUID().uuidString.lowercased(),
-                name: item.name,
-                value: .literal(item.value ?? ""),
-                enabled: true
-            )
-        }
-        isSynchronizingQuery = false
-    }
 
-    private func synchronizeURLFromQuery() {
-        guard isSynchronizingQuery == false,
-              var components = URLComponents(string: session.draft.url)
-        else { return }
-        isSynchronizingQuery = true
-        components.queryItems = session.draft.query.filter(\.enabled).map {
-            URLQueryItem(name: $0.name, value: $0.value.editableValue)
-        }
-        if let value = components.string { session.draft.url = value }
-        isSynchronizingQuery = false
-    }
 }
 
-private struct RequestHistorySheet: View {
-    @Bindable var model: WireboltModel
+private struct WebSocketResponseView: View {
     @Bindable var session: DocumentSession
-    @Environment(\.dismiss) private var dismiss
-
+    @State private var selectedMessage: UUID?
+    @State private var showsHeaders = false
+    @State private var filter = "All"
+    @State private var hex = false
+    @State private var hideControl = false
+    @State private var isSearching = false
+    @State private var query = ""
+    @State private var split = ResponseLayoutState()
+    private var socket: WebSocketDocumentState { session.socket }
+    private var selected: WebSocketMessage? { socket.messages.first { $0.id == selectedMessage } }
+    private var messages: [WebSocketMessage] {
+        socket.messages.filter {
+            (!hideControl || $0.control == nil)
+                && (filter == "All" || (filter == "Sent" ? $0.outgoing : !$0.outgoing && !$0.system))
+                && (query.isEmpty || String(decoding: $0.data, as: UTF8.self).localizedCaseInsensitiveContains(query))
+        }
+    }
     var body: some View {
-        VStack(spacing: 0) {
-            HStack {
-                Text("History — \(session.title)")
-                    .font(.headline)
-                Spacer()
-                Button("Clear", role: .destructive) {
-                    Task { await model.clearHistory(for: session) }
+        Group {
+            if socket.status == .connecting {
+                VStack(spacing: 10) { ProgressView().controlSize(.small); Text("Connecting…") }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else if socket.messages.isEmpty && socket.status == .disconnected {
+                if let error = socket.errorMessage {
+                    LightweightPlaceholder(title: "", systemImage: "exclamationmark.circle", description: error)
+                } else {
+                    VStack(spacing: 10) {
+                        Image(systemName: "paperplane").font(.system(size: 49, weight: .light))
+                        Text("No Connection").font(.system(size: 16, weight: .semibold))
+                    }.foregroundStyle(.secondary).frame(maxWidth: .infinity, maxHeight: .infinity)
                 }
-                .disabled(model.historyEntries.isEmpty)
-            }
-            .padding(12)
-            Divider()
-            if model.historyEntries.isEmpty {
-                LightweightPlaceholder(
-                    title: "No History",
-                    systemImage: "clock",
-                    description: "Completed runs for this request appear here."
-                )
             } else {
-                List(model.historyEntries) { entry in
-                    HStack {
-                        VStack(alignment: .leading, spacing: 3) {
-                            Text("\(entry.prepared.method) \(entry.prepared.url)")
-                                .lineLimit(1)
-                            Text(entry.createdAt.formatted())
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                        }
+                VStack(spacing: 0) {
+                    HStack(spacing: 10) {
+                        PanelTabButton(title: "WebSocket", isSelected: !showsHeaders) { showsHeaders = false }
+                        PanelTabButton(title: "Headers", isSelected: showsHeaders) { showsHeaders = true }
                         Spacer()
-                        if let status = entry.responseHead?.status {
-                            Text(status.formatted())
-                                .foregroundStyle(WireboltTheme.statusColor(status))
-                        } else if let failure = entry.failure {
-                            Text(failure.kind.replacingOccurrences(of: "_", with: " ").capitalized)
-                                .foregroundStyle(.red)
-                        }
-                        Button("Restore") {
-                            Task {
-                                await model.restoreHistory(entry, into: session)
-                                dismiss()
+                    }.padding(.horizontal, 11).frame(height: 34).background(WireboltTheme.barBackground)
+                    Divider()
+                    if showsHeaders { ResponseHeadersTable(headers: socket.headers) }
+                    else {
+                        ResponseSplit(layout: split) {
+                            VStack(spacing: 0) {
+                                messageToolbar
+                                Divider()
+                                messageTable
                             }
+                        } response: {
+                            SyntaxTextView(text: preview, language: .plain)
                         }
                     }
                 }
             }
+        }.onAppear { split.requestHeight = 148 }
+    }
+    private var messageTable: some View {
+        Table(messages, selection: $selectedMessage) {
+                                    TableColumn("Data") { message in
+                                        HStack(spacing: 8) {
+                                            Image(systemName: message.system ? "exclamationmark.circle.fill" : message.outgoing ? "arrow.up" : "arrow.down")
+                                                .foregroundStyle(message.system ? .orange : WireboltTheme.primaryAccent)
+                                            Text(message.control ?? String(decoding: message.data.prefix(300), as: UTF8.self)).lineLimit(1)
+                                        }
+                                    }.width(200)
+                                    TableColumn("Time") { message in Text(Self.time.string(from: message.timestamp)) }
+                                }.font(.system(size: 11)).tableStyle(.bordered(alternatesRowBackgrounds: false))
+    }
+    private var messageToolbar: some View {
+        HStack(spacing: 6) {
+            Text("Messages").foregroundStyle(.secondary)
+            Spacer(minLength: 4)
+            if isSearching { TextField("Find", text: $query).frame(width: 120) }
+            Button("Search", systemImage: "magnifyingglass") { isSearching.toggle() }
+                .labelStyle(.iconOnly).buttonStyle(.borderless)
+            Menu {
+                ForEach(["All", "Sent", "Receive"], id: \.self) { option in
+                    Button { filter = option } label: { Label(option, systemImage: filter == option ? "checkmark" : "") }
+                }
+                Divider()
+                Menu("Option") { Toggle("Hide Ping/Pong", isOn: $hideControl) }
+            } label: { Text(filter) }.menuStyle(.borderlessButton).fixedSize()
+            Picker("Preview", selection: $hex) { Text("Previewer").tag(false); Text("Hex").tag(true) }
+                .labelsHidden().pickerStyle(.menu).controlSize(.small).frame(width: 82)
+            Button("Copy", systemImage: "doc.on.doc") {
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setString(preview, forType: .string)
+            }.labelStyle(.iconOnly).buttonStyle(.borderless)
+            Button { Task { await socket.send(body: session.draft.body) } } label: {
+                Text("SEND ⌘↩").font(.system(size: 12, weight: .semibold)).frame(width: 80, height: 18)
+            }.buttonStyle(.borderedProminent).controlSize(.regular)
+                .disabled(socket.status != .connected)
+        }.font(.system(size: 13)).padding(.horizontal, 12).frame(height: 32).background(WireboltTheme.barBackground)
+    }
+    private var preview: String {
+        guard let selected else { return "" }
+        let data = selected.data.prefix(DocumentSession.previewByteLimit)
+        return hex ? data.map { String(format: "%02X", $0) }.joined(separator: " ") : String(decoding: data, as: UTF8.self)
+    }
+    private static let time: DateFormatter = {
+        let formatter = DateFormatter(); formatter.dateFormat = "HH:mm:ss.SSS"; return formatter
+    }()
+}
+
+private struct RequestHistoryMenu: View {
+    @Bindable var model: WireboltModel
+    @Bindable var session: DocumentSession
+    @State private var entries: [RunHistoryEntry] = []
+    @State private var isClearing = false
+
+    var body: some View {
+        Menu("Request History", systemImage: "clock.arrow.circlepath") {
+            Button("Clear History") { isClearing = true }.disabled(entries.isEmpty)
             Divider()
-            HStack {
-                Spacer()
-                Button("Done") { dismiss() }
-                    .keyboardShortcut(.defaultAction)
+            if entries.isEmpty { Text("No History") }
+            ForEach(entries) { entry in
+                Button {
+                    Task { await model.restoreHistory(entry, into: session) }
+                } label: {
+                    HStack(spacing: 8) {
+                        Text(entry.createdAt, style: .relative)
+                        Text(entry.responseHead.map { String($0.status) } ?? "Error")
+                        if let completion = entry.completion {
+                            Text("\(completion.totalTimeNS / 1_000_000) ms")
+                            Text(String(format: "%.3f KB", Double(completion.bytesReceived) / 1000))
+                        }
+                    }
+                }
             }
-            .padding(12)
         }
-        .frame(width: 720, height: 430)
+        .menuStyle(.borderlessButton).menuIndicator(.hidden).labelStyle(.iconOnly)
+        .foregroundStyle(.secondary).help("Request History")
+        .task(id: model.historyRevision) { entries = await model.historyEntries(for: session) }
+        .alert("Clear History?", isPresented: $isClearing) {
+            Button("Cancel", role: .cancel) {}
+            Button("Clear", role: .destructive) {
+                Task { await model.clearHistory(for: session); entries = [] }
+            }
+        }
     }
 }
 
 private struct LongURLEditor: View {
     @Binding var url: String
     @Environment(\.dismiss) private var dismiss
+    @State private var editedURL: String
+
+    init(url: Binding<String>) {
+        _url = url
+        _editedURL = State(initialValue: url.wrappedValue)
+    }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Text("Edit Long URL")
-                .font(.headline)
-            TextEditor(text: $url)
-                .font(.body.monospaced())
-                .frame(minHeight: 150)
-                .overlay { RoundedRectangle(cornerRadius: 6).stroke(WireboltTheme.separator) }
+        VStack(alignment: .leading, spacing: 10) {
+            Text("Edit Long URL").font(.system(size: 11))
+            TextEditor(text: $editedURL)
+                .font(.system(size: 12, design: .monospaced))
+                .border(WireboltTheme.separator, width: 0.5)
             HStack {
+                Button("Cancel", role: .cancel) { dismiss() }.keyboardShortcut(.cancelAction)
                 Spacer()
-                Button("Done") { dismiss() }
-                    .keyboardShortcut(.defaultAction)
-            }
-        }
-        .padding(20)
-        .frame(width: 700, height: 250)
+                Button("Done (⌘↩)") { url = editedURL; dismiss() }
+                    .keyboardShortcut(.return, modifiers: .command)
+            }.controlSize(.small)
+        }.padding(16).frame(width: 566, height: 362)
     }
 }
 
@@ -1680,10 +1917,10 @@ private struct InlineResponseStatus: View {
                 .controlSize(.small)
         } else if let status {
             HStack(spacing: 6) {
-                Image(systemName: "checkmark.circle.fill")
+                Image(systemName: status >= 400 ? "exclamationmark.circle.fill" : "checkmark.circle.fill")
                     .foregroundStyle(WireboltTheme.statusColor(status))
                 Text(statusLabel(status))
-                    .font(.system(size: 14.5, weight: .semibold).monospacedDigit())
+                    .font(.system(size: 15))
                     .foregroundStyle(WireboltTheme.statusColor(status))
             }
             .fixedSize()
@@ -1705,7 +1942,7 @@ private struct InlineResponseStatus: View {
         case 403: "Forbidden"
         case 404: "Not Found"
         case 422: "Unprocessable Entity"
-        case 500: "Server Error"
+        case 500: "Internal Server Error"
         default: "Response"
         }
         return "\(status) \(reason)"
@@ -1717,71 +1954,117 @@ private struct WorkspaceActionButtonStyle: ButtonStyle {
 
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
-            .font(.body.weight(.medium))
+            .font(.system(size: 12, weight: .semibold))
             .foregroundStyle(.white)
             .padding(.horizontal, 13)
-            .frame(minWidth: 104, minHeight: 30)
+            .frame(minWidth: 102, minHeight: 28)
             .background(color.opacity(configuration.isPressed ? 0.78 : 1), in: .capsule)
             .opacity(configuration.isPressed ? 0.9 : 1)
     }
 }
 
+private struct NativeRequestURLField: NSViewRepresentable {
+    @Binding var text: String
+    @Binding var isEditing: Bool
+    let focusTrigger: Int
+    let active: Bool
+    let submit: () -> Void
+
+    func makeCoordinator() -> Coordinator { Coordinator(self) }
+    func makeNSView(context: Context) -> NSTextField {
+        let field = NSTextField()
+        field.isBordered = false
+        field.drawsBackground = false
+        field.font = .monospacedSystemFont(ofSize: 13, weight: .regular)
+        field.placeholderString = "Enter URL (⌘L)"
+        field.cell?.usesSingleLineMode = true
+        field.cell?.lineBreakMode = .byTruncatingTail
+        field.cell?.isScrollable = true
+        field.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        field.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        field.delegate = context.coordinator
+        field.target = context.coordinator
+        field.action = #selector(Coordinator.submit)
+        field.setAccessibilityLabel("Request URL")
+        return field
+    }
+    func updateNSView(_ field: NSTextField, context: Context) {
+        context.coordinator.parent = self
+        field.cell?.isScrollable = isEditing
+        field.cell?.lineBreakMode = isEditing ? .byClipping : .byTruncatingTail
+        if field.stringValue != text { field.stringValue = text }
+        if context.coordinator.focusTrigger != focusTrigger {
+            context.coordinator.focusTrigger = focusTrigger
+            if active { field.window?.makeFirstResponder(field); field.selectText(nil) }
+        }
+    }
+    @MainActor
+    final class Coordinator: NSObject, NSTextFieldDelegate {
+        var parent: NativeRequestURLField
+        var focusTrigger: Int
+        init(_ parent: NativeRequestURLField) { self.parent = parent; focusTrigger = parent.focusTrigger }
+        func controlTextDidBeginEditing(_ notification: Notification) { parent.isEditing = true }
+        func controlTextDidEndEditing(_ notification: Notification) { parent.isEditing = false }
+        func controlTextDidChange(_ notification: Notification) {
+            guard let field = notification.object as? NSTextField else { return }
+            parent.text = field.stringValue
+        }
+        @objc func submit() { parent.submit() }
+    }
+}
+
 private struct RequestSectionBar: View {
-    @Bindable var interface: WorkspaceUIState
+    @Bindable var interface: DocumentPresentationState
     @Bindable var session: DocumentSession
-    @State private var isShowingBulkEditor = false
+    @Binding var isBulkEditing: Bool
 
     var body: some View {
-        HStack(spacing: 18) {
+        ZStack(alignment: .leading) {
+                HStack(spacing: 10) {
             ForEach(RequestPanelSection.allCases) { section in
                 PanelTabButton(
                     title: section.rawValue,
                     badge: badge(for: section),
+                    indicator: (section == .body && session.draft.body != .empty)
+                        || (section == .auth && session.draft.authentication != .none),
                     isSelected: interface.requestSection == section,
                     action: { interface.requestSection = section }
                 )
             }
-            Spacer(minLength: 0)
-            Button("Add Field", systemImage: "plus") {
-                switch interface.requestSection {
-                case .params: session.draft.query.append(RequestField())
-                case .headers: session.draft.headers.append(RequestField())
-                case .body, .auth, .note: break
                 }
-            }
-            .labelStyle(.iconOnly)
-            .buttonStyle(.borderless)
-            .foregroundStyle(.secondary)
-            .help("Add Field")
-
-            Menu("Section Actions", systemImage: "ellipsis.circle") {
-                Button("Enable All") {
-                    updateAll(enabled: true)
+                .fixedSize(horizontal: true, vertical: false)
+                .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
+        }
+        .overlay(alignment: .trailing) {
+            HStack(spacing: 10) {
+            if interface.requestSection == .body {
+                BodyTools(requestBody: $session.draft.body)
+            } else if interface.requestSection == .auth {
+                AuthenticationTypePicker(authentication: $session.draft.authentication)
+            } else if fieldsBinding != nil {
+                Button("New Entry", systemImage: "plus") {
+                    interface.isBulkEditing = false; interface.focusNewKeyTrigger += 1
                 }
-                Button("Disable All") { updateAll(enabled: false) }
-                Button("Bulk Edit…") { isShowingBulkEditor = true }
-                    .disabled(fieldsBinding == nil)
-                Divider()
-                Button("Clear", role: .destructive, action: clearFields)
-                    .disabled(fieldsBinding?.wrappedValue.isEmpty != false)
+                .labelStyle(.iconOnly).buttonStyle(.borderless).foregroundStyle(.secondary)
+                Menu("Section Actions", systemImage: "ellipsis.circle") {
+                    Button("New Entry") { interface.isBulkEditing = false; interface.focusNewKeyTrigger += 1 }
+                    Divider()
+                    Button("Key-Value Edit") { isBulkEditing = false }
+                    Button("Bulk Edit") { isBulkEditing = true }
+                    Divider()
+                    Button("Clear All", action: clearFields)
+                }
+                .menuStyle(.borderlessButton).menuIndicator(.hidden)
+                .labelStyle(.iconOnly).foregroundStyle(.secondary).fixedSize()
             }
-            .menuStyle(.borderlessButton)
-            .menuIndicator(.hidden)
-            .labelStyle(.iconOnly)
-            .foregroundStyle(.secondary)
-            .fixedSize()
+            }
         }
         .padding(.leading, 11)
         .padding(.trailing, 10)
-        .frame(height: 34)
+        .frame(height: 32)
         .background(WireboltTheme.barBackground)
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Request sections")
-        .sheet(isPresented: $isShowingBulkEditor) {
-            if let fieldsBinding {
-                BulkFieldEditor(fields: fieldsBinding)
-            }
-        }
     }
 
     private func badge(for section: RequestPanelSection) -> Int? {
@@ -1824,37 +2107,22 @@ private struct BulkFieldEditor: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Text("Bulk Edit")
-                .font(.headline)
-            Text("One `Key: Value` per line. Prefix a line with `#` to disable it.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-            TextEditor(text: $text)
-                .font(.body.monospaced())
-                .overlay { RoundedRectangle(cornerRadius: 6).stroke(WireboltTheme.separator) }
-            HStack {
-                Spacer()
-                Button("Cancel", role: .cancel) { dismiss() }
-                Button("Apply") {
-                    fields = parse(text)
-                    dismiss()
-                }
-                .keyboardShortcut(.defaultAction)
-            }
-        }
-        .padding(20)
-        .frame(width: 620, height: 360)
+        BodyTextEditor(text: $text)
+            .onChange(of: text) { fields = parse(text) }
     }
 
     private func parse(_ source: String) -> [RequestField] {
-        source.split(separator: "\n", omittingEmptySubsequences: true).compactMap { line in
+        var unused = fields
+        return source.split(separator: "\n", omittingEmptySubsequences: true).compactMap { line in
             var value = String(line)
             let enabled = value.hasPrefix("#") == false
             if enabled == false { value.removeFirst(); value = value.trimmingCharacters(in: .whitespaces) }
             guard let separator = value.firstIndex(of: ":") else { return nil }
+            let name = String(value[..<separator]).trimmingCharacters(in: .whitespaces)
+            let index = unused.firstIndex { $0.name == name && $0.enabled == enabled }
+            let id = index.map { unused.remove(at: $0).id } ?? UUID().uuidString.lowercased()
             return RequestField(
-                name: String(value[..<separator]).trimmingCharacters(in: .whitespaces),
+                id: id, name: name,
                 value: .literal(String(value[value.index(after: separator)...]).trimmingCharacters(in: .whitespaces)),
                 enabled: enabled
             )
@@ -1865,21 +2133,29 @@ private struct BulkFieldEditor: View {
 struct PanelTabButton: View {
     let title: String
     var badge: Int?
+    var indicator = false
     let isSelected: Bool
+    var height: CGFloat = 34
     let action: () -> Void
 
     var body: some View {
         Button(action: action) {
-            HStack(spacing: 5) {
+            HStack(spacing: title == "Headers" ? 4 : 5) {
                 Text(title)
                 if let badge, badge > 0 {
-                    Text("\(badge)")
+                    Text("(\(badge))")
                         .font(.caption.monospacedDigit())
                         .foregroundStyle(WireboltTheme.success)
+                } else if indicator {
+                    Text("•︎").foregroundStyle(WireboltTheme.success)
                 }
             }
+            .font(.system(size: 13))
+            .lineLimit(1)
+            .fixedSize(horizontal: true, vertical: false)
             .foregroundStyle(isSelected ? .primary : .secondary)
-            .frame(height: 34)
+            .padding(.horizontal, 3)
+            .frame(height: height)
             .contentShape(.rect)
         }
         .buttonStyle(.plain)
@@ -1901,22 +2177,32 @@ private struct FieldEditor: View {
     let title: String
     @Binding var fields: [RequestField]
     let kind: FieldEditorKind
+    var focusTrigger = 0
+    @State private var pendingID = UUID().uuidString.lowercased()
 
     var body: some View {
         VStack(spacing: 0) {
             FieldTableHeader()
 
+            ScrollViewReader { proxy in
             ScrollView {
                 LazyVStack(spacing: 0) {
                     ForEach($fields) { $field in
-                        FieldTableRow(
+                        if field.id != pendingID { FieldTableRow(
                             field: $field,
                             onRemove: { fields.removeAll { $0.id == field.id } }
                         )
-                        .overlay(alignment: .bottom) { Divider() }
+                        }
                     }
-                    NewFieldTableRow(fields: $fields, kind: kind)
+                    NewFieldTableRow(fields: $fields, kind: kind, pendingID: $pendingID, focusTrigger: focusTrigger)
+                        .id("new-field")
                 }
+            }
+            .task(id: focusTrigger) {
+                guard focusTrigger > 0 else { return }
+                await Task.yield()
+                proxy.scrollTo("new-field", anchor: .bottom)
+            }
             }
         }
         .background(WireboltTheme.paneBackground)
@@ -1927,18 +2213,17 @@ private struct FieldTableHeader: View {
     var body: some View {
         HStack(spacing: 0) {
             Color.clear.frame(width: 27)
-            Divider()
+            Divider().frame(height: 14)
             Text("Key")
-                .frame(width: 175, alignment: .leading)
+                .frame(width: 179, alignment: .leading)
                 .padding(.leading, 4)
-            Divider()
+            Divider().frame(height: 14)
             Text("Value")
-                .frame(minWidth: 145, maxWidth: .infinity, alignment: .leading)
+                .frame(minWidth: 50, maxWidth: .infinity, alignment: .leading)
                 .padding(.leading, 4)
-            Color.clear.frame(width: 42)
         }
-        .font(.caption)
-        .foregroundStyle(.secondary)
+        .font(.system(size: 11, weight: .semibold))
+        .foregroundStyle(.primary)
         .frame(height: 28)
         .background(WireboltTheme.barBackground)
         .overlay(alignment: .bottom) { Divider() }
@@ -1953,45 +2238,35 @@ private struct FieldTableRow: View {
 
     var body: some View {
         HStack(spacing: 0) {
-            Button {
-                field.enabled.toggle()
-            } label: {
-                Image(systemName: field.enabled ? "checkmark.square.fill" : "square")
-                    .symbolRenderingMode(.palette)
-                    .foregroundStyle(
-                        field.enabled ? Color.white : Color.secondary,
-                        field.enabled ? WireboltTheme.primaryAccent : Color.clear
-                    )
-                    .font(.system(size: 16))
-            }
-            .buttonStyle(.plain)
-            .frame(width: 27)
-            .accessibilityLabel("Enabled")
-            .accessibilityValue(field.enabled ? "On" : "Off")
-            Divider()
+            Toggle("Enabled", isOn: $field.enabled).labelsHidden().toggleStyle(.checkbox)
+                .controlSize(.regular).frame(width: 27)
+            Color.clear.frame(width: 1)
             TextField("Key", text: $field.name)
                 .textFieldStyle(.plain)
-                .font(.callout.monospaced())
+                .font(.system(size: 11, design: .monospaced))
                 .frame(width: 175)
                 .frame(height: 20)
                 .padding(.horizontal, 4)
-                .offset(y: -2)
-            Divider()
+
+            Color.clear.frame(width: 1)
             TextField("Value", text: literalBinding($field.value))
                 .textFieldStyle(.plain)
-                .font(.callout.monospaced())
-                .frame(minWidth: 145, maxWidth: .infinity)
+                .font(.system(size: 11, design: .monospaced))
+                .frame(minWidth: 50, maxWidth: .infinity)
                 .frame(height: 20)
                 .padding(.horizontal, 4)
-                .offset(y: -2)
+                .padding(.trailing, 5)
+        }
+        .overlay(alignment: .trailing) {
             Button("Remove \(field.name)", systemImage: "trash", action: onRemove)
                 .labelStyle(.iconOnly)
                 .buttonStyle(.borderless)
                 .foregroundStyle(.secondary)
                 .frame(width: 42)
-                .opacity(isHovered ? 1 : 0.55)
+                .opacity(isHovered ? 1 : 0)
+                .allowsHitTesting(isHovered)
         }
-        .frame(height: 32)
+        .frame(height: 28)
         .background(isHovered ? Color.primary.opacity(0.035) : .clear)
         .onHover { isHovered = $0 }
     }
@@ -2007,6 +2282,8 @@ private struct FieldTableRow: View {
 private struct NewFieldTableRow: View {
     @Binding var fields: [RequestField]
     let kind: FieldEditorKind
+    @Binding var pendingID: String
+    var focusTrigger = 0
 
     @State private var name = ""
     @State private var value = ""
@@ -2035,15 +2312,15 @@ private struct NewFieldTableRow: View {
                     .buttonStyle(.plain)
                     .frame(width: 27)
                 }
-                Divider()
+                Color.clear.frame(width: 1)
                 TextField("New Key (⌘K)", text: $name)
                     .textFieldStyle(.plain)
-                    .font(.callout.monospaced())
+                    .font(.system(size: 11, design: .monospaced))
                     .focused($focusedField, equals: .key)
                     .frame(width: 175)
                     .frame(height: 20)
                     .padding(.horizontal, 4)
-                    .offset(y: -2)
+
                     .onSubmit { focusedField = .value }
                     .popover(isPresented: $showingSuggestions, arrowEdge: .bottom) {
                         HeaderSuggestions(query: name) { suggestion in
@@ -2052,15 +2329,16 @@ private struct NewFieldTableRow: View {
                             focusedField = .value
                         }
                     }
-                Divider()
+                Color.clear.frame(width: 1)
                 TextField("New Value", text: $value)
                     .textFieldStyle(.plain)
-                    .font(.callout.monospaced())
+                    .font(.system(size: 11, design: .monospaced))
                     .focused($focusedField, equals: .value)
-                    .frame(minWidth: 145, maxWidth: .infinity)
+                    .frame(minWidth: 50, maxWidth: .infinity)
                     .frame(height: 20)
                     .padding(.horizontal, 4)
-                    .offset(y: -2)
+                    .padding(.trailing, 5)
+
                     .onSubmit(commit)
                     .popover(isPresented: $showingValueSuggestions, arrowEdge: .bottom) {
                         HeaderValueSuggestions(query: value) { suggestion in
@@ -2069,9 +2347,9 @@ private struct NewFieldTableRow: View {
                             commit()
                         }
                     }
-                if name.isEmpty {
-                    Color.clear.frame(width: 42)
-                } else {
+            }
+            .overlay(alignment: .trailing) {
+                if !name.isEmpty {
                     Button("Discard New Field", systemImage: "trash", action: discard)
                         .labelStyle(.iconOnly)
                         .buttonStyle(.borderless)
@@ -2079,20 +2357,42 @@ private struct NewFieldTableRow: View {
                         .frame(width: 42)
                 }
             }
-            .frame(height: 32)
+            .frame(height: 28)
 
             if !name.isEmpty {
-                Divider()
+                Color.clear.frame(width: 1)
                 EmptyNewFieldRow()
             }
         }
         .foregroundStyle(.secondary)
-        .onChange(of: name) { updateSuggestions() }
-        .onChange(of: value) { updateValueSuggestions() }
+        .onChange(of: fields) { _, fields in
+            if (!name.isEmpty || !value.isEmpty) && !fields.contains(where: { $0.id == pendingID }) {
+                name = ""; value = ""; isEnabled = true
+            }
+        }
+        .task(id: focusTrigger) {
+            guard focusTrigger > 0 else { return }
+            if !name.isEmpty { commit() }
+            await Task.yield()
+            focusedField = .key
+        }
+        .onChange(of: name) { synchronizePending(); updateSuggestions() }
+        .onChange(of: value) { synchronizePending(); updateValueSuggestions() }
+        .onChange(of: isEnabled) { synchronizePending() }
         .onChange(of: focusedField) {
             updateSuggestions()
             updateValueSuggestions()
         }
+    }
+
+    private func synchronizePending() {
+        if name.isEmpty && value.isEmpty {
+            fields.removeAll { $0.id == pendingID }
+            return
+        }
+        let field = RequestField(id: pendingID, name: name, value: .literal(value), enabled: isEnabled)
+        if let index = fields.firstIndex(where: { $0.id == pendingID }) { fields[index] = field }
+        else { fields.append(field) }
     }
 
     private func updateSuggestions() {
@@ -2110,12 +2410,15 @@ private struct NewFieldTableRow: View {
 
     private func commit() {
         guard !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
-        fields.append(RequestField(name: name, value: .literal(value), enabled: isEnabled))
+        synchronizePending()
+        pendingID = UUID().uuidString.lowercased()
         discard()
         focusedField = .key
     }
 
     private func discard() {
+        fields.removeAll { $0.id == pendingID }
+        pendingID = UUID().uuidString.lowercased()
         name = ""
         value = ""
         isEnabled = true
@@ -2128,19 +2431,19 @@ private struct EmptyNewFieldRow: View {
     var body: some View {
         HStack(spacing: 0) {
             Color.clear.frame(width: 27)
-            Divider()
+            Color.clear.frame(width: 1)
             Text("New Key (⌘K)")
                 .frame(width: 175, alignment: .leading)
                 .padding(.horizontal, 4)
-            Divider()
+            Color.clear.frame(width: 1)
             Text("New Value")
-                .frame(minWidth: 145, maxWidth: .infinity, alignment: .leading)
+                .frame(minWidth: 50, maxWidth: .infinity, alignment: .leading)
                 .padding(.horizontal, 4)
-            Color.clear.frame(width: 42)
+                .padding(.trailing, 5)
         }
-        .font(.callout.monospaced())
+        .font(.system(size: 11, design: .monospaced))
         .foregroundStyle(.tertiary)
-        .frame(height: 32)
+        .frame(height: 28)
     }
 }
 
@@ -2225,37 +2528,75 @@ private struct AuthenticationEditor: View {
     @State private var clientSecretMaterial = ""
 
     var body: some View {
-        Form {
-            Picker("Authentication", selection: kindBinding) {
-                ForEach(AuthenticationKind.allCases) { kind in
-                    Text(kind.title).tag(kind)
-                }
-            }
-
+        Group {
             switch authentication {
             case .none:
-                Text("No Authorization header will be added.")
-                    .foregroundStyle(.secondary)
+                LightweightPlaceholder(title: "No Auth", systemImage: "lock.open")
             case let .basic(username, password):
-                TextField("Username", text: Binding(
-                    get: { username.editableValue },
-                    set: { newValue in
-                        guard case let .basic(_, currentPassword) = authentication else { return }
-                        authentication = .basic(username: .literal(newValue), password: currentPassword)
+                let user = model.secretMaterial(for: username)
+                let secret = model.secretMaterial(for: password)
+                Grid(alignment: .leading, horizontalSpacing: 8, verticalSpacing: 5) {
+                    GridRow {
+                        Text("Username").gridColumnAlignment(.trailing)
+                        TextField("", text: credential(username, role: "username"))
                     }
-                ))
-                TextField("Password Secret", text: Binding(
-                    get: { password.editableValue },
-                    set: { newValue in
-                        guard case let .basic(currentUsername, _) = authentication else { return }
-                        authentication = .basic(username: currentUsername, password: .secret(newValue))
+                    GridRow {
+                        Text("Password")
+                        TextField("", text: credential(password, role: "password"))
                     }
-                ))
+                    GridRow(alignment: .top) {
+                        Text("Generated Header").padding(.top, 3)
+                        Text(user.isEmpty && secret.isEmpty ? "Basic" : "Basic " + Data("\(user):\(secret)".utf8).base64EncodedString())
+                            .foregroundStyle(.secondary).padding(.top, 3)
+                            .textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                }
+                .font(.system(size: 13)).controlSize(.small)
+                .textFieldStyle(.roundedBorder).padding(.horizontal, 20).padding(.top, 16)
+                .task(id: password) { await model.loadSecret(password) }
+                .task(id: username) { await model.loadSecret(username) }
             case let .bearer(token):
-                TextField("Token Secret", text: Binding(
-                    get: { token.editableValue },
-                    set: { authentication = .bearer(token: .secret($0)) }
-                ))
+                HStack(alignment: .top, spacing: 10) {
+                    Text("Bearer Token").frame(width: 80, alignment: .trailing).padding(.top, 5)
+                    TextEditor(text: credential(token, role: "token"))
+                        .font(.system(size: 13)).scrollContentBackground(.hidden)
+                        .padding(4).frame(height: 162)
+                        .background(Color(nsColor: .textBackgroundColor), in: .rect(cornerRadius: 5))
+                        .overlay { RoundedRectangle(cornerRadius: 5).stroke(WireboltTheme.separator) }
+                }.padding(20)
+                    .task(id: token) { await model.loadSecret(token) }
+            case .apiKey, .oauth2:
+                advancedAuthentication
+            }
+        }
+        .font(.system(size: 12))
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+    }
+
+    private func credential(_ source: ValueSource, role: String) -> Binding<String> {
+        Binding(
+            get: { model.secretMaterial(for: source) },
+            set: { value in
+                let name: String
+                if case let .secret(existing) = source { name = existing }
+                else { name = "request.\(session.requestID).\(role)" }
+                model.editSecret(name: name, value: value)
+                switch authentication {
+                case let .basic(username, password):
+                    authentication = role == "username"
+                        ? .basic(username: .secret(name), password: password)
+                        : .basic(username: username, password: .secret(name))
+                case .bearer: authentication = .bearer(token: .secret(name))
+                default: break
+                }
+            }
+        )
+    }
+
+    private var advancedAuthentication: some View {
+        Form {
+            switch authentication {
+            case .none, .basic, .bearer: EmptyView()
             case let .apiKey(placement, name, value):
                 Picker("Placement", selection: Binding(
                     get: { placement },
@@ -2330,29 +2671,6 @@ private struct AuthenticationEditor: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
 
-    private var kindBinding: Binding<AuthenticationKind> {
-        Binding(
-            get: {
-                switch authentication {
-                case .none: .none
-                case .basic: .basic
-                case .bearer: .bearer
-                case .apiKey: .apiKey
-                case .oauth2: .oauth2
-                }
-            },
-            set: {
-                authentication = switch $0 {
-                case .none: .none
-                case .basic: .basic(username: .literal(""), password: .secret("auth.password"))
-                case .bearer: .bearer(token: .secret("auth.token"))
-                case .apiKey: .apiKey(placement: .header, name: "X-API-Key", value: .secret("auth.api-key"))
-                case .oauth2: .oauth2(configuration: OAuth2Configuration())
-                }
-            }
-        )
-    }
-
     private func oauthBinding<Value>(
         _ keyPath: WritableKeyPath<OAuth2Configuration, Value>
     ) -> Binding<Value> {
@@ -2372,6 +2690,38 @@ private struct AuthenticationEditor: View {
     }
 }
 
+private struct AuthenticationTypePicker: View {
+    @Binding var authentication: RequestAuthentication
+    var body: some View {
+        Picker("Auth Type", selection: kindBinding) {
+            ForEach(AuthenticationKind.allCases.filter { [.none, .basic, .bearer, kindBinding.wrappedValue].contains($0) }) { kind in Text(kind.title).tag(kind) }
+        }.font(.system(size: 13)).controlSize(.small).frame(width: 180)
+    }
+    private var kindBinding: Binding<AuthenticationKind> {
+        Binding(
+            get: {
+                switch authentication {
+                case .none: .none
+                case .basic: .basic
+                case .bearer: .bearer
+                case .apiKey: .apiKey
+                case .oauth2: .oauth2
+                }
+            },
+            set: {
+                authentication = switch $0 {
+                case .none: .none
+                case .basic: .basic(username: .literal(""), password: .secret("auth.\(UUID().uuidString).password"))
+                case .bearer: .bearer(token: .secret("auth.\(UUID().uuidString).token"))
+                case .apiKey: .apiKey(placement: .header, name: "X-API-Key", value: .secret("auth.api-key"))
+                case .oauth2: .oauth2(configuration: OAuth2Configuration())
+                }
+            }
+        )
+    }
+
+}
+
 private enum AuthenticationKind: CaseIterable, Identifiable {
     case none
     case basic
@@ -2384,7 +2734,7 @@ private enum AuthenticationKind: CaseIterable, Identifiable {
     var title: String {
         switch self {
         case .none: "None"
-        case .basic: "Basic Auth"
+        case .basic: "Basic"
         case .bearer: "Bearer Token"
         case .apiKey: "API Key"
         case .oauth2: "OAuth 2.0"
@@ -2394,93 +2744,43 @@ private enum AuthenticationKind: CaseIterable, Identifiable {
 
 private struct BodyEditor: View {
     @Binding var requestBody: RequestBody
+    @Binding var headers: [RequestField]
     @State private var wrapsLines = true
+    @State private var pendingContentType: String?
 
     var body: some View {
         VStack(spacing: 0) {
-            HStack(spacing: 8) {
-                Picker("Body type", selection: kindBinding) {
-                    ForEach(BodyKind.allCases) { kind in
-                        Text(kind.title).tag(kind)
-                    }
-                }
-                .labelsHidden()
-                .frame(width: 92)
-
-                if requestBody.isTextual {
-                    Text("UTF-8")
-                        .foregroundStyle(.secondary)
-                }
-
-                Spacer()
-                Button("Format", systemImage: "text.alignleft", action: formatBody)
-                    .labelStyle(.iconOnly)
-                    .buttonStyle(.borderless)
-                    .help("Format Body")
-                    .disabled(!requestBody.isTextual)
-                Button("Wrap Lines", systemImage: "arrow.turn.down.left") {
-                    wrapsLines.toggle()
-                }
-                    .labelStyle(.iconOnly)
-                    .buttonStyle(.borderless)
-                    .help("Wrap Lines")
-                    .foregroundStyle(wrapsLines ? WireboltTheme.primaryAccent : .secondary)
-            }
-            .padding(.horizontal, 12)
-            .frame(height: 43)
-            .background(WireboltTheme.barBackground)
-            Divider()
-
             switch requestBody {
             case .empty:
                 LightweightPlaceholder(
-                    title: "No Request Body",
-                    systemImage: "doc",
-                    description: "Choose JSON, Text, or Form to add a body."
+                    title: "No Body",
+                    systemImage: "nosign"
                 )
             case let .text(contentType, value):
-                VStack(spacing: 0) {
-                    TextField("Content-Type (optional)", text: Binding(
-                        get: { contentType ?? "" },
-                        set: { requestBody = .text(contentType: $0.isEmpty ? nil : $0, value: value) }
-                    ))
-                    .textFieldStyle(.plain)
-                    .padding(10)
-                    Divider()
-                    BodyTextEditor(text: Binding(
-                        get: { value },
-                        set: { requestBody = .text(contentType: contentType, value: $0) }
-                    ))
-                }
+                BodyTextEditor(text: Binding(
+                    get: { value },
+                    set: { requestBody = .text(contentType: contentType, value: $0) }
+                ))
             case let .json(value):
                 BodyTextEditor(text: Binding(
                     get: { value },
                     set: { requestBody = .json(value: $0) }
-                ))
+                ), language: .json)
             case let .xml(value):
                 BodyTextEditor(text: Binding(
                     get: { value },
                     set: { requestBody = .xml(value: $0) }
-                ))
+                ), language: .xml)
             case let .html(value):
                 BodyTextEditor(text: Binding(
                     get: { value },
                     set: { requestBody = .html(value: $0) }
-                ))
+                ), language: .html)
             case let .raw(contentType, value):
-                VStack(spacing: 0) {
-                    TextField("Content-Type (optional)", text: Binding(
-                        get: { contentType ?? "" },
-                        set: { requestBody = .raw(contentType: $0.isEmpty ? nil : $0, value: value) }
-                    ))
-                    .textFieldStyle(.plain)
-                    .padding(10)
-                    Divider()
-                    BodyTextEditor(text: Binding(
-                        get: { value },
-                        set: { requestBody = .raw(contentType: contentType, value: $0) }
-                    ))
-                }
+                BodyTextEditor(text: Binding(
+                    get: { value },
+                    set: { requestBody = .raw(contentType: contentType, value: $0) }
+                ))
             case let .formURLEncoded(fields):
                 FieldEditor(
                     title: "Form Fields",
@@ -2499,11 +2799,63 @@ private struct BodyEditor: View {
                 FileBodyEditor(
                     path: path,
                     contentType: contentType,
-                    update: { requestBody = .file(path: $0, contentType: $1) }
+                    update: { path, mime in
+                        requestBody = .file(path: path, contentType: mime)
+                        if !path.isEmpty, let mime,
+                           headers.first(where: { $0.enabled && $0.name.caseInsensitiveCompare("Content-Type") == .orderedSame })?.value != .literal(mime) {
+                            pendingContentType = mime
+                        }
+                    }
                 )
             }
         }
         .background(WireboltTheme.paneBackground)
+        .alert("Change Content-Type Header", isPresented: Binding(
+            get: { pendingContentType != nil }, set: { if !$0 { pendingContentType = nil } }
+        )) {
+            Button("Cancel", role: .cancel) { pendingContentType = nil }
+            Button("Yes") {
+                guard let mime = pendingContentType else { return }
+                if let index = headers.firstIndex(where: { $0.name.caseInsensitiveCompare("Content-Type") == .orderedSame }) {
+                    headers[index].value = .literal(mime)
+                    headers[index].enabled = true
+                } else { headers.append(RequestField(name: "Content-Type", value: .literal(mime))) }
+                pendingContentType = nil
+            }.keyboardShortcut(.defaultAction)
+        } message: { Text("Do you want to set Content-Type: \(pendingContentType ?? "")") }
+    }
+
+}
+
+private struct BodyTools: View {
+    @Binding var requestBody: RequestBody
+    @AppStorage("editor.wordWrap") private var wrapsLines = true
+    var body: some View {
+        HStack(spacing: 7) {
+            Picker("Content Type", selection: kindBinding) {
+                ForEach(BodyKind.allCases) { kind in
+                    Text(kind.title).tag(kind)
+                    if [.form, .html, .raw, .file].contains(kind) { Divider() }
+                }
+            }
+            .font(.system(size: 13)).controlSize(.small).frame(width: 168)
+            if case let .multipart(parts) = requestBody {
+                Button("Add Part", systemImage: "plus") { requestBody = .multipart(parts: parts + [MultipartPart()]) }
+                    .labelStyle(.iconOnly).buttonStyle(.borderless)
+            } else {
+                Button("Format Body", systemImage: "wand.and.stars", action: formatBody)
+                    .labelStyle(.iconOnly).buttonStyle(.borderless).disabled(!requestBody.isTextual)
+            }
+            Menu("Body Actions", systemImage: "ellipsis.circle") {
+                if case .multipart = requestBody {
+                    Button("Add Part") {
+                        if case let .multipart(parts) = requestBody { requestBody = .multipart(parts: parts + [MultipartPart()]) }
+                    }
+                    Button("Clear All") { requestBody = .multipart(parts: []) }
+                }
+                EditorPreferencesMenu()
+            }.menuStyle(.borderlessButton).menuIndicator(.hidden).labelStyle(.iconOnly).fixedSize()
+        }.fixedSize()
     }
 
     private var kindBinding: Binding<BodyKind> {
@@ -2511,7 +2863,7 @@ private struct BodyEditor: View {
             get: {
                 switch requestBody {
                 case .empty: .empty
-                case .text: .text
+                case .text: .raw
                 case .json: .json
                 case .xml: .xml
                 case .html: .html
@@ -2521,16 +2873,20 @@ private struct BodyEditor: View {
                 case .file: .file
                 }
             },
-            set: {
-                requestBody = switch $0 {
+            set: { kind in
+                let previous: String = switch requestBody {
+                case let .text(_, value), let .json(value), let .xml(value), let .html(value), let .raw(_, value): value
+                default: ""
+                }
+                requestBody = switch kind {
                 case .empty: .empty
-                case .text: .text(contentType: nil, value: "")
-                case .json: .json(value: "{\n  \n}")
-                case .xml: .xml(value: "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<root></root>")
-                case .html: .html(value: "<!doctype html>\n<html>\n</html>")
-                case .raw: .raw(contentType: nil, value: "")
+                case .text: .text(contentType: nil, value: previous)
+                case .json: .json(value: previous.isEmpty ? "{\n  \n}" : previous)
+                case .xml: .xml(value: previous)
+                case .html: .html(value: previous)
+                case .raw: .raw(contentType: nil, value: previous)
                 case .form: .formURLEncoded(fields: [])
-                case .multipart: .multipart(parts: [])
+                case .multipart: .multipart(parts: previous.isEmpty ? [] : [MultipartPart(name: "name", value: .literal(previous))])
                 case .file: .file(path: "", contentType: nil)
                 }
             }
@@ -2560,35 +2916,13 @@ private struct BodyEditor: View {
 
 private struct BodyTextEditor: View {
     @Binding var text: String
-
+    var language: SyntaxLanguage = .plain
+    var label = "Request body"
+    @State private var find = EditorFindState()
     var body: some View {
-        HStack(alignment: .top, spacing: 0) {
-            Text(lineNumbers)
-                .font(.system(.body, design: .monospaced))
-                .monospacedDigit()
-                .foregroundStyle(.tertiary)
-                .multilineTextAlignment(.trailing)
-                .lineSpacing(3)
-                .frame(width: 38, alignment: .trailing)
-                .padding(.top, 9)
-                .padding(.trailing, 8)
-                .accessibilityHidden(true)
-
-            Divider()
-
-            TextEditor(text: $text)
-                .font(.system(.body, design: .monospaced))
-                .scrollContentBackground(.hidden)
-                .background(WireboltTheme.paneBackground)
-                .padding(.horizontal, 8)
-                .accessibilityLabel("Request body")
-        }
-        .background(WireboltTheme.paneBackground)
-    }
-
-    private var lineNumbers: String {
-        let count = max(text.components(separatedBy: .newlines).count, 1)
-        return (1 ... count).map(String.init).joined(separator: "\n")
+        NativeCodeEditor(text: $text, language: language, label: label, find: find)
+            .frame(maxWidth: .infinity, maxHeight: .infinity).clipped()
+            .editorFindOverlay(find)
     }
 }
 
@@ -2603,17 +2937,18 @@ private enum BodyKind: CaseIterable, Identifiable {
     case multipart
     case file
 
+    static var allCases: [Self] { [.json, .form, .xml, .html, .raw, .multipart, .file, .empty] }
     var id: Self { self }
 
     var title: String {
         switch self {
-        case .empty: "None"
+        case .empty: "No Body"
         case .json: "JSON"
         case .text: "Text"
         case .xml: "XML"
         case .html: "HTML"
-        case .raw: "Raw"
-        case .form: "Form"
+        case .raw: "Raw Text"
+        case .form: "Form URLEncoded"
         case .multipart: "Multipart"
         case .file: "File"
         }
@@ -2631,71 +2966,152 @@ private extension RequestBody {
 
 private struct MultipartEditor: View {
     @Binding var parts: [MultipartPart]
-
     var body: some View {
         VStack(spacing: 0) {
-            HStack {
-                Text("Multipart Parts")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                Spacer()
-                Button("Add Part", systemImage: "plus") {
-                    parts.append(MultipartPart())
-                }
-                .buttonStyle(.borderless)
-            }
-            .padding(.horizontal, 10)
-            .frame(height: 32)
+            HStack(spacing: 0) {
+                Text("Part").frame(width: 99, alignment: .leading).padding(.leading, 10)
+                Divider().frame(height: 16)
+                Text("Content Type").frame(width: 118, alignment: .leading).padding(.leading, 6)
+                Divider().frame(height: 16)
+                Text("File Name").frame(width: 98, alignment: .leading).padding(.leading, 6)
+                Divider().frame(height: 16)
+                Text("Value").frame(width: 175, alignment: .leading).padding(.leading, 6)
+                Spacer(minLength: 0)
+            }.font(.system(size: 11)).frame(height: 28).background(WireboltTheme.barBackground)
             Divider()
-            ScrollView {
-                LazyVStack(spacing: 0) {
+            ScrollView([.horizontal, .vertical]) {
+                VStack(alignment: .leading, spacing: 0) {
                     ForEach($parts) { $part in
-                        HStack(spacing: 7) {
-                            Toggle("Enabled", isOn: $part.enabled)
-                                .labelsHidden()
-                            TextField("Name", text: $part.name)
-                                .frame(width: 140)
-                            Picker("Type", selection: $part.kind) {
-                                Text("Text").tag(MultipartPartKind.text)
-                                Text("File").tag(MultipartPartKind.file)
-                            }
-                            .labelsHidden()
-                            .frame(width: 78)
-                            if part.kind == .text {
-                                TextField("Value", text: Binding(
-                                    get: { part.value.editableValue },
-                                    set: { part.value = .literal($0) }
-                                ))
-                            } else {
-                                TextField("File", text: Binding(
-                                    get: { part.filePath ?? "" },
-                                    set: { part.filePath = $0.isEmpty ? nil : $0 }
-                                ))
-                                Button("Choose…") {
-                                    if let path = chooseFile() { part.filePath = path }
-                                }
-                            }
-                            Button("Remove", systemImage: "trash") {
-                                parts.removeAll { $0.id == part.id }
-                            }
-                            .labelStyle(.iconOnly)
-                            .buttonStyle(.borderless)
-                        }
-                        .padding(.horizontal, 10)
-                        .frame(height: 34)
-                        .overlay(alignment: .bottom) { Divider() }
+                        MultipartRow(part: $part) { parts.removeAll { $0.id == part.id } }
                     }
-                }
+                }.frame(minWidth: 520, maxWidth: .infinity, alignment: .leading)
             }
         }
     }
+}
 
-    private func chooseFile() -> String? {
+private struct MultipartRow: View {
+    @Binding var part: MultipartPart
+    let remove: () -> Void
+    @State private var isEditing = false
+    var body: some View {
+        HStack(spacing: 0) {
+            Text(part.name).frame(width: 99, alignment: .leading).padding(.leading, 10)
+            Text(part.contentType ?? "").frame(width: 119, alignment: .leading).padding(.leading, 6)
+            Text(part.fileName ?? part.filePath.map { URL(fileURLWithPath: $0).lastPathComponent } ?? "")
+                .frame(width: 99, alignment: .leading).padding(.leading, 6)
+            Text(part.kind == .text ? String(part.value.editableValue.prefix(12)) : "<…")
+                .lineLimit(1).frame(width: 31, alignment: .leading).padding(.leading, 6)
+            Button("Export", systemImage: "square.and.arrow.up", action: export).controlSize(.mini).frame(width: 78)
+            Button("Edit", systemImage: "pencil") { isEditing = true }.controlSize(.mini).frame(width: 63)
+                .popover(isPresented: $isEditing, arrowEdge: .bottom) {
+                    MultipartPartEditor(part: $part, remove: { isEditing = false; remove() })
+                }
+            Spacer(minLength: 0)
+        }.font(.system(size: 11)).lineLimit(1).frame(height: 28)
+            .onAppear { if part.name.isEmpty { isEditing = true } }
+    }
+    private func export() {
+        let panel = NSSavePanel()
+        panel.nameFieldStringValue = part.fileName ?? (part.name.isEmpty ? "part" : part.name)
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        do {
+            let data: Data
+            switch part.kind {
+            case .file: data = try Data(contentsOf: URL(fileURLWithPath: part.filePath ?? ""), options: .mappedIfSafe)
+            case .binary:
+                guard let decoded = Data(base64Encoded: part.value.editableValue) else { NSSound.beep(); return }
+                data = decoded
+            case .text: data = Data(part.value.editableValue.utf8)
+            }
+            try data.write(to: url, options: .atomic)
+        } catch { NSSound.beep() }
+    }
+}
+
+private struct MultipartPartEditor: View {
+    @Binding var part: MultipartPart
+    let remove: () -> Void
+    @Environment(\.dismiss) private var dismiss
+    @State private var isEditingValue = false
+    @State private var text = ""
+    var body: some View {
+        VStack(spacing: 0) {
+            Grid(alignment: .leading, horizontalSpacing: 8, verticalSpacing: 2) {
+                GridRow {
+                    Text("Part:").gridColumnAlignment(.trailing)
+                    TextField("", text: $part.name).frame(height: 26)
+                }
+                GridRow {
+                    Text("Content Type:")
+                    HStack(spacing: 0) {
+                        TextField("", text: optional(\.contentType))
+                        Menu("Content Type") {
+                            ForEach(["text/plain", "application/json", "application/xml", "application/octet-stream", "image/png"], id: \.self) { type in
+                                Button(type) { part.contentType = type }
+                            }
+                        }.labelsHidden().frame(width: 26)
+                    }.frame(height: 26)
+                }
+                GridRow {
+                    Text("File Name:")
+                    TextField("", text: optional(\.fileName)).frame(height: 26)
+                }
+                GridRow(alignment: .top) {
+                    Text("Value:").padding(.top, 4)
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("<Double-click to edit>").padding(4)
+                            .frame(maxWidth: .infinity, minHeight: 82, maxHeight: 82, alignment: .topLeading)
+                            .background(WireboltTheme.paneBackground).border(WireboltTheme.separator)
+                            .onTapGesture(count: 2, perform: editValue)
+                            .accessibilityAction(named: "Edit Value", editValue)
+                        Button("Select File…", action: selectFile).controlSize(.small)
+                    }.padding(.top, 6)
+                }
+            }.textFieldStyle(.roundedBorder)
+            Spacer()
+            HStack {
+                Button("Delete this Part", systemImage: "trash", action: remove)
+                Spacer()
+                Button("OK") { dismiss() }.keyboardShortcut(.defaultAction)
+            }.controlSize(.small)
+        }.font(.system(size: 12)).padding(20).frame(width: 510, height: 298)
+            .sheet(isPresented: $isEditingValue) {
+                VStack(spacing: 12) {
+                    BodyTextEditor(text: $text)
+                    HStack {
+                        Spacer()
+                        Button("Cancel") { isEditingValue = false }.keyboardShortcut(.cancelAction)
+                        Button("Done") {
+                            if part.kind == .binary {
+                                guard let data = try? WebSocketBinaryEncoding.hex.decode(text) else { NSSound.beep(); return }
+                                part.value = .literal(data.base64EncodedString())
+                            } else { part.kind = .text; part.filePath = nil; part.value = .literal(text) }
+                            isEditingValue = false
+                        }
+                            .keyboardShortcut(.defaultAction)
+                    }
+                }.padding(16).frame(width: 566, height: 362)
+            }
+    }
+    private func optional(_ keyPath: WritableKeyPath<MultipartPart, String?>) -> Binding<String> {
+        Binding(get: { part[keyPath: keyPath] ?? "" }, set: { part[keyPath: keyPath] = $0.isEmpty ? nil : $0 })
+    }
+    private func editValue() {
+        if part.kind == .binary, let data = Data(base64Encoded: part.value.editableValue) {
+            text = data.map { String(format: "%02X", $0) }.joined(separator: " ")
+        } else { text = part.value.editableValue }
+        isEditingValue = true
+    }
+    private func selectFile() {
         let panel = NSOpenPanel()
-        panel.canChooseFiles = true
         panel.canChooseDirectories = false
         panel.allowsMultipleSelection = false
-        return panel.runModal() == .OK ? panel.url?.path : nil
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        part.kind = .file
+        part.filePath = url.path
+        part.fileName = url.lastPathComponent
+        part.contentType = UTType(filenameExtension: url.pathExtension)?.preferredMIMEType ?? "application/octet-stream"
     }
 }
 
@@ -2705,25 +3121,32 @@ private struct FileBodyEditor: View {
     let update: (String, String?) -> Void
 
     var body: some View {
-        Form {
-            LabeledContent("File") {
-                HStack {
-                    TextField("Choose a file", text: Binding(
-                        get: { path },
-                        set: { update($0, contentType) }
-                    ))
-                    Button("Choose…", action: choose)
+        VStack(spacing: 0) {
+            Image(systemName: "paperclip.circle.fill").font(.system(size: 42)).foregroundStyle(.secondary)
+            Text(path.isEmpty ? "Select any file on your Mac" : path)
+                .font(.system(size: 13)).foregroundStyle(.secondary)
+                .lineLimit(1).truncationMode(.middle).padding(.horizontal, 20).padding(.top, 20)
+            if !path.isEmpty {
+                Button("Show In Finder…") { NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: path)]) }
+                    .padding(.top, 6)
+            }
+            Divider().frame(width: 200).padding(.top, 14).padding(.bottom, 16)
+            if path.isEmpty { Button("Select Local File…", action: choose) }
+            else {
+                HStack(spacing: 8) {
+                    Button("Replace…", action: choose)
+                    Button("Clear") { update("", contentType) }
                 }
             }
-            TextField("Content-Type", text: Binding(
-                get: { contentType ?? "" },
-                set: { update(path, $0.isEmpty ? nil : $0) }
-            ))
-            Text("The file path is passed to Rust; file contents never cross the Swift bridge.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
         }
-        .formStyle(.grouped)
+        .font(.system(size: 13)).controlSize(.regular)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .contentShape(.rect)
+        .dropDestination(for: URL.self) { urls, _ in
+            guard let file = urls.first, file.isFileURL else { return false }
+            update(file.path, UTType(filenameExtension: file.pathExtension)?.preferredMIMEType ?? "application/octet-stream")
+            return true
+        }
     }
 
     private func choose() {
@@ -2732,7 +3155,7 @@ private struct FileBodyEditor: View {
         panel.canChooseDirectories = false
         panel.allowsMultipleSelection = false
         if panel.runModal() == .OK, let selected = panel.url {
-            update(selected.path, contentType)
+            update(selected.path, UTType(filenameExtension: selected.pathExtension)?.preferredMIMEType ?? "application/octet-stream")
         }
     }
 }
@@ -2783,26 +3206,46 @@ struct LightweightPlaceholder: View {
     var description: String?
 
     var body: some View {
-        ContentUnavailableView(
-            title,
-            systemImage: systemImage,
-            description: description.map(Text.init)
-        )
+        VStack(spacing: 10) {
+            Image(systemName: systemImage).font(.system(size: 32, weight: .light))
+            if !title.isEmpty { Text(title).font(.system(size: 13)) }
+            if let description {
+                Text(description).font(.system(size: 12)).multilineTextAlignment(.center).frame(maxWidth: 250)
+            }
+        }
+        .foregroundStyle(.secondary)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
         .accessibilityElement(children: .combine)
     }
 }
 
+private struct ToolbarSpace: NSViewRepresentable {
+    var width: Double
+    func makeNSView(context: Context) -> Space { Space() }
+    func updateNSView(_ view: Space, context: Context) {
+        view.width = width
+        view.invalidateIntrinsicContentSize()
+    }
+    final class Space: NSView {
+        var width = 0.0
+        override var intrinsicContentSize: NSSize { NSSize(width: width, height: 1) }
+    }
+}
+
 private struct WindowConfigurator: NSViewRepresentable {
+    var sidebarWidth: Double
     func makeNSView(context _: Context) -> WindowConfigurationView {
         WindowConfigurationView()
     }
 
     func updateNSView(_ view: WindowConfigurationView, context _: Context) {
+        view.sidebarWidth = sidebarWidth
+        view.updateSidebarOutline()
         view.scheduleMenuOrderMatch()
     }
 }
 
-private struct SidebarMaterialView: NSViewRepresentable {
+struct SidebarMaterialView: NSViewRepresentable {
     func makeNSView(context _: Context) -> NSVisualEffectView {
         let view = NSVisualEffectView()
         view.material = .sidebar
@@ -2819,55 +3262,29 @@ private struct SidebarMaterialView: NSViewRepresentable {
 
 private struct EnvironmentPopup: View {
     @Bindable var model: WireboltModel
-    @State private var editingEnvironment: EnvironmentDraft?
+    @State private var isEditingEnvironments = false
 
     var body: some View {
-        Menu {
-            Button {
-                model.selectedEnvironmentID = nil
-            } label: {
-                environmentLabel("Global Environment", selected: model.selectedEnvironmentID == nil)
+        Picker("Environment", selection: Binding(
+            get: { model.selectedEnvironmentID ?? WorkspaceDraft.globalEnvironmentID },
+            set: { selection in
+                if selection == "configure" { isEditingEnvironments = true }
+                else { model.selectedEnvironmentID = selection == WorkspaceDraft.globalEnvironmentID ? nil : selection }
             }
-            ForEach(model.workspace.environments.sorted(by: { $0.name < $1.name })) { environment in
-                Button {
-                    model.selectedEnvironmentID = environment.id
-                } label: {
-                    environmentLabel(
-                        environment.name,
-                        selected: model.selectedEnvironmentID == environment.id
-                    )
-                }
+        )) {
+            Text("Global Environment").tag(WorkspaceDraft.globalEnvironmentID)
+            ForEach(model.workspace.environments.filter { $0.id != WorkspaceDraft.globalEnvironmentID }.sorted(by: { $0.name < $1.name })) { environment in
+                Text(environment.name).tag(environment.id)
             }
             Divider()
-            Button("New Environment…", systemImage: "plus") {
-                editingEnvironment = model.makeNewEnvironment()
-            }
-            if let selectedEnvironment {
-                Button("Edit \(selectedEnvironment.name)…", systemImage: "slider.horizontal.3") {
-                    editingEnvironment = selectedEnvironment
-                }
-                Button("Delete \(selectedEnvironment.name)", systemImage: "trash", role: .destructive) {
-                    Task { await model.deleteEnvironment(id: selectedEnvironment.id) }
-                }
-            }
-        } label: {
-            HStack(spacing: 7) {
-                Text(selectedEnvironment?.name ?? "Global Environment")
-                    .lineLimit(1)
-                Spacer(minLength: 4)
-                Image(systemName: "chevron.up.chevron.down")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-            }
-            .padding(.horizontal, 9)
-            .frame(maxWidth: .infinity, minHeight: 28)
-            .contentShape(.rect)
+            Text("Configure Environments…").tag("configure")
         }
-        .menuStyle(.button)
+        .labelsHidden().pickerStyle(.menu).controlSize(.large)
+        .font(.system(size: 13))
         .accessibilityLabel("Environment")
         .accessibilityValue(selectedEnvironment?.name ?? "Global Environment")
-        .sheet(item: $editingEnvironment) { environment in
-            EnvironmentEditor(model: model, environment: environment)
+        .sheet(isPresented: $isEditingEnvironments) {
+            EnvironmentEditor(model: model)
         }
     }
 
@@ -2881,104 +3298,72 @@ private struct EnvironmentPopup: View {
 }
 
 private struct ResponseSplit<RequestContent: View, ResponseContent: View>: View {
-    let orientation: ResponseOrientation
+    @Bindable var layout: ResponseLayoutState
+    var orientation: ResponseOrientation = .bottom
+    var minimumResponseWidth: CGFloat = 349
     @ViewBuilder let request: RequestContent
     @ViewBuilder let response: ResponseContent
-
-    init(
-        orientation: ResponseOrientation,
-        @ViewBuilder request: () -> RequestContent,
-        @ViewBuilder response: () -> ResponseContent
-    ) {
-        self.orientation = orientation
-        self.request = request()
-        self.response = response()
-    }
-
-    var body: some View {
-        if orientation == .bottom {
-            VerticalResponseSplit {
-                request
-            } response: {
-                response
-            }
-        } else {
-            HSplitView {
-                request.frame(minWidth: 300)
-                response.frame(minWidth: 300)
-            }
-        }
-    }
-}
-
-private struct VerticalResponseSplit<RequestContent: View, ResponseContent: View>: View {
-    @ViewBuilder let request: RequestContent
-    @ViewBuilder let response: ResponseContent
-
-    @State private var requestedHeight: CGFloat = 296
-    @State private var dragStartHeight: CGFloat?
-
-    init(
-        @ViewBuilder request: () -> RequestContent,
-        @ViewBuilder response: () -> ResponseContent
-    ) {
-        self.request = request()
-        self.response = response()
-    }
+    @State private var dragOrigin: CGFloat?
 
     var body: some View {
         GeometryReader { geometry in
-            let usableHeight = max(geometry.size.height - 1, 0)
-            let requestHeight = min(
-                max(requestedHeight, 180),
-                max(180, usableHeight - 140)
-            )
-
-            VStack(spacing: 0) {
-                request
-                    .frame(height: requestHeight)
-
-                Rectangle()
-                    .fill(WireboltTheme.separator)
-                    .frame(height: 1)
+            let vertical = orientation == .bottom
+            let length = vertical ? geometry.size.height : geometry.size.width
+            let minimum: CGFloat = 100
+            let maximum = max(minimum, length - (vertical ? 200 : minimumResponseWidth) - 1)
+            let position = min(maximum, max(minimum, (vertical ? layout.requestHeight : layout.requestWidth) ?? (length / 2).rounded(.down)))
+            let arrangement = vertical ? AnyLayout(VStackLayout(spacing: 0)) : AnyLayout(HStackLayout(spacing: 0))
+            arrangement {
+                request.frame(width: vertical ? nil : position, height: vertical ? position : nil).clipped()
+                Rectangle().fill(WireboltTheme.separator)
+                    .frame(width: vertical ? nil : 1, height: vertical ? 1 : nil)
                     .overlay {
-                        Color.clear
-                            .contentShape(.rect)
-                            .frame(height: 7)
-                            .gesture(splitDragGesture(totalHeight: usableHeight))
-                            .onHover { hovering in
-                                if hovering {
-                                    NSCursor.resizeUpDown.set()
-                                } else {
-                                    NSCursor.arrow.set()
+                        Color.clear.contentShape(.rect)
+                            .frame(width: vertical ? nil : 7, height: vertical ? 7 : nil)
+                            .gesture(DragGesture(minimumDistance: 1, coordinateSpace: .global)
+                                .onChanged { value in
+                                    if dragOrigin == nil { dragOrigin = position }
+                                    let offset = vertical ? value.translation.height : value.translation.width
+                                    let updated = min(maximum, max(minimum, (dragOrigin ?? position) + offset))
+                                    if vertical { layout.requestHeight = updated }
+                                    else { layout.requestWidth = updated }
                                 }
+                                .onEnded { _ in dragOrigin = nil })
+                            .onHover { hovering in
+                                if hovering { (vertical ? NSCursor.resizeUpDown : NSCursor.resizeLeftRight).push() }
+                                else { NSCursor.pop() }
                             }
                     }
-
-                response
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                response.frame(maxWidth: .infinity, maxHeight: .infinity).clipped()
+            }
+            .onAppear {
+                if vertical, layout.requestHeight == nil { layout.requestHeight = position }
+                if !vertical, layout.requestWidth == nil { layout.requestWidth = position }
+            }
+            .onChange(of: orientation) {
+                if vertical { layout.requestHeight = (geometry.size.height / 2).rounded(.down) }
+                else { layout.requestWidth = (geometry.size.width / 2).rounded(.down) }
             }
         }
-    }
-
-    private func splitDragGesture(totalHeight: CGFloat) -> some Gesture {
-        DragGesture(minimumDistance: 0)
-            .onChanged { value in
-                let start = dragStartHeight ?? requestedHeight
-                if dragStartHeight == nil { dragStartHeight = requestedHeight }
-                requestedHeight = min(
-                    max(start + value.translation.height, 180),
-                    max(180, totalHeight - 140)
-                )
-            }
-            .onEnded { _ in
-                dragStartHeight = nil
-            }
     }
 }
 
 @MainActor
 private final class WindowConfigurationView: NSView {
+    var sidebarWidth = 250.0
+    private let sidebarOutline = SidebarOutlineView()
+
+    func updateSidebarOutline() {
+        guard let content = window?.contentView?.superview else { return }
+        if sidebarOutline.superview !== content {
+            sidebarOutline.frame = content.bounds
+            sidebarOutline.autoresizingMask = [.width, .height]
+            content.addSubview(sidebarOutline, positioned: .above, relativeTo: nil)
+        }
+        sidebarOutline.sidebarWidth = sidebarWidth
+        sidebarOutline.needsDisplay = true
+    }
+
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
         guard let window else { return }
@@ -2988,9 +3373,10 @@ private final class WindowConfigurationView: NSView {
         window.titlebarSeparatorStyle = .none
         window.toolbarStyle = .unified
         window.styleMask.insert(.fullSizeContentView)
-        window.backgroundColor = .clear
+        window.backgroundColor = .windowBackgroundColor
         window.isOpaque = false
         window.setFrameAutosaveName("WireboltMainWindow")
+        updateSidebarOutline()
         observeMainMenuChanges()
         synchronizeRequestMenuOrder()
         scheduleMenuOrderMatch()
@@ -3055,5 +3441,19 @@ private final class WindowConfigurationView: NSView {
         for (offset, item) in movedItems.enumerated() {
             menu.insertItem(item, at: viewIndex + offset)
         }
+    }
+}
+
+@MainActor
+private final class SidebarOutlineView: NSView {
+    var sidebarWidth = 250.0
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
+    override func draw(_ dirtyRect: NSRect) {
+        guard sidebarWidth > 0 else { return }
+        NSColor.separatorColor.setStroke()
+        let outline = NSBezierPath(roundedRect: NSRect(x: 8.5, y: 8.5,
+            width: sidebarWidth - 9, height: bounds.height - 17), xRadius: 18, yRadius: 18)
+        outline.lineWidth = 1
+        outline.stroke()
     }
 }

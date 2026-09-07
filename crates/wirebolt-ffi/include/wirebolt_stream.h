@@ -47,4 +47,18 @@ wirebolt_run_session *wirebolt_run_start(
 void wirebolt_run_cancel(wirebolt_run_session *session);
 void wirebolt_run_free(wirebolt_run_session *session);
 
+/* Serialized WebSocket events. Payloads are borrowed during the callback.
+ * 0 connected (JSON headers), 1 incoming text, 2 incoming binary, 3 closed,
+ * 4 error, 5 sent text, 6 sent binary, 7 incoming ping, 8 incoming pong,
+ * 9 automatic outgoing pong. Return 0 to stop consumption. Exactly one
+ * terminal event (closed/error) follows every successful start. Free must
+ * happen after the terminal callback returns, never inside a callback.
+ */
+typedef struct wirebolt_socket_session wirebolt_socket_session;
+typedef uint8_t (*wirebolt_on_socket_event_fn)(void *context, uint8_t kind, const uint8_t *bytes, uintptr_t length);
+wirebolt_socket_session *wirebolt_socket_start(const uint8_t *json, uintptr_t length, wirebolt_on_socket_event_fn callback, void *context);
+uint8_t wirebolt_socket_send(wirebolt_socket_session *session, uint8_t binary, const uint8_t *bytes, uintptr_t length);
+void wirebolt_socket_cancel(wirebolt_socket_session *session);
+void wirebolt_socket_free(wirebolt_socket_session *session);
+
 #endif

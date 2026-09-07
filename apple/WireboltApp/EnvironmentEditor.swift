@@ -3,160 +3,219 @@ import SwiftUI
 struct EnvironmentEditor: View {
     @Bindable var model: WireboltModel
     @Environment(\.dismiss) private var dismiss
-    @State private var environment: EnvironmentDraft
-    @State private var secretMaterialByRowID: [String: String] = [:]
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+    @State private var environments: [EnvironmentDraft]
+    @State private var selectedID: String
+    @State private var newKey = ""
+    @State private var newValue = ""
+    @State private var deletedIDs: Set<String> = []
+    @State private var editingNameID: String?
+    @FocusState private var newKeyFocused: Bool
+    @FocusState private var environmentListFocused: Bool
+    @State private var isSaving = false
+    @State private var validationMessage: String?
 
-    init(model: WireboltModel, environment: EnvironmentDraft) {
+    init(model: WireboltModel) {
         self.model = model
-        _environment = State(initialValue: environment)
+        var values = model.workspace.environments
+        if !values.contains(where: { $0.id == WorkspaceDraft.globalEnvironmentID }) {
+            values.insert(EnvironmentDraft(id: WorkspaceDraft.globalEnvironmentID, name: "Global Environment"), at: 0)
+        }
+        _environments = State(initialValue: values)
+        _selectedID = State(initialValue: model.selectedEnvironmentID ?? WorkspaceDraft.globalEnvironmentID)
     }
 
     var body: some View {
-        VStack(spacing: 0) {
-            Form {
-                TextField("Name", text: $environment.name)
-                LabeledContent("Variables") {
-                    Button("Add Variable", systemImage: "plus") {
-                        environment.variables.append(EnvironmentVariableDraft(
-                            order: environment.variables.count
-                        ))
-                    }
-                }
-
-                ForEach($environment.variables) { $variable in
-                    EnvironmentVariableRow(
-                        variable: $variable,
-                        secretMaterial: Binding(
-                            get: { secretMaterialByRowID[variable.id, default: ""] },
-                            set: { secretMaterialByRowID[variable.id] = $0 }
-                        ),
-                        canMoveUp: variable.order > 0,
-                        canMoveDown: variable.order < environment.variables.count - 1,
-                        moveUp: { move(variable.id, offset: -1) },
-                        moveDown: { move(variable.id, offset: 1) },
-                        remove: {
-                            environment.variables.removeAll { $0.id == variable.id }
-                            normalizeOrder()
+        VStack(spacing: 8) {
+            HStack(alignment: .top, spacing: 0) {
+                VStack(alignment: .leading, spacing: 0) {
+                    Text("Environments").foregroundStyle(.secondary).padding(.leading, 12).frame(height: 31)
+                    Divider()
+                    ScrollView {
+                    LazyVStack(spacing: 0) {
+                        ForEach($environments) { $environment in
+                            HStack(spacing: 4) {
+                                if environment.id == WorkspaceDraft.globalEnvironmentID {
+                                    Text("Global Environment").lineLimit(1)
+                                    Spacer(minLength: 2)
+                                    Image(systemName: "info.circle").help("Global variables are available in every environment.")
+                                } else {
+                                    InlineSidebarName(title: environment.name, isEditing: Binding(
+                                        get: { editingNameID == environment.id },
+                                        set: { editingNameID = $0 ? environment.id : nil }
+                                    )) { environment.name = $0 }
+                                    Spacer(minLength: 2)
+                                }
+                            }
+                            .padding(.horizontal, 6)
+                            .frame(height: 24)
+                            .foregroundStyle(selectedID == environment.id ? Color.white : Color.primary)
+                            .background(selectedID == environment.id ? WireboltTheme.primaryAccent : .clear, in: .rect(cornerRadius: 5))
+                            .contentShape(.rect)
+                            .simultaneousGesture(TapGesture(count: 2).onEnded {
+                                selectedID = environment.id
+                                if environment.id != WorkspaceDraft.globalEnvironmentID { editingNameID = environment.id }
+                            })
+                            .simultaneousGesture(TapGesture().onEnded {
+                                selectedID = environment.id
+                                if editingNameID == nil { environmentListFocused = true }
+                            })
+                            .accessibilityElement(children: .contain)
+                            .accessibilityLabel(environment.name)
+                            .accessibilityAction { selectedID = environment.id }
+                            .accessibilityAddTraits(selectedID == environment.id ? .isSelected : [])
+                            .contextMenu {
+                                Button("Delete") { deleteEnvironment(id: environment.id) }
+                                    .disabled(environment.id == WorkspaceDraft.globalEnvironmentID)
+                            }
                         }
-                    )
+                    }.padding(10)
+                    }
+                    .focusable().focusEffectDisabled().focused($environmentListFocused)
+                    .onMoveCommand { direction in
+                        guard editingNameID == nil, let index = environments.firstIndex(where: { $0.id == selectedID }) else { return }
+                        if direction == .up { selectedID = environments[max(0, index - 1)].id }
+                        else if direction == .down { selectedID = environments[min(environments.count - 1, index + 1)].id }
+                    }
+                    .onKeyPress(.return) {
+                        guard editingNameID == nil, selectedID != WorkspaceDraft.globalEnvironmentID else { return .ignored }
+                        editingNameID = selectedID
+                        return .handled
+                    }
+                    .background {
+                        if reduceTransparency { Color(nsColor: .windowBackgroundColor) }
+                        else { SidebarMaterialView() }
+                    }
+                }.frame(width: 200)
+                VStack(spacing: 0) {
+                    HStack {
+                        Text("Variables").foregroundStyle(.secondary)
+                        Spacer()
+                        Button("New Entry", systemImage: "plus", action: addRow)
+                            .labelStyle(.iconOnly).buttonStyle(.borderless)
+                            .keyboardShortcut("k", modifiers: .command)
+                        Menu("Variable Actions", systemImage: "ellipsis.circle") {
+                            Button("New Entry", action: addRow)
+                            Button("Clear All") { selected.variables.wrappedValue = [] }
+                        }.menuStyle(.borderlessButton).menuIndicator(.hidden).labelStyle(.iconOnly)
+                    }.padding(.leading, 12).frame(height: 31)
+                    Divider()
+                    HStack(spacing: 0) {
+                        Color.clear.frame(width: 27)
+                        Divider().frame(height: 14)
+                        Text("Key").padding(.leading, 4).frame(width: 183, alignment: .leading)
+                        Divider().frame(height: 14)
+                        Text("Value").padding(.leading, 4).frame(maxWidth: .infinity, alignment: .leading)
+                    }.font(.system(size: 11)).frame(height: 27)
+                    Divider()
+                    ScrollView {
+                        LazyVStack(spacing: 0) {
+                            ForEach(selected.variables) { $variable in
+                                HStack(spacing: 0) {
+                                    Toggle("Enabled", isOn: $variable.enabled).labelsHidden().frame(width: 28)
+                                    TextField("Key", text: $variable.key).frame(width: 175).padding(.horizontal, 4)
+                                    Color.clear.frame(width: 1)
+                                    TextField("Value", text: Binding(
+                                        get: { variable.value.editableValue },
+                                        set: { value in
+                                            if case .secret = variable.value { variable.value = .secret(value) }
+                                            else { variable.value = .literal(value) }
+                                        }
+                                    )).padding(.horizontal, 4).padding(.trailing, 5).frame(maxWidth: .infinity)
+                                }.textFieldStyle(.plain).frame(height: 28)
+                                    .contextMenu {
+                                        Button("Delete") { selected.variables.wrappedValue.removeAll { $0.id == variable.id } }
+                                    }
+                            }
+                            HStack(spacing: 0) {
+                                Color.clear.frame(width: 28)
+                                TextField("New Key (⌘K)", text: $newKey).frame(width: 175).padding(.horizontal, 4)
+                                    .focused($newKeyFocused).onSubmit { commitNewRow() }
+                                Color.clear.frame(width: 1)
+                                TextField("New Value", text: $newValue).padding(.horizontal, 4).padding(.trailing, 5).onSubmit { commitNewRow() }
+                            }.textFieldStyle(.plain).frame(height: 28)
+                        }.font(.system(size: 11, design: .monospaced))
+                    }.background(Color(nsColor: .textBackgroundColor))
                 }
             }
-            .formStyle(.grouped)
-
-            Divider()
             HStack {
-                Text("Secret values are stored in Keychain; only their reference is saved.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                Button("New Environment") {
+                    let environment = model.makeNewEnvironment()
+                    environments.append(environment)
+                    selectedID = environment.id
+                    editingNameID = environment.id
+                }
                 Spacer()
-                Button("Cancel", role: .cancel, action: dismiss.callAsFunction)
+                Button { Task { await saveAndClose() } } label: { Text("Close").frame(width: 66) }
                     .keyboardShortcut(.cancelAction)
-                Button("Save") { Task { await save() } }
-                    .keyboardShortcut(.defaultAction)
-                    .disabled(hasInvalidRows)
+                    .disabled(isSaving)
+            }.controlSize(.regular).frame(height: 24)
+        }
+        .font(.system(size: 13)).padding(.horizontal, 20).padding(.top, 20).padding(.bottom, 8).frame(width: 857, height: 480)
+        .onChange(of: selectedID) { previous, _ in commitNewRow(environmentID: previous) }
+        .interactiveDismissDisabled()
+        .alert("Environment could not be saved", isPresented: Binding(
+            get: { validationMessage != nil }, set: { if !$0 { validationMessage = nil } }
+        )) { Button("OK", role: .cancel) {} } message: { Text(validationMessage ?? "") }
+    }
+
+    private var selected: Binding<EnvironmentDraft> {
+        Binding(
+            get: { environments.first { $0.id == selectedID } ?? environments[0] },
+            set: { value in
+                guard let index = environments.firstIndex(where: { $0.id == value.id }) else { return }
+                environments[index] = value
             }
-            .padding(12)
-        }
-        .frame(minWidth: 760, minHeight: 420)
+        )
     }
 
-    private func move(_ id: String, offset: Int) {
-        guard let source = environment.variables.firstIndex(where: { $0.id == id }) else { return }
-        let destination = source + offset
-        guard environment.variables.indices.contains(destination) else { return }
-        environment.variables.swapAt(source, destination)
-        normalizeOrder()
+    private func addRow() {
+        commitNewRow()
+        newKeyFocused = true
     }
 
-    private func normalizeOrder() {
-        for index in environment.variables.indices {
-            environment.variables[index].order = index
-        }
+    private func deleteEnvironment(id: String) {
+        guard id != WorkspaceDraft.globalEnvironmentID else { return }
+        if model.workspace.environments.contains(where: { $0.id == id }) { deletedIDs.insert(id) }
+        environments.removeAll { $0.id == id }
+        selectedID = WorkspaceDraft.globalEnvironmentID
     }
 
-    private func save() async {
-        for variable in environment.variables {
-            guard case let .secret(reference) = variable.value,
-                  let material = secretMaterialByRowID[variable.id],
-                  material.isEmpty == false
-            else { continue }
-            await model.saveSecret(name: reference, value: material)
-        }
-        normalizeOrder()
-        await model.saveEnvironment(environment)
-        dismiss()
+    private func commitNewRow(environmentID: String? = nil) {
+        defer { newKey = ""; newValue = "" }
+        guard !newKey.trimmingCharacters(in: .whitespaces).isEmpty,
+              let index = environments.firstIndex(where: { $0.id == (environmentID ?? selectedID) }) else { return }
+        environments[index].variables.append(EnvironmentVariableDraft(
+            key: newKey, value: .literal(newValue), order: environments[index].variables.count
+        ))
     }
 
     private var hasInvalidRows: Bool {
-        let enabledKeys = environment.variables.filter(\.enabled).map(\.key)
-        return environment.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-            || environment.variables.contains { variable in
-                variable.key.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                    || variable.value.editableValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-            }
-            || Set(enabledKeys).count != enabledKeys.count
-    }
-}
-
-private struct EnvironmentVariableRow: View {
-    @Binding var variable: EnvironmentVariableDraft
-    @Binding var secretMaterial: String
-    let canMoveUp: Bool
-    let canMoveDown: Bool
-    let moveUp: () -> Void
-    let moveDown: () -> Void
-    let remove: () -> Void
-
-    var body: some View {
-        HStack(spacing: 8) {
-            Toggle("Enabled", isOn: $variable.enabled)
-                .labelsHidden()
-            TextField("Name", text: $variable.key)
-            Picker("Storage", selection: isSecret) {
-                Text("Literal").tag(false)
-                Text("Keychain").tag(true)
-            }
-            .labelsHidden()
-            .frame(width: 100)
-            if isSecret.wrappedValue {
-                TextField("Keychain reference", text: editableValue)
-                SecureField("New secret value (optional)", text: $secretMaterial)
-            } else {
-                TextField("Value", text: editableValue)
-            }
-            Button("Move Up", systemImage: "chevron.up", action: moveUp)
-                .labelStyle(.iconOnly)
-                .buttonStyle(.borderless)
-                .disabled(!canMoveUp)
-            Button("Move Down", systemImage: "chevron.down", action: moveDown)
-                .labelStyle(.iconOnly)
-                .buttonStyle(.borderless)
-                .disabled(!canMoveDown)
-            Button("Remove", systemImage: "minus.circle", action: remove)
-                .labelStyle(.iconOnly)
-                .buttonStyle(.borderless)
+        environments.contains { environment in
+            let keys = environment.variables.filter(\.enabled).map(\.key)
+            return environment.name.trimmingCharacters(in: .whitespaces).isEmpty
+                || keys.contains { $0.trimmingCharacters(in: .whitespaces).isEmpty }
+                || Set(keys).count != keys.count
         }
     }
 
-    private var isSecret: Binding<Bool> {
-        Binding(
-            get: {
-                if case .secret = variable.value { true } else { false }
-            },
-            set: { secret in
-                variable.value = secret
-                    ? .secret(variable.value.editableValue)
-                    : .literal(variable.value.editableValue)
-            }
-        )
-    }
-
-    private var editableValue: Binding<String> {
-        Binding(
-            get: { variable.value.editableValue },
-            set: { value in
-                variable.value = isSecret.wrappedValue ? .secret(value) : .literal(value)
-            }
-        )
+    private func saveAndClose() async {
+        commitNewRow()
+        guard !hasInvalidRows else {
+            validationMessage = "Give each environment a name and each enabled variable a unique, non-empty key."
+            return
+        }
+        isSaving = true
+        defer { isSaving = false }
+        for id in deletedIDs {
+            guard await model.deleteEnvironment(id: id) else { validationMessage = "The environment could not be deleted."; return }
+            deletedIDs.remove(id)
+        }
+        for environment in environments {
+            guard await model.saveEnvironment(environment) else { validationMessage = "The workspace could not be saved. Your edits are still open."; return }
+        }
+        model.selectedEnvironmentID = selectedID == WorkspaceDraft.globalEnvironmentID ? nil : selectedID
+        isSaving = false
+        dismiss()
     }
 }

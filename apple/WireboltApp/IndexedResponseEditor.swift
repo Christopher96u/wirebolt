@@ -1,0 +1,353 @@
+import AppKit
+import SwiftUI
+
+struct IndexedResponseEditor: View {
+    let url: URL
+    let preview: String
+    let language: SyntaxLanguage
+    let search: String
+    var prefix = ""
+    var find: EditorFindState?
+    @State private var localFind = EditorFindState()
+    @AppStorage("editor.fontSize") private var fontSize = 12.0
+    @AppStorage("editor.wordWrap") private var wraps = true
+    @State private var index: ResponseTextIndex?
+    @State private var failure = false
+
+    var body: some View {
+        GeometryReader { geometry in
+            let gutter = CodeEditorMetrics.gutterWidth(fontSize, lineCount: index?.lineCount ?? 1)
+            let columns = wraps ? max(1, Int((geometry.size.width - gutter - 22) / (fontSize * 0.602))) : Int.max / 4
+            Group {
+                if let index {
+                    IndexedCodeScrollView(index: index, fontSize: fontSize, language: language, search: search, wraps: wraps,
+                        storageKey: prefix.isEmpty ? "Response body" : "Raw response", find: find ?? localFind)
+                } else if failure {
+                    Text("The response could not be opened.").foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                } else {
+                    NativeCodeEditor(text: .constant(preview), editable: false, language: language, label: "Response body", find: find ?? localFind)
+                }
+            }
+            .task(id: "\(url.path):\(columns):\(prefix)") {
+                if index?.url != url { index = nil }
+                failure = false
+                let task = Task.detached(priority: .userInitiated) { try ResponseTextIndex(url: url, columns: columns, prefix: prefix) }
+                do {
+                    let result = try await withTaskCancellationHandler { try await task.value } onCancel: { task.cancel() }
+                    try Task.checkCancellation()
+                    index = result
+                } catch is CancellationError {} catch { failure = true }
+            }
+        }
+        .editorFindOverlay(find ?? localFind)
+    }
+}
+
+private struct IndexedCodeScrollView: NSViewRepresentable {
+    @Environment(\.editorStorage) private var editorStorage
+    let index: ResponseTextIndex
+    let fontSize: Double
+    let language: SyntaxLanguage
+    let search: String
+    let wraps: Bool
+    let storageKey: String
+    let find: EditorFindState
+    @AppStorage("editor.scrollBeyondLastLine") private var beyond = true
+
+    func makeNSView(context: Context) -> NSScrollView {
+        let scroll = NSScrollView()
+        CodeScroller.configure(scroll)
+        scroll.hasVerticalScroller = true
+        scroll.drawsBackground = true
+        scroll.backgroundColor = .textBackgroundColor
+        scroll.contentView = EditorClipView()
+        scroll.documentView = IndexedCodeView()
+        updateNSView(scroll, context: context)
+        return scroll
+    }
+
+    func updateNSView(_ scroll: NSScrollView, context: Context) {
+        guard let view = scroll.documentView as? IndexedCodeView else { return }
+        let restore = view.presentation == nil
+        if restore { view.presentation = editorStorage?.state(for: storageKey) }
+        (scroll.contentView as? EditorClipView)?.changed = { [weak view] point in view?.presentation?.origin = point }
+        let changed = view.index?.url != index.url || view.index?.columns != index.columns || view.fontSize != fontSize || view.language != language
+        view.index = index
+        view.fontSize = fontSize
+        view.language = language
+        scroll.hasHorizontalScroller = !wraps
+        view.autoresizingMask = wraps ? [.width] : []
+        let width = wraps ? scroll.contentSize.width : max(scroll.contentSize.width, Double(index.maximumColumns) * fontSize * 0.602 + view.gutterWidth + 22)
+        view.setFrameSize(NSSize(width: width, height: max(scroll.contentSize.height, Double(index.rowCount) * view.lineHeight + 6 + (beyond ? max(0, scroll.contentSize.height - view.lineHeight) : 0))))
+        scroll.contentInsets = NSEdgeInsets(top: 0, left: 0, bottom: 0, right: 0)
+        if changed { view.invalidateRows() }
+        if restore, let presentation = view.presentation {
+            let origin = presentation.origin
+            view.restoreSelection()
+            DispatchQueue.main.async { [weak scroll] in
+                scroll?.contentView.scroll(to: origin)
+                if let scroll { scroll.reflectScrolledClipView(scroll.contentView) }
+            }
+        }
+        if view.query != search { view.find(search) }
+        view.updateFind(find)
+    }
+}
+
+@MainActor
+private final class IndexedCodeView: NSView {
+    var presentation: EditorPresentationStorage.State?
+    var index: ResponseTextIndex?
+    var fontSize = 12.0
+    var language = SyntaxLanguage.plain
+    private(set) var query = ""
+    var lineHeight: Double { CodeEditorMetrics.lineHeight(fontSize) }
+    var gutterWidth: Double { CodeEditorMetrics.gutterWidth(fontSize, lineCount: index?.lineCount ?? 1) }
+    override var isFlipped: Bool { true }
+    override var acceptsFirstResponder: Bool { true }
+    private var cachedRows: [ResponseTextIndex.Row] = []
+    private var loadingRange: Range<Int>?
+    private var loadTask: Task<Void, Never>?
+    private var findTask: Task<Void, Never>?
+    private var selectionStart: (row: Int, column: Int)?
+    private var selectionEnd: (row: Int, column: Int)?
+    deinit { loadTask?.cancel(); findTask?.cancel() }
+
+    func restoreSelection() {
+        guard let selection = presentation?.indexedSelection else { return }
+        selectionStart = (selection.startRow, selection.startColumn)
+        selectionEnd = (selection.endRow, selection.endColumn)
+    }
+    private func saveSelection() {
+        guard let start = selectionStart, let end = selectionEnd else { return }
+        presentation?.indexedSelection = (start.row, start.column, end.row, end.column)
+    }
+
+    override init(frame: NSRect) {
+        super.init(frame: frame)
+        setAccessibilityElement(true)
+        setAccessibilityRole(.textArea)
+        setAccessibilityLabel("Response body")
+    }
+    required init?(coder: NSCoder) { nil }
+
+    private weak var findState: EditorFindState?
+    private var findQuery = TextSearchQuery()
+    private var findScopeOnly = false
+    private var findSource = ""
+    private var findMatches: [ResponseTextIndex.SearchMatch] = []
+    private var findIndex: Int?
+
+    func updateFind(_ state: EditorFindState) {
+        findState = state
+        guard let index else { return }
+        let query = state.isVisible ? state.query : TextSearchQuery()
+        let source = "\(index.url.path):\(index.columns)"
+        if query != findQuery || state.selectionOnly != findScopeOnly || source != findSource {
+            findQuery = query
+            findScopeOnly = state.selectionOnly
+            findSource = source
+            findTask?.cancel()
+            findMatches = []
+            findIndex = nil
+            needsDisplay = true
+            let scope = state.selectionOnly ? state.indexedSelection : nil
+            findTask = Task { [weak self, weak state] in
+                do {
+                    if !query.text.isEmpty { try await Task.sleep(for: .milliseconds(100)) }
+                    let worker = Task.detached(priority: .userInitiated) { try index.search(query, selection: scope) }
+                    let matches = try await withTaskCancellationHandler { try await worker.value } onCancel: { worker.cancel() }
+                    try Task.checkCancellation()
+                    guard let self, let state else { return }
+                    self.findMatches = matches
+                    state.update(count: matches.count)
+                    self.applyFindSelection(state)
+                    self.needsDisplay = true
+                } catch is CancellationError {} catch {
+                    state?.update(count: 0, error: "Invalid regular expression")
+                }
+            }
+        }
+        applyFindSelection(state)
+    }
+
+    private func applyFindSelection(_ state: EditorFindState) {
+        guard state.isVisible, let current = state.currentMatch, findMatches.indices.contains(current), findIndex != current else { return }
+        findIndex = current
+        let match = findMatches[current]
+        selectionStart = (match.start.row, match.start.column)
+        selectionEnd = (match.end.row, match.end.column)
+        scroll(NSPoint(x: 0, y: Double(match.start.row) * lineHeight))
+        needsDisplay = true
+    }
+
+    private func findHighlights(row: Int, length: Int) -> [NSRange] {
+        var lower = 0
+        var upper = findMatches.count
+        while lower < upper {
+            let middle = (lower + upper) / 2
+            if findMatches[middle].end.row < row { lower = middle + 1 } else { upper = middle }
+        }
+        var ranges: [NSRange] = []
+        while lower < findMatches.count, findMatches[lower].start.row <= row {
+            let match = findMatches[lower]
+            let start = match.start.row == row ? min(length, match.start.column) : 0
+            let end = match.end.row == row ? min(length, match.end.column) : length
+            if end > start { ranges.append(NSRange(location: start, length: end - start)) }
+            lower += 1
+        }
+        return ranges
+    }
+
+    func invalidateRows() {
+        loadTask?.cancel()
+        cachedRows = []
+        loadingRange = nil
+        needsDisplay = true
+    }
+
+    override func draw(_ dirtyRect: NSRect) {
+        NSColor.textBackgroundColor.setFill()
+        dirtyRect.fill()
+        guard let index else { return }
+        let first = max(0, Int(visibleRect.minY / lineHeight) - 4)
+        let end = min(index.rowCount, Int(visibleRect.maxY / lineHeight) + 5)
+        let range = first..<max(first, end)
+        if cachedRows.first?.number ?? Int.max > first || cachedRows.last?.number ?? -1 < end - 1 {
+            load(range)
+        }
+        let numberAttributes: [NSAttributedString.Key: Any] = [.font: NSFont.monospacedSystemFont(ofSize: fontSize, weight: .regular), .foregroundColor: NSColor.secondaryLabelColor]
+        let selection = orderedSelection
+        for row in cachedRows where range.contains(row.number) {
+            let y = Double(row.number) * lineHeight + 3
+            if !row.continuation {
+                let number = String(row.line + 1) as NSString
+                number.draw(at: NSPoint(x: gutterWidth - 22 - number.size(withAttributes: numberAttributes).width, y: y), withAttributes: numberAttributes)
+            }
+            let attributed = NSMutableAttributedString(attributedString: SyntaxHighlighter.attributedString(text: row.text, language: language, fontSize: fontSize))
+            for range in findHighlights(row: row.number, length: attributed.length) {
+                attributed.addAttribute(.backgroundColor, value: NSColor.findHighlightColor.withAlphaComponent(0.25), range: range)
+            }
+            if let (start, end) = selection, row.number >= start.row && row.number <= end.row {
+                let lower = row.number == start.row ? min(start.column, attributed.length) : 0
+                let upper = row.number == end.row ? min(end.column, attributed.length) : attributed.length
+                if upper > lower { attributed.addAttribute(.backgroundColor, value: NSColor.selectedTextBackgroundColor, range: NSRange(location: lower, length: upper - lower)) }
+            }
+            if !query.isEmpty {
+                let match = (row.text as NSString).range(of: query)
+                if match.location != NSNotFound { attributed.addAttribute(.backgroundColor, value: NSColor.findHighlightColor, range: match) }
+            }
+            attributed.draw(at: NSPoint(x: gutterWidth + 4, y: y))
+        }
+    }
+
+    private func load(_ range: Range<Int>) {
+        guard loadingRange != range, let index else { return }
+        loadTask?.cancel()
+        loadingRange = range
+        loadTask = Task { [weak self] in
+            let reader = Task.detached(priority: .userInitiated) { try index.rows(start: range.lowerBound, count: range.count) }
+            let rows = try? await withTaskCancellationHandler { try await reader.value } onCancel: { reader.cancel() }
+            guard !Task.isCancelled, let self, let rows else { return }
+            self.cachedRows = rows
+            self.setAccessibilityValue(rows.map(\.text).joined(separator: "\n"))
+            self.needsDisplay = true
+        }
+    }
+
+    func find(_ query: String) {
+        self.query = query
+        findTask?.cancel()
+        needsDisplay = true
+        guard !query.isEmpty, let index else { return }
+        findTask = Task { [weak self] in
+            let search = Task.detached(priority: .userInitiated) { try index.firstMatch(query) }
+            let row = try? await withTaskCancellationHandler { try await search.value } onCancel: { search.cancel() }
+            guard !Task.isCancelled, let self, let row else { return }
+            self.scroll(NSPoint(x: 0, y: Double(row) * self.lineHeight))
+        }
+    }
+
+    private func position(_ event: NSEvent) -> (row: Int, column: Int) {
+        let point = convert(event.locationInWindow, from: nil)
+        let row = min(max(0, Int(point.y / lineHeight)), max(0, (index?.rowCount ?? 1) - 1))
+        guard let text = cachedRows.first(where: { $0.number == row })?.text else { return (row, 0) }
+        let target = max(0, point.x - gutterWidth - 4)
+        let attributes: [NSAttributedString.Key: Any] = [.font: NSFont.monospacedSystemFont(ofSize: fontSize, weight: .regular)]
+        var prefix = ""
+        var previousWidth = 0.0
+        for character in text {
+            let previous = prefix.utf16.count
+            prefix.append(character)
+            let width = (prefix as NSString).size(withAttributes: attributes).width
+            if target < (previousWidth + width) / 2 { return (row, previous) }
+            previousWidth = width
+        }
+        return (row, prefix.utf16.count)
+    }
+    override func mouseDown(with event: NSEvent) {
+        window?.makeFirstResponder(self)
+        selectionStart = position(event)
+        selectionEnd = selectionStart
+        saveSelection()
+        needsDisplay = true
+    }
+    override func mouseDragged(with event: NSEvent) {
+        selectionEnd = position(event)
+        saveSelection()
+        _ = autoscroll(with: event)
+        needsDisplay = true
+    }
+    override func mouseUp(with event: NSEvent) {
+        if let (start, end) = orderedSelection, start != end {
+            findState?.indexedSelection = (.init(row: start.row, column: start.column), .init(row: end.row, column: end.column))
+        } else { findState?.indexedSelection = nil }
+    }
+    @objc func performFindPanelAction(_ sender: Any?) { findState?.isVisible = true }
+    override func keyDown(with event: NSEvent) {
+        if event.modifierFlags.contains(.command), event.charactersIgnoringModifiers == "f" { findState?.isVisible = true }
+        else if event.modifierFlags.contains(.command), event.charactersIgnoringModifiers == "a" { selectAll(nil) }
+        else if event.modifierFlags.contains(.command), event.charactersIgnoringModifiers == "c" { copy(nil) }
+        else {
+            let origin = visibleRect.origin
+            let target: Double? = switch event.keyCode {
+            case 115: 0
+            case 119: max(0, frame.height - visibleRect.height)
+            case 116: max(0, origin.y - visibleRect.height)
+            case 121: min(frame.height - visibleRect.height, origin.y + visibleRect.height)
+            case 125: event.modifierFlags.contains(.command) ? max(0, frame.height - visibleRect.height) : origin.y + lineHeight
+            case 126: event.modifierFlags.contains(.command) ? 0 : max(0, origin.y - lineHeight)
+            default: nil
+            }
+            if let target { scroll(NSPoint(x: origin.x, y: target)) }
+            else { super.keyDown(with: event) }
+        }
+    }
+    override func selectAll(_ sender: Any?) {
+        selectionStart = (0, 0)
+        selectionEnd = (max(0, (index?.rowCount ?? 1) - 1), Int.max)
+        saveSelection()
+        needsDisplay = true
+    }
+    private var orderedSelection: ((row: Int, column: Int), (row: Int, column: Int))? {
+        guard let start = selectionStart, let end = selectionEnd else { return nil }
+        return start.row < end.row || (start.row == end.row && start.column <= end.column) ? (start, end) : (end, start)
+    }
+    @objc func copy(_ sender: Any?) {
+        guard let index, let (start, end) = orderedSelection else { return }
+        Task {
+            let result = await Task.detached(priority: .userInitiated) {
+                guard let rows = try? index.rows(start: start.row, count: end.row - start.row + 1) else { return "" }
+                return rows.map { row in
+                    let string = row.text as NSString
+                    let lower = row.number == start.row ? min(start.column, string.length) : 0
+                    let upper = row.number == end.row ? min(end.column, string.length) : string.length
+                    return (row.number > start.row && !row.continuation ? "\n" : "") + string.substring(with: NSRange(location: lower, length: max(0, upper - lower)))
+                }.joined()
+            }.value
+            NSPasteboard.general.clearContents()
+            NSPasteboard.general.setString(result, forType: .string)
+        }
+    }
+}

@@ -7,4 +7,6 @@ cd "$repo_dir"
 scripts/lint.sh
 scripts/test.sh
 scripts/performance.sh smoke
+scripts/editor-performance.sh
 scripts/build-app.sh
+build/performance-contract --launch-smoke build/Wirebolt.app/Contents/MacOS/Wirebolt

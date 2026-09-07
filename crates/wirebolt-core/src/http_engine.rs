@@ -164,6 +164,10 @@ impl fmt::Debug for HttpEngine {
 }
 
 impl HttpEngine {
+    pub(crate) const fn client(&self) -> &Client {
+        &self.client
+    }
+
     /// Builds a pooled HTTP client in direct mode.
     ///
     /// # Errors

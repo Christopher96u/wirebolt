@@ -679,6 +679,19 @@ impl KeychainSecretStore {
         }
     }
 
+    /// Reads a credential for an explicitly opened authentication editor.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SecretResolutionError`] when Keychain cannot resolve the name.
+    pub fn read(&self, name: &SecretName) -> Result<Option<String>, SecretResolutionError> {
+        match KeychainSecretResolver::new(&self.service).resolve(name) {
+            Ok(value) => Ok(Some(value.expose().to_owned())),
+            Err(error) if error.kind() == SecretResolutionErrorKind::NotFound => Ok(None),
+            Err(error) => Err(error),
+        }
+    }
+
     /// Creates or replaces a named secret in the user's Keychain.
     ///
     /// # Errors
@@ -691,6 +704,15 @@ impl KeychainSecretStore {
             value.as_bytes(),
         )
         .map_err(|_| SecretResolutionError::new(SecretResolutionErrorKind::Unavailable))
+    }
+
+    /// Removes a credential created by an import that failed to commit.
+    ///
+    /// # Errors
+    /// Returns an error when Keychain cannot remove the item.
+    pub fn remove(&self, name: &SecretName) -> Result<(), SecretResolutionError> {
+        security_framework::passwords::delete_generic_password(&self.service, name.as_str())
+            .map_err(|_| SecretResolutionError::new(SecretResolutionErrorKind::Unavailable))
     }
 }
 

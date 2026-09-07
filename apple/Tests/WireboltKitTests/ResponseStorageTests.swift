@@ -4,6 +4,17 @@ import Testing
 
 @Suite("File-backed responses")
 struct ResponseStorageTests {
+    @Test("Response cookies exclude values retained from earlier hosts")
+    func responseCookies() async throws {
+        let jar = CookieJar()
+        let previousURL = try #require(URL(string: "https://old.example.com"))
+        let currentURL = try #require(URL(string: "https://new.example.com"))
+        await jar.store(headers: [ResponseHeader(name: "Set-Cookie", value: "old=one; Path=/")], requestURL: previousURL)
+        let received = await jar.store(headers: [ResponseHeader(name: "Set-Cookie", value: "new=two; Path=/")], requestURL: currentURL)
+        #expect(received.map(\.name) == ["new"])
+        #expect(await jar.all().count == 2)
+    }
+
     @Test("streams, searches and exports without retaining the complete body")
     func responseBodyStore() async throws {
         let root = temporaryDirectory()

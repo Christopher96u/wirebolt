@@ -41,11 +41,27 @@ enum ResponseOrientation: String, CaseIterable {
     case right
 }
 
-struct DocumentPresentationState: Equatable {
-    var requestSection: RequestPanelSection = .params
+@MainActor
+@Observable
+final class ResponseLayoutState {
+    var requestHeight: CGFloat?
+    var requestWidth: CGFloat?
+}
+
+@MainActor
+@Observable
+final class DocumentPresentationState {
+    let editorStorage = EditorPresentationStorage()
+    var requestSection: RequestPanelSection
     var responseSection: ResponsePanelSection = .body
     var responseRenderer: ResponseRenderer = .json
-    var responseOrientation: ResponseOrientation = .bottom
+    var usesAutomaticRenderer = true
+    var isBulkEditing = false
+    var focusNewKeyTrigger = 0
+
+    init(requestSection: RequestPanelSection = .params) {
+        self.requestSection = requestSection
+    }
 }
 
 struct DirtyCloseRequest: Identifiable, Equatable {
@@ -85,20 +101,50 @@ final class WorkspaceUIState {
     @ObservationIgnored private let defaults: UserDefaults
 
     var columnVisibility = NavigationSplitViewVisibility.all
+    private var fallbackPresentation = DocumentPresentationState()
+    private var activePresentation: DocumentPresentationState {
+        guard let activeTabID else { return fallbackPresentation }
+        return presentationByTabID[activeTabID] ?? fallbackPresentation
+    }
     var requestSection: RequestPanelSection {
-        didSet { persistActivePresentation() }
+        get { activePresentation.requestSection }
+        set { activePresentation.requestSection = newValue; persistActivePresentation() }
     }
     var responseSection: ResponsePanelSection {
-        didSet { persistActivePresentation() }
+        get { activePresentation.responseSection }
+        set { activePresentation.responseSection = newValue; persistActivePresentation() }
     }
     var responseRenderer: ResponseRenderer {
-        didSet {
+        get { activePresentation.responseRenderer }
+        set {
+            activePresentation.responseRenderer = newValue
             persistActivePresentation()
-            PerformanceProbe.rendererReady(responseRenderer.rawValue)
+            PerformanceProbe.rendererReady(newValue.rawValue)
         }
     }
-    var responseOrientation: ResponseOrientation {
-        didSet { persistActivePresentation() }
+    var responseOrientation: ResponseOrientation = .bottom {
+        didSet { defaults.set(responseOrientation.rawValue, forKey: Self.responseOrientationKey) }
+    }
+    private var responseLayoutsByGroupID: [String: ResponseLayoutState] = [:]
+
+    func responseLayout(for groupID: String) -> ResponseLayoutState {
+        if let layout = responseLayoutsByGroupID[groupID] { return layout }
+        let layout = ResponseLayoutState()
+        responseLayoutsByGroupID[groupID] = layout
+        return layout
+    }
+    var isBulkEditing: Bool {
+        get { activePresentation.isBulkEditing }
+        set { activePresentation.isBulkEditing = newValue }
+    }
+    var canEditFields: Bool { activeTabID != nil && (requestSection == .params || requestSection == .headers) }
+    func addKey() { activePresentation.isBulkEditing = false; activePresentation.focusNewKeyTrigger += 1 }
+    func selectTab(index: Int? = nil, offset: Int = 0, model: WireboltModel) {
+        guard let group = model.sessions.activeGroup, !group.tabIDs.isEmpty else { return }
+        let current = group.tabIDs.firstIndex(of: group.selectedTabID ?? "") ?? 0
+        let target = index ?? ((current + offset + group.tabIDs.count) % group.tabIDs.count)
+        guard group.tabIDs.indices.contains(target) else { return }
+        model.sessions.select(tabID: group.tabIDs[target]); synchronizeSelection(model: model)
     }
     var activeTabID: String?
     var sidebarFilter = ""
@@ -120,6 +166,8 @@ final class WorkspaceUIState {
     }
 
     private var presentationByTabID: [String: DocumentPresentationState] = [:]
+    private var lastClosedSession: DocumentSession?
+    private var lastClosedPresentation: DocumentPresentationState?
 
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
@@ -155,14 +203,17 @@ final class WorkspaceUIState {
         PerformanceProbe.tabSwitched()
     }
 
-    func makeNewRequest(model: WireboltModel, kind: DocumentKind = .http) {
+    func makeNewRequest(model: WireboltModel, kind: DocumentKind = .http, rename: Bool = true) {
         persistActivePresentation()
-        let session = model.makeNewRequest(kind: kind)
-        activeTabID = session.id
-        presentationByTabID[session.id] = DocumentPresentationState()
-        requestSection = kind == .http ? .params : .body
-        responseSection = .body
-        focusURLTrigger += 1
+        Task {
+            guard let session = await model.createRequest(kind: kind) else { return }
+            activeTabID = session.id
+            presentationByTabID[session.id] = DocumentPresentationState()
+            requestSection = kind == .http ? .params : .body
+            responseSection = .body
+            renamingRequestID = rename ? model.selectedRequestID : nil
+            focusSidebarTrigger += 1
+        }
     }
 
     func makeNewRequest(
@@ -172,16 +223,19 @@ final class WorkspaceUIState {
         groupID: String? = nil
     ) {
         persistActivePresentation()
-        let session = model.makeNewRequest(
-            kind: kind,
-            collectionID: collectionID,
-            groupID: groupID
-        )
-        activeTabID = session.id
-        presentationByTabID[session.id] = DocumentPresentationState()
-        requestSection = kind == .http ? .params : .body
-        responseSection = .body
-        focusURLTrigger += 1
+        Task {
+            guard let session = await model.createRequest(
+                kind: kind,
+                collectionID: collectionID,
+                groupID: groupID
+            ) else { return }
+            activeTabID = session.id
+            presentationByTabID[session.id] = DocumentPresentationState()
+            requestSection = kind == .http ? .params : .body
+            responseSection = .body
+            renamingRequestID = model.selectedRequestID
+            focusSidebarTrigger += 1
+        }
     }
 
     func promptForNewCollection() {
@@ -198,6 +252,43 @@ final class WorkspaceUIState {
             title: "Rename Collection",
             initialName: collection.name
         )
+    }
+
+    var focusSidebarTrigger = 0
+    var collapsedSidebarCollections: Set<String> = []
+    var expandedSidebarGroups: Set<String> = []
+    var renamingRequestID: String?
+
+    func moveSidebarSelection(_ delta: Int, model: WireboltModel) {
+        let query = model.normalizedSearchQuery(sidebarFilter)
+        var visible: [RequestLocation] = []
+        for collection in model.workspace.collections.sorted(by: { ($0.order, $0.name) < ($1.order, $1.name) }) where !collapsedSidebarCollections.contains(collection.id) || !query.isEmpty {
+            func append(parent: String?) {
+                let groups = collection.groups.filter { $0.parentID == parent }
+                let requests = collection.requests.filter { $0.groupID == parent }
+                let order = (groups.map { ($0.order, $0.id, true) } + requests.map { ($0.order, $0.id, false) }).sorted { $0.0 < $1.0 }
+                for (_, id, group) in order {
+                    if group {
+                        if expandedSidebarGroups.contains(collection.id + ":" + id) || !query.isEmpty { append(parent: id) }
+                    } else if let request = requests.first(where: { $0.id == id }), query.isEmpty || model.requestMatches(request, normalizedQuery: query) {
+                        visible.append(request)
+                    }
+                }
+            }
+            append(parent: nil)
+        }
+        guard !visible.isEmpty else { return }
+        let current = visible.firstIndex(where: { $0.id == model.selectedRequestID }) ?? (delta > 0 ? -1 : visible.count)
+        activateSavedRequest(visible[min(max(0, current + delta), visible.count - 1)], model: model)
+    }
+
+    var renamingGroupID: String?
+
+    func makeNewFolder(model: WireboltModel, collectionID: String? = nil, parentID: String? = nil) {
+        Task {
+            if let collectionID { renamingGroupID = await model.createGroup(collectionID: collectionID, parentID: parentID, name: "Untitled Folder") }
+            else { renamingGroupID = await model.createRootFolder() }
+        }
     }
 
     func promptForNewGroup(collectionID: String) {
@@ -249,9 +340,11 @@ final class WorkspaceUIState {
         close(.one(id), model: model)
     }
 
-    func close(_ scope: TabCloseScope, model: WireboltModel) {
-        let groupID = model.sessions.activeGroupID
-        let blocked = model.sessions.close(scope, in: groupID)
+    func close(_ scope: TabCloseScope, model: WireboltModel, in targetGroupID: String? = nil) {
+        let groupID = targetGroupID ?? model.sessions.activeGroupID
+        let previous = model.sessions.activeSession
+        let previousPresentation = previous.flatMap { presentationByTabID[$0.id] }
+        let blocked = model.closeDocuments(scope, in: groupID)
         guard blocked.isEmpty else {
             dirtyCloseRequest = DirtyCloseRequest(
                 scope: scope,
@@ -261,17 +354,27 @@ final class WorkspaceUIState {
             return
         }
         discardPresentation(for: scope, model: model)
-        ensureOneTab(model: model)
         synchronizeSelection(model: model)
+        if model.sessions.activeSession == nil {
+            lastClosedSession = previous
+            lastClosedPresentation = previousPresentation
+            NSApp.keyWindow?.performClose(nil)
+        }
     }
 
     func confirmDirtyClose(model: WireboltModel) {
         guard let request = dirtyCloseRequest else { return }
-        _ = model.sessions.close(request.scope, in: request.groupID, allowDirty: true)
+        let previous = model.sessions.activeSession
+        let previousPresentation = previous.flatMap { presentationByTabID[$0.id] }
+        model.closeDocuments(request.scope, in: request.groupID, allowDirty: true)
         dirtyCloseRequest = nil
         discardPresentation(for: request.scope, model: model)
-        ensureOneTab(model: model)
         synchronizeSelection(model: model)
+        if model.sessions.activeSession == nil {
+            lastClosedSession = previous
+            lastClosedPresentation = previousPresentation
+            NSApp.keyWindow?.performClose(nil)
+        }
     }
 
     func selectImportedFile(_ url: URL) {
@@ -286,27 +389,24 @@ final class WorkspaceUIState {
         importStatus = "The collection could not be imported"
     }
 
+    func presentation(for session: DocumentSession) -> DocumentPresentationState {
+        if let existing = presentationByTabID[session.id] { return existing }
+        let state = DocumentPresentationState(requestSection: session.draft.body == .empty ? .params : .body)
+        presentationByTabID[session.id] = state
+        return state
+    }
+
     private func activatePresentation(for tabID: String, defaultBody: RequestBody) {
+        if presentationByTabID[tabID] == nil {
+            let state = DocumentPresentationState(requestSection: defaultBody == .empty ? .params : .body)
+            presentationByTabID[tabID] = state
+        }
         activeTabID = tabID
-        let fallback = DocumentPresentationState(
-            requestSection: defaultBody == .empty ? .params : .body
-        )
-        let state = presentationByTabID[tabID] ?? fallback
-        requestSection = state.requestSection
-        responseSection = state.responseSection
-        responseRenderer = state.responseRenderer
-        responseOrientation = state.responseOrientation
         defaults.set(tabID, forKey: Self.activeTabKey)
     }
 
     private func persistActivePresentation() {
-        guard let activeTabID else { return }
-        presentationByTabID[activeTabID] = DocumentPresentationState(
-            requestSection: requestSection,
-            responseSection: responseSection,
-            responseRenderer: responseRenderer,
-            responseOrientation: responseOrientation
-        )
+        guard activeTabID != nil else { return }
         defaults.set(requestSection.rawValue, forKey: Self.requestSectionKey)
         defaults.set(responseSection.rawValue, forKey: Self.responseSectionKey)
         defaults.set(responseRenderer.rawValue, forKey: Self.responseRendererKey)
@@ -318,10 +418,13 @@ final class WorkspaceUIState {
         presentationByTabID = presentationByTabID.filter { remaining.contains($0.key) }
     }
 
-    private func ensureOneTab(model: WireboltModel) {
-        if model.sessions.activeSession == nil {
-            makeNewRequest(model: model)
-        }
+    func reopenLastDocument(model: WireboltModel) {
+        guard model.sessions.activeSession == nil, let session = lastClosedSession else { return }
+        model.sessions.reopen(session)
+        if let state = lastClosedPresentation { presentationByTabID[session.id] = state }
+        lastClosedSession = nil
+        lastClosedPresentation = nil
+        synchronizeSelection(model: model)
     }
 
     private static let requestSectionKey = "workspace.requestSection"
@@ -331,73 +434,6 @@ final class WorkspaceUIState {
     private static let activeTabKey = "workspace.activeTab"
 }
 
-enum WireboltTheme {
-    /// Brand indigo sampled from the approved UI reference: #6159E5.
-    static let primaryAccent = Color(
-        red: 97.0 / 255.0,
-        green: 89.0 / 255.0,
-        blue: 229.0 / 255.0
-    )
-    static let paneBackground = Color(nsColor: .textBackgroundColor)
-    static let barBackground = AnyShapeStyle(.bar)
-    static let separator = Color(nsColor: .separatorColor)
-    static let success = Color(red: 0.31, green: 0.80, blue: 0.34)
-
-    static let nsJSONKey = adaptiveColor(
-        light: NSColor(srgbRed: 0.56, green: 0.24, blue: 0.22, alpha: 1),
-        dark: NSColor(srgbRed: 0.50, green: 0.72, blue: 0.84, alpha: 1)
-    )
-    static let nsJSONString = adaptiveColor(
-        light: NSColor(srgbRed: 0.22, green: 0.46, blue: 0.59, alpha: 1),
-        dark: NSColor(srgbRed: 0.82, green: 0.58, blue: 0.49, alpha: 1)
-    )
-    static let nsJSONNumber = adaptiveColor(
-        light: NSColor(srgbRed: 0.24, green: 0.44, blue: 0.56, alpha: 1),
-        dark: NSColor(srgbRed: 0.75, green: 0.69, blue: 0.46, alpha: 1)
-    )
-    static let nsJSONBoolean = adaptiveColor(
-        light: NSColor(srgbRed: 0.31, green: 0.49, blue: 0.29, alpha: 1),
-        dark: NSColor(srgbRed: 0.62, green: 0.72, blue: 0.43, alpha: 1)
-    )
-    static let nsJSONNull = adaptiveColor(
-        light: NSColor(srgbRed: 0.52, green: 0.30, blue: 0.56, alpha: 1),
-        dark: NSColor(srgbRed: 0.72, green: 0.54, blue: 0.77, alpha: 1)
-    )
-
-    static let jsonKey = Color(nsColor: nsJSONKey)
-    static let jsonString = Color(nsColor: nsJSONString)
-    static let jsonNumber = Color(nsColor: nsJSONNumber)
-    static let jsonBoolean = Color(nsColor: nsJSONBoolean)
-    static let jsonNull = Color(nsColor: nsJSONNull)
-    static let treeKey = Color(red: 0.25, green: 0.50, blue: 0.68)
-    static let treeValue = Color(red: 0.64, green: 0.29, blue: 0.27)
-
-    static func methodColor(_ method: HTTPMethod) -> Color {
-        switch method {
-        case .get, .head, .options: Color(red: 0.31, green: 0.78, blue: 0.35)
-        case .post: Color(red: 0.20, green: 0.59, blue: 0.86)
-        case .put: Color(red: 0.82, green: 0.61, blue: 0.18)
-        case .patch: Color(red: 0.28, green: 0.63, blue: 0.82)
-        case .delete: Color(red: 0.86, green: 0.28, blue: 0.29)
-        default: primaryAccent
-        }
-    }
-
-    static func requestBarMethodColor(_ method: HTTPMethod) -> Color {
-        method == .patch ? success : methodColor(method)
-    }
-
-    static func statusColor(_ status: UInt16) -> Color {
-        switch status {
-        case 200 ..< 300: success
-        case 300 ..< 400: .orange
-        default: .red
-        }
-    }
-
-    private static func adaptiveColor(light: NSColor, dark: NSColor) -> NSColor {
-        NSColor(name: nil) { appearance in
-            appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua ? dark : light
-        }
-    }
+extension FocusedValues {
+    @Entry var workspaceCommands: WorkspaceUIState?
 }

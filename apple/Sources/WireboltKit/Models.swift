@@ -317,6 +317,7 @@ public enum RequestBody: Codable, Equatable, Sendable {
 
 public enum MultipartPartKind: String, Codable, CaseIterable, Sendable {
     case text
+    case binary
     case file
 }
 
@@ -326,6 +327,7 @@ public struct MultipartPart: Identifiable, Codable, Equatable, Sendable {
     public var kind: MultipartPartKind
     public var value: ValueSource
     public var filePath: String?
+    public var fileName: String?
     public var contentType: String?
     public var enabled: Bool
 
@@ -335,6 +337,7 @@ public struct MultipartPart: Identifiable, Codable, Equatable, Sendable {
         kind: MultipartPartKind = .text,
         value: ValueSource = .literal(""),
         filePath: String? = nil,
+        fileName: String? = nil,
         contentType: String? = nil,
         enabled: Bool = true
     ) {
@@ -343,6 +346,7 @@ public struct MultipartPart: Identifiable, Codable, Equatable, Sendable {
         self.kind = kind
         self.value = value
         self.filePath = filePath
+        self.fileName = fileName
         self.contentType = contentType
         self.enabled = enabled
     }
@@ -350,6 +354,7 @@ public struct MultipartPart: Identifiable, Codable, Equatable, Sendable {
     enum CodingKeys: String, CodingKey {
         case id, name, kind, value, enabled
         case filePath = "file_path"
+        case fileName = "file_name"
         case contentType = "content_type"
     }
 }
@@ -404,6 +409,8 @@ public struct RequestDraft: Equatable, Sendable {
     public var name: String
     public var method: HTTPMethod
     public var url: String
+    public var webSocket: Bool
+    public var note: String
     public var query: [RequestField]
     public var headers: [RequestField]
     public var authentication: RequestAuthentication
@@ -417,6 +424,8 @@ public struct RequestDraft: Equatable, Sendable {
         name: String = "Untitled Request",
         method: HTTPMethod = .get,
         url: String = "",
+        webSocket: Bool = false,
+        note: String = "",
         query: [RequestField] = [],
         headers: [RequestField] = [],
         authentication: RequestAuthentication = .none,
@@ -429,6 +438,8 @@ public struct RequestDraft: Equatable, Sendable {
         self.name = name
         self.method = method
         self.url = url
+        self.webSocket = webSocket
+        self.note = note
         self.query = query
         self.headers = headers
         self.authentication = authentication
@@ -436,6 +447,58 @@ public struct RequestDraft: Equatable, Sendable {
         self.proxy = proxy
         self.transport = transport
         self.inheritsWorkspaceTransport = inheritsWorkspaceTransport
+    }
+}
+
+public extension RequestDraft {
+    var separatingURLQuery: RequestDraft {
+        var result = self
+        let explicitFields = query
+        result.query = []
+        result.editURL(url)
+        result.query += explicitFields
+        return result
+    }
+
+    /// The URL field combines the base URL and the editable query table. Transport
+    /// receives them separately so each query parameter is encoded exactly once.
+    var displayURL: String {
+        let enabled = query.filter(\.enabled)
+        guard !enabled.isEmpty else { return url }
+        var components = URLComponents()
+        components.queryItems = enabled.map { URLQueryItem(name: $0.name, value: $0.value.editableValue) }
+        let fragment = url.firstIndex(of: "#") ?? url.endIndex
+        let prefix = String(url[..<fragment])
+        let separator = prefix.contains("?") ? "&" : "?"
+        return prefix + separator + (components.percentEncodedQuery ?? "") + url[fragment...]
+    }
+
+    mutating func editURL(_ text: String) {
+        let fragment = text.firstIndex(of: "#") ?? text.endIndex
+        let prefix = text[..<fragment]
+        guard let start = prefix.firstIndex(of: "?") else {
+            url = text
+            query.removeAll(where: \.enabled)
+            return
+        }
+        let rawQuery = String(prefix[prefix.index(after: start)...])
+        var components = URLComponents()
+        // URLComponents(string:) accepts partially typed and Unicode query values.
+        components = URLComponents(string: "https://query.invalid/?" + rawQuery) ?? components
+        guard let items = components.queryItems else { return }
+        var previous = query.filter(\.enabled)
+        let disabled = query.filter { !$0.enabled }
+        query = items.map { item in
+            if let index = previous.firstIndex(where: { $0.name == item.name }) {
+                var field = previous.remove(at: index)
+                if field.value.editableValue != (item.value ?? "") {
+                    field.value = .literal(item.value ?? "")
+                }
+                return field
+            }
+            return RequestField(name: item.name, value: .literal(item.value ?? ""))
+        } + disabled
+        url = String(prefix[..<start]) + text[fragment...]
     }
 }
 
@@ -632,6 +695,8 @@ public struct ImportPreview: Codable, Equatable, Identifiable, Sendable {
 }
 
 public struct WorkspaceDraft: Equatable, Sendable {
+    public static let globalEnvironmentID = "global"
+    public static let rootCollectionID = "workspace-root"
     public var name: String
     public var proxy: ProxyDocument?
     public var transport: TransportSettings

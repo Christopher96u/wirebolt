@@ -267,6 +267,10 @@ pub struct Request {
     pub order: i64,
     pub method: String,
     pub url: String,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub web_socket: bool,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub note: String,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub query: Vec<RequestValueField>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -298,6 +302,8 @@ impl Request {
             order: 0,
             method: method.into(),
             url: url.into(),
+            web_socket: false,
+            note: String::new(),
             query: Vec::new(),
             headers: Vec::new(),
             authentication: RequestAuthentication::None,
@@ -514,6 +520,8 @@ pub struct MultipartPart {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub file_path: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub file_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub content_type: Option<String>,
     #[serde(default = "enabled_by_default")]
     pub enabled: bool,
@@ -523,6 +531,8 @@ pub struct MultipartPart {
 #[serde(rename_all = "snake_case")]
 pub enum MultipartPartKind {
     Text,
+    /// Embedded bytes stored as Base64, without an external file dependency.
+    Binary,
     File,
 }
 

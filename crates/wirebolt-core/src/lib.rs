@@ -1,6 +1,10 @@
 #![forbid(unsafe_code)]
 
 mod body_decoder;
+mod export_engine;
+pub use export_engine::{
+    ExportError, export_legacy_v1_collection, export_legacy_v1_request, export_legacy_v1_workspace,
+};
 mod git_collaboration;
 mod http_engine;
 mod import_engine;
@@ -8,6 +12,8 @@ mod proxy;
 mod request;
 mod request_pipeline;
 mod storage;
+mod websocket;
+pub use websocket::{WebSocketConnection, WebSocketError, WebSocketFrame};
 
 pub use body_decoder::ContentEncoding;
 pub use git_collaboration::{

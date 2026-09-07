@@ -68,6 +68,26 @@ impl<'a, R: SecretResolver + ?Sized> RequestPipeline<'a, R> {
     ///
     /// Returns field-scoped issues without including resolved values.
     pub fn prepare(&self, request: &Request) -> Result<PreparedRequest, RequestPipelineError> {
+        self.prepare_protocol(request, false)
+    }
+
+    /// Resolves WebSocket variables and credentials before converting the URL
+    /// to its HTTP upgrade equivalent.
+    ///
+    /// # Errors
+    /// Returns the same field-scoped validation failures as HTTP preparation.
+    pub fn prepare_websocket(
+        &self,
+        request: &Request,
+    ) -> Result<PreparedRequest, RequestPipelineError> {
+        self.prepare_protocol(request, true)
+    }
+
+    fn prepare_protocol(
+        &self,
+        request: &Request,
+        websocket: bool,
+    ) -> Result<PreparedRequest, RequestPipelineError> {
         let mut resolver = TemplateResolver::new(self.environment, self.secrets);
         let method = parse_method(&request.method).ok();
         if method.is_none() {
@@ -80,7 +100,21 @@ impl<'a, R: SecretResolver + ?Sized> RequestPipeline<'a, R> {
         let url_mark = resolver.secret_mark();
         let Some(mut url) = resolver
             .resolve_template(&request.url, FieldPath::Fixed("url"))
-            .and_then(|value| parse_http_url(&value))
+            .and_then(|value| {
+                if websocket {
+                    let mut url = Url::parse(value.trim()).ok()?;
+                    let scheme = match url.scheme() {
+                        "ws" => "http",
+                        "wss" => "https",
+                        _ => return None,
+                    };
+                    url.set_scheme(scheme).ok()?;
+                    url.host_str()?;
+                    Some(url)
+                } else {
+                    parse_http_url(&value)
+                }
+            })
         else {
             if resolver.issues.is_empty() {
                 resolver.issue(FieldPath::Fixed("url"), RequestIssueKind::InvalidUrl, None);
@@ -412,14 +446,11 @@ fn prepare_multipart<R: SecretResolver + ?Sized>(
     headers: &mut HeaderMap,
 ) -> Vec<u8> {
     let boundary = "wirebolt-boundary-7MA4YWxkTrZu0gW";
-    if !headers.contains_key(CONTENT_TYPE) {
-        headers.insert(
-            CONTENT_TYPE,
-            HeaderValue::from_static(
-                "multipart/form-data; boundary=wirebolt-boundary-7MA4YWxkTrZu0gW",
-            ),
-        );
-    }
+    // The encoder owns the boundary. Imported headers may describe a different body.
+    headers.insert(
+        CONTENT_TYPE,
+        HeaderValue::from_static("multipart/form-data; boundary=wirebolt-boundary-7MA4YWxkTrZu0gW"),
+    );
     let mut body = Vec::new();
     for (index, part) in parts.iter().enumerate().filter(|(_, part)| part.enabled) {
         let Some(name) =
@@ -429,12 +460,59 @@ fn prepare_multipart<R: SecretResolver + ?Sized>(
         };
         let escaped_name = name.replace(['"', '\r', '\n'], "_");
         body.extend_from_slice(format!("--{boundary}\r\n").as_bytes());
-        match part.kind {
-            MultipartPartKind::Text => {
-                body.extend_from_slice(
-                    format!("Content-Disposition: form-data; name=\"{escaped_name}\"\r\n\r\n")
-                        .as_bytes(),
+        let filename = part.file_name.as_deref().or_else(|| {
+            (part.kind == MultipartPartKind::File).then(|| {
+                part.file_path
+                    .as_deref()
+                    .and_then(|path| std::path::Path::new(path).file_name())
+                    .and_then(|name| name.to_str())
+                    .unwrap_or("file")
+            })
+        });
+        let disposition = filename.map_or_else(String::new, |name| {
+            format!("; filename=\"{}\"", name.replace(['\"', '\r', '\n'], "_"))
+        });
+        body.extend_from_slice(
+            format!("Content-Disposition: form-data; name=\"{escaped_name}\"{disposition}\r\n")
+                .as_bytes(),
+        );
+        let content_type = part
+            .content_type
+            .as_deref()
+            .filter(|value| !value.is_empty())
+            .or_else(|| {
+                (part.kind == MultipartPartKind::File).then_some("application/octet-stream")
+            });
+        if let Some(content_type) = content_type {
+            if HeaderValue::from_str(content_type).is_err() {
+                resolver.issue(
+                    FieldPath::indexed("body.parts", index, "content_type"),
+                    RequestIssueKind::InvalidHeaderValue,
+                    None,
                 );
+                continue;
+            }
+            body.extend_from_slice(format!("Content-Type: {content_type}\r\n").as_bytes());
+        }
+        body.extend_from_slice(b"\r\n");
+        match part.kind {
+            MultipartPartKind::Binary => {
+                if let Some(value) = resolver.resolve_source(
+                    &part.value,
+                    FieldPath::indexed("body.parts", index, "value"),
+                ) {
+                    if let Ok(bytes) = STANDARD.decode(value.as_bytes()) {
+                        body.extend_from_slice(&bytes);
+                    } else {
+                        resolver.issue(
+                            FieldPath::indexed("body.parts", index, "value"),
+                            RequestIssueKind::InvalidBody,
+                            None,
+                        );
+                    }
+                }
+            }
+            MultipartPartKind::Text => {
                 if let Some(value) = resolver.resolve_source(
                     &part.value,
                     FieldPath::indexed("body.parts", index, "value"),
@@ -443,41 +521,18 @@ fn prepare_multipart<R: SecretResolver + ?Sized>(
                 }
             }
             MultipartPartKind::File => {
-                let Some(path) = part.file_path.as_deref() else {
+                let bytes = part
+                    .file_path
+                    .as_deref()
+                    .and_then(|path| fs::read(path).ok());
+                if let Some(bytes) = bytes {
+                    body.extend_from_slice(&bytes);
+                } else {
                     resolver.issue(
                         FieldPath::indexed("body.parts", index, "file_path"),
                         RequestIssueKind::FileUnavailable,
                         None,
                     );
-                    continue;
-                };
-                let filename = std::path::Path::new(path)
-                    .file_name()
-                    .and_then(|name| name.to_str())
-                    .unwrap_or("file")
-                    .replace(['"', '\r', '\n'], "_");
-                body.extend_from_slice(
-                    format!(
-                        "Content-Disposition: form-data; name=\"{escaped_name}\"; filename=\"{filename}\"\r\n"
-                    )
-                    .as_bytes(),
-                );
-                body.extend_from_slice(
-                    format!(
-                        "Content-Type: {}\r\n\r\n",
-                        part.content_type
-                            .as_deref()
-                            .unwrap_or("application/octet-stream")
-                    )
-                    .as_bytes(),
-                );
-                match fs::read(path) {
-                    Ok(bytes) => body.extend_from_slice(&bytes),
-                    Err(_) => resolver.issue(
-                        FieldPath::indexed("body.parts", index, "file_path"),
-                        RequestIssueKind::FileUnavailable,
-                        None,
-                    ),
                 }
             }
         }
@@ -758,6 +813,7 @@ pub enum RequestIssueKind {
     InvalidHeaderValue,
     ConflictingHeader,
     InvalidJson,
+    InvalidBody,
     FileUnavailable,
     InvalidTemplate,
     TemplateTooDeep,

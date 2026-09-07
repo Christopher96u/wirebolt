@@ -99,11 +99,15 @@ private struct PerformanceResults: Encodable {
 
 private struct Arguments {
     let smokeOnly: Bool
+    var launchOnly = false
     let appExecutable: URL?
     let budgets: URL?
 
     static func parse() throws -> Arguments {
         var values = Array(CommandLine.arguments.dropFirst())
+        if values.count == 2, values[0] == "--launch-smoke" {
+            return Arguments(smokeOnly: false, launchOnly: true, appExecutable: URL(fileURLWithPath: values[1]), budgets: nil)
+        }
         if values == ["--smoke"] {
             return Arguments(smokeOnly: true, appExecutable: nil, budgets: nil)
         }
@@ -145,7 +149,7 @@ private enum HarnessError: Error, CustomStringConvertible {
         case let .invalidMeasurement(reason):
             "invalid performance measurement: \(reason)"
         case .usage:
-            "usage: performance-contract --smoke | --app <executable> [--budgets <json>]"
+            "usage: performance-contract --smoke | --launch-smoke <executable> | --app <executable> [--budgets <json>]"
         }
     }
 }
@@ -169,6 +173,12 @@ private enum PerformanceContract {
 
             guard let appExecutable = arguments.appExecutable else {
                 throw HarnessError.usage
+            }
+
+            if arguments.launchOnly {
+                _ = try measureLaunch(executable: appExecutable, count: 1)
+                print("app_launch_smoke=passed")
+                return
             }
 
             let budgets = try arguments.budgets.map(loadBudgets)
@@ -527,6 +537,13 @@ private enum PerformanceContract {
                 .appendingPathComponent("wirebolt-ready-\(UUID().uuidString)")
             let process = Process()
             process.executableURL = executable
+            let workspace = fileManager.temporaryDirectory.appendingPathComponent("wirebolt-launch-\(UUID().uuidString)")
+            process.arguments = ["--workspace", workspace.path]
+            defer {
+                stop(process)
+                try? fileManager.removeItem(at: readyFile)
+                try? fileManager.removeItem(at: workspace)
+            }
             var environment = ProcessInfo.processInfo.environment
             environment["WIREBOLT_READY_FILE"] = readyFile.path
             process.environment = environment
@@ -555,6 +572,7 @@ private enum PerformanceContract {
             let elapsed = DispatchTime.now().uptimeNanoseconds - started
             milliseconds.append(Double(elapsed) / 1_000_000)
             usleep(250_000)
+            guard process.isRunning else { throw HarnessError.appExited(process.terminationStatus) }
             rssMebibytes.append(try residentMemoryMebibytes(pid: process.processIdentifier))
 
             stop(process)
