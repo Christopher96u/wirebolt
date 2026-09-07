@@ -4,6 +4,98 @@ import Testing
 
 @Suite("Wirebolt model")
 struct WireboltModelTests {
+    @Test("New global requests persist at the workspace root and contextual requests keep their folder")
+    @MainActor
+    func createRequestsInContext() async throws {
+        let persistence = MutationRecorder()
+        let model = WireboltModel(runner: StubRunner(), persistence: persistence)
+        let global = try #require(await model.createRequest())
+        #expect(global.collectionID == WorkspaceDraft.rootCollectionID)
+        #expect(!global.isDirty)
+        #expect(global.draft.url.isEmpty)
+        model.workspace.collections.append(CollectionDraft(id: "api", name: "API", groups: [GroupDraft(id: "folder", name: "Folder")]))
+        let nested = try #require(await model.createRequest(kind: .webSocket, collectionID: "api", groupID: "folder"))
+        #expect(nested.collectionID == "api")
+        #expect(nested.kind == .webSocket)
+        #expect(!nested.isDirty)
+        #expect(model.workspace.location(collectionID: "api", requestID: nested.requestID)?.groupID == "folder")
+        let commands = await persistence.commands
+        #expect(commands.count == 3)
+    }
+
+    @Test("Save targets the document collection even when another collection is first")
+    @MainActor
+    func saveKeepsDocumentCollection() async {
+        let persistence = MutationRecorder()
+        let model = WireboltModel(runner: StubRunner(), persistence: persistence)
+        let location = RequestLocation(collectionID: "second", request: RequestDraft(id: "request", name: "Saved"))
+        model.workspace.collections = [CollectionDraft(id: "first", name: "First"), CollectionDraft(id: "second", name: "Second", requests: [location])]
+        model.select(location)
+        model.draft.note = "Keep in second"
+        await model.saveCurrentRequest(collectionID: "first")
+        let commands = await persistence.commands
+        guard case let .saveRequest(collectionID, saved) = commands.first else { Issue.record("Expected request save"); return }
+        #expect(collectionID == "second")
+        #expect(saved.request.note == "Keep in second")
+        #expect(model.workspace.collections[0].requests.isEmpty)
+        #expect(model.sessions.activeSession?.isDirty == false)
+    }
+
+    @Test("Sending a captured document cannot be redirected by a later tab selection")
+    @MainActor
+    func sendTargetsCapturedDocument() async {
+        let runner = InputCapturingRunner()
+        let model = WireboltModel(runner: runner)
+        let first = model.sessions.open(draft: RequestDraft(id: "first", name: "First", url: "https://example.com/first"))
+        let second = model.sessions.open(draft: RequestDraft(id: "second", name: "Second", url: "https://example.com/second"))
+        await model.send(first)
+        #expect(await runner.lastInput?.url == "https://example.com/first")
+        #expect(first.preparedRun?.url == "https://example.com/first")
+        #expect(second.preparedRun == nil)
+        #expect(model.sessions.activeSession?.id == second.id)
+        await model.send()
+        #expect(await runner.lastInput?.url == "https://example.com/second")
+        #expect(second.preparedRun?.url == "https://example.com/second")
+    }
+
+    @Test("Renaming a saved request keeps unrelated edits dirty and out of persistence")
+    @MainActor
+    func renamePreservesUnsavedEdits() async {
+        let persistence = MutationRecorder()
+        let model = WireboltModel(runner: StubRunner(), persistence: persistence)
+        let draft = RequestDraft(id: "request", name: "Before", url: "https://example.com/saved")
+        let location = RequestLocation(collectionID: "api", request: draft)
+        model.workspace.collections = [CollectionDraft(id: "api", name: "API", requests: [location])]
+        model.select(location)
+        model.draft.url = "https://example.com/unsaved"
+        await model.renameRequest(collectionID: "api", requestID: "request", name: "After")
+        #expect(model.draft.name == "After")
+        #expect(model.draft.url == "https://example.com/unsaved")
+        #expect(model.sessions.activeSession?.isDirty == true)
+        let commands = await persistence.commands
+        guard case let .saveRequest(_, saved) = commands.first else { Issue.record("Expected one request save"); return }
+        #expect(saved.request.name == "After")
+        #expect(saved.request.url == "https://example.com/saved")
+        model.draft.url = "https://example.com/saved"
+        #expect(model.sessions.activeSession?.isDirty == false)
+    }
+
+    @Test("Global variables apply without a selection and selected values override them")
+    @MainActor
+    func globalVariables() {
+        let model = WireboltModel(runner: StubRunner())
+        model.workspace.environments = [
+            EnvironmentDraft(id: WorkspaceDraft.globalEnvironmentID, name: "Global Environment", legacyVariables: [
+                "host": .literal("global.example"), "shared": .literal("yes")
+            ]),
+            EnvironmentDraft(id: "local", name: "Local", legacyVariables: ["host": .literal("localhost")])
+        ]
+        #expect(model.activeVariables["host"] == .literal("global.example"))
+        model.selectedEnvironmentID = "local"
+        #expect(model.activeVariables["host"] == .literal("localhost"))
+        #expect(model.activeVariables["shared"] == .literal("yes"))
+    }
+
     @Test("streams a response into bounded visible state")
     @MainActor
     func streamsResponse() async {
@@ -295,6 +387,68 @@ struct WireboltModelTests {
         #expect(store.groups[0].tabIDs == [second.id])
     }
 
+    @Test("Closing all tabs can reopen the previous document with its completed response")
+    @MainActor
+    func reopenLastDocument() async {
+        let store = DocumentSessionStore()
+        let session = store.openTemporary()
+        session.markSaved(session.draft)
+        let run = RunID()
+        session.beginRun(run)
+        await session.consume(.chunk(Data("preserved".utf8)), runID: run)
+        await session.consume(.complete(RunCompletion(bytesReceived: 9, totalTimeNS: 1)), runID: run)
+        #expect(store.close(.all).isEmpty)
+        #expect(store.activeSession == nil)
+        store.reopen(session)
+        #expect(store.activeSession === session)
+        #expect(store.activeSession?.responseText == "preserved")
+        #expect(store.activeGroup?.tabIDs == [session.id])
+    }
+
+    @Test("Splitting preserves a completed response and resending cannot delete the other viewport")
+    @MainActor
+    func splitResponseLifetime() async throws {
+        let store = DocumentSessionStore()
+        let source = store.openTemporary()
+        source.markSaved(source.draft)
+        let run = RunID()
+        source.beginRun(run)
+        await source.consume(.chunk(Data("shared body".utf8)), runID: run)
+        await source.consume(.complete(RunCompletion(bytesReceived: 11, totalTimeNS: 1)), runID: run)
+        _ = try #require(store.split(tabID: source.id))
+        let copy = try #require(store.activeSession)
+        #expect(copy.responseText == "shared body")
+        #expect(!copy.isDirty)
+        source.beginRun(RunID())
+        let bytes = try await copy.bodyStore?.viewport()
+        #expect(bytes == Data("shared body".utf8))
+        store.select(tabID: source.id, in: store.groups[0].id)
+        #expect(store.activeSession === source)
+        let reopened = store.open(draft: copy.draft)
+        #expect(reopened === source)
+    }
+
+    @Test("Closing a running document cancels transport and discards edits only after confirmation")
+    @MainActor
+    func closeRunningDocument() async {
+        let runner = RoutedRunner()
+        let model = WireboltModel(runner: runner)
+        let session = model.sessions.openTemporary()
+        session.draft.url = "https://example.com/pending"
+        session.markSaved(session.draft)
+        let task = Task { await model.send(session) }
+        await runner.waitForPending(url: session.draft.url)
+        session.draft.name = "Unsaved edit"
+        #expect(model.closeDocuments(.all).map(\.id) == [session.id])
+        #expect(session.isRunning)
+        #expect(model.closeDocuments(.all, allowDirty: true).isEmpty)
+        await task.value
+        #expect(!session.isRunning)
+        #expect(session.failure?.kind == "cancelled")
+        #expect(!session.isDirty)
+        #expect(model.sessions.activeSession == nil)
+    }
+
     @Test("applies hierarchical workspace mutations without reloading")
     @MainActor
     func appliesWorkspaceDeltas() async {
@@ -423,6 +577,34 @@ struct WireboltModelTests {
         #expect(session.draft.url == "https://example.com/edited")
     }
 
+    @Test("Authentication edits reach secure storage before running and never enter the encoded draft")
+    @MainActor
+    func editedCredentials() async throws {
+        let persistence = SecretPersistenceRecorder()
+        let model = WireboltModel(runner: StubRunner(), persistence: persistence)
+        model.draft.url = "https://example.com"
+        model.draft.authentication = .bearer(token: .secret("test.token"))
+        model.editSecret(name: "test.token", value: "fixture-token-material")
+        await model.send()
+        #expect(await persistence.savedSecret?.0 == "test.token")
+        #expect(await persistence.savedSecret?.1 == "fixture-token-material")
+        let encoded = try JSONEncoder().encode(RunInput(draft: model.draft, variables: [:]))
+        #expect(!String(decoding: encoded, as: UTF8.self).contains("fixture-token-material"))
+    }
+
+    @Test("Cancellation has a terminal presentation and ignores late callbacks")
+    @MainActor
+    func cancellationPresentation() async {
+        let session = DocumentSession(draft: RequestDraft())
+        let run = RunID()
+        session.beginRun(run)
+        session.cancel(runID: run)
+        await session.consume(.chunk(Data("late".utf8)), runID: run)
+        #expect(!session.isRunning)
+        #expect(session.failure?.kind == "cancelled")
+        #expect(session.responseBytes == 0)
+    }
+
     @Test("stores acquired OAuth tokens in Keychain persistence without putting material in the draft")
     @MainActor
     func acquiresOAuthToken() async throws {
@@ -526,6 +708,10 @@ private actor RoutedRunner: RequestRunner {
 
     nonisolated func cancel(runID: RunID) {
         Task { await self.finishCancellation(runID: runID) }
+    }
+
+    func waitForPending(url: String) async {
+        while !pendingByRunID.values.contains(where: { $0.input.url == url }) { await Task.yield() }
     }
 
     func release(runFor url: String, body: String) async {

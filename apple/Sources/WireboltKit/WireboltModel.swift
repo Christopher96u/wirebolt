@@ -11,14 +11,18 @@ public protocol WorkspacePersistence: Sendable {
     func save(request: RequestDraft, in collectionID: String) async throws
     func save(environment: EnvironmentDraft) async throws
     func saveSecret(name: String, value: String) async throws
+    func readSecret(name: String) async throws -> String?
     func apply(_ command: WorkspaceCommand) async throws -> WorkspaceDelta
     func previewImport(format: ImportFormat, source: String) async throws -> ImportPreview
     func commitImport(format: ImportFormat, source: String) async throws -> WorkspaceDelta
+    func commitImportFile(format: ImportFormat, source: String, name: String) async throws -> WorkspaceDelta
     func exportCollection(id: String) async throws -> String
+    func exportWorkspace() async throws -> String
     func exportRequest(collectionID: String, id: String) async throws -> String
 }
 
 public extension WorkspacePersistence {
+    func readSecret(name _: String) async throws -> String? { nil }
     func apply(_ command: WorkspaceCommand) async throws -> WorkspaceDelta {
         switch command {
         case let .saveRequest(collectionID, location):
@@ -40,7 +44,12 @@ public extension WorkspacePersistence {
         throw WorkspaceMutationError.unsupported
     }
 
+    func commitImportFile(format: ImportFormat, source: String, name: String) async throws -> WorkspaceDelta {
+        try await commitImport(format: format, source: source)
+    }
+
     func exportCollection(id _: String) async throws -> String { throw WorkspaceMutationError.unsupported }
+    func exportWorkspace() async throws -> String { throw WorkspaceMutationError.unsupported }
     func exportRequest(collectionID _: String, id _: String) async throws -> String {
         throw WorkspaceMutationError.unsupported
     }
@@ -70,25 +79,31 @@ public final class WireboltModel {
     public private(set) var gitOperation: GitOperationSnapshot?
     public private(set) var gitFailure: GitFailure?
     public private(set) var isGitBusy = false
-    public private(set) var importPreview: ImportPreview?
+    public private(set) var isImporting = false
+    public var importFailureMessage: String?
     public private(set) var historyEntries: [RunHistoryEntry] = []
+    public private(set) var historyRevision = 0
+    private var editedSecrets: [String: String] = [:]
+    private var dirtySecrets: Set<String> = []
     public private(set) var oauthReceipts: [String: OAuth2TokenReceipt] = [:]
     public private(set) var oauthFailureMessage: String?
     public private(set) var isOAuthBusy = false
     public var isShowingGitCollaboration = false
 
+    @ObservationIgnored private let socketConnector: (any WebSocketConnecting)?
     @ObservationIgnored private let runner: any RequestRunner
     @ObservationIgnored private var persistence: (any WorkspacePersistence)?
     @ObservationIgnored private var gitCollaboration: (any GitCollaboration)?
-    @ObservationIgnored private var pendingImport: (format: ImportFormat, source: String)?
     @ObservationIgnored private let history: HistoryRepository
     @ObservationIgnored private let cookieJar: CookieJar
     @ObservationIgnored private let oauth2: any OAuth2Authorizing
     @ObservationIgnored private var requestSearchIndex: [String: String] = [:]
-    private var operationFailure: RunFailure?
+    @ObservationIgnored private var rootCreation: Task<Void, any Error>?
+    public var operationFailure: RunFailure?
 
     public init(
         runner: any RequestRunner,
+        socketConnector: (any WebSocketConnecting)? = nil,
         persistence: (any WorkspacePersistence)? = nil,
         gitCollaboration: (any GitCollaboration)? = nil,
         sessions: DocumentSessionStore? = nil,
@@ -99,6 +114,7 @@ public final class WireboltModel {
         ),
         oauth2: (any OAuth2Authorizing)? = nil
     ) {
+        self.socketConnector = socketConnector
         self.runner = runner
         self.persistence = persistence
         self.gitCollaboration = gitCollaboration
@@ -114,6 +130,8 @@ public final class WireboltModel {
     ) {
         self.persistence = persistence
         self.gitCollaboration = gitCollaboration
+        editedSecrets = [:]
+        dirtySecrets = []
     }
 
     public var selectedRequestID: String? {
@@ -143,9 +161,9 @@ public final class WireboltModel {
     public var isRunning: Bool { sessions.activeSession?.isRunning ?? false }
 
     public var activeVariables: [String: ValueSource] {
-        workspace.environments
-            .first(where: { $0.id == selectedEnvironmentID })?
-            .enabledValues ?? [:]
+        let global = workspace.environments.first { $0.id == WorkspaceDraft.globalEnvironmentID }?.enabledValues ?? [:]
+        let selected = workspace.environments.first { $0.id == selectedEnvironmentID }?.enabledValues ?? [:]
+        return global.merging(selected, uniquingKeysWith: { _, override in override })
     }
 
     public var hasUnsavedRequestChanges: Bool {
@@ -170,10 +188,32 @@ public final class WireboltModel {
         return indexed.contains(normalizedQuery)
     }
 
-    public func send() async {
-        let session = sessions.activeSession ?? sessions.openTemporary()
+    public func connectWebSocket(_ session: DocumentSession) async {
+        guard let socketConnector else { return }
+        do { try await flushSecrets() } catch {
+            operationFailure = RunFailure(kind: "keychain", issues: [])
+            return
+        }
+        var draft = session.draft
+        if draft.inheritsWorkspaceTransport { draft.transport = workspace.transport }
+        session.socket.connect(input: RunInput(draft: draft, variables: activeVariables,
+            workspaceProxy: workspace.proxy), connector: socketConnector)
+    }
+
+    public func send(_ target: DocumentSession? = nil) async {
+        let session = target ?? sessions.activeSession ?? sessions.openTemporary()
+        if session.kind == .webSocket {
+            if session.socket.status == .connected { await session.socket.send(body: session.draft.body) }
+            else { await connectWebSocket(session) }
+            return
+        }
         guard session.isRunning == false else { return }
         operationFailure = nil
+        do { try await flushSecrets() } catch {
+            operationFailure = RunFailure(kind: "keychain", issues: [])
+            return
+        }
+        guard !session.isRunning, sessions.session(id: session.id) != nil else { return }
         let runID = RunID()
         var runDraft = session.draft
         if runDraft.inheritsWorkspaceTransport {
@@ -192,6 +232,7 @@ public final class WireboltModel {
                 sensitive: true
             ))
         }
+        guard sessions.session(id: session.id) != nil else { return }
         let input = RunInput(
             draft: runDraft,
             variables: activeVariables,
@@ -201,6 +242,7 @@ public final class WireboltModel {
 
         do {
             for try await event in runner.events(for: input, runID: runID) {
+                guard session.activeRunID == runID else { return }
                 if Task.isCancelled {
                     runner.cancel(runID: runID)
                     session.cancel(runID: runID)
@@ -209,8 +251,7 @@ public final class WireboltModel {
                 if case let .head(head) = event,
                    let url = URL(string: runDraft.url)
                 {
-                    await cookieJar.store(headers: head.headers, requestURL: url)
-                    session.setResponseCookies(await cookieJar.all())
+                    session.setResponseCookies(await cookieJar.store(headers: head.headers, requestURL: url))
                 }
                 await session.consume(event, runID: runID)
             }
@@ -229,12 +270,24 @@ public final class WireboltModel {
         }
     }
 
-    public func cancel() {
-        guard let session = sessions.activeSession,
+    public func cancel(_ target: DocumentSession? = nil) {
+        guard let session = target ?? sessions.activeSession,
               let runID = session.activeRunID
         else { return }
         runner.cancel(runID: runID)
         session.cancel(runID: runID)
+    }
+
+    @discardableResult
+    public func closeDocuments(_ scope: TabCloseScope, in groupID: String? = nil, allowDirty: Bool = false) -> [DocumentSession] {
+        let previous = sessions.sessions
+        let blocked = sessions.close(scope, in: groupID, allowDirty: allowDirty)
+        guard blocked.isEmpty else { return blocked }
+        for (id, session) in previous where sessions.session(id: id) == nil {
+            cancel(session)
+            if allowDirty, let saved = session.savedDraft { session.markSaved(saved) }
+        }
+        return []
     }
 
     public func acquireOAuthToken(for session: DocumentSession) async {
@@ -251,6 +304,10 @@ public final class WireboltModel {
         } catch {
             oauthFailureMessage = error.localizedDescription
         }
+    }
+
+    public func historyEntries(for session: DocumentSession) async -> [RunHistoryEntry] {
+        await history.list(requestID: session.requestID)
     }
 
     public func loadHistory(for session: DocumentSession) async {
@@ -282,6 +339,12 @@ public final class WireboltModel {
             body: body
         )
         historyEntries = await history.list(requestID: session.requestID)
+        historyRevision += 1
+    }
+
+    public func exportWorkspace() async -> String? {
+        do { return try await persistence?.exportWorkspace() }
+        catch { operationFailure = RunFailure(kind: "export", issues: []); return nil }
     }
 
     public func exportCollection(id: String) async -> String? {
@@ -371,7 +434,9 @@ public final class WireboltModel {
         guard let persistence,
               let session = sessions.activeSession
         else { return }
+        let collectionID = session.collectionID ?? collectionID
         do {
+            try await flushSecrets()
             let location = RequestLocation(
                 collectionID: collectionID,
                 groupID: workspace.location(collectionID: collectionID, requestID: session.draft.id)?.groupID,
@@ -379,15 +444,16 @@ public final class WireboltModel {
                 request: session.draft
             )
             _ = try await persistence.apply(.saveRequest(collectionID: collectionID, location: location))
-            session.markSaved(session.draft)
+            session.recordSavedDraft(location.request)
             applySavedRequest(location)
         } catch {
             operationFailure = RunFailure(kind: "workspace", issues: [])
         }
     }
 
-    public func saveEnvironment(_ environment: EnvironmentDraft) async {
-        guard let persistence else { return }
+    @discardableResult
+    public func saveEnvironment(_ environment: EnvironmentDraft) async -> Bool {
+        guard let persistence else { return false }
         do {
             _ = try await persistence.apply(.saveEnvironment(environment))
             if let index = workspace.environments.firstIndex(where: { $0.id == environment.id }) {
@@ -395,9 +461,11 @@ public final class WireboltModel {
             } else {
                 workspace.environments.append(environment)
             }
-            selectedEnvironmentID = environment.id
+            selectedEnvironmentID = environment.id == WorkspaceDraft.globalEnvironmentID ? nil : environment.id
+            return true
         } catch {
             operationFailure = RunFailure(kind: "workspace", issues: [])
+            return false
         }
     }
 
@@ -410,17 +478,54 @@ public final class WireboltModel {
         }
     }
 
-    public func deleteEnvironment(id: String) async {
-        guard let persistence else { return }
+    @discardableResult
+    public func deleteEnvironment(id: String) async -> Bool {
+        guard let persistence else { return false }
         do {
             _ = try await persistence.apply(.deleteEnvironment(id: id))
             workspace.environments.removeAll { $0.id == id }
             if selectedEnvironmentID == id {
                 selectedEnvironmentID = nil
             }
+            return true
         } catch {
             operationFailure = RunFailure(kind: "workspace", issues: [])
+            return false
         }
+    }
+
+    public func secretMaterial(for source: ValueSource) -> String {
+        switch source {
+        case let .literal(value): value
+        case let .secret(name): editedSecrets[name] ?? ""
+        }
+    }
+
+    public func editSecret(name: String, value: String) {
+        editedSecrets[name] = value
+        dirtySecrets.insert(name)
+    }
+
+    public func loadSecret(_ source: ValueSource) async {
+        guard case let .secret(name) = source, editedSecrets[name] == nil,
+              let persistence else { return }
+        do {
+            let value = try await persistence.readSecret(name: name) ?? ""
+            if editedSecrets[name] == nil { editedSecrets[name] = value }
+        } catch { operationFailure = RunFailure(kind: "keychain", issues: []) }
+    }
+
+    private func flushSecrets() async throws {
+        guard let persistence else {
+            if !dirtySecrets.isEmpty { throw WorkspaceMutationError.unsupported }
+            return
+        }
+        for name in dirtySecrets {
+            guard let value = editedSecrets[name] else { continue }
+            try await persistence.saveSecret(name: name, value: value)
+            if editedSecrets[name] == value { dirtySecrets.remove(name) }
+        }
+        if !dirtySecrets.isEmpty { try await flushSecrets() }
     }
 
     public func saveSecret(name: String, value: String) async {
@@ -432,59 +537,40 @@ public final class WireboltModel {
         }
     }
 
-    public func previewImport(url: URL, format: ImportFormat) async {
-        guard let persistence else { return }
+    public func importDocument(url: URL, format: ImportFormat) async {
+        guard !isImporting, persistence != nil else { return }
+        isImporting = true
+        importFailureMessage = nil
+        defer { isImporting = false }
         do {
             let source = try await Task.detached(priority: .userInitiated) {
-                let data = try Data(contentsOf: url, options: [.mappedIfSafe])
-                guard let source = String(data: data, encoding: .utf8) else {
-                    throw WorkspaceMutationError.unsupported
-                }
-                return source
+                try String(contentsOf: url, encoding: .utf8)
             }.value
-            importPreview = try await persistence.previewImport(format: format, source: source)
-            pendingImport = (format, source)
-        } catch {
-            cancelPendingImport()
-            operationFailure = RunFailure(kind: "import", issues: [])
-        }
+            await commitDocument(source: source, format: format, fileName: url.deletingPathExtension().lastPathComponent)
+        } catch { importFailureMessage = "The selected document could not be read." }
     }
 
-    public func previewImport(source: String, format: ImportFormat) async {
+    public func importDocument(source: String, format: ImportFormat) async {
+        guard !isImporting, persistence != nil else { return }
+        isImporting = true
+        importFailureMessage = nil
+        defer { isImporting = false }
+        await commitDocument(source: source, format: format)
+    }
+
+    private func commitDocument(source: String, format: ImportFormat, fileName: String? = nil) async {
         guard let persistence else { return }
+        let previousIDs = Set(workspace.collections.map(\.id))
         do {
-            importPreview = try await persistence.previewImport(format: format, source: source)
-            pendingImport = (format, source)
-        } catch {
-            cancelPendingImport()
-            operationFailure = RunFailure(kind: "import", issues: [])
-        }
-    }
-
-    public func commitPendingImport() async {
-        guard let persistence, let pendingImport else { return }
-        do {
-            _ = try await persistence.commitImport(
-                format: pendingImport.format,
-                source: pendingImport.source
-            )
-            let importedName = importPreview?.collectionName
-            cancelPendingImport()
+            if let fileName {
+                _ = try await persistence.commitImportFile(format: format, source: source, name: fileName)
+            } else { _ = try await persistence.commitImport(format: format, source: source) }
             applyLoadedWorkspace(try await persistence.load())
-            if let importedName,
-               let imported = workspace.collections.first(where: { $0.name == importedName }),
-               let first = imported.requests.first
-            {
-                select(first)
-            }
+            if let imported = workspace.collections.first(where: { !previousIDs.contains($0.id) }),
+               let request = imported.requests.first { select(request) }
         } catch {
-            operationFailure = RunFailure(kind: "import", issues: [])
+            importFailureMessage = "The document could not be imported. Check its format and contents."
         }
-    }
-
-    public func cancelPendingImport() {
-        pendingImport = nil
-        importPreview = nil
     }
 
     @discardableResult
@@ -500,7 +586,7 @@ public final class WireboltModel {
             let location = RequestLocation(
                 collectionID: collectionID,
                 groupID: groupID,
-                order: workspace.collections[collectionIndex].requests.count,
+                order: max(Int.min + 1, min(0, workspace.collections[collectionIndex].requests.map(\.order).min() ?? 0)) - 1,
                 request: session.draft
             )
             applySavedRequest(location)
@@ -513,6 +599,39 @@ public final class WireboltModel {
             id: UUID().uuidString.lowercased(),
             name: "New Environment"
         )
+    }
+
+    public func createRequest(kind: DocumentKind = .http, collectionID: String? = nil, groupID: String? = nil) async -> DocumentSession? {
+        guard let persistence else { return nil }
+        let collectionID = collectionID ?? WorkspaceDraft.rootCollectionID
+        do {
+            if collectionID == WorkspaceDraft.rootCollectionID { try await ensureRootCollection() }
+            guard let collection = workspace.collections.first(where: { $0.id == collectionID }) else { return nil }
+            let draft = RequestDraft(id: UUID().uuidString.lowercased(),
+                name: kind == .http ? "Untitled Request" : "Untitled WebSocket Request", webSocket: kind == .webSocket)
+            let location = RequestLocation(collectionID: collectionID, groupID: groupID,
+                order: max(Int.min + 1, min(0, collection.requests.map(\.order).min() ?? 0)) - 1, request: draft)
+            _ = try await persistence.apply(.saveRequest(collectionID: collectionID, location: location))
+            applySavedRequest(location)
+            return sessions.open(draft: draft, collectionID: collectionID, kind: kind)
+        } catch { operationFailure = RunFailure(kind: "workspace", issues: []); return nil }
+    }
+
+    private func ensureRootCollection() async throws {
+        let id = WorkspaceDraft.rootCollectionID
+        guard let persistence, !workspace.collections.contains(where: { $0.id == id }) else { return }
+        let root = CollectionDraft(id: id, name: "Requests", order: Int.min)
+        if rootCreation == nil { rootCreation = Task { _ = try await persistence.apply(.createCollection(root)) } }
+        do { try await rootCreation?.value } catch { rootCreation = nil; throw error }
+        if !workspace.collections.contains(where: { $0.id == id }) { workspace.collections.insert(root, at: 0) }
+        rootCreation = nil
+    }
+
+    public func createRootFolder() async -> String? {
+        do {
+            try await ensureRootCollection()
+            return await createGroup(collectionID: WorkspaceDraft.rootCollectionID, name: "Untitled Folder")
+        } catch { operationFailure = RunFailure(kind: "workspace", issues: []); return nil }
     }
 
     public func createCollection(name: String = "New Collection") async {
@@ -528,6 +647,20 @@ public final class WireboltModel {
         } catch {
             operationFailure = RunFailure(kind: "workspace", issues: [])
         }
+    }
+
+    public func renameRequest(collectionID: String, requestID: String, name: String) async {
+        guard let persistence,
+              var location = workspace.location(collectionID: collectionID, requestID: requestID)
+        else { return }
+        location.request.name = name
+        do {
+            _ = try await persistence.apply(.saveRequest(collectionID: collectionID, location: location))
+            applySavedRequest(location)
+            for session in sessions.sessions.values where session.collectionID == collectionID && session.requestID == requestID {
+                session.renameSavedRequest(name)
+            }
+        } catch { operationFailure = RunFailure(kind: "workspace", issues: []) }
     }
 
     public func renameCollection(id: String, name: String) async {
@@ -553,10 +686,11 @@ public final class WireboltModel {
         }
     }
 
-    public func createGroup(collectionID: String, parentID: String? = nil, name: String = "New Folder") async {
+    @discardableResult
+    public func createGroup(collectionID: String, parentID: String? = nil, name: String = "New Folder") async -> String? {
         guard let persistence,
               let collectionIndex = workspace.collections.firstIndex(where: { $0.id == collectionID })
-        else { return }
+        else { return nil }
         let siblings = workspace.collections[collectionIndex].groups.filter { $0.parentID == parentID }
         let group = GroupDraft(
             id: Self.documentID(from: name, fallback: "group"),
@@ -567,8 +701,10 @@ public final class WireboltModel {
         do {
             _ = try await persistence.apply(.createGroup(collectionID: collectionID, group: group))
             workspace.collections[collectionIndex].groups.append(group)
+            return group.id
         } catch {
             operationFailure = RunFailure(kind: "workspace", issues: [])
+            return nil
         }
     }
 
@@ -713,7 +849,7 @@ public final class WireboltModel {
     private func applyLoadedWorkspace(_ loaded: WorkspaceDraft) {
         workspace = loaded
         rebuildRequestSearchIndex()
-        selectedEnvironmentID = loaded.environments.first?.id
+        selectedEnvironmentID = loaded.environments.first(where: { $0.id != WorkspaceDraft.globalEnvironmentID })?.id
         guard sessions.activeSession == nil,
               let first = loaded.collections.flatMap(\.requests).first
         else { return }
@@ -768,7 +904,7 @@ public final class WireboltModel {
                 return requestID == nil || session.requestID == requestID
             }
             for id in ids {
-                _ = sessions.close(.one(id), in: group.id, allowDirty: true)
+                closeDocuments(.one(id), in: group.id, allowDirty: true)
             }
         }
     }

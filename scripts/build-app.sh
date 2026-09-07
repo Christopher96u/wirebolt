@@ -22,6 +22,13 @@ swiftc \
   -o "$executable_dir/Wirebolt" \
   apple/Generated/wirebolt_ffi.swift \
   apple/Sources/WireboltKit/Models.swift \
+  apple/Sources/WireboltKit/CurlExport.swift \
+  apple/Sources/WireboltKit/WebSocket.swift \
+  apple/Sources/WireboltKit/JSONNode.swift \
+  apple/Sources/WireboltKit/CodeFolding.swift \
+  apple/Sources/WireboltKit/TextSearch.swift \
+  apple/Sources/WireboltKit/CodeTextWrapping.swift \
+  apple/Sources/WireboltKit/ResponseTextIndex.swift \
   apple/Sources/WireboltKit/DocumentSessions.swift \
   apple/Sources/WireboltKit/ResponseStorage.swift \
   apple/Sources/WireboltKit/OAuth2Service.swift \
@@ -33,9 +40,16 @@ swiftc \
   apple/WireboltApp/GitCollaborationView.swift \
   apple/WireboltApp/PerformanceProbe.swift \
   apple/WireboltApp/ResponseViewer.swift \
+  apple/WireboltApp/ResponseHexView.swift \
+  apple/WireboltApp/FieldTextInput.swift \
+  apple/WireboltApp/NativeCodeEditor.swift \
+  apple/WireboltApp/EditorFind.swift \
+  apple/WireboltApp/IndexedResponseEditor.swift \
+  apple/WireboltApp/WireboltTheme.swift \
   apple/WireboltApp/ResponseViewport.swift \
   apple/WireboltApp/RustCore.swift \
   apple/WireboltApp/RustRequestRunner.swift \
+  apple/WireboltApp/RustWebSocketRunner.swift \
   apple/WireboltApp/RustWorkspacePersistence.swift \
   -Xcc -fmodule-map-file=apple/Generated/wirebolt_ffiFFI.modulemap \
   -Xcc -fmodule-map-file=crates/wirebolt-ffi/include/module.modulemap \

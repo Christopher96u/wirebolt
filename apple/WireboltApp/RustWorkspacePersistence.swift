@@ -51,6 +51,13 @@ struct RustWorkspacePersistence: WorkspacePersistence, GitCollaboration {
         }.value
     }
 
+    func readSecret(name: String) async throws -> String? {
+        let bridge = bridge
+        return try await Task.detached(priority: .userInitiated) {
+            try bridge.readSecret(name: name)
+        }.value
+    }
+
     func saveSecret(name: String, value: String) async throws {
         let bridge = bridge
         try await Task.detached(priority: .userInitiated) {
@@ -83,6 +90,21 @@ struct RustWorkspacePersistence: WorkspacePersistence, GitCollaboration {
         return try await Task.detached(priority: .userInitiated) {
             let json = try bridge.commitImport(format: format.rawValue, source: source)
             return try JSONDecoder().decode(WorkspaceDelta.self, from: Data(json.utf8))
+        }.value
+    }
+
+    func commitImportFile(format: ImportFormat, source: String, name: String) async throws -> WorkspaceDelta {
+        let bridge = bridge
+        return try await Task.detached(priority: .userInitiated) {
+            let json = try bridge.commitImportFile(format: format.rawValue, source: source, name: name)
+            return try JSONDecoder().decode(WorkspaceDelta.self, from: Data(json.utf8))
+        }.value
+    }
+
+    func exportWorkspace() async throws -> String {
+        let bridge = bridge
+        return try await Task.detached(priority: .userInitiated) {
+            try bridge.exportWorkspaceJson()
         }.value
     }
 
@@ -137,6 +159,10 @@ struct RustWorkspacePersistence: WorkspacePersistence, GitCollaboration {
     }
 
     static var defaultWorkspaceURL: URL {
+        let arguments = ProcessInfo.processInfo.arguments
+        if let index = arguments.firstIndex(of: "--workspace"), arguments.indices.contains(index + 1) {
+            return URL(fileURLWithPath: arguments[index + 1], isDirectory: true)
+        }
         let applicationSupport = FileManager.default.urls(
             for: .applicationSupportDirectory,
             in: .userDomainMask
@@ -250,6 +276,8 @@ private struct SavedRequestDocument: Codable {
     var order: Int
     let method: String
     let url: String
+    let webSocket: Bool?
+    let note: String?
     let query: [RequestField]
     let headers: [RequestField]
     let authentication: RequestAuthentication
@@ -260,6 +288,8 @@ private struct SavedRequestDocument: Codable {
 
     private enum CodingKeys: String, CodingKey {
         case id, name, order, method, url, query, headers, authentication, body, proxy, transport
+        case webSocket = "web_socket"
+        case note
         case inheritsWorkspaceTransport = "inherits_workspace_transport"
         case groupID = "group_id"
     }
@@ -271,6 +301,8 @@ private struct SavedRequestDocument: Codable {
         order = 0
         method = request.method.rawValue
         url = request.url
+        webSocket = request.webSocket
+        note = request.note
         query = request.query
         headers = request.headers
         authentication = request.authentication
@@ -303,6 +335,8 @@ private struct SavedRequestDocument: Codable {
             name: name,
             method: HTTPMethod(rawValue: method) ?? .get,
             url: url,
+            webSocket: webSocket ?? false,
+            note: note ?? "",
             query: query,
             headers: headers,
             authentication: authentication,

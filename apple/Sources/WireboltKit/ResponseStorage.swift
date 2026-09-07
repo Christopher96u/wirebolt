@@ -26,6 +26,11 @@ public actor ResponseBodyStore {
         handle = nil
     }
 
+    deinit {
+        try? handle?.close()
+        if ownsFile { try? FileManager.default.removeItem(at: url) }
+    }
+
     public func append(_ data: Data) throws {
         try handle?.write(contentsOf: data)
         byteCount += UInt64(data.count)
@@ -213,14 +218,18 @@ public actor CookieJar {
         }
     }
 
-    public func store(headers: [ResponseHeader], requestURL: URL) {
+    @discardableResult
+    public func store(headers: [ResponseHeader], requestURL: URL) -> [CookieSnapshot] {
+        var received: [CookieSnapshot] = []
         for header in headers where header.name.caseInsensitiveCompare("set-cookie") == .orderedSame {
             guard let cookie = Self.parse(header.value, requestURL: requestURL) else { continue }
+            received.append(cookie)
             cookies.removeAll { $0.id == cookie.id }
             if cookie.expiresAt.map({ $0 > Date() }) != false { cookies.append(cookie) }
         }
         removeExpired()
         persist()
+        return received
     }
 
     public func header(for url: URL) -> String? {

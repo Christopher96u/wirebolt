@@ -18,6 +18,13 @@ swiftc \
   -o build/bridge-smoke \
   apple/Generated/wirebolt_ffi.swift \
   apple/Sources/WireboltKit/Models.swift \
+  apple/Sources/WireboltKit/CurlExport.swift \
+  apple/Sources/WireboltKit/WebSocket.swift \
+  apple/Sources/WireboltKit/JSONNode.swift \
+  apple/Sources/WireboltKit/CodeFolding.swift \
+  apple/Sources/WireboltKit/TextSearch.swift \
+  apple/Sources/WireboltKit/CodeTextWrapping.swift \
+  apple/Sources/WireboltKit/ResponseTextIndex.swift \
   apple/Sources/WireboltKit/DocumentSessions.swift \
   apple/Sources/WireboltKit/ResponseStorage.swift \
   apple/Sources/WireboltKit/OAuth2Service.swift \

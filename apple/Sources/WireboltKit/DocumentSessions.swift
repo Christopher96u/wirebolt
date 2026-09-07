@@ -22,11 +22,15 @@ public final class DocumentSession: Identifiable {
     public static let previewByteLimit = ResponseBodyStore.viewportByteCount
 
     public let id: String
+    public let socket = WebSocketDocumentState()
     public let kind: DocumentKind
     public let collectionID: String?
     public let requestID: String
     public var draft: RequestDraft
-    public var note: String
+    public var note: String {
+        get { draft.note }
+        set { draft.note = newValue }
+    }
     public private(set) var savedDraft: RequestDraft?
     public private(set) var responseHead: ResponseHead?
     public private(set) var preparedRun: PreparedRunSnapshot?
@@ -52,17 +56,23 @@ public final class DocumentSession: Identifiable {
         savedDraft: RequestDraft? = nil
     ) {
         self.id = id
-        self.kind = kind
+        self.kind = draft.webSocket || draft.url.hasPrefix("ws://") || draft.url.hasPrefix("wss://") ? .webSocket : kind
         self.collectionID = collectionID
         self.requestID = requestID ?? draft.id
-        self.draft = draft
-        self.note = note
-        self.savedDraft = savedDraft
+        self.draft = draft.separatingURLQuery
+        self.draft.webSocket = self.kind == .webSocket
+        if !note.isEmpty { self.draft.note = note }
+        self.savedDraft = savedDraft == draft ? self.draft : savedDraft?.separatingURLQuery
     }
 
     public var title: String { draft.name }
     public var isDirty: Bool { savedDraft != draft }
     public var isRunning: Bool { activeRunID != nil }
+
+    public func renameSavedRequest(_ name: String) {
+        draft.name = name
+        savedDraft?.name = name
+    }
 
     public func beginRun(_ runID: RunID) {
         resetResponse()
@@ -107,6 +117,7 @@ public final class DocumentSession: Identifiable {
 
     public func cancel(runID: RunID) {
         guard activeRunID == runID else { return }
+        failure = RunFailure(kind: "cancelled", issues: [])
         activeRunID = nil
     }
 
@@ -115,8 +126,9 @@ public final class DocumentSession: Identifiable {
         savedDraft = draft
     }
 
+    public func recordSavedDraft(_ draft: RequestDraft) { savedDraft = draft }
+
     public func resetResponse() {
-        if let bodyStore { Task { await bodyStore.remove() } }
         responseHead = nil
         preparedRun = nil
         responseText = ""
@@ -128,6 +140,22 @@ public final class DocumentSession: Identifiable {
         bodyStore = nil
         responseCookies = []
         presentedBodyBytes = 0
+    }
+
+    public func copyCompletedResponse(from source: DocumentSession) {
+        savedDraft = source.savedDraft
+        guard !source.isRunning else { return }
+        responseHead = source.responseHead
+        preparedRun = source.preparedRun
+        responseText = source.responseText
+        responsePreviewData = source.responsePreviewData
+        responseBytes = source.responseBytes
+        responseWasTruncated = source.responseWasTruncated
+        completion = source.completion
+        failure = source.failure
+        bodyStore = source.bodyStore
+        responseCookies = source.responseCookies
+        presentedBodyBytes = source.presentedBodyBytes
     }
 
     public func setResponseCookies(_ cookies: [CookieSnapshot]) {
@@ -204,6 +232,14 @@ public final class DocumentSessionStore {
         sessions[id]
     }
 
+    public func reopen(_ session: DocumentSession) {
+        sessions[session.id] = session
+        mutateGroup(id: activeGroupID) { group in
+            if !group.tabIDs.contains(session.id) { group.tabIDs.append(session.id) }
+            select(session.id, in: &group)
+        }
+    }
+
     @discardableResult
     public func open(
         draft: RequestDraft,
@@ -214,9 +250,11 @@ public final class DocumentSessionStore {
         isSaved: Bool = true
     ) -> DocumentSession {
         let targetGroupID = groupID ?? activeGroupID
+        let kind: DocumentKind = draft.webSocket || draft.url.hasPrefix("ws://") || draft.url.hasPrefix("wss://") ? .webSocket : kind
         if !forceNewSession,
            let existing = sessions.values.first(where: {
                $0.requestID == draft.id && $0.collectionID == collectionID && $0.kind == kind
+                   && groups.first(where: { $0.id == targetGroupID })?.tabIDs.contains($0.id) == true
            })
         {
             select(tabID: existing.id, in: targetGroupID)
@@ -245,7 +283,7 @@ public final class DocumentSessionStore {
         collectionID: String? = nil
     ) -> DocumentSession {
         let method: HTTPMethod = .get
-        let title = kind == .http ? "Untitled Request" : "Untitled WebSocket"
+        let title = kind == .http ? "Untitled Request" : "Untitled WebSocket Request"
         return open(
             draft: RequestDraft(
                 id: UUID().uuidString.lowercased(),
@@ -261,7 +299,8 @@ public final class DocumentSessionStore {
 
     public func select(tabID: String, in groupID: String? = nil) {
         let targetGroupID = groupID ?? activeGroupID
-        guard sessions[tabID] != nil else { return }
+        guard sessions[tabID] != nil,
+              groups.first(where: { $0.id == targetGroupID })?.tabIDs.contains(tabID) == true else { return }
         mutateGroup(id: targetGroupID) { group in
             guard group.tabIDs.contains(tabID) else { return }
             select(tabID, in: &group)
@@ -299,6 +338,7 @@ public final class DocumentSessionStore {
             forceNewSession: true
         )
         copy.note = source.note
+        copy.copyCompletedResponse(from: source)
         return group.id
     }
 
@@ -339,6 +379,7 @@ public final class DocumentSessionStore {
     }
 
     public func removeAll() {
+        for session in sessions.values { session.socket.disconnect() }
         sessions.removeAll(keepingCapacity: true)
         let group = EditorGroup()
         groups = [group]
@@ -360,6 +401,7 @@ public final class DocumentSessionStore {
     private func removeUnreferencedSessions(_ candidateIDs: [String]) {
         let referenced = Set(groups.flatMap(\.tabIDs))
         for id in candidateIDs where !referenced.contains(id) {
+            sessions[id]?.socket.disconnect()
             sessions[id] = nil
         }
     }

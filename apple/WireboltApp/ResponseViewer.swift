@@ -3,15 +3,20 @@ import SwiftUI
 import WebKit
 
 struct ResponseViewer: View {
-    @Bindable var interface: WorkspaceUIState
+    @Bindable var interface: DocumentPresentationState
     @Bindable var session: DocumentSession
 
     var body: some View {
         Group {
-            if let failure = session.failure {
+            if session.isRunning {
+                VStack(spacing: 9) {
+                    ProgressView().controlSize(.small)
+                    Text("Sending…").font(.system(size: 12)).foregroundStyle(.secondary)
+                }.frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else if let failure = session.failure {
                 LightweightPlaceholder(
-                    title: "Request Failed",
-                    systemImage: "exclamationmark.triangle",
+                    title: failure.kind == "cancelled" ? "Cancelled" : "",
+                    systemImage: "exclamationmark.circle",
                     description: failureDescription(failure)
                 )
             } else if hasResponse {
@@ -24,6 +29,15 @@ struct ResponseViewer: View {
             }
         }
         .background(WireboltTheme.paneBackground)
+        .onChange(of: session.responseHead) {
+            guard interface.usesAutomaticRenderer, let head = session.responseHead else { return }
+            let mime = head.headers.first { $0.name.lowercased() == "content-type" }?.value.lowercased() ?? ""
+            if mime.contains("json") { interface.responseRenderer = .json }
+            else if mime.contains("html") { interface.responseRenderer = .html }
+            else if mime.contains("xml") { interface.responseRenderer = .xml }
+            else if mime.hasPrefix("image/") { interface.responseRenderer = .image }
+            else { interface.responseRenderer = .raw }
+        }
     }
 
     @ViewBuilder
@@ -44,7 +58,8 @@ struct ResponseViewer: View {
         case .cookies:
             ResponseCookiesTable(cookies: session.responseCookies)
         case .raw:
-            RawResponseViewer(text: rawResponseText, bodyStore: session.bodyStore)
+            ResponseSourceView(title: "Raw Response", text: rawResponseText, bodyStore: session.bodyStore,
+                byteCount: session.responseBytes, prefix: rawResponseHeaders)
         case .request:
             SentRequestViewer(snapshot: session.preparedRun)
         }
@@ -58,62 +73,88 @@ struct ResponseViewer: View {
     }
 
     private var rawResponseText: String {
-        guard let head = session.responseHead else { return session.responseText }
+        rawResponseHeaders + session.responseText
+    }
+
+    private var rawResponseHeaders: String {
+        guard let head = session.responseHead else { return "" }
         let statusLine = "\(head.version) \(head.status)"
         let headers = head.headers.map { "\($0.name): \($0.value)" }.joined(separator: "\n")
-        return [statusLine, headers, "", session.responseText].joined(separator: "\n")
+        return [statusLine, headers, "", ""].joined(separator: "\n")
     }
 
     private func failureDescription(_ failure: RunFailure) -> String {
         if let issue = failure.issues.first {
             return "\(issue.path): \(issue.kind.replacingOccurrences(of: "_", with: " "))"
         }
+        if failure.kind == "connection" {
+            return "An error occurred while connecting to the server, please re-check your URL or connection and try again."
+        }
         return failure.kind.replacingOccurrences(of: "_", with: " ").capitalized
     }
 }
 
-private struct RawResponseViewer: View {
+private struct ResponseSourceView: View {
+    let title: String
     let text: String
-    let bodyStore: ResponseBodyStore?
-
-    @State private var search = ""
-
+    var bodyStore: ResponseBodyStore?
+    var byteCount: UInt64 = 0
+    var prefix = ""
+    @State private var find = EditorFindState()
+    @State private var loadedText: String?
     var body: some View {
         VStack(spacing: 0) {
-            HStack {
-                TextField("Find in Raw Response", text: $search)
-                    .textFieldStyle(.roundedBorder)
-                    .frame(maxWidth: 220)
-                if search.isEmpty == false {
-                    Text("\(text.components(separatedBy: search).count - 1) matches")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-                Spacer()
-                Button("Copy Raw Response", systemImage: "doc.on.doc", action: copy)
-                    .labelStyle(.iconOnly)
-                    .buttonStyle(.borderless)
-                Button("Show Body in Finder", systemImage: "folder", action: showInFinder)
-                    .labelStyle(.iconOnly)
-                    .buttonStyle(.borderless)
-                    .disabled(bodyStore == nil)
-            }
-            .padding(.horizontal, 12)
-            .frame(height: 43)
-            .background(WireboltTheme.barBackground)
+            HStack(spacing: 10) {
+                Text(title).foregroundStyle(.secondary)
+                Spacer(minLength: 4)
+                Button("Find", systemImage: "magnifyingglass") { find.isVisible = true }
+                    .labelStyle(.iconOnly).buttonStyle(.borderless)
+                Menu("Actions", systemImage: "ellipsis.circle") {
+                    Button("Copy") {
+                        Task {
+                            let value: String
+                            if let bodyStore {
+                                let data = try? await bodyStore.viewport(length: Int(byteCount))
+                                value = prefix + String(decoding: data ?? Data(), as: UTF8.self)
+                            } else { value = text }
+                            NSPasteboard.general.clearContents()
+                            NSPasteboard.general.setString(value, forType: .string)
+                        }
+                    }
+                    Divider()
+                    EditorPreferencesMenu()
+                }.menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize().labelStyle(.iconOnly)
+            }.font(.system(size: 13)).padding(.horizontal, 12).frame(height: 27)
+                .background(WireboltTheme.barBackground)
             Divider()
-            SyntaxTextView(text: text, language: .http)
+            if let bodyStore, byteCount > 1024 * 1024 {
+                IndexedResponseEditor(url: bodyStore.url, preview: text, language: .http, search: "", prefix: prefix, find: find)
+            } else {
+                NativeCodeEditor(text: .constant(loadedText ?? text), editable: false, language: .http, label: title, find: find)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity).clipped()
+                    .editorFindOverlay(find)
+            }
+        }
+        .task(id: bodyStore?.url) {
+            guard let bodyStore, byteCount <= 1024 * 1024 else { return }
+            let data = try? await bodyStore.viewport(length: Int(byteCount))
+            guard !Task.isCancelled else { return }
+            loadedText = prefix + String(decoding: data ?? Data(), as: UTF8.self)
         }
     }
+}
 
-    private func copy() {
-        NSPasteboard.general.clearContents()
-        NSPasteboard.general.setString(text, forType: .string)
-    }
-
-    private func showInFinder() {
-        guard let bodyStore else { return }
-        NSWorkspace.shared.activateFileViewerSelecting([bodyStore.url])
+struct EditorPreferencesMenu: View {
+    @AppStorage("editor.wordWrap") private var wordWrap = true
+    @AppStorage("editor.showInvisibles") private var invisibles = true
+    @AppStorage("editor.scrollBeyondLastLine") private var scrollBeyond = true
+    var body: some View {
+        Menu("UI Settings", systemImage: "slider.vertical.3") {
+            Toggle("Word Wrap", systemImage: "text.word.spacing", isOn: $wordWrap)
+            Divider()
+            Toggle("Show Invisibles Chars", systemImage: "a", isOn: $invisibles)
+            Toggle("Scroll beyond Last Line", systemImage: "arrow.down.to.line", isOn: $scrollBeyond)
+        }
     }
 }
 
@@ -121,9 +162,9 @@ private struct NoResponsePlaceholder: View {
     var body: some View {
         VStack(spacing: 10) {
             Image(systemName: "paperplane")
-                .font(.system(size: 49, weight: .light))
+                .font(.system(size: 49, weight: .regular))
             Text("No Response")
-                .font(.title2.weight(.semibold))
+                .font(.system(size: 20, weight: .regular))
         }
         .foregroundStyle(.tertiary)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -132,13 +173,13 @@ private struct NoResponsePlaceholder: View {
 }
 
 private struct ResponseSectionBar: View {
-    @Bindable var interface: WorkspaceUIState
+    @Bindable var interface: DocumentPresentationState
     @Bindable var session: DocumentSession
 
     var body: some View {
+        GeometryReader { geometry in
         HStack(spacing: 0) {
-            ScrollView(.horizontal) {
-                HStack(spacing: 22) {
+                HStack(spacing: 10) {
                     ForEach([
                         ResponsePanelSection.headers,
                         .body,
@@ -152,19 +193,22 @@ private struct ResponseSectionBar: View {
                             isSelected: interface.responseSection == section,
                             action: { interface.responseSection = section }
                         )
-                        .offset(y: -1)
+                        .offset(y: -0.5)
+                        if section == .raw { Divider().frame(height: 14).padding(.horizontal, 1) }
                     }
                 }
                 .padding(.leading, 11)
                 .padding(.trailing, 10)
-            }
-            .scrollIndicators(.hidden)
+                .fixedSize(horizontal: true, vertical: false)
 
-            Spacer(minLength: 12)
+            Spacer(minLength: 4)
             ResponseTransferMetrics(session: session)
                 .padding(.trailing, 10)
         }
+        .frame(minWidth: geometry.size.width, maxHeight: .infinity, alignment: .leading)
+        }
         .frame(height: 34)
+        .clipped()
         .background(WireboltTheme.barBackground)
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Response sections")
@@ -185,7 +229,7 @@ private struct ResponseTransferMetrics: View {
                 Label(sizeLabel, systemImage: "arrow.down.circle.fill")
             }
         }
-        .font(.callout.monospacedDigit())
+        .font(.system(size: 15))
         .foregroundStyle(.secondary)
         .fixedSize()
         .accessibilityElement(children: .combine)
@@ -193,19 +237,22 @@ private struct ResponseTransferMetrics: View {
 
     private var durationLabel: String {
         guard let completion = session.completion else { return "—" }
-        let milliseconds = Double(completion.totalTimeNS) / 1_000_000
-        return milliseconds < 1
-            ? String(format: "%.0f µs", Double(completion.totalTimeNS) / 1_000)
-            : String(format: "%.0f ms", milliseconds)
+        let milliseconds = completion.totalTimeNS / 1_000_000
+        if milliseconds < 1000 { return "\(milliseconds) ms" }
+        return "\(milliseconds / 1000) s \(milliseconds % 1000) ms"
     }
 
     private var sizeLabel: String {
-        String(format: "%.3f KB", Double(session.responseBytes) / 1_000)
+        let kilobytes = Double(session.responseBytes) / 1024
+        if kilobytes < 1024 { return kilobytes.formatted(.number.grouping(.never).precision(.significantDigits(1...3))) + " KB" }
+        let megabytes = kilobytes / 1024
+        if megabytes < 1024 { return megabytes.formatted(.number.grouping(.never).precision(.significantDigits(1...3))) + " MB" }
+        return (megabytes / 1024).formatted(.number.grouping(.never).precision(.significantDigits(1...3))) + " GB"
     }
 }
 
 private struct ResponseBodyViewer: View {
-    @Bindable var interface: WorkspaceUIState
+    @Bindable var interface: DocumentPresentationState
     let text: String
     let previewData: Data
     let receivedBytes: UInt64
@@ -213,13 +260,9 @@ private struct ResponseBodyViewer: View {
     let store: ResponseBodyStore?
     let snapshot: PreparedRunSnapshot?
 
-    @State private var search = ""
-    @State private var isSearching = false
-    @State private var fullMatchCount = 0
-    @State private var searchTask: Task<Void, Never>?
+    @State private var find = EditorFindState()
     @State private var actionError: String?
     @State private var loadedViewportData: Data?
-    @State private var viewportOffset: UInt64 = 0
     @State private var storeSize: UInt64 = 0
 
     var body: some View {
@@ -228,94 +271,80 @@ private struct ResponseBodyViewer: View {
                 Text("Body")
                     .foregroundStyle(.secondary)
 
-                NativeRendererPicker(selection: $interface.responseRenderer)
+                NativeRendererPicker(selection: Binding(
+                    get: { interface.responseRenderer },
+                    set: { interface.responseRenderer = $0; interface.usesAutomaticRenderer = false }
+                ))
+                    .controlSize(.small)
                     .frame(width: 122, height: 22)
+                    .offset(y: -1)
                 .help("Response Renderer")
 
                 Spacer(minLength: 8)
 
-                if isSearching {
-                    TextField("Find", text: $search)
-                        .textFieldStyle(.roundedBorder)
-                        .frame(width: 150)
-                    Text("\(fullMatchCount) matches")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-
+                HStack(spacing: 13) {
                 Button("Find", systemImage: "magnifyingglass") {
-                    isSearching.toggle()
-                    if !isSearching { search = "" }
+                    if [.json, .xml, .html, .raw].contains(interface.responseRenderer) { find.isVisible = true }
                 }
                 .labelStyle(.iconOnly)
                 .buttonStyle(.borderless)
                 .foregroundStyle(.secondary)
+                .frame(width: 20)
                 .help("Find in Response (⌘F)")
 
                 Menu("Response Actions", systemImage: "ellipsis.circle") {
-                    Button("Save Response…", action: saveResponse)
-                        .disabled(store == nil)
-                    Button("Open Response", action: openResponse)
-                        .disabled(store == nil)
-                    Button("Show in Finder", action: showInFinder)
-                        .disabled(store == nil)
+                    Button("Copy Body", systemImage: "doc.on.doc") {
+                        Task {
+                            guard let store, let data = try? await store.viewport(offset: 0, length: Int(clamping: receivedBytes)) else { return }
+                            NSPasteboard.general.clearContents()
+                            NSPasteboard.general.setString(String(decoding: data, as: UTF8.self), forType: .string)
+                        }
+                    }
                     Divider()
-                    Button("Copy as cURL", action: copyAsCurl)
-                        .disabled(snapshot == nil)
+                    Button("Export Body…", systemImage: "square.and.arrow.up", action: saveResponse).disabled(store == nil)
+                    Divider()
+                    EditorPreferencesMenu()
+                    Divider()
+                    Menu("Open With", systemImage: "square.and.arrow.up") {
+                        if let store {
+                            ForEach(NSWorkspace.shared.urlsForApplications(toOpen: store.url), id: \.self) { application in
+                                Button(application.deletingPathExtension().lastPathComponent) {
+                                    NSWorkspace.shared.open([store.url], withApplicationAt: application,
+                                        configuration: NSWorkspace.OpenConfiguration())
+                                }
+                            }
+                        }
+                        Button("Default Application", action: openResponse).disabled(store == nil)
+                    }
                 }
                 .menuStyle(.borderlessButton)
                 .menuIndicator(.hidden)
                 .labelStyle(.iconOnly)
                 .foregroundStyle(.secondary)
                 .fixedSize()
+                .frame(width: 20)
+                }
+                .offset(y: -1)
             }
+            .font(.system(size: 13))
             .padding(.leading, 11)
-            .padding(.trailing, 12)
+            .padding(.trailing, 11)
             .frame(height: 27)
             .background(WireboltTheme.barBackground)
             Divider()
 
-            rendererContent
+            if receivedBytes == 0 {
+                Text("No Body").font(.system(size: 16, weight: .semibold)).foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else { rendererContent }
 
-            if wasTruncated {
-                HStack {
-                    Button("Previous Viewport", systemImage: "chevron.left") {
-                        loadViewport(offset: viewportOffset.saturatingSubtract(UInt64(ResponseBodyStore.viewportByteCount)))
-                    }
-                    .labelStyle(.iconOnly)
-                    .disabled(viewportOffset == 0)
-                    Text("Bytes \(viewportOffset.formatted())–\(min(viewportOffset + UInt64(renderedData.count), storeSize).formatted()) of \(storeSize.formatted())")
-                    Button("Next Viewport", systemImage: "chevron.right") {
-                        loadViewport(offset: viewportOffset + UInt64(ResponseBodyStore.viewportByteCount))
-                    }
-                    .labelStyle(.iconOnly)
-                    .disabled(viewportOffset + UInt64(renderedData.count) >= storeSize)
-                    Spacer()
-                    Text("32 KB viewport · full response remains file-backed")
-                }
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .padding(8)
-                .background(.bar)
-            }
         }
-        .onChange(of: search) { _, query in
-            searchTask?.cancel()
-            guard query.isEmpty == false, let store else {
-                fullMatchCount = 0
-                return
-            }
-            searchTask = Task {
-                let count = (try? await store.countOccurrences(of: query)) ?? 0
-                guard Task.isCancelled == false else { return }
-                fullMatchCount = count
-            }
-        }
-        .onDisappear { searchTask?.cancel() }
         .task(id: store?.url) {
             storeSize = await store?.size() ?? UInt64(previewData.count)
             loadedViewportData = nil
-            viewportOffset = 0
+            if let store, storeSize <= 1024 * 1024 {
+                loadedViewportData = try? await store.viewport(offset: 0, length: Int(storeSize))
+            }
         }
         .onChange(of: receivedBytes) { _, value in storeSize = max(storeSize, value) }
         .alert("Response Action Failed", isPresented: Binding(
@@ -330,37 +359,6 @@ private struct ResponseBodyViewer: View {
 
     private var renderedData: Data { loadedViewportData ?? previewData }
     private var renderedText: String { String(decoding: renderedData, as: UTF8.self) }
-
-    private func loadViewport(offset: UInt64) {
-        guard let store else { return }
-        Task {
-            let size = await store.size()
-            let bounded = min(offset, size.saturatingSubtract(1))
-            guard let data = try? await store.viewport(offset: bounded) else { return }
-            storeSize = size
-            viewportOffset = bounded
-            loadedViewportData = data
-        }
-    }
-
-    private func copyAsCurl() {
-        guard let snapshot else { return }
-        var parts = ["curl", "-X", shellQuote(snapshot.method), shellQuote(snapshot.url)]
-        for header in snapshot.headers {
-            parts += ["-H", shellQuote("\(header.name): \(header.value)")]
-        }
-        if let body = snapshot.body.textPreview {
-            parts += ["--data-raw", shellQuote(body)]
-        } else if snapshot.body.byteCount > 0 {
-            parts += ["--data-binary", snapshot.body.redacted ? "'[redacted]'" : "'@response-body'" ]
-        }
-        NSPasteboard.general.clearContents()
-        NSPasteboard.general.setString(parts.joined(separator: " "), forType: .string)
-    }
-
-    private func shellQuote(_ value: String) -> String {
-        "'\(value.replacingOccurrences(of: "'", with: "'\\''"))'"
-    }
 
     private func saveResponse() {
         guard let store else { return }
@@ -388,34 +386,31 @@ private struct ResponseBodyViewer: View {
     private var rendererContent: some View {
         switch interface.responseRenderer {
         case .json:
-            SyntaxTextView(text: renderedText, language: .json)
+            textRenderer(.json)
         case .tree:
-            JSONTreeView(text: renderedText)
+            JSONResponseTree(url: store?.url, preview: renderedData).clipped()
         case .image:
-            ResponseImageView(data: renderedData)
+            ResponseImageView(url: store?.url, data: renderedData)
         case .xml:
-            SyntaxTextView(text: renderedText, language: .xml)
+            textRenderer(.xml)
         case .html:
-            SyntaxTextView(text: renderedText, language: .html)
+            textRenderer(.html)
         case .webView:
-            IsolatedWebPreview(html: renderedText)
+            ResponseWebPreview(url: store?.url, preview: renderedText)
         case .raw:
-            SyntaxTextView(text: renderedText, language: .plain)
+            textRenderer(.plain)
         case .hex:
-            SyntaxTextView(text: hexText, language: .plain)
+            ResponseHexView(store: store, data: renderedData, byteCount: receivedBytes)
         }
     }
 
-    private var hexText: String {
-        renderedData.enumerated().reduce(into: "") { output, item in
-            let (offset, byte) = item
-            if offset.isMultiple(of: 16) {
-                if offset > 0 { output.append("\n") }
-                output.append(String(format: "%08x  ", offset))
-            }
-            output.append(String(format: "%02x ", byte))
-        }
+    @ViewBuilder
+    private func textRenderer(_ language: SyntaxLanguage) -> some View {
+        if wasTruncated, storeSize > 1024 * 1024, let store {
+            IndexedResponseEditor(url: store.url, preview: renderedText, language: language, search: "", find: find)
+        } else { SyntaxTextView(text: renderedText, language: language, search: "", find: find) }
     }
+
 }
 
 private extension UInt64 {
@@ -425,10 +420,11 @@ private extension UInt64 {
 }
 
 private struct ResponseImageView: View {
+    let url: URL?
     let data: Data
 
     var body: some View {
-        if let image = NSImage(data: data) {
+        if let image = url.flatMap({ NSImage(contentsOf: $0) }) ?? NSImage(data: data) {
             ScrollView([.horizontal, .vertical]) {
                 Image(nsImage: image)
                     .resizable()
@@ -440,9 +436,25 @@ private struct ResponseImageView: View {
             LightweightPlaceholder(
                 title: "Image Preview",
                 systemImage: "photo",
-                description: "The first response viewport is not a supported image."
+                description: "This response is not a supported image."
             )
         }
+    }
+}
+
+private struct ResponseWebPreview: View {
+    let url: URL?
+    let preview: String
+    @State private var html: String?
+    var body: some View {
+        IsolatedWebPreview(html: html ?? preview)
+            .task(id: url) {
+                guard let url else { return }
+                let reader = Task.detached(priority: .userInitiated) { try String(contentsOf: url, encoding: .utf8) }
+                let result = try? await withTaskCancellationHandler { try await reader.value } onCancel: { reader.cancel() }
+                guard !Task.isCancelled else { return }
+                html = result
+            }
     }
 }
 
@@ -472,230 +484,83 @@ private struct IsolatedWebPreview: NSViewRepresentable {
     }
 }
 
-private struct ResponseHeadersTable: View {
+struct ResponseHeadersTable: View {
     let headers: [ResponseHeader]
-
-    @State private var search = ""
-
     var body: some View {
-        VStack(spacing: 0) {
-            HStack {
-                TextField("Search Headers", text: $search)
-                    .textFieldStyle(.roundedBorder)
-                    .frame(maxWidth: 220)
-                Spacer()
-                Button("Copy Headers", systemImage: "doc.on.doc", action: copyHeaders)
-                    .labelStyle(.iconOnly)
-                    .buttonStyle(.borderless)
-                    .disabled(headers.isEmpty)
-                Button("Export Headers…", systemImage: "square.and.arrow.down", action: exportHeaders)
-                    .labelStyle(.iconOnly)
-                    .buttonStyle(.borderless)
-                    .disabled(headers.isEmpty)
-            }
-            .padding(.horizontal, 12)
-            .frame(height: 43)
-            .background(WireboltTheme.barBackground)
-            Divider()
-
-            HStack(spacing: 0) {
-                Text("Key")
-                    .frame(minWidth: 150, maxWidth: .infinity, alignment: .leading)
-                    .padding(.leading, 12)
-                Divider()
-                Text("Value")
-                    .frame(minWidth: 180, maxWidth: .infinity, alignment: .leading)
-                    .padding(.leading, 12)
-            }
-            .font(.caption)
-            .foregroundStyle(.secondary)
-            .frame(height: 30)
-            Divider()
-
-            ScrollView {
-                LazyVStack(spacing: 0) {
-                    ForEach(filteredHeaders) { header in
-                        HStack(alignment: .top, spacing: 0) {
-                            Text(header.name)
-                                .frame(minWidth: 150, maxWidth: .infinity, alignment: .leading)
-                                .padding(.leading, 12)
-                                .textSelection(.enabled)
-                            Text(header.value)
-                                .frame(minWidth: 180, maxWidth: .infinity, alignment: .leading)
-                                .padding(.leading, 12)
-                                .fixedSize(horizontal: false, vertical: true)
-                                .textSelection(.enabled)
-                        }
-                        .font(.body.monospaced())
-                        .padding(.vertical, 7)
-                        .frame(minHeight: 32, alignment: .top)
-                    }
-                }
-            }
-        }
-    }
-
-    private var filteredHeaders: [ResponseHeader] {
-        guard search.isEmpty == false else { return headers }
-        return headers.filter {
-            $0.name.localizedCaseInsensitiveContains(search)
-                || $0.value.localizedCaseInsensitiveContains(search)
-        }
-    }
-
-    private var headerText: String {
-        headers.map { "\($0.name): \($0.value)" }.joined(separator: "\n")
-    }
-
-    private func copyHeaders() {
-        NSPasteboard.general.clearContents()
-        NSPasteboard.general.setString(headerText, forType: .string)
-    }
-
-    private func exportHeaders() {
-        let panel = NSSavePanel()
-        panel.nameFieldStringValue = "response-headers.txt"
-        guard panel.runModal() == .OK, let url = panel.url else { return }
-        do { try Data(headerText.utf8).write(to: url, options: .atomic) }
-        catch { NSSound.beep() }
+        ResponseKeyValueTable(title: "Header List", rows: headers.map { ($0.name, $0.value, false) })
     }
 }
 
 private struct ResponseCookiesTable: View {
     let cookies: [CookieSnapshot]
+    var body: some View {
+        ResponseKeyValueTable(title: "Cookies", rows: cookies.flatMap { cookie in
+            var rows = [(cookie.name, cookie.value, true), ("    Path", cookie.path, false)]
+            if cookie.httpOnly { rows.append(("    HttpOnly", "True", false)) }
+            if cookie.secure { rows.append(("    Secure", "True", false)) }
+            if let expires = cookie.expiresAt { rows.append(("    Expires", expires.formatted(), false)) }
+            if !cookie.sameSite.isEmpty { rows.append(("    SameSite", cookie.sameSite, false)) }
+            return rows
+        })
+    }
+}
 
-    @State private var revealValues = false
+private struct ResponseKeyValueTable: View {
+    let title: String
+    let rows: [(String, String, Bool)]
     @State private var search = ""
-
+    @State private var isSearching = false
     var body: some View {
         VStack(spacing: 0) {
-            HStack(spacing: 8) {
-                TextField("Search Cookies", text: $search)
-                    .textFieldStyle(.roundedBorder)
-                    .frame(maxWidth: 220)
-                Spacer()
-                Toggle("Reveal Values", systemImage: revealValues ? "eye.slash" : "eye", isOn: $revealValues)
-                    .toggleStyle(.button)
-                    .labelStyle(.iconOnly)
-                    .help(revealValues ? "Hide Sensitive Values" : "Reveal Sensitive Values")
-                Button("Copy Cookies", systemImage: "doc.on.doc", action: copyCookies)
-                    .labelStyle(.iconOnly)
-                    .buttonStyle(.borderless)
-                    .disabled(cookies.isEmpty)
-            }
-            .padding(.horizontal, 12)
-            .frame(height: 43)
-            .background(WireboltTheme.barBackground)
+            HStack(spacing: 10) {
+                Text(title).foregroundStyle(.secondary)
+                Spacer(minLength: 4)
+                if isSearching { TextField("Find", text: $search).frame(width: 140) }
+                Button("Find", systemImage: "magnifyingglass") { isSearching.toggle() }
+                    .labelStyle(.iconOnly).buttonStyle(.borderless)
+                Button("Copy", systemImage: "doc.on.doc") {
+                    NSPasteboard.general.clearContents()
+                    NSPasteboard.general.setString(rows.map { "\($0.0): \($0.1)" }.joined(separator: "\n"), forType: .string)
+                }.labelStyle(.iconOnly).buttonStyle(.borderless)
+            }.font(.system(size: 13)).padding(.horizontal, 12).frame(height: 27)
+                .background(WireboltTheme.barBackground)
             Divider()
-
-            Table(visibleCookies) {
-                TableColumn("Name", value: \.name)
-                    .width(min: 100, ideal: 125)
-                TableColumn("Value") { cookie in
-                    Text(revealValues ? cookie.value : String(repeating: "•", count: 12))
-                        .font(.body.monospaced())
-                }
-                TableColumn("Domain", value: \.domain)
-                TableColumn("Path", value: \.path)
-                    .width(50)
-                TableColumn("Expires") { cookie in
-                    Text(cookie.expiresAt?.formatted() ?? "Session")
-                }
-                TableColumn("Secure") { cookie in
-                    Image(systemName: cookie.secure ? "checkmark.circle.fill" : "circle")
-                        .foregroundStyle(cookie.secure ? .green : .secondary)
-                        .accessibilityLabel(cookie.secure ? "Secure" : "Not secure")
-                }
-                .width(58)
-                TableColumn("SameSite", value: \.sameSite)
-            }
-            .tableStyle(.bordered(alternatesRowBackgrounds: true))
-
-            HStack(spacing: 6) {
-                Image(systemName: "eye.slash")
-                Text(revealValues ? "Sensitive values visible" : "Sensitive values hidden")
+            HStack(spacing: 0) {
+                Text("Key").frame(width: 178, alignment: .leading).padding(.leading, 10)
+                Divider().frame(height: 16)
+                Text("Value").padding(.leading, 6)
                 Spacer()
+            }.font(.system(size: 11)).frame(height: 27)
+            Divider()
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 0) {
+                    ForEach(Array(rows.enumerated()), id: \.offset) { _, row in
+                        if search.isEmpty || row.0.localizedCaseInsensitiveContains(search) || row.1.localizedCaseInsensitiveContains(search) {
+                            HStack(alignment: .top, spacing: 0) {
+                                Text(row.0).frame(width: 178, alignment: .leading).padding(.leading, 10)
+                                Text(row.1).frame(maxWidth: .infinity, alignment: .leading).padding(.leading, 6)
+                            }.font(.system(size: 12, weight: row.2 ? .bold : .regular, design: .monospaced))
+                                .textSelection(.enabled).padding(.vertical, 6).frame(minHeight: 28)
+                        }
+                    }
+                }
             }
-            .font(.caption)
-            .foregroundStyle(.secondary)
-            .padding(.horizontal, 12)
-            .frame(height: 27)
-            .background(WireboltTheme.barBackground)
-            .overlay(alignment: .top) { Divider() }
         }
-    }
-
-    private var visibleCookies: [CookieSnapshot] {
-        guard !search.isEmpty else { return cookies }
-        return cookies.filter {
-            $0.name.localizedCaseInsensitiveContains(search)
-                || $0.domain.localizedCaseInsensitiveContains(search)
-        }
-    }
-
-    private func copyCookies() {
-        let value = cookies.map { "\($0.name)=\($0.value)" }.joined(separator: "; ")
-        NSPasteboard.general.clearContents()
-        NSPasteboard.general.setString(value, forType: .string)
     }
 }
 
 private struct SentRequestViewer: View {
     let snapshot: PreparedRunSnapshot?
 
-    @State private var mode = SentRequestMode.raw
-
-    var body: some View {
-        VStack(spacing: 0) {
-            HStack {
-                Text("Sent Request")
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
-                Spacer()
-                Picker("Request View", selection: $mode) {
-                    ForEach(SentRequestMode.allCases) { mode in
-                        Text(mode.rawValue).tag(mode)
-                    }
-                }
-                .pickerStyle(.segmented)
-                .labelsHidden()
-                .frame(width: 135)
-                Button("Copy Request", systemImage: "doc.on.doc") {
-                    NSPasteboard.general.clearContents()
-                    NSPasteboard.general.setString(sentRequestText, forType: .string)
-                }
-                .labelStyle(.iconOnly)
-                .buttonStyle(.borderless)
-            }
-            .padding(.horizontal, 12)
-            .frame(height: 43)
-            .background(WireboltTheme.barBackground)
-            Divider()
-
-            SyntaxTextView(
-                text: mode == .raw ? sentRequestText : headerText,
-                language: mode == .raw ? .http : .plain
-            )
-
-            HStack(spacing: 6) {
-                Image(systemName: "lock")
-                Text("Secrets redacted")
-                Spacer()
-            }
-            .font(.caption)
-            .foregroundStyle(.secondary)
-            .padding(.horizontal, 12)
-            .frame(height: 27)
-            .background(WireboltTheme.barBackground)
-            .overlay(alignment: .top) { Divider() }
-        }
-    }
+    var body: some View { ResponseSourceView(title: "Raw Request", text: sentRequestText) }
 
     private var sentRequestText: String {
         guard let snapshot else { return "No request has been sent from this tab." }
         let url = URL(string: snapshot.url)
-        let path = url?.path.isEmpty == false ? url?.path ?? "/" : "/"
-        let host = url?.host ?? "[redacted]"
+        let components = url.flatMap { URLComponents(url: $0, resolvingAgainstBaseURL: false) }
+        let path = (components?.percentEncodedPath.isEmpty == false ? components?.percentEncodedPath ?? "/" : "/")
+            + (components?.percentEncodedQuery.map { "?" + $0 } ?? "")
+        let host = (url?.host ?? "[redacted]") + (url?.port.map { ":" + String($0) } ?? "")
         var lines = [
             "\(snapshot.method) \(path) HTTP/1.1",
             "Host: \(host)",
@@ -730,97 +595,117 @@ private enum SentRequestMode: String, CaseIterable, Identifiable {
     var id: Self { self }
 }
 
-private struct JSONTreeView: View {
-    let text: String
-
-    private let nodes: [JSONNode]
-
-    init(text: String) {
-        self.text = text
-        nodes = JSONNode.makeRoot(from: text)
-    }
-
+private struct JSONResponseTree: View {
+    let url: URL?
+    let preview: Data
+    @State private var nodes: [JSONNode] = []
+    @State private var revision = 0
     var body: some View {
-        VStack(spacing: 0) {
-            HStack(spacing: 0) {
-                Text("Key")
-                    .frame(minWidth: 145, maxWidth: .infinity, alignment: .leading)
-                Divider()
-                Text("Value")
-                    .frame(minWidth: 180, maxWidth: .infinity, alignment: .leading)
-                    .padding(.leading, 16)
-            }
-            .font(.caption)
-            .foregroundStyle(.secondary)
-            .padding(.horizontal, 10)
-            .frame(height: 30)
-            .background(WireboltTheme.barBackground)
-            Divider()
-
-            List {
-                ForEach(nodes) { node in
-                    JSONNodeTreeRow(node: node)
-                        .listRowBackground(Color.clear)
-                        .listRowSeparator(.hidden)
+        JSONTreeView(nodes: nodes, revision: revision)
+            .task(id: url) {
+                let url = url, preview = preview
+                let parse = Task.detached(priority: .userInitiated) {
+                    let data = try url.map { try Data(contentsOf: $0, options: .mappedIfSafe) } ?? preview
+                    try Task.checkCancellation()
+                    return JSONNode.makeRoot(from: data)
                 }
+                let result = try? await withTaskCancellationHandler { try await parse.value } onCancel: { parse.cancel() }
+                guard !Task.isCancelled else { return }
+                nodes = result ?? []
+                revision += 1
             }
-            .listStyle(.plain)
-            .scrollContentBackground(.hidden)
-            .background(WireboltTheme.paneBackground)
-        }
     }
 }
 
-private struct JSONNodeTreeRow: View {
-    let node: JSONNode
+private struct JSONTreeView: NSViewRepresentable {
+    let nodes: [JSONNode]
+    let revision: Int
 
-    @State private var isExpanded: Bool
-
-    init(node: JSONNode) {
-        self.node = node
-        _isExpanded = State(initialValue: node.key != "args")
+    func makeCoordinator() -> Coordinator { Coordinator() }
+    func sizeThatFits(_ proposal: ProposedViewSize, nsView: NSScrollView, context: Context) -> CGSize? {
+        CGSize(width: proposal.width ?? 300, height: proposal.height ?? 200)
+    }
+    func makeNSView(context: Context) -> NSScrollView {
+        let scroll = NSScrollView()
+        let outline = NSOutlineView()
+        outline.style = .plain
+        outline.rowSizeStyle = .custom
+        outline.rowHeight = 19
+        outline.intercellSpacing = .zero
+        outline.indentationPerLevel = 16
+        outline.backgroundColor = .textBackgroundColor
+        outline.headerView = NSTableHeaderView()
+        let key = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("key"))
+        key.title = "Key"
+        key.width = 207
+        key.minWidth = 80
+        let value = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("value"))
+        value.title = "Value"
+        value.minWidth = 80
+        outline.addTableColumn(key)
+        outline.addTableColumn(value)
+        outline.outlineTableColumn = key
+        outline.columnAutoresizingStyle = .lastColumnOnlyAutoresizingStyle
+        outline.dataSource = context.coordinator
+        outline.delegate = context.coordinator
+        scroll.documentView = outline
+        scroll.hasVerticalScroller = true
+        scroll.autohidesScrollers = true
+        scroll.drawsBackground = true
+        scroll.backgroundColor = .textBackgroundColor
+        updateNSView(scroll, context: context)
+        return scroll
+    }
+    func updateNSView(_ scroll: NSScrollView, context: Context) {
+        guard let outline = scroll.documentView as? NSOutlineView, context.coordinator.revision != revision else { return }
+        context.coordinator.revision = revision
+        context.coordinator.roots = nodes.map(Node.init)
+        outline.reloadData()
+        for root in context.coordinator.roots { outline.expandItem(root) }
     }
 
-    var body: some View {
-        if let children = node.children, !children.isEmpty {
-            DisclosureGroup(isExpanded: $isExpanded) {
-                ForEach(children) { child in
-                    JSONNodeTreeRow(node: child)
+    fileprivate final class Node: NSObject {
+        let value: JSONNode
+        lazy var children: [Node] = (value.children ?? []).map(Node.init)
+        init(_ value: JSONNode) {
+            self.value = value
+        }
+    }
+
+    @MainActor
+    final class Coordinator: NSObject, NSOutlineViewDataSource, NSOutlineViewDelegate {
+        fileprivate var roots: [Node] = []
+        var revision = -1
+        func outlineView(_ outlineView: NSOutlineView, numberOfChildrenOfItem item: Any?) -> Int {
+            (item as? Node)?.children.count ?? roots.count
+        }
+        func outlineView(_ outlineView: NSOutlineView, child index: Int, ofItem item: Any?) -> Any {
+            ((item as? Node)?.children ?? roots)[index]
+        }
+        func outlineView(_ outlineView: NSOutlineView, isItemExpandable item: Any) -> Bool {
+            (item as? Node)?.children.isEmpty == false
+        }
+        func outlineView(_ outlineView: NSOutlineView, viewFor tableColumn: NSTableColumn?, item: Any) -> NSView? {
+            guard let node = item as? Node, let column = tableColumn else { return nil }
+            let field = (outlineView.makeView(withIdentifier: column.identifier, owner: nil) as? NSTextField)
+                ?? NSTextField(labelWithString: "")
+            field.identifier = column.identifier
+            field.font = .monospacedSystemFont(ofSize: 12, weight: .regular)
+            field.lineBreakMode = .byTruncatingTail
+            field.maximumNumberOfLines = 1
+            field.stringValue = column.identifier.rawValue == "key" ? node.value.key : node.value.value
+            if node.value.key == "Root" { field.textColor = .secondaryLabelColor }
+            else if column.identifier.rawValue == "key" { field.textColor = WireboltTheme.nsJSONKey }
+            else {
+                field.textColor = switch node.value.type {
+                case "String": WireboltTheme.nsJSONString
+                case "Number": WireboltTheme.nsJSONNumber
+                case "Boolean": WireboltTheme.nsJSONBoolean
+                case "Null": WireboltTheme.nsJSONNull
+                default: .secondaryLabelColor
                 }
-            } label: {
-                JSONNodeRow(node: node)
             }
-        } else {
-            JSONNodeRow(node: node)
-        }
-    }
-}
-
-private struct JSONNodeRow: View {
-    let node: JSONNode
-
-    var body: some View {
-        HStack(spacing: 0) {
-            Text(node.key)
-                .font(.body.monospaced())
-                .foregroundStyle(node.key == "Root" ? Color.secondary : WireboltTheme.treeKey)
-                .frame(minWidth: 145, maxWidth: .infinity, alignment: .leading)
-            Text(node.value)
-                .font(.body.monospaced())
-                .foregroundStyle(valueColor)
-                .lineLimit(1)
-                .frame(minWidth: 110, maxWidth: .infinity, alignment: .leading)
-        }
-        .frame(height: 28)
-        .accessibilityElement(children: .combine)
-    }
-
-    private var valueColor: Color {
-        switch node.type {
-        case "String", "Number": WireboltTheme.treeValue
-        case "Boolean": WireboltTheme.jsonBoolean
-        case "Null": WireboltTheme.jsonNull
-        default: .secondary
+            return field
         }
     }
 }
@@ -842,7 +727,8 @@ private struct NativeRendererPicker: NSViewRepresentable {
     func makeNSView(context: Context) -> FixedRendererPopupButton {
         let button = FixedRendererPopupButton(frame: .zero, pullsDown: false)
         button.controlSize = .small
-        button.font = .systemFont(ofSize: NSFont.systemFontSize)
+        button.font = .systemFont(ofSize: 11)
+        button.alignment = .center
         button.addItems(withTitles: ResponseRenderer.allCases.map(\.rawValue))
         button.target = context.coordinator
         button.action = #selector(Coordinator.changed(_:))
@@ -870,252 +756,6 @@ private struct NativeRendererPicker: NSViewRepresentable {
                   let renderer = ResponseRenderer(rawValue: title)
             else { return }
             selection.wrappedValue = renderer
-        }
-    }
-}
-
-private struct JSONNode: Identifiable {
-    let id: String
-    let key: String
-    let type: String
-    let value: String
-    let children: [JSONNode]?
-
-    static func makeRoot(from text: String) -> [JSONNode] {
-        guard let data = text.data(using: .utf8),
-              let object = try? JSONSerialization.jsonObject(with: data)
-        else {
-            return []
-        }
-        return [make(key: "Root", value: object, path: "root")]
-    }
-
-    private static func make(key: String, value: Any, path: String) -> JSONNode {
-        if let dictionary = value as? [String: Any] {
-            let children = dictionary.keys.sorted(by: preferredJSONKeyOrder).map {
-                make(key: $0, value: dictionary[$0]!, path: "\(path).\($0)")
-            }
-            return JSONNode(
-                id: path,
-                key: key,
-                type: "Object",
-                value: "Object (\(children.count) items)",
-                children: children
-            )
-        }
-        if let array = value as? [Any] {
-            let children = array.enumerated().map {
-                make(key: "\($0.offset)", value: $0.element, path: "\(path)[\($0.offset)]")
-            }
-            return JSONNode(
-                id: path,
-                key: key,
-                type: "Array",
-                value: "Array (\(children.count) items)",
-                children: children
-            )
-        }
-        if value is NSNull {
-            return JSONNode(id: path, key: key, type: "Null", value: "null", children: nil)
-        }
-        if let boolean = value as? Bool {
-            return JSONNode(id: path, key: key, type: "Boolean", value: boolean ? "true" : "false", children: nil)
-        }
-        if let number = value as? NSNumber {
-            return JSONNode(id: path, key: key, type: "Number", value: number.stringValue, children: nil)
-        }
-        return JSONNode(id: path, key: key, type: "String", value: String(describing: value), children: nil)
-    }
-
-    private static func preferredJSONKeyOrder(_ lhs: String, _ rhs: String) -> Bool {
-        let preferred = [
-            "headers",
-            "args",
-            "url",
-            "x-amzn-trace-id",
-            "x-forwarded-port",
-            "x-forwarded-proto",
-            "host",
-        ]
-        let lhsIndex = preferred.firstIndex(of: lhs) ?? preferred.endIndex
-        let rhsIndex = preferred.firstIndex(of: rhs) ?? preferred.endIndex
-        return lhsIndex == rhsIndex ? lhs < rhs : lhsIndex < rhsIndex
-    }
-}
-
-enum SyntaxLanguage: Equatable {
-    case json
-    case xml
-    case html
-    case http
-    case plain
-}
-
-struct SyntaxTextView: View {
-    let text: String
-    let language: SyntaxLanguage
-
-    var body: some View {
-        ScrollView([.horizontal, .vertical]) {
-            HStack(alignment: .top, spacing: 0) {
-                Text(lineNumbers)
-                    .font(.system(.body, design: .monospaced))
-                    .monospacedDigit()
-                    .foregroundStyle(.tertiary)
-                    .multilineTextAlignment(.trailing)
-                    .lineSpacing(3)
-                    .frame(width: 38, alignment: .trailing)
-                    .padding(.trailing, 8)
-                    .accessibilityHidden(true)
-
-                Divider()
-
-                if language == .json {
-                    Text(foldingMarkers)
-                        .font(.system(.body, design: .monospaced))
-                        .foregroundStyle(.secondary)
-                        .lineSpacing(3)
-                        .frame(width: 10, alignment: .trailing)
-                        .accessibilityHidden(true)
-                }
-
-                Text(highlightedText)
-                    .font(.system(.body, design: .monospaced))
-                    .foregroundStyle(.primary)
-                    .lineSpacing(3)
-                    .textSelection(.enabled)
-                    .fixedSize(horizontal: true, vertical: false)
-                    .padding(.leading, 10)
-                    .background(alignment: .topLeading) {
-                        if language == .json {
-                            JSONIndentGuides(text: text)
-                                .allowsHitTesting(false)
-                        }
-                    }
-                    .accessibilityLabel(accessibilityLabel)
-            }
-            .padding(.vertical, 0)
-            .padding(.trailing, 12)
-        }
-        .background(WireboltTheme.paneBackground)
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-        .defaultScrollAnchor(.topLeading)
-    }
-
-    private var lineNumbers: String {
-        let count = max(text.components(separatedBy: .newlines).count, 1)
-        return (1 ... count).map(String.init).joined(separator: "\n")
-    }
-
-    private var foldingMarkers: String {
-        text.components(separatedBy: .newlines).map { line in
-            let trimmed = line.trimmingCharacters(in: .whitespaces)
-            return (trimmed.hasSuffix("{") || trimmed.hasSuffix("[")) ? "⌄" : ""
-        }.joined(separator: "\n")
-    }
-
-    private var accessibilityLabel: String {
-        switch language {
-        case .json: "JSON response"
-        case .xml: "XML response"
-        case .html: "HTML response"
-        case .http: "HTTP request"
-        case .plain: "Raw response"
-        }
-    }
-
-    private var highlightedText: AttributedString {
-        let highlighted = SyntaxHighlighter.attributedString(text: text, language: language)
-        return (try? AttributedString(highlighted, including: \.appKit)) ?? AttributedString(text)
-    }
-}
-
-private struct JSONIndentGuides: View {
-    let text: String
-
-    var body: some View {
-        Canvas { context, size in
-            let lines = text.components(separatedBy: .newlines)
-            let lineHeight = size.height / CGFloat(max(lines.count, 1))
-
-            for (lineIndex, line) in lines.enumerated() {
-                let leadingSpaces = line.prefix { $0 == " " }.count
-                let indentation = leadingSpaces / 2
-                guard indentation > 0 else { continue }
-
-                for level in 0 ..< indentation {
-                    let x = CGFloat(level) * 15.65 + 4
-                    var path = Path()
-                    path.move(to: CGPoint(x: x, y: CGFloat(lineIndex) * lineHeight))
-                    path.addLine(to: CGPoint(x: x, y: CGFloat(lineIndex + 1) * lineHeight))
-                    context.stroke(
-                        path,
-                        with: .color(WireboltTheme.separator.opacity(0.7)),
-                        lineWidth: 0.5
-                    )
-                }
-            }
-        }
-    }
-}
-
-@MainActor
-private enum SyntaxHighlighter {
-    static func attributedString(text: String, language: SyntaxLanguage) -> NSAttributedString {
-        let paragraph = NSMutableParagraphStyle()
-        paragraph.lineSpacing = 3
-        let result = NSMutableAttributedString(
-            string: text,
-            attributes: [
-                .font: NSFont.monospacedSystemFont(ofSize: NSFont.systemFontSize, weight: .regular),
-                .foregroundColor: NSColor.labelColor,
-                .paragraphStyle: paragraph,
-            ]
-        )
-
-        switch language {
-        case .json:
-            apply(#"\"(?:\\.|[^\"\\])*\""#, color: WireboltTheme.nsJSONString, to: result)
-            apply(#"\"(?:\\.|[^\"\\])*\"(?=\s*:)"#, color: WireboltTheme.nsJSONKey, to: result)
-            apply(#"\b(true|false)\b"#, color: WireboltTheme.nsJSONBoolean, to: result)
-            apply(#"\bnull\b"#, color: WireboltTheme.nsJSONNull, to: result)
-            apply(#"-?\b\d+(?:\.\d+)?\b"#, color: WireboltTheme.nsJSONNumber, to: result)
-            applyURL(to: result)
-        case .xml, .html:
-            apply(#"</?[A-Za-z][^>]*>"#, color: .systemTeal, to: result)
-            apply(#"\"[^\"]*\""#, color: .systemOrange, to: result)
-        case .http:
-            apply(#"(?m)^[A-Z]+\s+\S+\s+HTTP/\d(?:\.\d)?$"#, color: .systemGreen, to: result)
-            apply(#"(?m)^[A-Za-z0-9-]+(?=:)"#, color: .systemTeal, to: result)
-            apply(#"•+"#, color: .systemOrange, to: result)
-        case .plain:
-            break
-        }
-        return result
-    }
-
-    private static func apply(
-        _ pattern: String,
-        color: NSColor,
-        to text: NSMutableAttributedString
-    ) {
-        guard let expression = try? NSRegularExpression(pattern: pattern) else { return }
-        let range = NSRange(location: 0, length: text.length)
-        expression.enumerateMatches(in: text.string, range: range) { match, _, _ in
-            guard let match else { return }
-            text.addAttribute(.foregroundColor, value: color, range: match.range)
-        }
-    }
-
-    private static func applyURL(to text: NSMutableAttributedString) {
-        guard let expression = try? NSRegularExpression(pattern: #"https?://[^\"\s]+"#) else { return }
-        let range = NSRange(location: 0, length: text.length)
-        expression.enumerateMatches(in: text.string, range: range) { match, _, _ in
-            guard let match else { return }
-            text.addAttributes([
-                .underlineStyle: NSUnderlineStyle.single.rawValue,
-                .link: text.attributedSubstring(from: match.range).string,
-            ], range: match.range)
         }
     }
 }

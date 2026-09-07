@@ -2,9 +2,11 @@ use std::{error::Error, fmt};
 
 use serde_json::Value;
 
+mod legacy_v1;
+
 use crate::{
-    MultipartPart, MultipartPartKind, Request, RequestBody, RequestHeader, RequestValueField,
-    ValueSource,
+    MultipartPart, MultipartPartKind, Request, RequestAuthentication, RequestBody, RequestHeader,
+    RequestValueField, ValueSource,
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -57,7 +59,11 @@ pub struct ImportedRequest {
     pub method: String,
     pub url: String,
     pub headers: Vec<RequestHeader>,
+    pub query: Vec<RequestValueField>,
+    pub authentication: RequestAuthentication,
     pub body: RequestBody,
+    pub web_socket: bool,
+    pub note: String,
 }
 
 impl ImportedRequest {
@@ -71,7 +77,11 @@ impl ImportedRequest {
         request.group_id = group_id;
         request.order = self.order;
         request.headers = self.headers;
+        request.query = self.query;
+        request.authentication = self.authentication;
         request.body = self.body;
+        request.web_socket = self.web_socket;
+        request.note = self.note;
         request
     }
 }
@@ -99,6 +109,25 @@ impl Error for ImportError {}
 pub struct ImportEngine;
 
 impl ImportEngine {
+    /// Imports a file while retaining its top-level folders under the filename.
+    ///
+    /// # Errors
+    /// Returns [`ImportError`] for invalid input without including source contents.
+    pub fn parse_file(
+        format: ImportFormat,
+        source: &str,
+        name: &str,
+    ) -> Result<ImportedCollection, ImportError> {
+        if format == ImportFormat::LegacyWorkspaceV1 {
+            let root: Value = serde_json::from_str(source)
+                .map_err(|_| ImportError::new("legacy workspace JSON is invalid"))?;
+            if root.get("nodes").is_some() {
+                return legacy_v1::parse_named(&root, Some(name));
+            }
+        }
+        Self::parse(format, source)
+    }
+
     /// Parses a source completely before returning any documents to storage.
     ///
     /// # Errors
@@ -183,6 +212,10 @@ fn parse_curl(source: &str) -> Result<ImportedCollection, ImportError> {
             method,
             url,
             headers,
+            query: Vec::new(),
+            authentication: RequestAuthentication::None,
+            web_socket: false,
+            note: String::new(),
             body: body.unwrap_or(RequestBody::Empty),
         }],
         warnings: Vec::new(),
@@ -243,6 +276,10 @@ fn parse_har(source: &str) -> Result<ImportedCollection, ImportError> {
                 method,
                 url,
                 headers,
+                query: Vec::new(),
+                authentication: RequestAuthentication::None,
+                web_socket: false,
+                note: String::new(),
                 body,
             })
         })
@@ -338,6 +375,10 @@ fn parse_postman_items(items: &[Value], parent: Option<&str>, output: &mut Impor
             method,
             url,
             headers,
+            query: Vec::new(),
+            authentication: RequestAuthentication::None,
+            web_socket: false,
+            note: String::new(),
             body: postman_body(request.get("body")),
         });
     }
@@ -400,6 +441,10 @@ fn postman_body(body: Option<&Value>) -> RequestBody {
                         value: ValueSource::literal(
                             part.get("value").and_then(Value::as_str).unwrap_or(""),
                         ),
+                        file_name: part
+                            .get("fileName")
+                            .and_then(Value::as_str)
+                            .map(str::to_owned),
                         file_path: part.get("src").and_then(Value::as_str).map(str::to_owned),
                         content_type: part
                             .get("contentType")
@@ -420,6 +465,9 @@ fn postman_body(body: Option<&Value>) -> RequestBody {
 fn parse_legacy_workspace(source: &str) -> Result<ImportedCollection, ImportError> {
     let root: Value = serde_json::from_str(source)
         .map_err(|_| ImportError::new("legacy workspace JSON is invalid"))?;
+    if root.get("nodes").is_some() {
+        return legacy_v1::parse(&root);
+    }
     let name = root
         .get("name")
         .and_then(Value::as_str)
@@ -462,6 +510,10 @@ fn parse_legacy_workspace(source: &str) -> Result<ImportedCollection, ImportErro
                     .filter_map(header_from_name_value)
                     .collect(),
                 body: RequestBody::Empty,
+                query: Vec::new(),
+                authentication: RequestAuthentication::None,
+                web_socket: false,
+                note: String::new(),
             })
         })
         .collect::<Vec<_>>();
