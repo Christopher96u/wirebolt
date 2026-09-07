@@ -17,7 +17,11 @@ struct IndexedResponseEditor: View {
     var body: some View {
         GeometryReader { geometry in
             let gutter = CodeEditorMetrics.gutterWidth(fontSize, lineCount: index?.lineCount ?? 1)
-            let columns = wraps ? max(1, Int((geometry.size.width - gutter - 22) / (fontSize * 0.602))) : Int.max / 4
+            let font = NSFont.monospacedSystemFont(ofSize: fontSize, weight: .regular)
+            let width = max(1, geometry.size.width - gutter - 22)
+            let advance = (" " as NSString).size(withAttributes: [.font: font]).width
+            let columns = wraps ? max(1, Int(width / advance)) : Int.max / 4
+            let wrapping = wraps ? CodeTextWrapping(fontName: font.fontName, fontSize: fontSize, width: width) : nil
             Group {
                 if let index {
                     IndexedCodeScrollView(index: index, fontSize: fontSize, language: language, search: search, wraps: wraps,
@@ -29,10 +33,10 @@ struct IndexedResponseEditor: View {
                     NativeCodeEditor(text: .constant(preview), editable: false, language: language, label: "Response body", find: find ?? localFind)
                 }
             }
-            .task(id: "\(url.path):\(columns):\(prefix)") {
+            .task(id: "\(url.path):\(columns):\(fontSize):\(width):\(prefix)") {
                 if index?.url != url { index = nil }
                 failure = false
-                let task = Task.detached(priority: .userInitiated) { try ResponseTextIndex(url: url, columns: columns, prefix: prefix) }
+                let task = Task.detached(priority: .userInitiated) { try ResponseTextIndex(url: url, columns: columns, prefix: prefix, wrapping: wrapping) }
                 do {
                     let result = try await withTaskCancellationHandler { try await task.value } onCancel: { task.cancel() }
                     try Task.checkCancellation()
@@ -72,22 +76,23 @@ private struct IndexedCodeScrollView: NSViewRepresentable {
         let restore = view.presentation == nil
         if restore { view.presentation = editorStorage?.state(for: storageKey) }
         (scroll.contentView as? EditorClipView)?.changed = { [weak view] point in view?.presentation?.origin = point }
-        let changed = view.index?.url != index.url || view.index?.columns != index.columns || view.fontSize != fontSize || view.language != language
+        let changed = view.index?.url != index.url || view.index?.columns != index.columns || view.index?.wrapping != index.wrapping || view.fontSize != fontSize || view.language != language
         view.index = index
         view.fontSize = fontSize
         view.language = language
         scroll.hasHorizontalScroller = !wraps
         view.autoresizingMask = wraps ? [.width] : []
-        let width = wraps ? scroll.contentSize.width : max(scroll.contentSize.width, Double(index.maximumColumns) * fontSize * 0.602 + view.gutterWidth + 22)
-        view.setFrameSize(NSSize(width: width, height: max(scroll.contentSize.height, Double(index.rowCount) * view.lineHeight + 6 + (beyond ? max(0, scroll.contentSize.height - view.lineHeight) : 0))))
+        let width = wraps ? scroll.contentSize.width : max(scroll.contentSize.width, Double(index.maximumColumns) * (" " as NSString).size(withAttributes: [.font: NSFont.monospacedSystemFont(ofSize: fontSize, weight: .regular)]).width + view.gutterWidth + 22)
+        view.setFrameSize(NSSize(width: width, height: max(scroll.contentSize.height, Double(index.rowCount) * view.lineHeight + 2 * CodeEditorMetrics.textTopInset(fontSize) + (beyond ? max(0, scroll.contentSize.height - view.lineHeight) : 0))))
         scroll.contentInsets = NSEdgeInsets(top: 0, left: 0, bottom: 0, right: 0)
         if changed { view.invalidateRows() }
         if restore, let presentation = view.presentation {
             let origin = presentation.origin
             view.restoreSelection()
             DispatchQueue.main.async { [weak scroll] in
-                scroll?.contentView.scroll(to: origin)
-                if let scroll { scroll.reflectScrolledClipView(scroll.contentView) }
+                guard let scroll else { return }
+                (scroll.contentView as? EditorClipView)?.restorePresentationOrigin(origin)
+                scroll.reflectScrolledClipView(scroll.contentView)
             }
         }
         if view.query != search { view.find(search) }
@@ -96,7 +101,7 @@ private struct IndexedCodeScrollView: NSViewRepresentable {
 }
 
 @MainActor
-private final class IndexedCodeView: NSView {
+private final class IndexedCodeView: NSView, NSUserInterfaceValidations {
     var presentation: EditorPresentationStorage.State?
     var index: ResponseTextIndex?
     var fontSize = 12.0
@@ -143,7 +148,7 @@ private final class IndexedCodeView: NSView {
         findState = state
         guard let index else { return }
         let query = state.isVisible ? state.query : TextSearchQuery()
-        let source = "\(index.url.path):\(index.columns)"
+        let source = "\(index.url.path):\(index.columns):\(String(describing: index.wrapping))"
         if query != findQuery || state.selectionOnly != findScopeOnly || source != findSource {
             findQuery = query
             findScopeOnly = state.selectionOnly
@@ -220,7 +225,7 @@ private final class IndexedCodeView: NSView {
         let numberAttributes: [NSAttributedString.Key: Any] = [.font: NSFont.monospacedSystemFont(ofSize: fontSize, weight: .regular), .foregroundColor: NSColor.secondaryLabelColor]
         let selection = orderedSelection
         for row in cachedRows where range.contains(row.number) {
-            let y = Double(row.number) * lineHeight + 3
+            let y = Double(row.number) * lineHeight + CodeEditorMetrics.textTopInset(fontSize)
             if !row.continuation {
                 let number = String(row.line + 1) as NSString
                 number.draw(at: NSPoint(x: gutterWidth - 22 - number.size(withAttributes: numberAttributes).width, y: y), withAttributes: numberAttributes)
@@ -238,7 +243,7 @@ private final class IndexedCodeView: NSView {
                 let match = (row.text as NSString).range(of: query)
                 if match.location != NSNotFound { attributed.addAttribute(.backgroundColor, value: NSColor.findHighlightColor, range: match) }
             }
-            attributed.draw(at: NSPoint(x: gutterWidth + 4, y: y))
+            attributed.draw(at: NSPoint(x: gutterWidth + 4 + row.indent, y: y))
         }
     }
 
@@ -271,9 +276,10 @@ private final class IndexedCodeView: NSView {
 
     private func position(_ event: NSEvent) -> (row: Int, column: Int) {
         let point = convert(event.locationInWindow, from: nil)
-        let row = min(max(0, Int(point.y / lineHeight)), max(0, (index?.rowCount ?? 1) - 1))
-        guard let text = cachedRows.first(where: { $0.number == row })?.text else { return (row, 0) }
-        let target = max(0, point.x - gutterWidth - 4)
+        let row = min(max(0, Int((point.y - CodeEditorMetrics.textTopInset(fontSize)) / lineHeight)), max(0, (index?.rowCount ?? 1) - 1))
+        guard let content = cachedRows.first(where: { $0.number == row }) else { return (row, 0) }
+        let text = content.text
+        let target = max(0, point.x - gutterWidth - 4 - content.indent)
         let attributes: [NSAttributedString.Key: Any] = [.font: NSFont.monospacedSystemFont(ofSize: fontSize, weight: .regular)]
         var prefix = ""
         var previousWidth = 0.0
@@ -304,7 +310,27 @@ private final class IndexedCodeView: NSView {
             findState?.indexedSelection = (.init(row: start.row, column: start.column), .init(row: end.row, column: end.column))
         } else { findState?.indexedSelection = nil }
     }
-    @objc func performFindPanelAction(_ sender: Any?) { findState?.isVisible = true }
+    @objc func performFindPanelAction(_ sender: Any?) { performTextFinderAction(sender) }
+    func validateUserInterfaceItem(_ item: NSValidatedUserInterfaceItem) -> Bool {
+        if item.action == #selector(performFindPanelAction(_:)) || item.action == #selector(performTextFinderAction(_:)) {
+            switch item.tag {
+            case 1: return true
+            case 2, 3: return !findMatches.isEmpty
+            case 11: return findState?.isVisible == true
+            default: return false
+            }
+        }
+        return true
+    }
+    override func performTextFinderAction(_ sender: Any?) {
+        switch (sender as? NSMenuItem)?.tag ?? 1 {
+        case 1: findState?.isVisible = true
+        case 2: findState?.move(1)
+        case 3: findState?.move(-1)
+        case 11: findState?.isVisible = false
+        default: super.performTextFinderAction(sender)
+        }
+    }
     override func keyDown(with event: NSEvent) {
         if event.modifierFlags.contains(.command), event.charactersIgnoringModifiers == "f" { findState?.isVisible = true }
         else if event.modifierFlags.contains(.command), event.charactersIgnoringModifiers == "a" { selectAll(nil) }

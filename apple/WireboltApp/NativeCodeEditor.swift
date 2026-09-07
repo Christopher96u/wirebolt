@@ -26,6 +26,7 @@ enum CodeEditorMetrics {
         let font = NSFont.monospacedSystemFont(ofSize: fontSize, weight: .regular)
         return max(0, lineHeight(fontSize) - NSLayoutManager().defaultLineHeight(for: font))
     }
+    static func textTopInset(_ fontSize: Double) -> Double { floor(lineSpacing(fontSize) / 2) }
     static func gutterWidth(_ fontSize: Double, lineCount: Int) -> Double {
         let font = NSFont.monospacedSystemFont(ofSize: fontSize, weight: .regular)
         let digitWidth = ("0" as NSString).size(withAttributes: [.font: font]).width
@@ -119,11 +120,18 @@ struct NativeCodeEditor: NSViewRepresentable {
         view.isContinuousSpellCheckingEnabled = false
         view.allowsUndo = true
         view.usesFindBar = find == nil
-        view.findAction = { [weak coordinator = context.coordinator] action in
+        view.findAction = { [weak coordinator = context.coordinator, weak view] action in
             guard let state = coordinator?.findState else { return false }
-            if action == 2 { state.move(1) }
-            else if action == 3 { state.move(-1) }
-            else { state.isVisible = true }
+            switch action {
+            case 1: state.isVisible = true
+            case 2: state.move(1)
+            case 3: state.move(-1)
+            case 7:
+                guard let view, view.selectedRange().length > 0 else { return false }
+                state.query.text = (view.string as NSString).substring(with: view.selectedRange())
+            case 11: state.isVisible = false
+            default: return false
+            }
             return true
         }
         view.isIncrementalSearchingEnabled = true
@@ -152,7 +160,9 @@ struct NativeCodeEditor: NSViewRepresentable {
         guard let view = scroll.documentView as? NSTextView else { return }
         context.coordinator.text = $text
         context.coordinator.findState = find
+        (view as? FindableCodeTextView)?.findState = find
         view.isEditable = editable
+        view.textContainerInset = NSSize(width: 4, height: CodeEditorMetrics.textTopInset(fontSize))
         view.setAccessibilityLabel(label)
         let coordinator = context.coordinator
         if coordinator.presentation == nil {
@@ -200,7 +210,7 @@ struct NativeCodeEditor: NSViewRepresentable {
                 guard let scroll, let view else { return }
                 coordinator.updating = true
                 if NSMaxRange(presentation.selection) <= (view.string as NSString).length { view.setSelectedRange(presentation.selection) }
-                scroll.contentView.scroll(to: presentation.origin)
+                (scroll.contentView as? EditorClipView)?.restorePresentationOrigin(presentation.origin)
                 scroll.reflectScrolledClipView(scroll.contentView)
                 coordinator.updating = false
             }
@@ -357,9 +367,27 @@ struct NativeCodeEditor: NSViewRepresentable {
 
 private final class FindableCodeTextView: NSTextView {
     var findAction: ((Int) -> Bool)?
+    weak var findState: EditorFindState?
+
+    override func validateUserInterfaceItem(_ item: NSValidatedUserInterfaceItem) -> Bool {
+        if let state = findState, item.action == #selector(performFindPanelAction(_:)) || item.action == #selector(performTextFinderAction(_:)) {
+            switch item.tag {
+            case 1: return true
+            case 2, 3: return state.matchCount > 0
+            case 7: return selectedRange().length > 0
+            case 11: return state.isVisible
+            default: break
+            }
+        }
+        return super.validateUserInterfaceItem(item)
+    }
     override func performFindPanelAction(_ sender: Any?) {
         let action = (sender as? NSMenuItem)?.tag ?? 1
         if findAction?(action) != true { super.performFindPanelAction(sender) }
+    }
+    override func performTextFinderAction(_ sender: Any?) {
+        let action = (sender as? NSMenuItem)?.tag ?? 1
+        if findAction?(action) != true { super.performTextFinderAction(sender) }
     }
     override func performKeyEquivalent(with event: NSEvent) -> Bool {
         if event.modifierFlags.intersection(.deviceIndependentFlagsMask) == .command,
@@ -381,11 +409,16 @@ private final class CodeLayoutManager: NSLayoutManager {
         guard drawInvisibles, let storage = textStorage, let container = textContainers.first else { return }
         let string = storage.string as NSString
         let chars = characterRange(forGlyphRange: glyphsToShow, actualGlyphRange: nil)
-        let attributes: [NSAttributedString.Key: Any] = [.font: NSFont.systemFont(ofSize: 8), .foregroundColor: NSColor.tertiaryLabelColor]
         for index in chars.location ..< NSMaxRange(chars) where string.character(at: index) == 32 {
             let glyph = glyphIndexForCharacter(at: index)
             let bounds = boundingRect(forGlyphRange: NSRange(location: glyph, length: 1), in: container)
-            ("·" as NSString).draw(at: NSPoint(x: origin.x + bounds.midX - 1, y: origin.y + bounds.midY - 4), withAttributes: attributes)
+            let font = storage.attribute(.font, at: index, effectiveRange: nil) as? NSFont
+                ?? .monospacedSystemFont(ofSize: 12, weight: .regular)
+            let attributes: [NSAttributedString.Key: Any] = [.font: font, .foregroundColor: NSColor.tertiaryLabelColor]
+            let marker = "·" as NSString
+            let width = marker.size(withAttributes: attributes).width
+            let line = lineFragmentRect(forGlyphAt: glyph, effectiveRange: nil)
+            marker.draw(at: NSPoint(x: origin.x + bounds.midX - width / 2, y: origin.y + line.minY), withAttributes: attributes)
         }
     }
 }
@@ -453,9 +486,25 @@ private final class NativeEditorScrollView: NSScrollView {
 @MainActor
 final class EditorClipView: NSClipView {
     var changed: ((CGPoint) -> Void)?
+
+    private var leadingOrigin: CGPoint {
+        var target = bounds
+        target.origin = CGPoint(x: documentRect.minX - bounds.width, y: documentRect.minY - bounds.height)
+        return constrainBoundsRect(target).origin
+    }
+
+    func restorePresentationOrigin(_ origin: CGPoint) {
+        let leading = leadingOrigin
+        let target = NSRect(origin: CGPoint(x: leading.x + origin.x, y: leading.y + origin.y), size: bounds.size)
+        scroll(to: constrainBoundsRect(target).origin)
+    }
+
     override func scroll(to newOrigin: NSPoint) {
         super.scroll(to: newOrigin)
-        changed?(bounds.origin)
+        // Rulers and AppKit content insets can make the resting origin negative.
+        // Persist distance from that edge so native and indexed editors agree.
+        let leading = leadingOrigin
+        changed?(CGPoint(x: max(0, bounds.origin.x - leading.x), y: max(0, bounds.origin.y - leading.y)))
     }
 }
 
@@ -498,6 +547,16 @@ private final class CodeLineRuler: NSRulerView {
         let point = convert(event.locationInWindow, from: nil)
         if let hit = hitAreas.first(where: { $0.0.contains(point) }) { toggle?(hit.1) }
         else { super.mouseDown(with: event) }
+    }
+
+    override func draw(_ dirtyRect: NSRect) {
+        NSGraphicsContext.saveGraphicsState()
+        defer { NSGraphicsContext.restoreGraphicsState() }
+        let gutter = NSRect(x: bounds.minX, y: bounds.minY, width: ruleThickness, height: bounds.height)
+        NSBezierPath(rect: gutter).addClip()
+        (scrollView?.backgroundColor ?? .textBackgroundColor).setFill()
+        dirtyRect.intersection(gutter).fill()
+        drawHashMarksAndLabels(in: dirtyRect)
     }
 
     override func drawHashMarksAndLabels(in rect: NSRect) {
@@ -545,8 +604,6 @@ private final class CodeLineRuler: NSRulerView {
 final class CodeTextContainer: NSTextContainer {
     // Code punctuation defines wrapping opportunities independently of natural
     // language word boundaries. The storage remains the original editable text.
-    nonisolated private static let breakAfter = Set(" \t})]?|/&.,;¢°′″‰℃、。｡､￠，．：；？！％・･ゝゞヽヾーァィゥェォッャュョヮヵヶぁぃぅぇぉっゃゅょゎゕゖㇰㇱㇲㇳㇴㇵㇶㇷㇸㇹㇺㇻㇼㇽㇾㇿ々〻ｧｨｩｪｫｬｭｮｯｰ”〉》」』】〕）］｝｣".utf16)
-    nonisolated private static let breakBefore = Set("([{‘“〈《「『【〔（［｛｢£¥＄￡￥+＋".utf16)
     private var paragraph: (range: NSRange, text: NSString, font: NSFont, ascii: Bool, typesetter: CTTypesetter?)?
 
     func invalidateParagraph() { paragraph = nil }
@@ -565,8 +622,8 @@ final class CodeTextContainer: NSTextContainer {
             let range = source.lineRange(for: NSRange(location: index, length: 0))
             let text = source.substring(with: range) as NSString
             let ascii = (0..<text.length).allSatisfy { (32...126).contains(text.character(at: $0)) || text.character(at: $0) == 10 || text.character(at: $0) == 13 }
-            let typesetter = ascii ? nil : CTTypesetterCreateWithAttributedString(NSAttributedString(string: text as String,
-                attributes: [.font: font]) as CFAttributedString)
+            let typesetter = ascii ? nil : CTTypesetterCreateWithAttributedStringAndOptions(NSAttributedString(string: text as String,
+                attributes: [.font: font]) as CFAttributedString, [kCTTypesetterOptionAllowUnboundedLayout: true] as CFDictionary)
             paragraph = (range, text, font, ascii, typesetter)
         }
         guard let paragraph else { return rect }
@@ -585,17 +642,11 @@ final class CodeTextContainer: NSTextContainer {
         if paragraph.ascii {
             fit = min(text.length - start, max(1, Int(available / max(1, advance))))
         } else {
-            fit = max(1, CTTypesetterSuggestClusterBreak(typesetter!, start, available))
+            guard let typesetter else { return rect }
+            fit = max(1, CTTypesetterSuggestClusterBreak(typesetter, start, available))
         }
         guard start + fit < text.length else { return rect }
-        var count = fit
-        let firstContent = (start..<text.length).first { text.character(at: $0) != 32 && text.character(at: $0) != 9 } ?? text.length
-        for end in stride(from: start + fit, through: start + 1, by: -1) {
-            if end > firstContent && (Self.breakAfter.contains(text.character(at: end - 1)) || Self.breakBefore.contains(text.character(at: end))) {
-                count = end - start
-                break
-            }
-        }
+        let count = CodeTextWrapping.breakLength(in: text, start: start, fitting: fit)
         let width: Double
         if let typesetter {
             let line = CTTypesetterCreateLine(typesetter, CFRange(location: start, length: count))

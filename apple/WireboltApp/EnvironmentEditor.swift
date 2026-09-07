@@ -103,37 +103,38 @@ struct EnvironmentEditor: View {
                     HStack(spacing: 0) {
                         Color.clear.frame(width: 27)
                         Divider().frame(height: 14)
-                        Text("Key").padding(.leading, 4).frame(width: 183, alignment: .leading)
+                        Text("Key").padding(.leading, 6).frame(width: 183, alignment: .leading)
                         Divider().frame(height: 14)
-                        Text("Value").padding(.leading, 4).frame(maxWidth: .infinity, alignment: .leading)
+                        Text("Value").padding(.leading, 6).frame(maxWidth: .infinity, alignment: .leading)
                     }.font(.system(size: 11)).frame(height: 27)
                     Divider()
                     ScrollView {
                         LazyVStack(spacing: 0) {
                             ForEach(selected.variables) { $variable in
-                                HStack(spacing: 0) {
-                                    Toggle("Enabled", isOn: $variable.enabled).labelsHidden().frame(width: 28)
-                                    TextField("Key", text: $variable.key).frame(width: 175).padding(.horizontal, 4)
+                                let height = FieldEditorMetrics.height(key: variable.key, value: variable.value.editableValue, valueWidth: 392)
+                                HStack(alignment: .top, spacing: 0) {
+                                    FieldCheckbox(isOn: $variable.enabled)
+                                    FieldTextInput("Key", text: $variable.key, height: height).frame(width: 175).padding(.horizontal, 4)
                                     Color.clear.frame(width: 1)
-                                    TextField("Value", text: Binding(
+                                    FieldTextInput("Value", text: Binding(
                                         get: { variable.value.editableValue },
                                         set: { value in
                                             if case .secret = variable.value { variable.value = .secret(value) }
                                             else { variable.value = .literal(value) }
                                         }
-                                    )).padding(.horizontal, 4).padding(.trailing, 5).frame(maxWidth: .infinity)
-                                }.textFieldStyle(.plain).frame(height: 28)
+                                    ), height: height).padding(.horizontal, 4).padding(.trailing, 5).frame(maxWidth: .infinity)
+                                }.frame(height: height).padding(.vertical, 4)
                                     .contextMenu {
                                         Button("Delete") { selected.variables.wrappedValue.removeAll { $0.id == variable.id } }
                                     }
                             }
                             HStack(spacing: 0) {
                                 Color.clear.frame(width: 28)
-                                TextField("New Key (⌘K)", text: $newKey).frame(width: 175).padding(.horizontal, 4)
-                                    .focused($newKeyFocused).onSubmit { commitNewRow() }
+                                FieldTextInput("New Key (⌘K)", text: $newKey, height: newFieldHeight).frame(width: 175).padding(.horizontal, 4)
+                                    .focused($newKeyFocused).onSubmit { commitNewRow(); newKeyFocused = true }
                                 Color.clear.frame(width: 1)
-                                TextField("New Value", text: $newValue).padding(.horizontal, 4).padding(.trailing, 5).onSubmit { commitNewRow() }
-                            }.textFieldStyle(.plain).frame(height: 28)
+                                FieldTextInput("New Value", text: $newValue, height: newFieldHeight).padding(.horizontal, 4).padding(.trailing, 5).onSubmit { commitNewRow(); newKeyFocused = true }
+                            }.frame(height: newFieldHeight).padding(.vertical, 4)
                         }.font(.system(size: 11, design: .monospaced))
                     }.background(Color(nsColor: .textBackgroundColor))
                 }
@@ -158,6 +159,8 @@ struct EnvironmentEditor: View {
             get: { validationMessage != nil }, set: { if !$0 { validationMessage = nil } }
         )) { Button("OK", role: .cancel) {} } message: { Text(validationMessage ?? "") }
     }
+
+    private var newFieldHeight: Double { FieldEditorMetrics.height(key: newKey, value: newValue, valueWidth: 392) }
 
     private var selected: Binding<EnvironmentDraft> {
         Binding(

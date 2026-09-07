@@ -207,7 +207,7 @@ private struct ResponseSectionBar: View {
         }
         .frame(minWidth: geometry.size.width, maxHeight: .infinity, alignment: .leading)
         }
-        .frame(height: 33)
+        .frame(height: 34)
         .clipped()
         .background(WireboltTheme.barBackground)
         .accessibilityElement(children: .contain)
@@ -275,17 +275,21 @@ private struct ResponseBodyViewer: View {
                     get: { interface.responseRenderer },
                     set: { interface.responseRenderer = $0; interface.usesAutomaticRenderer = false }
                 ))
+                    .controlSize(.small)
                     .frame(width: 122, height: 22)
+                    .offset(y: -1)
                 .help("Response Renderer")
 
                 Spacer(minLength: 8)
 
+                HStack(spacing: 13) {
                 Button("Find", systemImage: "magnifyingglass") {
                     if [.json, .xml, .html, .raw].contains(interface.responseRenderer) { find.isVisible = true }
                 }
                 .labelStyle(.iconOnly)
                 .buttonStyle(.borderless)
                 .foregroundStyle(.secondary)
+                .frame(width: 20)
                 .help("Find in Response (⌘F)")
 
                 Menu("Response Actions", systemImage: "ellipsis.circle") {
@@ -318,10 +322,13 @@ private struct ResponseBodyViewer: View {
                 .labelStyle(.iconOnly)
                 .foregroundStyle(.secondary)
                 .fixedSize()
+                .frame(width: 20)
+                }
+                .offset(y: -1)
             }
             .font(.system(size: 13))
             .padding(.leading, 11)
-            .padding(.trailing, 12)
+            .padding(.trailing, 11)
             .frame(height: 27)
             .background(WireboltTheme.barBackground)
             Divider()
@@ -721,6 +728,7 @@ private struct NativeRendererPicker: NSViewRepresentable {
         let button = FixedRendererPopupButton(frame: .zero, pullsDown: false)
         button.controlSize = .small
         button.font = .systemFont(ofSize: 11)
+        button.alignment = .center
         button.addItems(withTitles: ResponseRenderer.allCases.map(\.rawValue))
         button.target = context.coordinator
         button.action = #selector(Coordinator.changed(_:))

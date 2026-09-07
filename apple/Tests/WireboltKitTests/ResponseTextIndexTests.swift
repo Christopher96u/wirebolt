@@ -1,8 +1,64 @@
 import Foundation
+import CoreText
 import Testing
 @testable import WireboltKit
 
 @Suite struct ResponseTextIndexTests {
+    private func wrapping(width: Double = 160) -> CodeTextWrapping {
+        let font = CTFontCreateUIFontForLanguage(.userFixedPitch, 12, nil)!
+        return CodeTextWrapping(fontName: CTFontCopyPostScriptName(font) as String, fontSize: 12, width: width)
+    }
+
+    @Test func pixelWrappingPreservesUnicodeAndCheckpointIndentation() throws {
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: url) }
+        let text = "  " + String(repeating: "path/to?q=cafe\u{301}, 東京 👨‍👩‍👧‍👦 🚀; ", count: 4000)
+        let bytes = Data(text.utf8)
+        try bytes.write(to: url)
+        let index = try ResponseTextIndex(url: url, columns: 20, wrapping: wrapping())
+        let rows = try index.rows(start: 0, count: index.rowCount)
+        #expect(rows.map(\.text).joined() == text)
+        #expect(rows.first?.indent == 0)
+        #expect(rows.dropFirst().allSatisfy { $0.continuation && $0.indent > 0 })
+        let clusterBoundaries = Set(text.indices.map { text[..<$0].utf8.count } + [text.utf8.count])
+        #expect(rows.allSatisfy { clusterBoundaries.contains(Int($0.byteOffset)) })
+        for start in stride(from: 127, to: index.rowCount, by: 128) {
+            let actual = try index.rows(start: start, count: 3)
+            let expected = Array(rows.dropFirst(start).prefix(3))
+            #expect(actual == expected)
+        }
+        #expect(try Data(contentsOf: url) == bytes)
+    }
+
+    @Test func pixelWrappingKeepsRawPrefixAndSearchPositions() throws {
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: url) }
+        let body = "  /json?limit=10&search=wirebolt\r\n\n"
+        try Data(body.utf8).write(to: url)
+        let prefix = "HTTP/1.1 200 OK\nX-Long-Header: abcdefghijklmnop\n\n"
+        let index = try ResponseTextIndex(url: url, columns: 20, prefix: prefix, wrapping: wrapping())
+        let rows = try index.rows(start: 0, count: index.rowCount)
+        #expect(rows.map { ($0.number > 0 && !$0.continuation ? "\n" : "") + $0.text }.joined() == prefix + body.replacingOccurrences(of: "\r", with: ""))
+        let match = try #require(index.search(TextSearchQuery(text: "search=wirebolt")).first)
+        let start = try #require(index.rows(start: match.start.row, count: 1).first)
+        #expect((start.text as NSString).substring(from: match.start.column).hasPrefix("search="))
+        #expect(try index.firstMatch("search=wirebolt") == match.start.row)
+        #expect(rows.suffix(2).map(\.text) == ["", ""])
+    }
+
+    @Test func pixelWrappingDecodesMalformedUTF8AndNarrowClusters() throws {
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: url) }
+        let bytes = Data([0xF0, 0x9F, 0x41, 0xED, 0xA0, 0x80, 0x80]) + Data("👨‍👩‍👧‍👦e\u{301}".utf8)
+        try bytes.write(to: url)
+        let index = try ResponseTextIndex(url: url, columns: 1, wrapping: wrapping(width: 1))
+        let rows = try index.rows(start: 0, count: index.rowCount)
+        #expect(rows.map(\.text).joined() == String(decoding: bytes, as: UTF8.self))
+        #expect(rows.suffix(2).map(\.text) == ["👨‍👩‍👧‍👦", "e\u{301}"])
+        try Data().write(to: url)
+        #expect(try ResponseTextIndex(url: url, columns: 1, wrapping: wrapping()).rowCount == 1)
+    }
+
     @Test func rawHeadersPrecedeEveryBodyRowWithoutCopyingTheResponseFile() throws {
         let url = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: url) }

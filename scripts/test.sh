@@ -23,6 +23,7 @@ swiftc \
   apple/Sources/WireboltKit/JSONNode.swift \
   apple/Sources/WireboltKit/CodeFolding.swift \
   apple/Sources/WireboltKit/TextSearch.swift \
+  apple/Sources/WireboltKit/CodeTextWrapping.swift \
   apple/Sources/WireboltKit/ResponseTextIndex.swift \
   apple/Sources/WireboltKit/DocumentSessions.swift \
   apple/Sources/WireboltKit/ResponseStorage.swift \

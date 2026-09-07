@@ -15,6 +15,10 @@ private struct EditorFixture: View {
     var body: some View { NativeCodeEditor(text: $document.text, language: document.language) }
 }
 
+private final class ScrollFixtureView: NSView {
+    override var isFlipped: Bool { true }
+}
+
 @main
 private struct EditorWorkloads {
     @MainActor static func main() throws {
@@ -45,7 +49,10 @@ private struct EditorWorkloads {
         let p95 = samples.sorted()[Int(Double(samples.count - 1) * 0.95)]
         precondition(editor.textContainer is CodeTextContainer)
         verifyCodeWrapping()
+        verifyLongUnicodeWrapping()
         verifyFontMetrics()
+        verifyFieldHeights()
+        verifyScrollRestoration(scroll)
         // Switching a binary response to Raw must keep TextKit responsive, including
         // its idle layout pass. Control bytes previously trapped that pass in layout.
         let watchdog = DispatchWorkItem { exit(86) }
@@ -74,7 +81,9 @@ private struct EditorWorkloads {
         for _ in 0..<1040 { try file.write(contentsOf: block) }
         try file.close()
         let indexStart = ContinuousClock.now
-        let index = try ResponseTextIndex(url: url, columns: 120)
+        let font = NSFont.monospacedSystemFont(ofSize: 12, weight: .regular)
+        let index = try ResponseTextIndex(url: url, columns: 120,
+            wrapping: CodeTextWrapping(fontName: font.fontName, fontSize: 12, width: 870))
         let indexTime = milliseconds(since: indexStart)
         var viewportSamples: [Double] = []
         for row in stride(from: 0, to: index.rowCount, by: max(1, index.rowCount / 30)) {
@@ -108,6 +117,81 @@ private struct EditorWorkloads {
         }
         precondition(lines == ["  \"path\": \"/json?limit=10&", "search=wirebolt\",\n", "  \"message\": \"Parity audit — ", "Unicode: café, 東京, 🚀\","])
         precondition(storage.string == source)
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: url) }
+        try! Data(source.utf8).write(to: url)
+        let font = NSFont.monospacedSystemFont(ofSize: 12, weight: .regular)
+        let index = try! ResponseTextIndex(url: url, columns: 36,
+            wrapping: CodeTextWrapping(fontName: font.fontName, fontSize: 12, width: 267))
+        let indexed = try! index.rows(start: 0, count: index.rowCount).map(\.text)
+        precondition(indexed == lines.map { $0.replacingOccurrences(of: "\n", with: "") })
+    }
+
+    @MainActor private static func verifyFieldHeights() {
+        // Measured narrow and wide columns, including a soft-wrap boundary.
+        for (value, narrow) in [("abcdef", 20.0), ("abcdefg", 34.0), ("abcdefgh", 34.0),
+            ("abcdefghijkl", 34.0), ("abcdefghijklmnopqrstuvwxyz", 76.0)] {
+            precondition(FieldEditorMetrics.height(for: value, width: 75) == narrow)
+            precondition(FieldEditorMetrics.height(for: value, width: 274) == 20)
+        }
+        precondition(FieldEditorMetrics.height(for: "first\nsecond", width: 274) == 34)
+        precondition(FieldEditorMetrics.height(for: "10", width: 1) == 34)
+        precondition(FieldEditorMetrics.height(for: "wirebolt", width: 1) == 118)
+    }
+
+    @MainActor private static func verifyScrollRestoration(_ native: NSScrollView) {
+        let plain = NSScrollView(frame: native.frame)
+        plain.contentView = EditorClipView()
+        plain.documentView = ScrollFixtureView(frame: NSRect(x: 0, y: 0, width: plain.contentSize.width, height: 4000))
+        plain.tile()
+        for scroll in [native, plain] {
+            let clip = scroll.contentView as! EditorClipView
+            let original = clip.bounds.origin
+            let changed = clip.changed
+            var saved = CGPoint.zero
+            clip.changed = { saved = $0 }
+            clip.restorePresentationOrigin(.zero)
+            let leading = clip.bounds.origin
+            precondition(saved == .zero)
+            if scroll === native {
+                precondition(abs(leading.x + (native.verticalRulerView?.ruleThickness ?? 0)) < 1)
+            } else { precondition(leading.x == 0) }
+            clip.restorePresentationOrigin(CGPoint(x: 0, y: 90))
+            precondition(abs(clip.bounds.origin.y - leading.y - 90) < 1)
+            precondition(abs(saved.y - 90) < 1 && saved.x == 0)
+            clip.restorePresentationOrigin(.zero)
+            precondition(clip.bounds.origin == leading)
+            clip.changed = changed
+            clip.scroll(to: original)
+        }
+    }
+
+    @MainActor private static func verifyLongUnicodeWrapping() {
+        let source = String(repeating: "café 東京 👨‍👩‍👧‍👦 /path?x=1&y=2; ", count: 1200)
+        let storage = NSTextStorage(attributedString: SyntaxHighlighter.attributedString(text: source, language: .plain))
+        let manager = NSLayoutManager()
+        storage.addLayoutManager(manager)
+        let container = CodeTextContainer(containerSize: NSSize(width: 267, height: CGFloat.greatestFiniteMagnitude))
+        container.lineFragmentPadding = 0
+        manager.addTextContainer(container)
+        manager.ensureLayout(for: container)
+        var lines: [String] = []
+        manager.enumerateLineFragments(forGlyphRange: NSRange(location: 0, length: manager.numberOfGlyphs)) { _, _, _, range, _ in
+            lines.append((source as NSString).substring(with: manager.characterRange(forGlyphRange: range, actualGlyphRange: nil)))
+        }
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: url) }
+        try! Data(source.utf8).write(to: url)
+        let font = NSFont.monospacedSystemFont(ofSize: 12, weight: .regular)
+        let index = try! ResponseTextIndex(url: url, columns: 36,
+            wrapping: CodeTextWrapping(fontName: font.fontName, fontSize: 12, width: 267))
+        let indexed = try! index.rows(start: 0, count: index.rowCount).map(\.text)
+        if indexed != lines {
+            let differences = zip(indexed, lines).enumerated().filter { $0.element.0 != $0.element.1 }.prefix(3)
+            let report = "Unicode wrapping: indexed \(indexed.count), native \(lines.count), differences \(Array(differences))\n"
+            FileHandle.standardError.write(Data(report.utf8))
+            preconditionFailure("Native and indexed Unicode wrapping differ")
+        }
     }
 
     @MainActor private static func verifyFontMetrics() {

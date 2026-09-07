@@ -28,6 +28,7 @@ struct WireboltApp: App {
         .windowResizability(.contentMinSize)
         .windowToolbarStyle(.unified)
         .commands {
+            TextEditingCommands()
             CommandGroup(replacing: .newItem) {
                 Button("New Tab") { interface.makeNewRequest(model: model, rename: false) }
                     .keyboardShortcut("t", modifiers: .command)
@@ -139,6 +140,7 @@ private struct WireboltSettingsView: View {
     @Bindable var model: WireboltModel
     @AppStorage("interfaceAppearance") private var interfaceAppearance = "system"
     @AppStorage("editor.fontSize") private var fontSize = 12.0
+    @State private var showingPrivacyPolicy = false
 
     var body: some View {
         TabView {
@@ -195,24 +197,44 @@ private struct WireboltSettingsView: View {
             Tab("Privacy", systemImage: "person.fill") {
                 Grid(alignment: .leading, horizontalSpacing: 10, verticalSpacing: 18) {
                     GridRow(alignment: .top) {
-                        Text("Analytics:").gridColumnAlignment(.trailing)
+                        Text("Analytics:").frame(width: 104, alignment: .trailing)
                         VStack(alignment: .leading, spacing: 6) {
                             Toggle("Share analytics with Wirebolt", isOn: .constant(false)).disabled(true)
-                            Text("Wirebolt does not send diagnostics or usage data automatically.")
+                                .frame(height: 18, alignment: .top).padding(.leading, 2)
+                            Text("Wirebolt does not collect usage analytics or send identifiers automatically. Your collections, requests and environments stay in your workspace.")
                                 .font(.system(size: 11)).foregroundStyle(.secondary)
+                                .frame(width: 384, height: 44, alignment: .topLeading).padding(.leading, 2)
                         }
                     }
                     GridRow(alignment: .top) {
-                        Text("Crash Reports:")
+                        Text("Crash Report:").frame(width: 104, alignment: .trailing)
                         VStack(alignment: .leading, spacing: 6) {
                             Toggle("Share crash reports with Wirebolt", isOn: .constant(false)).disabled(true)
-                            Text("Diagnostics stay on this Mac. You can export them explicitly when needed.")
+                                .frame(height: 18, alignment: .top).padding(.leading, 2)
+                            Text("Wirebolt does not upload crash reports or diagnostics automatically. You decide what information to include when reporting a problem.")
                                 .font(.system(size: 11)).foregroundStyle(.secondary)
+                                .frame(width: 384, height: 44, alignment: .topLeading).padding(.leading, 2)
+                            Text("Your data stays under your control.")
+                                .font(.system(size: 13)).foregroundStyle(.secondary).padding(.leading, 2)
+                            Button { showingPrivacyPolicy = true } label: {
+                                Text("Privacy Policy").frame(width: 86, height: 18)
+                            }
+                                .padding(.top, 12).padding(.leading, 2)
                         }
                     }
-                }.font(.system(size: 12)).padding(.horizontal, 20).padding(.top, 20)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-
+                }
+                .font(.system(size: 13)).controlSize(.regular)
+                .padding(.leading, 44).padding(.trailing, 18).padding(.top, 20)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+                .sheet(isPresented: $showingPrivacyPolicy) {
+                    VStack(alignment: .leading, spacing: 16) {
+                        Text("Privacy Policy").font(.title2.weight(.semibold))
+                        Text("Wirebolt stores your workspace on this Mac. It does not automatically send analytics, identifiers, crash reports or diagnostics.")
+                        Text("Requests connect to the addresses you choose and may use your configured proxy. Sign-in and Git sync connect to their services when you use those features.")
+                        Text("You control which workspace files or diagnostic details you share with others.")
+                        HStack { Spacer(); Button("Done") { showingPrivacyPolicy = false }.keyboardShortcut(.defaultAction) }
+                    }.padding(24).frame(width: 480)
+                }
             }
         }
         .frame(width: 562, height: 309)

@@ -10,15 +10,23 @@ public struct ResponseTextIndex: Sendable {
         public let byteOffset: UInt64
         public let text: String
         public let columns: Int
+        public let indent: Double
+
+        public init(number: Int, line: Int, continuation: Bool, byteOffset: UInt64, text: String, columns: Int, indent: Double = 0) {
+            self.number = number; self.line = line; self.continuation = continuation
+            self.byteOffset = byteOffset; self.text = text; self.columns = columns; self.indent = indent
+        }
     }
     private struct Checkpoint: Sendable {
         let row: Int
         let line: Int
         let continuation: Bool
         let offset: UInt64
+        let indent: Double
     }
     public let url: URL
     public let columns: Int
+    public let wrapping: CodeTextWrapping?
     public let rowCount: Int
     public let lineCount: Int
     public let maximumColumns: Int
@@ -27,13 +35,26 @@ public struct ResponseTextIndex: Sendable {
     private let prefixLines: Int
     private let prefix: String
 
-    public init(url: URL, columns: Int, prefix: String = "") throws {
+    public init(url: URL, columns: Int, prefix: String = "", wrapping: CodeTextWrapping? = nil) throws {
+        self.wrapping = wrapping
         self.url = url
         self.prefix = prefix
         self.columns = max(1, columns)
         var prefixRows: [Row] = []
         let lines = prefix.isEmpty ? [] : Array(prefix.components(separatedBy: "\n").dropLast(prefix.hasSuffix("\n") ? 1 : 0))
         for (lineNumber, line) in lines.enumerated() {
+            if let wrapping {
+                let paragraph = CodeTextWrapping.Paragraph(bytes: Data(line.utf8), layout: wrapping)
+                var start = 0
+                repeat {
+                    let indent = start == 0 ? 0 : paragraph.indentation
+                    let range = paragraph.next(from: start, indent: indent)
+                    prefixRows.append(Row(number: prefixRows.count, line: lineNumber, continuation: start > 0,
+                        byteOffset: 0, text: paragraph.source.substring(with: range), columns: paragraph.columns(in: range), indent: indent))
+                    start = NSMaxRange(range)
+                } while start < paragraph.source.length
+                continue
+            }
             var remaining = line[...]
             var continuation = false
             repeat {
@@ -49,9 +70,9 @@ public struct ResponseTextIndex: Sendable {
         var count = 0
         var maximum = 0
         var lastLine = 0
-        try Self.scan(url: url, columns: self.columns, from: nil, collectText: false) { row in
+        try Self.scan(url: url, columns: self.columns, wrapping: wrapping, from: nil, collectText: false) { row in
             if row.number.isMultiple(of: 128) {
-                checkpoints.append(Checkpoint(row: row.number, line: row.line, continuation: row.continuation, offset: row.byteOffset))
+                checkpoints.append(Checkpoint(row: row.number, line: row.line, continuation: row.continuation, offset: row.byteOffset, indent: row.indent))
             }
             count = row.number + 1
             maximum = max(maximum, row.columns)
@@ -71,10 +92,10 @@ public struct ResponseTextIndex: Sendable {
         let checkpoint = checkpoints[min(bodyStart / 128, checkpoints.count - 1)]
         var rows = Array(prefixRows.dropFirst(start).prefix(count))
         if rows.count == count { return rows }
-        try Self.scan(url: url, columns: columns, from: checkpoint, collectText: true) { row in
+        try Self.scan(url: url, columns: columns, wrapping: wrapping, from: checkpoint, collectText: true) { row in
             if row.number >= bodyStart {
                 rows.append(Row(number: row.number + prefixRows.count, line: row.line + prefixLines,
-                    continuation: row.continuation, byteOffset: row.byteOffset, text: row.text, columns: row.columns))
+                    continuation: row.continuation, byteOffset: row.byteOffset, text: row.text, columns: row.columns, indent: row.indent))
             }
             return rows.count < count
         }
@@ -144,7 +165,7 @@ public struct ResponseTextIndex: Sendable {
             consume(number: row.number, raw: row.text + (newline ? "\n" : ""))
         }
         var previous: Row?
-        try Self.scan(url: url, columns: columns, from: nil, collectText: false) { row in
+        try Self.scan(url: url, columns: columns, wrapping: wrapping, from: nil, collectText: false) { row in
             if let previous {
                 let bytes = data[Int(previous.byteOffset)..<Int(row.byteOffset)]
                 consume(number: previous.number + prefixRows.count, raw: String(decoding: bytes, as: UTF8.self))
@@ -181,7 +202,7 @@ public struct ResponseTextIndex: Sendable {
                 let checkpoint = checkpoints.last(where: { $0.offset <= byteOffset })
                 var found: Int?
                 var preceding = checkpoint?.row ?? 0
-                try Self.scan(url: url, columns: columns, from: checkpoint, collectText: false) { row in
+                try Self.scan(url: url, columns: columns, wrapping: wrapping, from: checkpoint, collectText: false) { row in
                     if row.byteOffset > byteOffset { found = preceding; return false }
                     preceding = row.number
                     return true
@@ -193,7 +214,11 @@ public struct ResponseTextIndex: Sendable {
         }
     }
 
-    private static func scan(url: URL, columns: Int, from checkpoint: Checkpoint?, collectText: Bool, consume: (Row) -> Bool) throws {
+    private static func scan(url: URL, columns: Int, wrapping: CodeTextWrapping?, from checkpoint: Checkpoint?, collectText: Bool, consume: (Row) -> Bool) throws {
+        if let wrapping {
+            try scanWrapped(url: url, wrapping: wrapping, from: checkpoint, collectText: collectText, consume: consume)
+            return
+        }
         let reader = try FileHandle(forReadingFrom: url)
         defer { try? reader.close() }
         var offset = checkpoint?.offset ?? 0
@@ -253,4 +278,68 @@ public struct ResponseTextIndex: Sendable {
             }
         }
     }
+
+    private static func scanWrapped(url: URL, wrapping: CodeTextWrapping, from checkpoint: Checkpoint?,
+        collectText: Bool, consume: (Row) -> Bool) throws {
+        let reader = try FileHandle(forReadingFrom: url)
+        defer { try? reader.close() }
+        var offset = checkpoint?.offset ?? 0
+        try reader.seek(toOffset: offset)
+        let metrics = CodeTextWrapping.Metrics(wrapping)
+        var number = checkpoint?.row ?? 0
+        var line = checkpoint?.line ?? 0
+        var continuation = checkpoint?.continuation ?? false
+        var indentation = checkpoint?.indent ?? 0
+        var pending = Data()
+        var finished = false
+        while true {
+            try Task.checkCancellation()
+            if !finished {
+                let chunk = try autoreleasepool { try reader.read(upToCount: 64 * 1024) ?? Data() }
+                finished = chunk.isEmpty
+                pending.append(chunk)
+            }
+            var consumed = 0
+            while consumed < pending.count || finished {
+                let newline = pending[consumed...].firstIndex(of: 10)
+                let end = newline ?? pending.count
+                let complete = newline != nil || finished
+                let bytes = pending.subdata(in: consumed..<end)
+                let paragraph = CodeTextWrapping.Paragraph(bytes: bytes, layout: wrapping, metrics: metrics)
+                if !continuation { indentation = paragraph.indentation }
+                // Keep the final cluster and look-ahead across reads. No complete
+                // response or per-line strings survive this bounded scan.
+                let safeEnd = complete ? paragraph.source.length : max(0, paragraph.source.length - 512)
+                var start = 0
+                repeat {
+                    let indent = continuation ? indentation : 0
+                    let range = paragraph.next(from: start, indent: indent)
+                    if !complete && NSMaxRange(range) >= safeEnd { break }
+                    let row = Row(number: number, line: line, continuation: continuation,
+                        byteOffset: offset + UInt64(consumed + paragraph.byteOffsets[start]),
+                        text: collectText ? paragraph.source.substring(with: range) : "",
+                        columns: paragraph.columns(in: range), indent: indent)
+                    if !consume(row) { return }
+                    number += 1
+                    continuation = true
+                    start = NSMaxRange(range)
+                } while start < paragraph.source.length
+                if complete {
+                    if newline == nil { return }
+                    consumed = end + 1
+                    line += 1
+                    continuation = false
+                    indentation = 0
+                } else {
+                    consumed += paragraph.byteOffsets[start]
+                    break
+                }
+            }
+            if consumed > 0 {
+                pending = Data(pending.dropFirst(consumed))
+                offset += UInt64(consumed)
+            }
+        }
+    }
+
 }

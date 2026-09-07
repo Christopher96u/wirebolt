@@ -1016,24 +1016,21 @@ private struct SidebarFooter: View {
     var filterIsFocused: FocusState<Bool>.Binding
 
     var body: some View {
-        HStack(spacing: 7) {
+        HStack(spacing: 3) {
             Image(systemName: "magnifyingglass")
                 .foregroundStyle(.secondary)
+                .font(.system(size: 12)).frame(width: 12)
             TextField("Filter (⌘⇧F)", text: $interface.sidebarFilter)
                 .textFieldStyle(.plain)
                 .focused(filterIsFocused)
         }
-        .padding(.horizontal, 9)
-        .frame(height: 26)
+        .padding(.horizontal, 7)
+        .frame(height: 24)
         .background(.thinMaterial, in: .capsule)
-        .overlay {
-            Capsule()
-                .stroke(WireboltTheme.separator, lineWidth: 0.5)
-        }
-        .padding(.leading, 13)
+        .padding(.leading, 14)
         .padding(.trailing, 5)
         .padding(.top, 11)
-        .padding(.bottom, 12)
+        .padding(.bottom, 14)
     }
 }
 
@@ -1199,6 +1196,7 @@ private struct DocumentTabBar: View {
                         .id(tab.id)
                 }
             }
+            .padding(.top, 2)
             }
             .scrollIndicators(.never)
             .onChange(of: group?.selectedTabID) { _, selected in
@@ -1383,14 +1381,16 @@ private struct DocumentTabButton: View {
     var body: some View {
         ZStack(alignment: .trailing) {
             Button(action: onSelect) {
-                Text(tab.title)
-                    .font(.system(size: 12))
-                    .fontWeight(isSelected ? .medium : .regular)
-                    .lineLimit(1)
+                DocumentTabLabel(title: tab.title)
+                    .frame(height: 19)
                     .frame(maxWidth: .infinity)
+                    .offset(y: -1)
+                    .allowsHitTesting(false)
+                    .accessibilityHidden(true)
                     .contentShape(.rect)
             }
             .buttonStyle(.plain)
+            .accessibilityLabel(tab.title)
 
             Button("Close \(tab.title)", systemImage: "xmark", action: onClose)
                 .labelStyle(.iconOnly)
@@ -1400,7 +1400,8 @@ private struct DocumentTabButton: View {
                 .opacity(isHovered ? 1 : 0)
                 .accessibilityHidden(!isHovered)
         }
-        .padding(.horizontal, 15)
+        .padding(.leading, 19)
+        .padding(.trailing, 12)
         .frame(minWidth: 28, minHeight: 28)
         .background(isSelected ? Color.primary.opacity(0.055) : .clear, in: .rect(cornerRadius: 14))
         .overlay {
@@ -1418,6 +1419,22 @@ private struct DocumentTabButton: View {
         .accessibilityElement(children: .contain)
         .accessibilityAddTraits(isSelected ? .isSelected : [])
     }
+}
+
+private struct DocumentTabLabel: NSViewRepresentable {
+    let title: String
+
+    func makeNSView(context: Context) -> NSTextField {
+        let field = NSTextField(labelWithString: title)
+        field.font = .systemFont(ofSize: 12)
+        field.alignment = .center
+        field.lineBreakMode = .byTruncatingTail
+        field.maximumNumberOfLines = 1
+        field.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        return field
+    }
+
+    func updateNSView(_ field: NSTextField, context: Context) { field.stringValue = title }
 }
 
 private struct RequestWorkspace: View {
@@ -1644,6 +1661,7 @@ private struct RequestURLBar: View {
             .menuIndicator(.hidden)
             .frame(width: ceil((session.draft.method.rawValue as NSString).size(withAttributes: [.font: NSFont.systemFont(ofSize: 15, weight: .bold)]).width) + 1)
             .fixedSize()
+            .offset(x: 2, y: -1)
             .accessibilityLabel("HTTP method, \(session.draft.method.rawValue)")
 
             }
@@ -2036,7 +2054,7 @@ private struct RequestSectionBar: View {
                 .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
         }
         .overlay(alignment: .trailing) {
-            HStack(spacing: 10) {
+            HStack(spacing: 0) {
             if interface.requestSection == .body {
                 BodyTools(requestBody: $session.draft.body)
             } else if interface.requestSection == .auth {
@@ -2046,6 +2064,7 @@ private struct RequestSectionBar: View {
                     interface.isBulkEditing = false; interface.focusNewKeyTrigger += 1
                 }
                 .labelStyle(.iconOnly).buttonStyle(.borderless).foregroundStyle(.secondary)
+                .frame(width: 30, height: 32)
                 Menu("Section Actions", systemImage: "ellipsis.circle") {
                     Button("New Entry") { interface.isBulkEditing = false; interface.focusNewKeyTrigger += 1 }
                     Divider()
@@ -2056,11 +2075,12 @@ private struct RequestSectionBar: View {
                 }
                 .menuStyle(.borderlessButton).menuIndicator(.hidden)
                 .labelStyle(.iconOnly).foregroundStyle(.secondary).fixedSize()
+                .frame(width: 30, height: 32)
             }
             }
         }
         .padding(.leading, 11)
-        .padding(.trailing, 10)
+        .padding(.trailing, 11)
         .frame(height: 32)
         .background(WireboltTheme.barBackground)
         .accessibilityElement(children: .contain)
@@ -2179,33 +2199,43 @@ private struct FieldEditor: View {
     let kind: FieldEditorKind
     var focusTrigger = 0
     @State private var pendingID = UUID().uuidString.lowercased()
+    @State private var committedRows = 0
+    private var effectiveFocusTrigger: Int { focusTrigger + committedRows }
 
     var body: some View {
-        VStack(spacing: 0) {
+        GeometryReader { geometry in
+        let valueWidth = max(1, geometry.size.width - 225)
+        VStack(alignment: .leading, spacing: 0) {
             FieldTableHeader()
+                .frame(width: geometry.size.width, alignment: .leading)
 
             ScrollViewReader { proxy in
             ScrollView {
-                LazyVStack(spacing: 0) {
+                LazyVStack(alignment: .leading, spacing: 0) {
                     ForEach($fields) { $field in
                         if field.id != pendingID { FieldTableRow(
                             field: $field,
+                            valueWidth: valueWidth,
                             onRemove: { fields.removeAll { $0.id == field.id } }
                         )
                         }
                     }
-                    NewFieldTableRow(fields: $fields, kind: kind, pendingID: $pendingID, focusTrigger: focusTrigger)
+                    NewFieldTableRow(fields: $fields, kind: kind, pendingID: $pendingID, focusTrigger: effectiveFocusTrigger,
+                        onCommit: { committedRows += 1 }, valueWidth: valueWidth)
                         .id("new-field")
                 }
+                .frame(width: geometry.size.width, alignment: .leading)
             }
-            .task(id: focusTrigger) {
-                guard focusTrigger > 0 else { return }
+            .task(id: effectiveFocusTrigger) {
+                guard effectiveFocusTrigger > 0 else { return }
                 await Task.yield()
+                guard !Task.isCancelled else { return }
                 proxy.scrollTo("new-field", anchor: .bottom)
             }
             }
         }
         .background(WireboltTheme.paneBackground)
+        }
     }
 }
 
@@ -2215,12 +2245,12 @@ private struct FieldTableHeader: View {
             Color.clear.frame(width: 27)
             Divider().frame(height: 14)
             Text("Key")
-                .frame(width: 179, alignment: .leading)
-                .padding(.leading, 4)
+                .frame(width: 177, alignment: .leading)
+                .padding(.leading, 6)
             Divider().frame(height: 14)
             Text("Value")
-                .frame(minWidth: 50, maxWidth: .infinity, alignment: .leading)
-                .padding(.leading, 4)
+                .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
+                .padding(.leading, 6)
         }
         .font(.system(size: 11, weight: .semibold))
         .foregroundStyle(.primary)
@@ -2232,41 +2262,36 @@ private struct FieldTableHeader: View {
 
 private struct FieldTableRow: View {
     @Binding var field: RequestField
+    let valueWidth: Double
     let onRemove: () -> Void
 
     @State private var isHovered = false
+    private var fieldHeight: Double { FieldEditorMetrics.height(key: field.name, value: field.value.editableValue, valueWidth: valueWidth) }
 
     var body: some View {
-        HStack(spacing: 0) {
-            Toggle("Enabled", isOn: $field.enabled).labelsHidden().toggleStyle(.checkbox)
-                .controlSize(.regular).frame(width: 27)
-            Color.clear.frame(width: 1)
-            TextField("Key", text: $field.name)
-                .textFieldStyle(.plain)
-                .font(.system(size: 11, design: .monospaced))
+        HStack(alignment: .top, spacing: 0) {
+            FieldCheckbox(isOn: $field.enabled)
+            FieldTextInput("Key", text: $field.name, height: fieldHeight)
                 .frame(width: 175)
-                .frame(height: 20)
                 .padding(.horizontal, 4)
 
             Color.clear.frame(width: 1)
-            TextField("Value", text: literalBinding($field.value))
-                .textFieldStyle(.plain)
-                .font(.system(size: 11, design: .monospaced))
-                .frame(minWidth: 50, maxWidth: .infinity)
-                .frame(height: 20)
+            FieldTextInput("Value", text: literalBinding($field.value), height: fieldHeight)
+                .frame(width: valueWidth)
                 .padding(.horizontal, 4)
                 .padding(.trailing, 5)
         }
-        .overlay(alignment: .trailing) {
+        .overlay(alignment: .topTrailing) {
             Button("Remove \(field.name)", systemImage: "trash", action: onRemove)
                 .labelStyle(.iconOnly)
                 .buttonStyle(.borderless)
                 .foregroundStyle(.secondary)
-                .frame(width: 42)
+                .frame(width: 42, height: 20)
                 .opacity(isHovered ? 1 : 0)
                 .allowsHitTesting(isHovered)
         }
-        .frame(height: 28)
+        .frame(height: fieldHeight)
+        .padding(.vertical, 4)
         .background(isHovered ? Color.primary.opacity(0.035) : .clear)
         .onHover { isHovered = $0 }
     }
@@ -2284,41 +2309,28 @@ private struct NewFieldTableRow: View {
     let kind: FieldEditorKind
     @Binding var pendingID: String
     var focusTrigger = 0
+    let onCommit: () -> Void
+    let valueWidth: Double
 
     @State private var name = ""
     @State private var value = ""
     @State private var showingSuggestions = false
     @State private var showingValueSuggestions = false
     @State private var isEnabled = true
+    private var fieldHeight: Double { FieldEditorMetrics.height(key: name, value: value, valueWidth: valueWidth) }
     @FocusState private var focusedField: NewFieldFocus?
 
     var body: some View {
         VStack(spacing: 0) {
-            HStack(spacing: 0) {
+            HStack(alignment: .top, spacing: 0) {
                 if name.isEmpty {
-                    Color.clear.frame(width: 27)
+                    Color.clear.frame(width: 28)
                 } else {
-                    Button {
-                        isEnabled.toggle()
-                    } label: {
-                        Image(systemName: isEnabled ? "checkmark.square.fill" : "square")
-                            .symbolRenderingMode(.palette)
-                            .foregroundStyle(
-                                isEnabled ? Color.white : Color.secondary,
-                                isEnabled ? WireboltTheme.primaryAccent : Color.clear
-                            )
-                            .font(.system(size: 16))
-                    }
-                    .buttonStyle(.plain)
-                    .frame(width: 27)
+                    FieldCheckbox(isOn: $isEnabled)
                 }
-                Color.clear.frame(width: 1)
-                TextField("New Key (⌘K)", text: $name)
-                    .textFieldStyle(.plain)
-                    .font(.system(size: 11, design: .monospaced))
+                FieldTextInput("New Key (⌘K)", text: $name, height: fieldHeight)
                     .focused($focusedField, equals: .key)
                     .frame(width: 175)
-                    .frame(height: 20)
                     .padding(.horizontal, 4)
 
                     .onSubmit { focusedField = .value }
@@ -2330,12 +2342,9 @@ private struct NewFieldTableRow: View {
                         }
                     }
                 Color.clear.frame(width: 1)
-                TextField("New Value", text: $value)
-                    .textFieldStyle(.plain)
-                    .font(.system(size: 11, design: .monospaced))
+                FieldTextInput("New Value", text: $value, height: fieldHeight)
                     .focused($focusedField, equals: .value)
-                    .frame(minWidth: 50, maxWidth: .infinity)
-                    .frame(height: 20)
+                    .frame(width: valueWidth)
                     .padding(.horizontal, 4)
                     .padding(.trailing, 5)
 
@@ -2348,16 +2357,17 @@ private struct NewFieldTableRow: View {
                         }
                     }
             }
-            .overlay(alignment: .trailing) {
+            .overlay(alignment: .topTrailing) {
                 if !name.isEmpty {
                     Button("Discard New Field", systemImage: "trash", action: discard)
                         .labelStyle(.iconOnly)
                         .buttonStyle(.borderless)
                         .foregroundStyle(.secondary)
-                        .frame(width: 42)
+                        .frame(width: 42, height: 20)
                 }
             }
-            .frame(height: 28)
+            .frame(height: fieldHeight)
+            .padding(.vertical, 4)
 
             if !name.isEmpty {
                 Color.clear.frame(width: 1)
@@ -2374,6 +2384,7 @@ private struct NewFieldTableRow: View {
             guard focusTrigger > 0 else { return }
             if !name.isEmpty { commit() }
             await Task.yield()
+            guard !Task.isCancelled else { return }
             focusedField = .key
         }
         .onChange(of: name) { synchronizePending(); updateSuggestions() }
@@ -2413,7 +2424,7 @@ private struct NewFieldTableRow: View {
         synchronizePending()
         pendingID = UUID().uuidString.lowercased()
         discard()
-        focusedField = .key
+        onCommit()
     }
 
     private func discard() {
@@ -3389,18 +3400,20 @@ private final class WindowConfigurationView: NSView {
     private func observeMainMenuChanges() {
         NotificationCenter.default.removeObserver(self)
         guard let menu = NSApp.mainMenu else { return }
+        for observed in [menu, menu.item(withTitle: "Edit")?.submenu].compactMap({ $0 }) {
         NotificationCenter.default.addObserver(
             self,
             selector: #selector(mainMenuDidChange),
             name: NSMenu.didAddItemNotification,
-            object: menu
+            object: observed
         )
         NotificationCenter.default.addObserver(
             self,
             selector: #selector(mainMenuDidChange),
             name: NSMenu.didRemoveItemNotification,
-            object: menu
+            object: observed
         )
+        }
     }
 
     @objc private func mainMenuDidChange(_: Notification) {
@@ -3417,6 +3430,7 @@ private final class WindowConfigurationView: NSView {
     }
 
     @objc private func synchronizeRequestMenuOrder() {
+        synchronizeEditingMenu()
         guard let menu = NSApp.mainMenu,
               let viewItem = menu.items.first(where: { $0.title == "View" })
         else { return }
@@ -3440,6 +3454,20 @@ private final class WindowConfigurationView: NSView {
         guard let viewIndex = menu.items.firstIndex(of: viewItem) else { return }
         for (offset, item) in movedItems.enumerated() {
             menu.insertItem(item, at: viewIndex + offset)
+        }
+    }
+
+    private func synchronizeEditingMenu() {
+        guard let edit = NSApp.mainMenu?.item(withTitle: "Edit")?.submenu else { return }
+        let pasteIndex = edit.indexOfItem(withTitle: "Paste")
+        if pasteIndex >= 0, edit.item(withTitle: "Paste and Match Style") == nil {
+            let item = NSMenuItem(title: "Paste and Match Style", action: #selector(NSTextView.pasteAsPlainText(_:)), keyEquivalent: "v")
+            item.keyEquivalentModifierMask = [.command, .option, .shift]
+            edit.insertItem(item, at: pasteIndex + 1)
+        }
+        if let item = edit.item(withTitle: "Delete") {
+            item.keyEquivalent = "\u{8}"
+            item.keyEquivalentModifierMask = .command
         }
     }
 }

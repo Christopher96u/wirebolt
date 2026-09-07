@@ -27,6 +27,7 @@ swiftc \
   apple/Sources/WireboltKit/JSONNode.swift \
   apple/Sources/WireboltKit/CodeFolding.swift \
   apple/Sources/WireboltKit/TextSearch.swift \
+  apple/Sources/WireboltKit/CodeTextWrapping.swift \
   apple/Sources/WireboltKit/ResponseTextIndex.swift \
   apple/Sources/WireboltKit/DocumentSessions.swift \
   apple/Sources/WireboltKit/ResponseStorage.swift \
@@ -40,6 +41,7 @@ swiftc \
   apple/WireboltApp/PerformanceProbe.swift \
   apple/WireboltApp/ResponseViewer.swift \
   apple/WireboltApp/ResponseHexView.swift \
+  apple/WireboltApp/FieldTextInput.swift \
   apple/WireboltApp/NativeCodeEditor.swift \
   apple/WireboltApp/EditorFind.swift \
   apple/WireboltApp/IndexedResponseEditor.swift \
