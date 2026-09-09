@@ -264,6 +264,8 @@ private struct ResponseBodyViewer: View {
     @State private var actionError: String?
     @State private var loadedViewportData: Data?
     @State private var storeSize: UInt64 = 0
+    @State private var jsonDocument: JSONResponseDocument?
+    @State private var isFormattingJSON = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -347,6 +349,23 @@ private struct ResponseBodyViewer: View {
             }
         }
         .onChange(of: receivedBytes) { _, value in storeSize = max(storeSize, value) }
+        .task(id: interface.responseRenderer == .json ? store?.url : nil) {
+            guard interface.responseRenderer == .json, let store else {
+                isFormattingJSON = false
+                return
+            }
+            jsonDocument = nil
+            isFormattingJSON = true
+            do {
+                let document = try await store.formattedJSON()
+                try Task.checkCancellation()
+                jsonDocument = document
+                isFormattingJSON = false
+            } catch is CancellationError {
+            } catch {
+                isFormattingJSON = false
+            }
+        }
         .alert("Response Action Failed", isPresented: Binding(
             get: { actionError != nil },
             set: { if !$0 { actionError = nil } }
@@ -386,7 +405,17 @@ private struct ResponseBodyViewer: View {
     private var rendererContent: some View {
         switch interface.responseRenderer {
         case .json:
-            textRenderer(.json)
+            if isFormattingJSON {
+                ProgressView("Formatting JSON…")
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else if let jsonDocument {
+                if jsonDocument.byteCount > 1024 * 1024 {
+                    IndexedResponseEditor(url: jsonDocument.url, preview: jsonDocument.preview,
+                        language: .json, search: "", find: find)
+                } else {
+                    SyntaxTextView(text: jsonDocument.preview, language: .json, search: "", find: find)
+                }
+            } else { textRenderer(.json) }
         case .tree:
             JSONResponseTree(url: store?.url, preview: renderedData).clipped()
         case .image:

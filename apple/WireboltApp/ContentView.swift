@@ -526,17 +526,27 @@ private struct WorkspaceSidebarOutline: View {
 }
 
 private struct SidebarDisclosureStyle: DisclosureGroupStyle {
+    var isEditing = false
+
     func makeBody(configuration: Configuration) -> some View {
         VStack(alignment: .leading, spacing: 0) {
-            HStack(spacing: 6) {
+            HStack(spacing: 0) {
                 Button {
                     configuration.isExpanded.toggle()
                 } label: {
                     Image(systemName: configuration.isExpanded ? "chevron.down" : "chevron.right")
                         .font(.system(size: 9, weight: .semibold)).foregroundStyle(.secondary)
-                        .frame(width: 12, height: 24).contentShape(.rect)
+                        .frame(width: 12, height: 24).padding(.trailing, 6).contentShape(.rect)
                 }.buttonStyle(.plain).accessibilityLabel(configuration.isExpanded ? "Collapse" : "Expand")
-                configuration.label.font(.system(size: 13)).frame(maxWidth: .infinity, alignment: .leading)
+                if isEditing {
+                    configuration.label.font(.system(size: 13)).frame(maxWidth: .infinity, alignment: .leading)
+                } else {
+                    Button { configuration.isExpanded.toggle() } label: {
+                        configuration.label.font(.system(size: 13))
+                            .frame(maxWidth: .infinity, minHeight: 24, alignment: .leading)
+                            .contentShape(.rect)
+                    }.buttonStyle(.plain)
+                }
             }.frame(height: 24)
             if configuration.isExpanded {
                 configuration.content.padding(.leading, 14)
@@ -596,6 +606,7 @@ private struct CollapsedSidebarFolder: View {
 struct InlineSidebarName: View {
     let title: String
     @Binding var isEditing: Bool
+    var renameOnDoubleClick = false
     let save: (String) -> Void
     @State private var value = ""
     @FocusState private var focused: Bool
@@ -608,6 +619,10 @@ struct InlineSidebarName: View {
                     .onSubmit(commit)
                     .onExitCommand { isEditing = false }
                     .onChange(of: focused) { _, focused in if !focused && isEditing { commit() } }
+            } else if renameOnDoubleClick {
+                Text(title).lineLimit(1)
+                    .contentShape(.rect)
+                    .onTapGesture(count: 2) { isEditing = true }
             } else { Text(title).lineLimit(1) }
         }
         .task(id: isEditing) {
@@ -674,6 +689,7 @@ private struct SavedCollectionDisclosure: View {
                     }
                 }
         }
+        .disclosureGroupStyle(SidebarDisclosureStyle(isEditing: isRenaming))
         }
         }
         .onChange(of: isExpanded) { _, expanded in
@@ -857,6 +873,7 @@ private struct SavedGroupDisclosure: View {
                     }
                 }
         }
+        .disclosureGroupStyle(SidebarDisclosureStyle(isEditing: isRenaming || interface.renamingGroupID == group.id))
         .onChange(of: isExpanded) { _, expanded in
             let id = collection.id + ":" + group.id
             if expanded { interface.expandedSidebarGroups.insert(id) }
@@ -934,7 +951,7 @@ private struct SidebarRequestButton: View {
                 InlineSidebarName(title: location.request.name, isEditing: Binding(
                     get: { isRenaming || interface.renamingRequestID == location.id },
                     set: { isRenaming = $0; if !$0 && interface.renamingRequestID == location.id { interface.renamingRequestID = nil } }
-                ), save: onRename)
+                ), renameOnDoubleClick: true, save: onRename)
                     .lineLimit(1)
                     .foregroundStyle(isSelected ? Color.white : Color.primary)
                 Spacer(minLength: 0)
@@ -954,8 +971,10 @@ private struct SidebarRequestButton: View {
                 }
             }
         .buttonStyle(.plain)
-        .onTapGesture(perform: action)
-        .accessibilityElement(children: .combine)
+        .onTapGesture {
+            if !isRenaming && interface.renamingRequestID != location.id { action() }
+        }
+        .accessibilityElement(children: isRenaming || interface.renamingRequestID == location.id ? .contain : .combine)
         .accessibilityAction(.default, action)
         .frame(height: 24)
         .listRowInsets(EdgeInsets(top: 0, leading: 0, bottom: 0, trailing: 0))
@@ -1179,6 +1198,11 @@ private struct DocumentTabBar: View {
                         tab: tab,
                         isSelected: group?.selectedTabID == tab.id,
                         onSelect: { interface.activateTab(id: tab.id, groupID: groupID, model: model) },
+                        onRename: { name in
+                            if let collectionID = tab.collectionID {
+                                Task { await model.renameRequest(collectionID: collectionID, requestID: tab.requestID, name: name) }
+                            } else { tab.draft.name = name }
+                        },
                         onClose: {
                             interface.close(.one(tab.id), model: model, in: groupID)
                         },
@@ -1371,15 +1395,23 @@ private struct DocumentTabButton: View {
     let tab: DocumentSession
     let isSelected: Bool
     let onSelect: () -> Void
+    let onRename: (String) -> Void
     let onClose: () -> Void
     let onCloseOthers: () -> Void
     let onCloseRight: () -> Void
     let onCloseAll: () -> Void
 
     @State private var isHovered = false
+    @State private var isRenaming = false
 
     var body: some View {
         ZStack(alignment: .trailing) {
+            if isRenaming {
+                InlineSidebarName(title: tab.title, isEditing: $isRenaming, save: onRename)
+                    .font(.system(size: 12))
+                    .frame(height: 19)
+                    .accessibilityLabel("Request Name")
+            } else {
             Button(action: onSelect) {
                 DocumentTabLabel(title: tab.title)
                     .frame(height: 19)
@@ -1391,14 +1423,17 @@ private struct DocumentTabButton: View {
             }
             .buttonStyle(.plain)
             .accessibilityLabel(tab.title)
+            .highPriorityGesture(TapGesture(count: 2).onEnded { beginRenaming() })
+            }
 
             Button("Close \(tab.title)", systemImage: "xmark", action: onClose)
                 .labelStyle(.iconOnly)
                 .buttonStyle(.borderless)
                 .font(.system(size: 9, weight: .semibold))
                 .foregroundStyle(.secondary)
-                .opacity(isHovered ? 1 : 0)
-                .accessibilityHidden(!isHovered)
+                .opacity(isHovered && !isRenaming ? 1 : 0)
+                .allowsHitTesting(!isRenaming)
+                .accessibilityHidden(!isHovered || isRenaming)
         }
         .padding(.leading, 19)
         .padding(.trailing, 12)
@@ -1410,6 +1445,8 @@ private struct DocumentTabButton: View {
         }
         .onHover { isHovered = $0 }
         .contextMenu {
+            Button("Rename", action: beginRenaming)
+            Divider()
             Button("Close Tab", action: onClose)
             Button("Close Other Tabs", action: onCloseOthers)
             Button("Close Tabs to Right", action: onCloseRight)
@@ -1418,6 +1455,11 @@ private struct DocumentTabButton: View {
         }
         .accessibilityElement(children: .contain)
         .accessibilityAddTraits(isSelected ? .isSelected : [])
+    }
+
+    private func beginRenaming() {
+        onSelect()
+        isRenaming = true
     }
 }
 
