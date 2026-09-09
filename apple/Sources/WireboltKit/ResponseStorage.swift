@@ -8,6 +8,8 @@ public actor ResponseBodyStore {
     private let ownsFile: Bool
     private var handle: FileHandle?
     private var byteCount: UInt64 = 0
+    private var jsonDocument: JSONResponseDocument?
+    private var attemptedJSON = false
 
     public init(runID: RunID, directory: URL = FileManager.default.temporaryDirectory) throws {
         url = directory.appending(path: "wirebolt-response-\(runID.description).body")
@@ -32,6 +34,8 @@ public actor ResponseBodyStore {
     }
 
     public func append(_ data: Data) throws {
+        jsonDocument = nil
+        attemptedJSON = false
         try handle?.write(contentsOf: data)
         byteCount += UInt64(data.count)
     }
@@ -43,6 +47,15 @@ public actor ResponseBodyStore {
     }
 
     public func size() -> UInt64 { byteCount }
+
+    public func formattedJSON() throws -> JSONResponseDocument? {
+        guard handle == nil else { return nil }
+        if attemptedJSON { return jsonDocument }
+        do { jsonDocument = try JSONResponseDocument(sourceURL: url) }
+        catch is JSONPresentationError { jsonDocument = nil }
+        attemptedJSON = true
+        return jsonDocument
+    }
 
     public func viewport(offset: UInt64 = 0, length: Int = viewportByteCount) throws -> Data {
         let reader = try FileHandle(forReadingFrom: url)

@@ -27,6 +27,7 @@ swiftc \
   apple/Sources/WireboltKit/ResponseTextIndex.swift \
   apple/Sources/WireboltKit/DocumentSessions.swift \
   apple/Sources/WireboltKit/ResponseStorage.swift \
+  apple/Sources/WireboltKit/JSONResponseDocument.swift \
   apple/Sources/WireboltKit/OAuth2Service.swift \
   apple/Sources/WireboltKit/WireboltModel.swift \
   apple/Tests/BridgeSmoke.swift \

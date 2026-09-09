@@ -12,6 +12,7 @@ resources_dir="$app_dir/Contents/Resources"
 
 mkdir -p "$executable_dir" "$resources_dir"
 cp apple/WireboltApp/Info.plist "$app_dir/Contents/Info.plist"
+cp apple/WireboltApp/Resources/AppIcon.icns "$resources_dir/AppIcon.icns"
 
 swiftc \
   -O \
@@ -31,6 +32,7 @@ swiftc \
   apple/Sources/WireboltKit/ResponseTextIndex.swift \
   apple/Sources/WireboltKit/DocumentSessions.swift \
   apple/Sources/WireboltKit/ResponseStorage.swift \
+  apple/Sources/WireboltKit/JSONResponseDocument.swift \
   apple/Sources/WireboltKit/OAuth2Service.swift \
   apple/Sources/WireboltKit/WireboltModel.swift \
   apple/WireboltApp/WireboltApp.swift \
