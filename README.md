@@ -36,3 +36,19 @@ Benchmark the Rust HTTP engine over loopback:
 ```sh
 ./scripts/http-benchmark.sh
 ```
+
+## Beta releases
+
+On an Apple Silicon Mac with Python 3 and the authenticated GitHub CLI:
+
+```sh
+./scripts/package-beta.sh 0.1.0-beta.2
+./scripts/publish-beta.sh 0.1.0-beta.2
+```
+
+Use a new version for each build. Packages target Apple Silicon and macOS 15 or later.
+The package contains the app and dependency notices. The publisher uploads only the ZIP
+and Cask to `Christopher96u/homebrew-tap`; the source repository remains private.
+Release notes and the distribution repository description stay empty. An interrupted
+publication can be retried with the same package without replacing an existing asset.
+These betas use ad-hoc signing, so macOS requires approval on first launch.

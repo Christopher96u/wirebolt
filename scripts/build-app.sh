@@ -6,7 +6,7 @@ cd "$repo_dir"
 
 scripts/generate-bindings.sh
 
-app_dir="$repo_dir/build/Wirebolt.app"
+app_dir="${WIREBOLT_APP_DIR:-$repo_dir/build/Wirebolt.app}"
 executable_dir="$app_dir/Contents/MacOS"
 resources_dir="$app_dir/Contents/Resources"
 
