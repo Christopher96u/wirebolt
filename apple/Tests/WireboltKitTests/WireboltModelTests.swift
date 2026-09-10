@@ -177,6 +177,30 @@ struct WireboltModelTests {
         ))
     }
 
+    @Test("sidebar cache follows rename, reparent and deletion without stale filter results")
+    @MainActor
+    func sidebarCacheFollowsWorkspaceChanges() {
+        let model = WireboltModel(runner: StubRunner())
+        model.workspace.collections = [CollectionDraft(id: "c", name: "Collection", requests: [
+            RequestLocation(collectionID: "c", request: RequestDraft(id: "r", name: "Before"))
+        ])]
+        func requests(_ query: String) -> [RequestLocation] {
+            model.sidebarRows(query: query, collapsed: [], expanded: ["c:g"]).compactMap {
+                if case .request(let location) = $0.content { return location }
+                return nil
+            }
+        }
+        #expect(requests("Before").map(\.id) == ["c/r"])
+        model.workspace.collections[0].requests[0].request.name = "After"
+        #expect(requests("Before").isEmpty)
+        #expect(requests("After").map(\.id) == ["c/r"])
+        model.workspace.collections[0].groups = [GroupDraft(id: "g", name: "Folder")]
+        model.workspace.collections[0].requests[0].groupID = "g"
+        #expect(requests("Folder").map(\.id) == ["c/r"])
+        model.workspace.collections[0].requests.removeAll()
+        #expect(requests("After").isEmpty)
+    }
+
     @Test("caps the visible response without changing total bytes")
     @MainActor
     func capsPreview() async {

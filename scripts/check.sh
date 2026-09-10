@@ -9,4 +9,5 @@ scripts/test.sh
 scripts/performance.sh smoke
 scripts/editor-performance.sh
 scripts/build-app.sh
+scripts/native-performance.sh
 build/performance-contract --launch-smoke build/Wirebolt.app/Contents/MacOS/Wirebolt

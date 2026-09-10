@@ -109,9 +109,9 @@ private struct FindIconButtonStyle: ButtonStyle {
 }
 
 extension View {
-    func editorFindOverlay(_ state: EditorFindState) -> some View {
+    func editorFindOverlay(_ state: EditorFindState, isActive: Bool = true) -> some View {
         overlay(alignment: .topTrailing) {
-            if state.isVisible {
+            if state.isVisible && isActive {
                 GeometryReader { geometry in
                     EditorFindBar(state: state)
                         .frame(width: min(419, max(250, geometry.size.width - 28)))

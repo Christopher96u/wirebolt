@@ -9,6 +9,7 @@ struct IndexedResponseEditor: View {
     var prefix = ""
     var find: EditorFindState?
     @State private var localFind = EditorFindState()
+    @Environment(\.editorIsActive) private var isActive
     @AppStorage("editor.fontSize") private var fontSize = 12.0
     @AppStorage("editor.wordWrap") private var wraps = true
     @State private var index: ResponseTextIndex?
@@ -25,31 +26,33 @@ struct IndexedResponseEditor: View {
             Group {
                 if let index {
                     IndexedCodeScrollView(index: index, fontSize: fontSize, language: language, search: search, wraps: wraps,
-                        storageKey: prefix.isEmpty ? "Response body" : "Raw response", find: find ?? localFind)
+                        storageKey: prefix.isEmpty ? "Response body \(language)" : "Raw response", find: find ?? localFind)
                 } else if failure {
                     Text("The response could not be opened.").foregroundStyle(.secondary)
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                 } else {
-                    NativeCodeEditor(text: .constant(preview), editable: false, language: language, label: "Response body", find: find ?? localFind)
+                    ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
                 }
             }
-            .task(id: "\(url.path):\(columns):\(fontSize):\(width):\(prefix)") {
-                if index?.url != url { index = nil }
+            .opacity(index == nil || index?.url == url ? 1 : 0)
+            .overlay { if let index, index.url != url { ProgressView() } }
+            .task(id: "\(url.path):\(columns):\(fontSize):\(width):\(prefix):\(isActive)") {
+                guard isActive else { return }
                 failure = false
-                let task = Task.detached(priority: .userInitiated) { try ResponseTextIndex(url: url, columns: columns, prefix: prefix, wrapping: wrapping) }
                 do {
-                    let result = try await withTaskCancellationHandler { try await task.value } onCancel: { task.cancel() }
+                    let result = try await ResponseIndexCache.shared.index(url: url, columns: columns, prefix: prefix, wrapping: wrapping)
                     try Task.checkCancellation()
                     index = result
                 } catch is CancellationError {} catch { failure = true }
             }
         }
-        .editorFindOverlay(find ?? localFind)
+        .editorFindOverlay(find ?? localFind, isActive: isActive)
     }
 }
 
 private struct IndexedCodeScrollView: NSViewRepresentable {
     @Environment(\.editorStorage) private var editorStorage
+    @Environment(\.editorIsActive) private var isActive
     let index: ResponseTextIndex
     let fontSize: Double
     let language: SyntaxLanguage
@@ -73,6 +76,8 @@ private struct IndexedCodeScrollView: NSViewRepresentable {
 
     func updateNSView(_ scroll: NSScrollView, context: Context) {
         guard let view = scroll.documentView as? IndexedCodeView else { return }
+        setEditorVisibility(scroll, active: isActive)
+        guard isActive else { return }
         let restore = view.presentation == nil
         if restore { view.presentation = editorStorage?.state(for: storageKey) }
         (scroll.contentView as? EditorClipView)?.changed = { [weak view] point in view?.presentation?.origin = point }
@@ -96,12 +101,12 @@ private struct IndexedCodeScrollView: NSViewRepresentable {
             }
         }
         if view.query != search { view.find(search) }
-        view.updateFind(find)
+        if isActive { view.updateFind(find) }
     }
 }
 
 @MainActor
-private final class IndexedCodeView: NSView, NSUserInterfaceValidations {
+final class IndexedCodeView: NSView, NSUserInterfaceValidations {
     var presentation: EditorPresentationStorage.State?
     var index: ResponseTextIndex?
     var fontSize = 12.0
@@ -111,6 +116,15 @@ private final class IndexedCodeView: NSView, NSUserInterfaceValidations {
     var gutterWidth: Double { CodeEditorMetrics.gutterWidth(fontSize, lineCount: index?.lineCount ?? 1) }
     override var isFlipped: Bool { true }
     override var acceptsFirstResponder: Bool { true }
+    private(set) var hasDrawnViewport = false
+    private struct ShapedLine {
+        let text: String
+        let language: SyntaxLanguage
+        let fontSize: Double
+        let appearance: NSAppearance.Name
+        let line: IndexedTextLine
+    }
+    private var shapedLines: [ShapedLine] = []
     private var cachedRows: [ResponseTextIndex.Row] = []
     private var loadingRange: Range<Int>?
     private var loadTask: Task<Void, Never>?
@@ -207,6 +221,7 @@ private final class IndexedCodeView: NSView, NSUserInterfaceValidations {
 
     func invalidateRows() {
         loadTask?.cancel()
+        hasDrawnViewport = false
         cachedRows = []
         loadingRange = nil
         needsDisplay = true
@@ -230,6 +245,20 @@ private final class IndexedCodeView: NSView, NSUserInterfaceValidations {
                 let number = String(row.line + 1) as NSString
                 number.draw(at: NSPoint(x: gutterWidth - 22 - number.size(withAttributes: numberAttributes).width, y: y), withAttributes: numberAttributes)
             }
+            if row.text.utf16.count > 2048, selection == nil, query.isEmpty, findMatches.isEmpty {
+                let cached: ShapedLine
+                if let found = shapedLines.firstIndex(where: { $0.text == row.text && $0.language == language && $0.fontSize == fontSize && $0.appearance == effectiveAppearance.name }) {
+                    cached = shapedLines.remove(at: found)
+                } else {
+                    cached = ShapedLine(text: row.text, language: language, fontSize: fontSize, appearance: effectiveAppearance.name,
+                        line: IndexedTextLine(SyntaxHighlighter.attributedString(text: row.text, language: language, fontSize: fontSize), fontSize: fontSize))
+                }
+                shapedLines.append(cached)
+                while shapedLines.count > 2 || shapedLines.reduce(0, { $0 + $1.text.utf16.count }) > 2 * 1024 * 1024 { shapedLines.removeFirst() }
+                cached.line.draw(at: CGPoint(x: gutterWidth + 4 + row.indent, y: y), visible: visibleRect)
+                hasDrawnViewport = true
+                continue
+            }
             let attributed = NSMutableAttributedString(attributedString: SyntaxHighlighter.attributedString(text: row.text, language: language, fontSize: fontSize))
             for range in findHighlights(row: row.number, length: attributed.length) {
                 attributed.addAttribute(.backgroundColor, value: NSColor.findHighlightColor.withAlphaComponent(0.25), range: range)
@@ -244,6 +273,7 @@ private final class IndexedCodeView: NSView, NSUserInterfaceValidations {
                 if match.location != NSNotFound { attributed.addAttribute(.backgroundColor, value: NSColor.findHighlightColor, range: match) }
             }
             attributed.draw(at: NSPoint(x: gutterWidth + 4 + row.indent, y: y))
+            hasDrawnViewport = true
         }
     }
 

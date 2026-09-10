@@ -1,4 +1,5 @@
 import AppKit
+import CoreText
 import Foundation
 import Observation
 import SwiftUI
@@ -51,6 +52,7 @@ private struct EditorWorkloads {
         verifyCodeWrapping()
         verifyLongUnicodeWrapping()
         verifyFontMetrics()
+        verifyIndexedLineClipping()
         verifyFieldHeights()
         verifyScrollRestoration(scroll)
         // Switching a binary response to Raw must keep TextKit responsive, including
@@ -125,6 +127,44 @@ private struct EditorWorkloads {
             wrapping: CodeTextWrapping(fontName: font.fontName, fontSize: 12, width: 267))
         let indexed = try! index.rows(start: 0, count: index.rowCount).map(\.text)
         precondition(indexed == lines.map { $0.replacingOccurrences(of: "\n", with: "") })
+    }
+
+    @MainActor private static func verifyIndexedLineClipping() {
+        let source = String(repeating: "ASCII café 東京 👨‍👩‍👧‍👦 שלום مرحبا /path?a=1&b=2; ", count: 80)
+        for size in [10.0, 12.0, 28.0] {
+            let font = NSFont.monospacedSystemFont(ofSize: size, weight: .regular)
+            let styled = NSAttributedString(string: source, attributes: [.font: font, .foregroundColor: NSColor.black])
+            let reference = NSAttributedString(string: source, attributes: [.font: font, .foregroundColor: NSColor.black.cgColor])
+            let fullLine = CTLineCreateWithAttributedString(reference)
+            let clippedLine = IndexedTextLine(styled, fontSize: size)
+            for origin in [0.0, 97.0, 733.0, 2200.0] {
+                func render(clipped: Bool) -> NSBitmapImageRep {
+                    let bitmap = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: 280, pixelsHigh: 80,
+                        bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false,
+                        colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0)!
+                    bitmap.bitmapData!.initialize(repeating: 0, count: bitmap.bytesPerRow * bitmap.pixelsHigh)
+                    let context = NSGraphicsContext(bitmapImageRep: bitmap)!.cgContext
+                    context.translateBy(x: -origin, y: 80)
+                    context.scaleBy(x: 1, y: -1)
+                    let prior = NSGraphicsContext.current
+                    NSGraphicsContext.current = NSGraphicsContext(cgContext: context, flipped: true)
+                    defer { NSGraphicsContext.current = prior }
+                    let visible = CGRect(x: origin, y: 0, width: 280, height: 80)
+                    if clipped { clippedLine.draw(at: CGPoint(x: 0, y: 3), visible: visible) }
+                    else {
+                        context.clip(to: visible)
+                        context.textMatrix = CGAffineTransform(scaleX: 1, y: -1)
+                        context.textPosition = CGPoint(x: 0, y: 3 + NSLayoutManager().defaultBaselineOffset(for: font))
+                        CTLineDraw(fullLine, context)
+                    }
+                    return bitmap
+                }
+                let expected = render(clipped: false), actual = render(clipped: true)
+                let bytes = expected.bytesPerRow * expected.pixelsHigh
+                precondition(UnsafeBufferPointer(start: expected.bitmapData!, count: bytes).elementsEqual(
+                    UnsafeBufferPointer(start: actual.bitmapData!, count: bytes)), "Clipping must preserve Unicode glyphs at every horizontal position")
+            }
+        }
     }
 
     @MainActor private static func verifyFieldHeights() {

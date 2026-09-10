@@ -3,6 +3,23 @@ import Testing
 @testable import WireboltKit
 
 @Suite struct CodeFoldingTests {
+    @Test(arguments: [" ", "café", "東京🚀", "123", ""])
+    func incrementalEditsMatchFullFolding(_ replacement: String) throws {
+        let source = "{\n \"message\": \"hello\",\n \"items\": [\n  1, 2\n ]\n}"
+        let initial = CodeProjection(source: source)
+        let range = (source as NSString).range(of: "hello")
+        let changed = (source as NSString).replacingCharacters(in: range, with: replacement)
+        let updated = try #require(initial.updatingUnfoldedSource(changed, range: range, replacement: replacement, removed: "hello"))
+        #expect(updated.folds == CodeProjection(source: changed).folds)
+        #expect(updated.text == changed)
+    }
+
+    @Test(arguments: ["\n", "\r", "\\", "\"", "{", "}", "[", "]"])
+    func structuralEditsRequireReparsing(_ replacement: String) {
+        let initial = CodeProjection(source: "{\n 1\n}")
+        #expect(initial.updatingUnfoldedSource("", range: NSRange(location: 2, length: 0), replacement: replacement, removed: "") == nil)
+    }
+
     @Test func ignoresBracketsInsideEscapedStringsAndKeepsOriginalLineNumbers() {
         let source = "{\n  \"quoted\": \"[\\\"{\",\n  \"items\": [\n    0, 1, true, \"東京🚀\"\n  ]\n}"
         let projection = CodeProjection(source: source, collapsed: [2])
