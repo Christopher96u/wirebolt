@@ -260,22 +260,9 @@ final class WorkspaceUIState {
     var renamingRequestID: String?
 
     func moveSidebarSelection(_ delta: Int, model: WireboltModel) {
-        let query = model.normalizedSearchQuery(sidebarFilter)
-        var visible: [RequestLocation] = []
-        for collection in model.workspace.collections.sorted(by: { ($0.order, $0.name) < ($1.order, $1.name) }) where !collapsedSidebarCollections.contains(collection.id) || !query.isEmpty {
-            func append(parent: String?) {
-                let groups = collection.groups.filter { $0.parentID == parent }
-                let requests = collection.requests.filter { $0.groupID == parent }
-                let order = (groups.map { ($0.order, $0.id, true) } + requests.map { ($0.order, $0.id, false) }).sorted { $0.0 < $1.0 }
-                for (_, id, group) in order {
-                    if group {
-                        if expandedSidebarGroups.contains(collection.id + ":" + id) || !query.isEmpty { append(parent: id) }
-                    } else if let request = requests.first(where: { $0.id == id }), query.isEmpty || model.requestMatches(request, normalizedQuery: query) {
-                        visible.append(request)
-                    }
-                }
-            }
-            append(parent: nil)
+        let visible = model.sidebarRows(query: sidebarFilter, collapsed: collapsedSidebarCollections, expanded: expandedSidebarGroups).compactMap { row -> RequestLocation? in
+            if case .request(let location) = row.content { return location }
+            return nil
         }
         guard !visible.isEmpty else { return }
         let current = visible.firstIndex(where: { $0.id == model.selectedRequestID }) ?? (delta > 0 ? -1 : visible.count)

@@ -1,7 +1,7 @@
 import CoreText
 import Foundation
 
-public struct CodeTextWrapping: Equatable, Sendable {
+public struct CodeTextWrapping: Hashable, Sendable {
     public let fontName: String
     public let fontSize: Double
     public let width: Double
@@ -39,12 +39,40 @@ public struct CodeTextWrapping: Equatable, Sendable {
         }
     }
 
+    private final class ShapingWindow {
+        let source: NSString
+        let attributes: [NSAttributedString.Key: Any]
+        let windowLength: Int
+        var range = NSRange(location: 0, length: 0)
+        var typesetter: CTTypesetter?
+        init(source: NSString, attributes: [NSAttributedString.Key: Any], windowLength: Int) {
+            self.source = source; self.attributes = attributes; self.windowLength = windowLength
+        }
+        func prepare(from start: Int, length: Int = 0) -> CTTypesetter {
+            if typesetter == nil || start < range.location || NSMaxRange(range) < min(source.length, start + max(windowLength / 2, length)) {
+                range = source.rangeOfComposedCharacterSequences(for: NSRange(location: start, length: min(source.length - start, max(windowLength, length))))
+                typesetter = CTTypesetterCreateWithAttributedStringAndOptions(NSAttributedString(string: source.substring(with: range), attributes: attributes),
+                    [kCTTypesetterOptionAllowUnboundedLayout: true] as CFDictionary)
+            }
+            return typesetter!
+        }
+        func fitting(from start: Int, width: Double) -> Int {
+            let typesetter = prepare(from: start)
+            return max(1, CTTypesetterSuggestClusterBreak(typesetter, start - range.location, width))
+        }
+        func width(of requested: NSRange) -> Double {
+            let typesetter = prepare(from: requested.location, length: requested.length)
+            let line = CTTypesetterCreateLine(typesetter, CFRange(location: requested.location - range.location, length: requested.length))
+            return CTLineGetTypographicBounds(line, nil, nil, nil)
+        }
+    }
+
     struct Paragraph {
         let source: NSString
         let byteOffsets: [Int]
         let advance: Double
         let indentation: Double
-        let typesetter: CTTypesetter?
+        private let shaper: ShapingWindow?
         let layout: CodeTextWrapping
 
         init(bytes: Data, layout: CodeTextWrapping, metrics: Metrics? = nil) {
@@ -97,7 +125,7 @@ public struct CodeTextWrapping: Equatable, Sendable {
                 else { break }
             }
             indentation = min(Double(columns) * advance, max(0, layout.width - advance))
-            if units.allSatisfy({ (32...126).contains($0) }) { typesetter = nil }
+            if units.allSatisfy({ (32...126).contains($0) }) { shaper = nil }
             else {
                 var interval = advance * 4
                 let paragraph = withUnsafePointer(to: &interval) { pointer in
@@ -106,17 +134,13 @@ public struct CodeTextWrapping: Equatable, Sendable {
                 }
                 var styled = attributes
                 styled[NSAttributedString.Key(kCTParagraphStyleAttributeName as String)] = paragraph
-                // The scanner bounds its input. Core Text's default complexity
-                // limit can otherwise reject a valid Unicode buffer entirely.
-                typesetter = CTTypesetterCreateWithAttributedStringAndOptions(
-                    NSAttributedString(string: source as String, attributes: styled),
-                    [kCTTypesetterOptionAllowUnboundedLayout: true] as CFDictionary)
+                shaper = ShapingWindow(source: source, attributes: styled, windowLength: max(2048, Int(min(32768, layout.width / max(1, advance) * 8))))
             }
         }
 
         func next(from start: Int, indent: Double) -> NSRange {
             let available = max(1, layout.width - indent)
-            let fit = typesetter.map { max(1, CTTypesetterSuggestClusterBreak($0, start, available)) }
+            let fit = shaper.map { $0.fitting(from: start, width: available) }
                 ?? min(source.length - start, max(1, Int(available / max(1, advance))))
             var count = min(source.length - start, CodeTextWrapping.breakLength(in: source, start: start, fitting: fit))
             // TextKit hangs trailing whitespace on the preceding visual line.
@@ -130,9 +154,8 @@ public struct CodeTextWrapping: Equatable, Sendable {
         }
 
         func columns(in range: NSRange) -> Int {
-            guard let typesetter else { return range.length }
-            let line = CTTypesetterCreateLine(typesetter, CFRange(location: range.location, length: range.length))
-            return Int(ceil(CTLineGetTypographicBounds(line, nil, nil, nil) / max(1, advance)))
+            guard let shaper else { return range.length }
+            return Int(ceil(shaper.width(of: range) / max(1, advance)))
         }
     }
 }

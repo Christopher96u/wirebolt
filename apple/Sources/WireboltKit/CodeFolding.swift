@@ -14,6 +14,28 @@ public struct CodeProjection: Sendable {
     public let collapsed: Set<Int>
     private let replacements: [(source: NSRange, display: NSRange)]
 
+    /// An unfolded editor can publish text immediately while folding is computed elsewhere.
+    public init(unfolded source: String, folds: [CodeFold] = []) {
+        self.source = source
+        text = source
+        self.folds = folds
+        collapsed = []
+        replacements = []
+    }
+
+    public func updatingUnfoldedSource(_ source: String, range: NSRange, replacement: String, removed: String) -> CodeProjection? {
+        guard collapsed.isEmpty,
+              !replacement.utf16.contains(where: { [10, 13, 34, 92, 123, 125, 91, 93].contains($0) }),
+              !removed.utf16.contains(where: { [10, 13, 34, 92, 123, 125, 91, 93].contains($0) }) else { return nil }
+        let delta = replacement.utf16.count - range.length
+        let updated = folds.map { fold in
+            let start = fold.range.location > range.location ? fold.range.location + delta : fold.range.location
+            let end = NSMaxRange(fold.range) >= NSMaxRange(range) ? NSMaxRange(fold.range) + delta : NSMaxRange(fold.range)
+            return CodeFold(line: fold.line, range: NSRange(location: start, length: max(0, end - start)))
+        }
+        return CodeProjection(unfolded: source, folds: updated)
+    }
+
     public init(source: String, collapsed: Set<Int> = [], syntax: Syntax = .json) {
         self.source = source
         switch syntax {
@@ -79,6 +101,7 @@ public struct CodeProjection: Sendable {
         var line = 0
         var result: [CodeFold] = []
         for (offset, unit) in units.enumerated() {
+            if offset % 4096 == 0 && Task.isCancelled { return [] }
             if unit == 10 { line += 1 }
             if quoted {
                 if escaped { escaped = false }

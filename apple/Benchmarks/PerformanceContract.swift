@@ -23,19 +23,19 @@ private struct PerformanceBudgets: Decodable {
     let responseColdFirstViewportMilliseconds: Double
     let responseWarmFirstViewportP95Milliseconds: Double
     let responseWarmMaximumMainThreadSliceMilliseconds: Double
-    let workspaceOpenFirstContentMilliseconds: Double
-    let workspaceExpandCollapseP95Milliseconds: Double
-    let workspaceFilterP95Milliseconds: Double
-    let tabSwitchP95Milliseconds: Double
-    let tabCloseRestoreP95Milliseconds: Double
-    let typingFeedbackP95Milliseconds: Double
-    let largeResponseColdFirstViewportMilliseconds: Double
-    let largeResponseSearchP95Milliseconds: Double
-    let largeResponseRendererSwitchP95Milliseconds: Double
-    let largeResponseResidentDeltaMebibytes: Double
-    let historyInsertP95Milliseconds: Double
-    let historyRestoreP95Milliseconds: Double
-    let historyEvictionP95Milliseconds: Double
+    let syntheticWorkspaceOpenFirstContentMilliseconds: Double
+    let syntheticWorkspaceExpandCollapseP95Milliseconds: Double
+    let syntheticWorkspaceFilterP95Milliseconds: Double
+    let syntheticTabSwitchP95Milliseconds: Double
+    let syntheticTabCloseRestoreP95Milliseconds: Double
+    let syntheticTypingFeedbackP95Milliseconds: Double
+    let syntheticLargeResponseColdFirstViewportMilliseconds: Double
+    let syntheticLargeResponseSearchP95Milliseconds: Double
+    let syntheticLargeResponseRendererSwitchP95Milliseconds: Double
+    let syntheticLargeResponseResidentDeltaMebibytes: Double
+    let syntheticHistoryInsertP95Milliseconds: Double
+    let syntheticHistoryRestoreP95Milliseconds: Double
+    let syntheticHistoryEvictionP95Milliseconds: Double
     let largeImportParseP95Milliseconds: Double
 }
 
@@ -59,19 +59,19 @@ private struct PerformanceResults: Encodable {
     let responseWarmFirstViewportP50Milliseconds: Double
     let responseWarmFirstViewportP95Milliseconds: Double
     let responseWarmMaximumMainThreadSliceMilliseconds: Double
-    let workspaceOpenFirstContentMilliseconds: Double
-    let workspaceExpandCollapseP95Milliseconds: Double
-    let workspaceFilterP95Milliseconds: Double
-    let tabSwitchP95Milliseconds: Double
-    let tabCloseRestoreP95Milliseconds: Double
-    let typingFeedbackP95Milliseconds: Double
-    let largeResponseColdFirstViewportMilliseconds: Double
-    let largeResponseSearchP95Milliseconds: Double
-    let largeResponseRendererSwitchP95Milliseconds: Double
-    let largeResponseResidentDeltaMebibytes: Double
-    let historyInsertP95Milliseconds: Double
-    let historyRestoreP95Milliseconds: Double
-    let historyEvictionP95Milliseconds: Double
+    let syntheticWorkspaceOpenFirstContentMilliseconds: Double
+    let syntheticWorkspaceExpandCollapseP95Milliseconds: Double
+    let syntheticWorkspaceFilterP95Milliseconds: Double
+    let syntheticTabSwitchP95Milliseconds: Double
+    let syntheticTabCloseRestoreP95Milliseconds: Double
+    let syntheticTypingFeedbackP95Milliseconds: Double
+    let syntheticLargeResponseColdFirstViewportMilliseconds: Double
+    let syntheticLargeResponseSearchP95Milliseconds: Double
+    let syntheticLargeResponseRendererSwitchP95Milliseconds: Double
+    let syntheticLargeResponseResidentDeltaMebibytes: Double
+    let syntheticHistoryInsertP95Milliseconds: Double
+    let syntheticHistoryRestoreP95Milliseconds: Double
+    let syntheticHistoryEvictionP95Milliseconds: Double
     let largeImportParseP95Milliseconds: Double
     let raw: RawSamples
     let violations: [String]
@@ -83,16 +83,16 @@ private struct PerformanceResults: Encodable {
         let requestSetupMicroseconds: [Double]
         let requestDispatchMicroseconds: [Double]
         let responseFirstViewportMilliseconds: [Double]
-        let workspaceExpandCollapseMilliseconds: [Double]
-        let workspaceFilterMilliseconds: [Double]
-        let tabSwitchMilliseconds: [Double]
-        let tabCloseRestoreMilliseconds: [Double]
-        let typingFeedbackMilliseconds: [Double]
-        let largeResponseSearchMilliseconds: [Double]
-        let largeResponseRendererSwitchMilliseconds: [Double]
-        let historyInsertMilliseconds: [Double]
-        let historyRestoreMilliseconds: [Double]
-        let historyEvictionMilliseconds: [Double]
+        let syntheticWorkspaceExpandCollapseMilliseconds: [Double]
+        let syntheticWorkspaceFilterMilliseconds: [Double]
+        let syntheticTabSwitchMilliseconds: [Double]
+        let syntheticTabCloseRestoreMilliseconds: [Double]
+        let syntheticTypingFeedbackMilliseconds: [Double]
+        let syntheticLargeResponseSearchMilliseconds: [Double]
+        let syntheticLargeResponseRendererSwitchMilliseconds: [Double]
+        let syntheticHistoryInsertMilliseconds: [Double]
+        let syntheticHistoryRestoreMilliseconds: [Double]
+        let syntheticHistoryEvictionMilliseconds: [Double]
         let largeImportParseMilliseconds: [Double]
     }
 }
@@ -245,19 +245,19 @@ private enum PerformanceContract {
             responseWarmP50: percentile(warmResponse, 0.50),
             responseWarmP95: percentile(warmResponse, 0.95),
             responseWarmMaximum: warmResponse.max() ?? .infinity,
-            workspaceOpenFirstContent: features.workspaceOpenFirstContentMilliseconds,
-            workspaceExpandCollapseP95: percentile(features.workspaceExpandCollapseMilliseconds, 0.95),
-            workspaceFilterP95: percentile(features.workspaceFilterMilliseconds, 0.95),
-            tabSwitchP95: percentile(features.tabSwitchMilliseconds, 0.95),
-            tabCloseRestoreP95: percentile(features.tabCloseRestoreMilliseconds, 0.95),
-            typingFeedbackP95: percentile(features.typingFeedbackMilliseconds, 0.95),
-            largeResponseColdFirstViewport: features.responseColdFirstViewportMilliseconds,
-            largeResponseSearchP95: percentile(features.responseSearchMilliseconds, 0.95),
-            largeResponseRendererSwitchP95: percentile(features.responseRendererSwitchMilliseconds, 0.95),
-            largeResponseResidentDelta: features.responseResidentDeltaMebibytes,
-            historyInsertP95: percentile(features.historyInsertMilliseconds, 0.95),
-            historyRestoreP95: percentile(features.historyRestoreMilliseconds, 0.95),
-            historyEvictionP95: percentile(features.historyEvictionMilliseconds, 0.95),
+            syntheticWorkspaceOpenFirstContent: features.syntheticWorkspaceOpenFirstContentMilliseconds,
+            syntheticWorkspaceExpandCollapseP95: percentile(features.syntheticWorkspaceExpandCollapseMilliseconds, 0.95),
+            syntheticWorkspaceFilterP95: percentile(features.syntheticWorkspaceFilterMilliseconds, 0.95),
+            syntheticTabSwitchP95: percentile(features.syntheticTabSwitchMilliseconds, 0.95),
+            syntheticTabCloseRestoreP95: percentile(features.syntheticTabCloseRestoreMilliseconds, 0.95),
+            syntheticTypingFeedbackP95: percentile(features.syntheticTypingFeedbackMilliseconds, 0.95),
+            syntheticLargeResponseColdFirstViewport: features.responseColdFirstViewportMilliseconds,
+            syntheticLargeResponseSearchP95: percentile(features.responseSearchMilliseconds, 0.95),
+            syntheticLargeResponseRendererSwitchP95: percentile(features.responseRendererSwitchMilliseconds, 0.95),
+            syntheticLargeResponseResidentDelta: features.responseResidentDeltaMebibytes,
+            syntheticHistoryInsertP95: percentile(features.syntheticHistoryInsertMilliseconds, 0.95),
+            syntheticHistoryRestoreP95: percentile(features.syntheticHistoryRestoreMilliseconds, 0.95),
+            syntheticHistoryEvictionP95: percentile(features.syntheticHistoryEvictionMilliseconds, 0.95),
             largeImportParseP95: percentile(features.importParseMilliseconds, 0.95)
         )
 
@@ -281,19 +281,19 @@ private enum PerformanceContract {
             responseWarmFirstViewportP50Milliseconds: values.responseWarmP50,
             responseWarmFirstViewportP95Milliseconds: values.responseWarmP95,
             responseWarmMaximumMainThreadSliceMilliseconds: values.responseWarmMaximum,
-            workspaceOpenFirstContentMilliseconds: values.workspaceOpenFirstContent,
-            workspaceExpandCollapseP95Milliseconds: values.workspaceExpandCollapseP95,
-            workspaceFilterP95Milliseconds: values.workspaceFilterP95,
-            tabSwitchP95Milliseconds: values.tabSwitchP95,
-            tabCloseRestoreP95Milliseconds: values.tabCloseRestoreP95,
-            typingFeedbackP95Milliseconds: values.typingFeedbackP95,
-            largeResponseColdFirstViewportMilliseconds: values.largeResponseColdFirstViewport,
-            largeResponseSearchP95Milliseconds: values.largeResponseSearchP95,
-            largeResponseRendererSwitchP95Milliseconds: values.largeResponseRendererSwitchP95,
-            largeResponseResidentDeltaMebibytes: values.largeResponseResidentDelta,
-            historyInsertP95Milliseconds: values.historyInsertP95,
-            historyRestoreP95Milliseconds: values.historyRestoreP95,
-            historyEvictionP95Milliseconds: values.historyEvictionP95,
+            syntheticWorkspaceOpenFirstContentMilliseconds: values.syntheticWorkspaceOpenFirstContent,
+            syntheticWorkspaceExpandCollapseP95Milliseconds: values.syntheticWorkspaceExpandCollapseP95,
+            syntheticWorkspaceFilterP95Milliseconds: values.syntheticWorkspaceFilterP95,
+            syntheticTabSwitchP95Milliseconds: values.syntheticTabSwitchP95,
+            syntheticTabCloseRestoreP95Milliseconds: values.syntheticTabCloseRestoreP95,
+            syntheticTypingFeedbackP95Milliseconds: values.syntheticTypingFeedbackP95,
+            syntheticLargeResponseColdFirstViewportMilliseconds: values.syntheticLargeResponseColdFirstViewport,
+            syntheticLargeResponseSearchP95Milliseconds: values.syntheticLargeResponseSearchP95,
+            syntheticLargeResponseRendererSwitchP95Milliseconds: values.syntheticLargeResponseRendererSwitchP95,
+            syntheticLargeResponseResidentDeltaMebibytes: values.syntheticLargeResponseResidentDelta,
+            syntheticHistoryInsertP95Milliseconds: values.syntheticHistoryInsertP95,
+            syntheticHistoryRestoreP95Milliseconds: values.syntheticHistoryRestoreP95,
+            syntheticHistoryEvictionP95Milliseconds: values.syntheticHistoryEvictionP95,
             largeImportParseP95Milliseconds: values.largeImportParseP95,
             raw: PerformanceResults.RawSamples(
                 processLaunchMilliseconds: launch.milliseconds,
@@ -302,16 +302,16 @@ private enum PerformanceContract {
                 requestSetupMicroseconds: request,
                 requestDispatchMicroseconds: dispatch,
                 responseFirstViewportMilliseconds: response,
-                workspaceExpandCollapseMilliseconds: features.workspaceExpandCollapseMilliseconds,
-                workspaceFilterMilliseconds: features.workspaceFilterMilliseconds,
-                tabSwitchMilliseconds: features.tabSwitchMilliseconds,
-                tabCloseRestoreMilliseconds: features.tabCloseRestoreMilliseconds,
-                typingFeedbackMilliseconds: features.typingFeedbackMilliseconds,
-                largeResponseSearchMilliseconds: features.responseSearchMilliseconds,
-                largeResponseRendererSwitchMilliseconds: features.responseRendererSwitchMilliseconds,
-                historyInsertMilliseconds: features.historyInsertMilliseconds,
-                historyRestoreMilliseconds: features.historyRestoreMilliseconds,
-                historyEvictionMilliseconds: features.historyEvictionMilliseconds,
+                syntheticWorkspaceExpandCollapseMilliseconds: features.syntheticWorkspaceExpandCollapseMilliseconds,
+                syntheticWorkspaceFilterMilliseconds: features.syntheticWorkspaceFilterMilliseconds,
+                syntheticTabSwitchMilliseconds: features.syntheticTabSwitchMilliseconds,
+                syntheticTabCloseRestoreMilliseconds: features.syntheticTabCloseRestoreMilliseconds,
+                syntheticTypingFeedbackMilliseconds: features.syntheticTypingFeedbackMilliseconds,
+                syntheticLargeResponseSearchMilliseconds: features.responseSearchMilliseconds,
+                syntheticLargeResponseRendererSwitchMilliseconds: features.responseRendererSwitchMilliseconds,
+                syntheticHistoryInsertMilliseconds: features.syntheticHistoryInsertMilliseconds,
+                syntheticHistoryRestoreMilliseconds: features.syntheticHistoryRestoreMilliseconds,
+                syntheticHistoryEvictionMilliseconds: features.syntheticHistoryEvictionMilliseconds,
                 largeImportParseMilliseconds: features.importParseMilliseconds
             ),
             violations: violations(values: values, budgets: budgets)
@@ -333,19 +333,19 @@ private enum PerformanceContract {
         let responseWarmP50: Double
         let responseWarmP95: Double
         let responseWarmMaximum: Double
-        let workspaceOpenFirstContent: Double
-        let workspaceExpandCollapseP95: Double
-        let workspaceFilterP95: Double
-        let tabSwitchP95: Double
-        let tabCloseRestoreP95: Double
-        let typingFeedbackP95: Double
-        let largeResponseColdFirstViewport: Double
-        let largeResponseSearchP95: Double
-        let largeResponseRendererSwitchP95: Double
-        let largeResponseResidentDelta: Double
-        let historyInsertP95: Double
-        let historyRestoreP95: Double
-        let historyEvictionP95: Double
+        let syntheticWorkspaceOpenFirstContent: Double
+        let syntheticWorkspaceExpandCollapseP95: Double
+        let syntheticWorkspaceFilterP95: Double
+        let syntheticTabSwitchP95: Double
+        let syntheticTabCloseRestoreP95: Double
+        let syntheticTypingFeedbackP95: Double
+        let syntheticLargeResponseColdFirstViewport: Double
+        let syntheticLargeResponseSearchP95: Double
+        let syntheticLargeResponseRendererSwitchP95: Double
+        let syntheticLargeResponseResidentDelta: Double
+        let syntheticHistoryInsertP95: Double
+        let syntheticHistoryRestoreP95: Double
+        let syntheticHistoryEvictionP95: Double
         let largeImportParseP95: Double
     }
 
@@ -366,19 +366,19 @@ private enum PerformanceContract {
             ("response cold first viewport (ms)", values.responseCold, budgets.responseColdFirstViewportMilliseconds),
             ("response warm first viewport p95 (ms)", values.responseWarmP95, budgets.responseWarmFirstViewportP95Milliseconds),
             ("response warm maximum main-thread slice (ms)", values.responseWarmMaximum, budgets.responseWarmMaximumMainThreadSliceMilliseconds),
-            ("workspace open first content (ms)", values.workspaceOpenFirstContent, budgets.workspaceOpenFirstContentMilliseconds),
-            ("workspace expand/collapse p95 (ms)", values.workspaceExpandCollapseP95, budgets.workspaceExpandCollapseP95Milliseconds),
-            ("workspace filter p95 (ms)", values.workspaceFilterP95, budgets.workspaceFilterP95Milliseconds),
-            ("tab switch p95 (ms)", values.tabSwitchP95, budgets.tabSwitchP95Milliseconds),
-            ("tab close/restore p95 (ms)", values.tabCloseRestoreP95, budgets.tabCloseRestoreP95Milliseconds),
-            ("typing feedback p95 (ms)", values.typingFeedbackP95, budgets.typingFeedbackP95Milliseconds),
-            ("100 MiB response first viewport (ms)", values.largeResponseColdFirstViewport, budgets.largeResponseColdFirstViewportMilliseconds),
-            ("100 MiB response search p95 (ms)", values.largeResponseSearchP95, budgets.largeResponseSearchP95Milliseconds),
-            ("response renderer switch p95 (ms)", values.largeResponseRendererSwitchP95, budgets.largeResponseRendererSwitchP95Milliseconds),
-            ("100 MiB response resident delta (MiB)", values.largeResponseResidentDelta, budgets.largeResponseResidentDeltaMebibytes),
-            ("history insert p95 (ms)", values.historyInsertP95, budgets.historyInsertP95Milliseconds),
-            ("history restore p95 (ms)", values.historyRestoreP95, budgets.historyRestoreP95Milliseconds),
-            ("history eviction p95 (ms)", values.historyEvictionP95, budgets.historyEvictionP95Milliseconds),
+            ("synthetic workspace open first content (ms)", values.syntheticWorkspaceOpenFirstContent, budgets.syntheticWorkspaceOpenFirstContentMilliseconds),
+            ("synthetic workspace expand/collapse p95 (ms)", values.syntheticWorkspaceExpandCollapseP95, budgets.syntheticWorkspaceExpandCollapseP95Milliseconds),
+            ("synthetic workspace filter p95 (ms)", values.syntheticWorkspaceFilterP95, budgets.syntheticWorkspaceFilterP95Milliseconds),
+            ("synthetic tab switch p95 (ms)", values.syntheticTabSwitchP95, budgets.syntheticTabSwitchP95Milliseconds),
+            ("synthetic tab close/restore p95 (ms)", values.syntheticTabCloseRestoreP95, budgets.syntheticTabCloseRestoreP95Milliseconds),
+            ("synthetic typing feedback p95 (ms)", values.syntheticTypingFeedbackP95, budgets.syntheticTypingFeedbackP95Milliseconds),
+            ("synthetic 100 MiB response first viewport (ms)", values.syntheticLargeResponseColdFirstViewport, budgets.syntheticLargeResponseColdFirstViewportMilliseconds),
+            ("synthetic 100 MiB response search p95 (ms)", values.syntheticLargeResponseSearchP95, budgets.syntheticLargeResponseSearchP95Milliseconds),
+            ("synthetic response renderer switch p95 (ms)", values.syntheticLargeResponseRendererSwitchP95, budgets.syntheticLargeResponseRendererSwitchP95Milliseconds),
+            ("synthetic 100 MiB response resident delta (MiB)", values.syntheticLargeResponseResidentDelta, budgets.syntheticLargeResponseResidentDeltaMebibytes),
+            ("synthetic history insert p95 (ms)", values.syntheticHistoryInsertP95, budgets.syntheticHistoryInsertP95Milliseconds),
+            ("synthetic history restore p95 (ms)", values.syntheticHistoryRestoreP95, budgets.syntheticHistoryRestoreP95Milliseconds),
+            ("synthetic history eviction p95 (ms)", values.syntheticHistoryEvictionP95, budgets.syntheticHistoryEvictionP95Milliseconds),
             ("large import parse p95 (ms)", values.largeImportParseP95, budgets.largeImportParseP95Milliseconds),
         ]
 

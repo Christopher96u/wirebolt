@@ -22,14 +22,17 @@ swiftc \
   apple/Sources/WireboltKit/WebSocket.swift \
   apple/Sources/WireboltKit/JSONNode.swift \
   apple/Sources/WireboltKit/CodeFolding.swift \
+  apple/Sources/WireboltKit/TextLineIndex.swift \
   apple/Sources/WireboltKit/TextSearch.swift \
   apple/Sources/WireboltKit/CodeTextWrapping.swift \
   apple/Sources/WireboltKit/ResponseTextIndex.swift \
+  apple/Sources/WireboltKit/ResponseIndexCache.swift \
   apple/Sources/WireboltKit/DocumentSessions.swift \
   apple/Sources/WireboltKit/ResponseStorage.swift \
   apple/Sources/WireboltKit/JSONResponseDocument.swift \
   apple/Sources/WireboltKit/OAuth2Service.swift \
   apple/Sources/WireboltKit/WireboltModel.swift \
+  apple/Sources/WireboltKit/SidebarSnapshot.swift \
   apple/Tests/BridgeSmoke.swift \
   apple/WireboltApp/PerformanceProbe.swift \
   apple/WireboltApp/RustRequestRunner.swift \

@@ -71,7 +71,20 @@ public protocol GitCollaboration: Sendable {
 public final class WireboltModel {
     public static let previewByteLimit = DocumentSession.previewByteLimit
 
-    public var workspace = WorkspaceDraft(name: "Wirebolt")
+    public var workspace = WorkspaceDraft(name: "Wirebolt") {
+        didSet { sidebarSnapshot = nil; sidebarVisibleCache = nil }
+    }
+    @ObservationIgnored private var sidebarSnapshot: SidebarSnapshot?
+    @ObservationIgnored private var sidebarVisibleCache: (query: String, collapsed: Set<String>, expanded: Set<String>, rows: [SidebarSnapshot.Row])?
+
+    public func sidebarRows(query: String, collapsed: Set<String>, expanded: Set<String>) -> [SidebarSnapshot.Row] {
+        let collections = workspace.collections
+        if let cache = sidebarVisibleCache, cache.query == query, cache.collapsed == collapsed, cache.expanded == expanded { return cache.rows }
+        if sidebarSnapshot == nil { sidebarSnapshot = SidebarSnapshot(collections: collections) }
+        let rows = sidebarSnapshot!.visible(query: query, collapsedCollections: collapsed, expandedGroups: expanded)
+        sidebarVisibleCache = (query, collapsed, expanded, rows)
+        return rows
+    }
     public var selectedEnvironmentID: String?
     public let sessions: DocumentSessionStore
     public private(set) var isLoadingWorkspace = false

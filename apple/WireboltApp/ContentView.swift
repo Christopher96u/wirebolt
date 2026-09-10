@@ -7,7 +7,7 @@ struct ContentView: View {
     @Bindable var interface: WorkspaceUIState
 
     @AppStorage("interfaceAppearance") private var interfaceAppearance = "system"
-    @State private var workspaceSurfacePhase = 0
+    var loadsWorkspace = true
     @AppStorage("workspace.sidebarWidth") private var sidebarWidth = 250.0
     @State private var sidebarDragOrigin: Double?
     private var toolbarGap: Double { max(0, sidebarWidth - 184) }
@@ -22,7 +22,7 @@ struct ContentView: View {
                 WorkspaceSidebar(
                     model: model,
                     interface: interface,
-                    showsMaterial: workspaceSurfacePhase >= 1
+                    showsMaterial: true
                 )
                     .frame(width: sidebarWidth - 1)
                 Rectangle().fill(WireboltTheme.separator).frame(width: 1)
@@ -39,11 +39,7 @@ struct ContentView: View {
                             }
                     }
             }
-            if workspaceSurfacePhase >= 2 {
-                WorkspaceDeck(model: model, interface: interface)
-            } else {
-                InitialDetailPane()
-            }
+            WorkspaceDeck(model: model, interface: interface)
         }
     }
 
@@ -128,20 +124,9 @@ struct ContentView: View {
         .onAppear {
             interface.reopenLastDocument(model: model)
             interface.synchronizeSelection(model: model)
-            guard workspaceSurfacePhase == 0 else { return }
-            PerformanceProbe.markReady()
-            Task.detached(priority: .utility) {
-                _ = RustCore().status()
-            }
-            Task { @MainActor in
-                await Task.yield()
-                workspaceSurfacePhase = 1
-                try? await Task.sleep(for: .milliseconds(50))
-                workspaceSurfacePhase = 2
-            }
         }
         .task {
-            try? await Task.sleep(for: .milliseconds(150))
+            guard loadsWorkspace else { return }
             PerformanceProbe.beginWorkspaceLoad()
             let persistence = await Task.detached(priority: .userInitiated) {
                 try? RustWorkspacePersistence()
@@ -152,6 +137,8 @@ struct ContentView: View {
             await model.loadWorkspace()
             PerformanceProbe.endWorkspaceLoad()
             interface.synchronizeSelection(model: model)
+            await Task.yield()
+            PerformanceProbe.markReady()
         }
     }
 
@@ -485,43 +472,45 @@ private struct WorkspaceSidebarOutline: View {
     @Bindable var interface: WorkspaceUIState
 
     var body: some View {
-        ForEach(visibleCollections) { collection in
-            SavedCollectionDisclosure(
-                collection: collection,
-                selectedID: model.selectedRequestID,
-                model: model,
-                interface: interface,
-                onSelect: { interface.activateSavedRequest($0, model: model); interface.focusSidebarTrigger += 1 },
-                onSplit: { location in
-                    interface.activateSavedRequest(location, model: model)
-                    if let tabID = model.sessions.activeSession?.id {
-                        interface.openInNewSplit(tabID: tabID, model: model)
-                    }
+        ForEach(model.sidebarRows(query: interface.sidebarFilter, collapsed: interface.collapsedSidebarCollections, expanded: interface.expandedSidebarGroups)) { row in
+            Group {
+                switch row.content {
+                case .collection(let collection):
+                    SavedCollectionDisclosure(collection: collection, model: model, interface: interface)
+                case .group(let collection, let group):
+                    SavedGroupDisclosure(collection: collection, group: group, model: model, interface: interface)
+                case .request(let location):
+                    SavedRequestRow(model: model, interface: interface, location: location)
                 }
-            )
+            }
+            .padding(.leading, Double(row.depth) * 14)
+            .frame(height: 24)
         }
     }
+}
 
-    private var visibleCollections: [CollectionDraft] {
-        let rawQuery = interface.sidebarFilter.trimmingCharacters(in: .whitespacesAndNewlines)
-        let collections = model.workspace.collections.sorted { ($0.order, $0.name) < ($1.order, $1.name) }
-        guard rawQuery.isEmpty == false else { return collections }
-        let query = model.normalizedSearchQuery(rawQuery)
-        return collections.compactMap { collection in
-            let requests = collection.requests.filter {
-                model.requestMatches($0, normalizedQuery: query)
-            }
-            guard model.normalizedSearchQuery(collection.name).contains(query) || requests.isEmpty == false else {
-                return nil
-            }
-            return CollectionDraft(
-                id: collection.id,
-                name: collection.name,
-                order: collection.order,
-                groups: collection.groups,
-                requests: requests
-            )
-        }
+private struct SavedRequestRow: View {
+    let model: WireboltModel
+    let interface: WorkspaceUIState
+    let location: RequestLocation
+
+    var body: some View {
+        SidebarRequestButton(model: model, interface: interface, location: location,
+            isSelected: model.selectedRequestID == location.id,
+            action: { interface.activateSavedRequest(location, model: model); interface.focusSidebarTrigger += 1 },
+            onSplit: {
+                interface.activateSavedRequest(location, model: model)
+                if let tabID = model.sessions.activeSession?.id { interface.openInNewSplit(tabID: tabID, model: model) }
+            },
+            onRename: { name in Task { await model.renameRequest(collectionID: location.collectionID, requestID: location.request.id, name: name) } },
+            onDuplicate: { Task { await model.duplicateRequest(collectionID: location.collectionID, requestID: location.request.id) } },
+            onExport: { Task {
+                if let document = await model.exportRequest(collectionID: location.collectionID, id: location.request.id) {
+                    saveExportedDocument(named: location.request.name, content: document)
+                }
+            } },
+            onDelete: { interface.requestDelete(.request(collectionID: location.collectionID, id: location.request.id), title: location.request.name) }
+        ).equatable()
     }
 }
 
@@ -643,22 +632,19 @@ struct InlineSidebarName: View {
 
 private struct SavedCollectionDisclosure: View {
     let collection: CollectionDraft
-    let selectedID: String?
     @Bindable var model: WireboltModel
     @Bindable var interface: WorkspaceUIState
-    let onSelect: (RequestLocation) -> Void
-    let onSplit: (RequestLocation) -> Void
 
-    @State private var isExpanded = true
+    private var expansion: Binding<Bool> {
+        Binding(get: { !interface.collapsedSidebarCollections.contains(collection.id) || !interface.sidebarFilter.isEmpty }, set: {
+            if $0 { interface.collapsedSidebarCollections.remove(collection.id) }
+            else { interface.collapsedSidebarCollections.insert(collection.id) }
+        })
+    }
     @State private var isRenaming = false
 
     var body: some View {
-        Group {
-        if collection.id == WorkspaceDraft.rootCollectionID { items }
-        else {
-        DisclosureGroup(isExpanded: $isExpanded) {
-            items
-
+        DisclosureGroup(isExpanded: expansion) { EmptyView()
         } label: {
             HStack(spacing: 6) {
                 Image(systemName: "folder.fill")
@@ -690,26 +676,9 @@ private struct SavedCollectionDisclosure: View {
                 }
         }
         .disclosureGroupStyle(SidebarDisclosureStyle(isEditing: isRenaming))
-        }
-        }
-        .onChange(of: isExpanded) { _, expanded in
-            if expanded { interface.collapsedSidebarCollections.remove(collection.id) }
-            else { interface.collapsedSidebarCollections.insert(collection.id) }
-        }
         .dropDestination(for: String.self) { identifiers, _ in
             handleDrop(identifiers.first, parentID: nil)
         }
-    }
-
-    private var items: some View {
-            ForEach((rootGroups.map(SidebarItem.group) + rootRequests.map(SidebarItem.request)).sorted { $0.order < $1.order }) { item in
-                switch item {
-                case let .group(group):
-                    SavedGroupDisclosure(collection: collection, group: group, selectedID: selectedID,
-                        model: model, interface: interface, onSelect: onSelect, onSplit: onSplit)
-                case let .request(location): requestRow(location)
-                }
-            }
     }
 
     private var rootGroups: [GroupDraft] {
@@ -722,41 +691,6 @@ private struct SavedCollectionDisclosure: View {
         collection.requests
             .filter { $0.groupID == nil }
             .sorted { ($0.order, $0.request.name) < ($1.order, $1.request.name) }
-    }
-
-    private func requestRow(_ location: RequestLocation) -> some View {
-        SidebarRequestButton(
-            model: model, interface: interface,
-            location: location,
-            isSelected: selectedID == location.id,
-            action: { onSelect(location) },
-            onSplit: { onSplit(location) },
-            onRename: { name in Task { await model.renameRequest(collectionID: collection.id, requestID: location.request.id, name: name) } },
-            onDuplicate: {
-                Task {
-                    await model.duplicateRequest(
-                        collectionID: collection.id,
-                        requestID: location.request.id
-                    )
-                }
-            },
-            onExport: {
-                Task {
-                    if let document = await model.exportRequest(
-                        collectionID: collection.id,
-                        id: location.request.id
-                    ) {
-                        saveExportedDocument(named: location.request.name, content: document)
-                    }
-                }
-            },
-            onDelete: {
-                interface.requestDelete(
-                    .request(collectionID: collection.id, id: location.request.id),
-                    title: location.request.name
-                )
-            }
-        )
     }
 
     private func handleDrop(_ identifier: String?, parentID: String?) -> Bool {
@@ -793,59 +727,19 @@ private struct SavedCollectionDisclosure: View {
 private struct SavedGroupDisclosure: View {
     let collection: CollectionDraft
     let group: GroupDraft
-    let selectedID: String?
     @Bindable var model: WireboltModel
     @Bindable var interface: WorkspaceUIState
-    let onSelect: (RequestLocation) -> Void
-    let onSplit: (RequestLocation) -> Void
 
-    @State private var isExpanded = false
+    private var expansion: Binding<Bool> {
+        Binding(get: { interface.expandedSidebarGroups.contains(collection.id + ":" + group.id) || !interface.sidebarFilter.isEmpty }, set: {
+            let id = collection.id + ":" + group.id
+            if $0 { interface.expandedSidebarGroups.insert(id) } else { interface.expandedSidebarGroups.remove(id) }
+        })
+    }
     @State private var isRenaming = false
 
     var body: some View {
-        DisclosureGroup(isExpanded: Binding(
-            get: { isExpanded || !interface.sidebarFilter.isEmpty }, set: { isExpanded = $0 }
-        )) {
-            ForEach((childGroups.map(SidebarItem.group) + requests.map(SidebarItem.request)).sorted { $0.order < $1.order }) { item in
-                switch item {
-                case let .group(child):
-                    SavedGroupDisclosure(collection: collection, group: child, selectedID: selectedID,
-                        model: model, interface: interface, onSelect: onSelect, onSplit: onSplit)
-                case let .request(location):
-                SidebarRequestButton(
-                    model: model, interface: interface,
-                    location: location,
-                    isSelected: selectedID == location.id,
-                    action: { onSelect(location) },
-                    onSplit: { onSplit(location) },
-                    onRename: { name in Task { await model.renameRequest(collectionID: collection.id, requestID: location.request.id, name: name) } },
-                    onDuplicate: {
-                        Task {
-                            await model.duplicateRequest(
-                                collectionID: collection.id,
-                                requestID: location.request.id
-                            )
-                        }
-                    },
-                    onExport: {
-                        Task {
-                            if let document = await model.exportRequest(
-                                collectionID: collection.id,
-                                id: location.request.id
-                            ) {
-                                saveExportedDocument(named: location.request.name, content: document)
-                            }
-                        }
-                    },
-                    onDelete: {
-                        interface.requestDelete(
-                            .request(collectionID: collection.id, id: location.request.id),
-                            title: location.request.name
-                        )
-                    }
-                )
-                }
-            }
+        DisclosureGroup(isExpanded: expansion) { EmptyView()
         } label: {
             HStack(spacing: 6) {
                 Image(systemName: "folder.fill")
@@ -860,7 +754,7 @@ private struct SavedGroupDisclosure: View {
                 .contextMenu {
                     NewRequestMenu(model: model, interface: interface, collectionID: collection.id, groupID: group.id)
                     Button("New Folder") {
-                        isExpanded = true
+                        expansion.wrappedValue = true
                         interface.makeNewFolder(model: model, collectionID: collection.id, parentID: group.id)
                     }
                     Divider()
@@ -874,11 +768,6 @@ private struct SavedGroupDisclosure: View {
                 }
         }
         .disclosureGroupStyle(SidebarDisclosureStyle(isEditing: isRenaming || interface.renamingGroupID == group.id))
-        .onChange(of: isExpanded) { _, expanded in
-            let id = collection.id + ":" + group.id
-            if expanded { interface.expandedSidebarGroups.insert(id) }
-            else { interface.expandedSidebarGroups.remove(id) }
-        }
         .dropDestination(for: String.self) { identifiers, _ in
             handleDrop(identifiers.first)
         }
@@ -927,7 +816,11 @@ private struct SavedGroupDisclosure: View {
     }
 }
 
-private struct SidebarRequestButton: View {
+private struct SidebarRequestButton: View, @MainActor Equatable {
+    static func == (lhs: Self, rhs: Self) -> Bool {
+        lhs.model === rhs.model && lhs.interface === rhs.interface && lhs.location == rhs.location && lhs.isSelected == rhs.isSelected
+    }
+
     @Bindable var model: WireboltModel
     @Bindable var interface: WorkspaceUIState
     @Environment(\.colorScheme) private var colorScheme

@@ -127,7 +127,7 @@ private struct ResponseSourceView: View {
             }.font(.system(size: 13)).padding(.horizontal, 12).frame(height: 27)
                 .background(WireboltTheme.barBackground)
             Divider()
-            if let bodyStore, byteCount > 1024 * 1024 {
+            if let bodyStore, ResponseTextPresentation.usesIndex(byteCount: byteCount, preview: loadedText ?? text) {
                 IndexedResponseEditor(url: bodyStore.url, preview: text, language: .http, search: "", prefix: prefix, find: find)
             } else {
                 NativeCodeEditor(text: .constant(loadedText ?? text), editable: false, language: .http, label: title, find: find)
@@ -260,12 +260,16 @@ private struct ResponseBodyViewer: View {
     let store: ResponseBodyStore?
     let snapshot: PreparedRunSnapshot?
 
-    @State private var find = EditorFindState()
+    @State private var jsonFind = EditorFindState()
+    @State private var otherFind = EditorFindState()
+    @State private var hasShownOtherText = false
+    @State private var otherLanguage = SyntaxLanguage.plain
+    private var find: EditorFindState { interface.responseRenderer == .json ? jsonFind : otherFind }
     @State private var actionError: String?
     @State private var loadedViewportData: Data?
     @State private var storeSize: UInt64 = 0
     @State private var jsonDocument: JSONResponseDocument?
-    @State private var isFormattingJSON = false
+    @State private var formattedSource: URL?
 
     var body: some View {
         VStack(spacing: 0) {
@@ -342,28 +346,40 @@ private struct ResponseBodyViewer: View {
 
         }
         .task(id: store?.url) {
-            storeSize = await store?.size() ?? UInt64(previewData.count)
+            let size = await store?.size() ?? UInt64(previewData.count)
+            guard !Task.isCancelled else { return }
+            storeSize = size
             loadedViewportData = nil
-            if let store, storeSize <= 1024 * 1024 {
-                loadedViewportData = try? await store.viewport(offset: 0, length: Int(storeSize))
+            if let store, size <= 64 * 1024 {
+                let data = try? await store.viewport(offset: 0, length: Int(size))
+                guard !Task.isCancelled else { return }
+                loadedViewportData = data
+            }
+        }
+        .onChange(of: interface.responseRenderer) { _, renderer in
+            if renderer != .json {
+                hasShownOtherText = true
+                if renderer == .xml { otherLanguage = .xml }
+                else if renderer == .html { otherLanguage = .html }
+                else { otherLanguage = .plain }
             }
         }
         .onChange(of: receivedBytes) { _, value in storeSize = max(storeSize, value) }
         .task(id: interface.responseRenderer == .json ? store?.url : nil) {
             guard interface.responseRenderer == .json, let store else {
-                isFormattingJSON = false
                 return
             }
+            guard formattedSource != store.url else { return }
             jsonDocument = nil
-            isFormattingJSON = true
             do {
                 let document = try await store.formattedJSON()
                 try Task.checkCancellation()
                 jsonDocument = document
-                isFormattingJSON = false
+                formattedSource = store.url
             } catch is CancellationError {
             } catch {
-                isFormattingJSON = false
+                guard !Task.isCancelled else { return }
+                formattedSource = store.url
             }
         }
         .alert("Response Action Failed", isPresented: Binding(
@@ -404,40 +420,64 @@ private struct ResponseBodyViewer: View {
     @ViewBuilder
     private var rendererContent: some View {
         switch interface.responseRenderer {
-        case .json:
-            if isFormattingJSON {
-                ProgressView("Formatting JSON…")
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else if let jsonDocument {
-                if jsonDocument.byteCount > 1024 * 1024 {
-                    IndexedResponseEditor(url: jsonDocument.url, preview: jsonDocument.preview,
-                        language: .json, search: "", find: find)
-                } else {
-                    SyntaxTextView(text: jsonDocument.preview, language: .json, search: "", find: find)
-                }
-            } else { textRenderer(.json) }
+        case .json, .xml, .html, .raw:
+            textRenderer
         case .tree:
             JSONResponseTree(url: store?.url, preview: renderedData).clipped()
         case .image:
             ResponseImageView(url: store?.url, data: renderedData)
-        case .xml:
-            textRenderer(.xml)
-        case .html:
-            textRenderer(.html)
         case .webView:
             ResponseWebPreview(url: store?.url, preview: renderedText)
-        case .raw:
-            textRenderer(.plain)
         case .hex:
             ResponseHexView(store: store, data: renderedData, byteCount: receivedBytes)
         }
     }
 
     @ViewBuilder
-    private func textRenderer(_ language: SyntaxLanguage) -> some View {
-        if wasTruncated, storeSize > 1024 * 1024, let store {
-            IndexedResponseEditor(url: store.url, preview: renderedText, language: language, search: "", find: find)
-        } else { SyntaxTextView(text: renderedText, language: language, search: "", find: find) }
+    private var textRenderer: some View {
+        let isJSON = interface.responseRenderer == .json
+        let formatted = formattedSource == store?.url ? jsonDocument : nil
+        let pending = isJSON && store != nil && formattedSource != store?.url
+        let showsOther = !isJSON || (!pending && formatted == nil)
+        let language: SyntaxLanguage = switch interface.responseRenderer {
+        case .json: showsOther ? .json : otherLanguage
+        case .xml: .xml
+        case .html: .html
+        default: .plain
+        }
+        let displayedOtherFind = showsOther && isJSON ? jsonFind : otherFind
+        ZStack {
+            // Both are final presentations. Keeping them mounted preserves native
+            // folding, selection and scroll without rebuilding on every switch.
+            if let formatted {
+                Group {
+                    if formatted.byteCount > 1024 * 1024 {
+                        IndexedResponseEditor(url: formatted.url, preview: formatted.preview, language: .json, search: "", find: jsonFind)
+                    } else {
+                        SyntaxTextView(text: formatted.preview, language: .json, find: jsonFind, storageKey: "Response body json")
+                    }
+                }
+                .environment(\.editorIsActive, isJSON)
+                .opacity(isJSON ? 1 : 0)
+                .allowsHitTesting(isJSON)
+                .accessibilityHidden(!isJSON)
+            }
+            if showsOther || hasShownOtherText {
+                Group {
+                    if let store, ResponseTextPresentation.usesIndex(byteCount: max(storeSize, receivedBytes), preview: renderedText) {
+                        IndexedResponseEditor(url: store.url, preview: renderedText, language: language, search: "", find: displayedOtherFind)
+                    } else {
+                        SyntaxTextView(text: renderedText, language: language, find: displayedOtherFind, storageKey: "Response body \(language)")
+                            .id(language)
+                    }
+                }
+                .environment(\.editorIsActive, showsOther)
+                .opacity(showsOther ? 1 : 0)
+                .allowsHitTesting(showsOther)
+                .accessibilityHidden(!showsOther)
+            }
+            if pending { ProgressView("Formatting JSON…") }
+        }
     }
 
 }

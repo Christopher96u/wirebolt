@@ -2,22 +2,23 @@ import Darwin
 import Foundation
 
 struct FeatureWorkloadSamples {
-    let workspaceOpenFirstContentMilliseconds: Double
-    let workspaceExpandCollapseMilliseconds: [Double]
-    let workspaceFilterMilliseconds: [Double]
-    let tabSwitchMilliseconds: [Double]
-    let tabCloseRestoreMilliseconds: [Double]
-    let typingFeedbackMilliseconds: [Double]
+    let syntheticWorkspaceOpenFirstContentMilliseconds: Double
+    let syntheticWorkspaceExpandCollapseMilliseconds: [Double]
+    let syntheticWorkspaceFilterMilliseconds: [Double]
+    let syntheticTabSwitchMilliseconds: [Double]
+    let syntheticTabCloseRestoreMilliseconds: [Double]
+    let syntheticTypingFeedbackMilliseconds: [Double]
     let responseColdFirstViewportMilliseconds: Double
     let responseSearchMilliseconds: [Double]
     let responseRendererSwitchMilliseconds: [Double]
     let responseResidentDeltaMebibytes: Double
-    let historyInsertMilliseconds: [Double]
-    let historyRestoreMilliseconds: [Double]
-    let historyEvictionMilliseconds: [Double]
+    let syntheticHistoryInsertMilliseconds: [Double]
+    let syntheticHistoryRestoreMilliseconds: [Double]
+    let syntheticHistoryEvictionMilliseconds: [Double]
     let importParseMilliseconds: [Double]
 }
 
+// Component baselines only. NativeWorkloads measures the actual app views.
 enum FeatureWorkloads {
     private static let samples = 15
     private static let responseBytes = 100 * 1024 * 1024
@@ -55,19 +56,19 @@ enum FeatureWorkloads {
 
         precondition(checksum > 0, "feature workloads were optimized away")
         return FeatureWorkloadSamples(
-            workspaceOpenFirstContentMilliseconds: openElapsed,
-            workspaceExpandCollapseMilliseconds: expand,
-            workspaceFilterMilliseconds: filter,
-            tabSwitchMilliseconds: tabs.switches,
-            tabCloseRestoreMilliseconds: tabs.closeRestore,
-            typingFeedbackMilliseconds: typing,
+            syntheticWorkspaceOpenFirstContentMilliseconds: openElapsed,
+            syntheticWorkspaceExpandCollapseMilliseconds: expand,
+            syntheticWorkspaceFilterMilliseconds: filter,
+            syntheticTabSwitchMilliseconds: tabs.switches,
+            syntheticTabCloseRestoreMilliseconds: tabs.closeRestore,
+            syntheticTypingFeedbackMilliseconds: typing,
             responseColdFirstViewportMilliseconds: response.firstViewport,
             responseSearchMilliseconds: response.search,
             responseRendererSwitchMilliseconds: response.renderers,
             responseResidentDeltaMebibytes: response.residentDelta,
-            historyInsertMilliseconds: history.insert,
-            historyRestoreMilliseconds: history.restore,
-            historyEvictionMilliseconds: history.eviction,
+            syntheticHistoryInsertMilliseconds: history.insert,
+            syntheticHistoryRestoreMilliseconds: history.restore,
+            syntheticHistoryEvictionMilliseconds: history.eviction,
             importParseMilliseconds: importSamples
         )
     }

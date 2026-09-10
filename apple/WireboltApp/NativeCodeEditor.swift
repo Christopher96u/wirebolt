@@ -2,7 +2,7 @@ import AppKit
 import CoreText
 import SwiftUI
 
-enum SyntaxLanguage: Equatable {
+enum SyntaxLanguage: Hashable {
     case json
     case xml
     case html
@@ -39,11 +39,13 @@ struct SyntaxTextView: View {
     let language: SyntaxLanguage
     var search = ""
     var find: EditorFindState?
+    var storageKey: String?
     @State private var localFind = EditorFindState()
+    @Environment(\.editorIsActive) private var isActive
     var body: some View {
-        NativeCodeEditor(text: .constant(text), editable: false, language: language, label: "Response body", search: search, find: find ?? localFind)
+        NativeCodeEditor(text: .constant(text), editable: false, language: language, label: "Response body", search: search, find: find ?? localFind, storageKey: storageKey)
             .frame(maxWidth: .infinity, maxHeight: .infinity).clipped()
-            .editorFindOverlay(find ?? localFind)
+            .editorFindOverlay(find ?? localFind, isActive: isActive)
     }
 }
 
@@ -64,10 +66,27 @@ final class EditorPresentationStorage {
     }
 }
 
+private struct EditorActiveKey: EnvironmentKey {
+    static let defaultValue = true
+}
+
+@MainActor
+func setEditorVisibility(_ scroll: NSScrollView, active: Bool) {
+    guard scroll.isHidden != !active else { return }
+    if !active, let responder = scroll.window?.firstResponder as? NSView, responder.isDescendant(of: scroll) {
+        scroll.window?.makeFirstResponder(nil)
+    }
+    scroll.isHidden = !active
+}
+
 private struct EditorStorageKey: EnvironmentKey {
     static let defaultValue: EditorPresentationStorage? = nil
 }
 extension EnvironmentValues {
+    var editorIsActive: Bool {
+        get { self[EditorActiveKey.self] }
+        set { self[EditorActiveKey.self] = newValue }
+    }
     var editorStorage: EditorPresentationStorage? {
         get { self[EditorStorageKey.self] }
         set { self[EditorStorageKey.self] = newValue }
@@ -77,11 +96,13 @@ extension EnvironmentValues {
 struct NativeCodeEditor: NSViewRepresentable {
     @Binding var text: String
     @Environment(\.editorStorage) private var editorStorage
+    @Environment(\.editorIsActive) private var isActive
     var editable = true
     var language: SyntaxLanguage = .plain
     var label = "Request body"
     var search = ""
     var find: EditorFindState?
+    var storageKey: String?
     @AppStorage("editor.fontSize") private var fontSize = 12.0
     @AppStorage("editor.wordWrap") private var wrapsLines = true
     @AppStorage("editor.showInvisibles") private var showInvisibles = true
@@ -158,15 +179,26 @@ struct NativeCodeEditor: NSViewRepresentable {
 
     func updateNSView(_ scroll: NSScrollView, context: Context) {
         guard let view = scroll.documentView as? NSTextView else { return }
+        setEditorVisibility(scroll, active: isActive)
         context.coordinator.text = $text
-        context.coordinator.findState = find
-        (view as? FindableCodeTextView)?.findState = find
+        context.coordinator.findState = isActive ? find : nil
+        (view as? FindableCodeTextView)?.findState = isActive ? find : nil
+        guard isActive else { return }
+        let configuration = Configuration(fontSize: fontSize, wraps: wrapsLines, invisibles: showInvisibles,
+            scrollBeyond: scrollBeyond, editable: editable, language: language, appearance: view.effectiveAppearance.name)
+        if context.coordinator.configuration == configuration,
+           context.coordinator.projection.source == text, !context.coordinator.needsHighlight,
+           context.coordinator.search == search {
+            if let find, isActive { context.coordinator.refreshFind(in: scroll, state: find) }
+            return
+        }
+        context.coordinator.configuration = configuration
         view.isEditable = editable
         view.textContainerInset = NSSize(width: 4, height: CodeEditorMetrics.textTopInset(fontSize))
         view.setAccessibilityLabel(label)
         let coordinator = context.coordinator
         if coordinator.presentation == nil {
-            coordinator.presentation = editorStorage?.state(for: label)
+            coordinator.presentation = editorStorage?.state(for: storageKey ?? label)
             coordinator.collapsed = coordinator.presentation?.collapsed ?? []
         }
         let needsStyle = coordinator.fontSize != fontSize || coordinator.language != language
@@ -203,7 +235,7 @@ struct NativeCodeEditor: NSViewRepresentable {
         else { view.sizeToFit() }
         (scroll as? NativeEditorScrollView)?.updateDocumentSize()
         scroll.verticalRulerView?.needsDisplay = true
-        if let find { coordinator.refreshFind(in: scroll, state: find) }
+        if let find, isActive { coordinator.refreshFind(in: scroll, state: find) }
         if !coordinator.restored, let presentation = coordinator.presentation {
             coordinator.restored = true
             DispatchQueue.main.async { [weak scroll, weak view] in
@@ -217,9 +249,20 @@ struct NativeCodeEditor: NSViewRepresentable {
         }
     }
 
+    struct Configuration: Equatable {
+        let fontSize: Double
+        let wraps: Bool
+        let invisibles: Bool
+        let scrollBeyond: Bool
+        let editable: Bool
+        let language: SyntaxLanguage
+        let appearance: NSAppearance.Name
+    }
+
     @MainActor
     final class Coordinator: NSObject, NSTextViewDelegate, @preconcurrency NSLayoutManagerDelegate {
         var text: Binding<String>
+        var configuration: Configuration?
         var search = ""
         var updating = false
         var needsHighlight = false
@@ -230,7 +273,10 @@ struct NativeCodeEditor: NSViewRepresentable {
         var restored = false
         var collapsed: Set<Int> = []
         var projection = CodeProjection(source: "")
-        private var editedRange: NSRange?
+        private var edit: (range: NSRange, replacement: String, removed: String)?
+        private var lineIndex = TextLineIndex()
+        private var foldTask: Task<Void, Never>?
+        private var foldRevision = 0
         init(text: Binding<String>) { self.text = text }
 
         weak var findState: EditorFindState?
@@ -240,27 +286,32 @@ struct NativeCodeEditor: NSViewRepresentable {
         private var findRanges: [NSRange] = []
         private var findIndex: Int?
         private var findTask: Task<Void, Never>?
-        deinit { findTask?.cancel() }
+        deinit { findTask?.cancel(); foldTask?.cancel() }
 
         func refreshFind(in scroll: NSScrollView, state: EditorFindState) {
             guard let view = scroll.documentView as? NSTextView else { return }
             let query = state.isVisible ? state.query : TextSearchQuery()
             let scope = state.selectionOnly ? state.selection : nil
+            if query.text.isEmpty && findQuery.text.isEmpty {
+                findSource = projection.text
+                findScope = scope
+                return
+            }
             if !query.text.isEmpty, !collapsed.isEmpty {
                 collapsed.removeAll()
                 presentation?.collapsed = []
                 render(in: scroll)
             }
-            if query != findQuery || scope != findScope || view.string != findSource {
+            if query != findQuery || scope != findScope || projection.text != findSource {
                 findQuery = query
                 findScope = scope
-                findSource = view.string
+                findSource = projection.text
                 findIndex = nil
                 findTask?.cancel()
                 findRanges = []
-                let whole = NSRange(location: 0, length: (view.string as NSString).length)
+                let whole = NSRange(location: 0, length: (projection.text as NSString).length)
                 view.layoutManager?.removeTemporaryAttribute(.backgroundColor, forCharacterRange: whole)
-                let source = view.string
+                let source = projection.text
                 findTask = Task { [weak self, weak view, weak state] in
                     do {
                         let worker = Task.detached(priority: .userInitiated) { try query.matches(in: source, range: scope) }
@@ -299,16 +350,20 @@ struct NativeCodeEditor: NSViewRepresentable {
             let selection = view.selectedRange()
             let sourceSelection = projection.sourceOffset(selection.location)
             updating = true
+            foldTask?.cancel()
+            foldTask = nil
+            foldRevision += 1
+            lineIndex = TextLineIndex(text.wrappedValue)
             projection = CodeProjection(source: text.wrappedValue, collapsed: collapsed, syntax: language.folding)
             view.textStorage?.setAttributedString(SyntaxHighlighter.attributedString(text: projection.text, language: language, fontSize: fontSize))
             view.setSelectedRange(NSRange(location: min(projection.displayOffset(sourceSelection), (projection.text as NSString).length), length: 0))
             needsHighlight = false
-            (scroll.verticalRulerView as? CodeLineRuler)?.updateProjection(projection, folding: language.folding != .none)
+            (scroll.verticalRulerView as? CodeLineRuler)?.updateProjection(projection, folding: language.folding != .none, index: lineIndex)
             updating = false
         }
 
         func textView(_ textView: NSTextView, shouldChangeTextIn affectedCharRange: NSRange, replacementString: String?) -> Bool {
-            editedRange = NSRange(location: affectedCharRange.location, length: (replacementString as NSString?)?.length ?? 0)
+            edit = replacementString.map { (affectedCharRange, $0, (textView.string as NSString).substring(with: affectedCharRange)) }
             guard !updating, !collapsed.isEmpty, let replacementString, let scroll = textView.enclosingScrollView else { return true }
             let offset = projection.sourceOffset(affectedCharRange.location)
             let updated = projection.replacing(displayRange: affectedCharRange, with: replacementString)
@@ -326,15 +381,27 @@ struct NativeCodeEditor: NSViewRepresentable {
 
         func textDidChange(_ notification: Notification) {
             guard !updating, let view = notification.object as? NSTextView else { return }
+            // Apply the same UTF-16 edit to our immutable native snapshot. Bridging
+            // the entire mutable TextKit string per keystroke is linear in body size.
+            let source: String
+            if let edit, collapsed.isEmpty, let range = Range(edit.range, in: projection.source) {
+                var updated = projection.source
+                updated.replaceSubrange(range, with: edit.replacement)
+                source = updated
+            } else {
+                var snapshot = view.string
+                snapshot.makeContiguousUTF8()
+                source = snapshot
+            }
             // JSON tokens cannot cross an unescaped newline. Recolor only the edited
             // paragraphs, preserving TextKit's layout and the user's selection elsewhere.
             // Other grammars keep a full recolor because a tag can span several lines.
-            if let editedRange, let storage = view.textStorage, let scroll = view.enclosingScrollView,
+            if let edit, let storage = view.textStorage, let scroll = view.enclosingScrollView,
                language == .json || language == .plain || language == .http {
                 updating = true
-                let string = view.string as NSString
-                let start = min(editedRange.location, string.length)
-                let range = string.lineRange(for: NSRange(location: start, length: min(editedRange.length, string.length - start)))
+                let string = source as NSString
+                let start = min(edit.range.location, string.length)
+                let range = string.lineRange(for: NSRange(location: start, length: min((edit.replacement as NSString).length, string.length - start)))
                 let styled = SyntaxHighlighter.attributedString(text: string.substring(with: range), language: language, fontSize: fontSize)
                 storage.beginEditing()
                 storage.setAttributes([:], range: range)
@@ -342,14 +409,39 @@ struct NativeCodeEditor: NSViewRepresentable {
                     storage.setAttributes(attributes, range: NSRange(location: range.location + local.location, length: local.length))
                 }
                 storage.endEditing()
-                projection = CodeProjection(source: view.string, syntax: language.folding)
-                (scroll.verticalRulerView as? CodeLineRuler)?.updateProjection(projection, folding: language == .json)
+                lineIndex.replace(edit.range, with: edit.replacement)
+                if language != .json {
+                    projection = CodeProjection(unfolded: source)
+                } else if foldTask == nil, let updated = projection.updatingUnfoldedSource(source,
+                    range: edit.range, replacement: edit.replacement, removed: edit.removed) {
+                    projection = updated
+                } else {
+                    projection = CodeProjection(unfolded: source)
+                    scheduleFolds(in: scroll)
+                }
+                (scroll.verticalRulerView as? CodeLineRuler)?.updateProjection(projection, folding: language == .json, index: lineIndex)
                 updating = false
                 needsHighlight = false
             } else { needsHighlight = true }
-            editedRange = nil
-            text.wrappedValue = view.string
+            edit = nil
+            text.wrappedValue = source
         }
+        private func scheduleFolds(in scroll: NSScrollView) {
+            foldTask?.cancel()
+            foldRevision += 1
+            let revision = foldRevision
+            let source = projection.source
+            let syntax = language.folding
+            foldTask = Task { [weak self, weak scroll] in
+                let worker = Task.detached(priority: .userInitiated) { CodeProjection(source: source, syntax: syntax) }
+                let result = await withTaskCancellationHandler { await worker.value } onCancel: { worker.cancel() }
+                guard !Task.isCancelled, let self, let scroll, self.foldRevision == revision else { return }
+                self.projection = result
+                self.foldTask = nil
+                (scroll.verticalRulerView as? CodeLineRuler)?.updateProjection(result, folding: true, index: self.lineIndex)
+            }
+        }
+
         func textViewDidChangeSelection(_ notification: Notification) {
             if let view = notification.object as? NSTextView, let findState, !findState.isVisible {
                 let range = view.selectedRange()
@@ -469,7 +561,7 @@ private final class NativeEditorScrollView: NSScrollView {
     }
 
     func updateDocumentSize() {
-        guard !updatingDocumentSize, let text = documentView as? NSTextView,
+        guard !isHidden, !updatingDocumentSize, let text = documentView as? NSTextView,
               let manager = text.layoutManager, let container = text.textContainer else { return }
         updatingDocumentSize = true
         defer { updatingDocumentSize = false }
@@ -527,15 +619,13 @@ private final class CodeLineRuler: NSRulerView {
         if ruleThickness != width { ruleThickness = width }
     }
 
-    func updateProjection(_ projection: CodeProjection, folding: Bool) {
-        let source = projection.source
-        var starts = [0]
-        for (offset, unit) in source.utf16.enumerated() where unit == 10 { starts.append(offset + 1) }
+    func updateProjection(_ projection: CodeProjection, folding: Bool, index: TextLineIndex) {
+        let starts = index.starts
         let foldLines = Set(folding ? projection.folds.map(\.line) : [])
         var line = 0
-        let displayStarts = [0] + projection.text.utf16.enumerated().compactMap { $0.element == 10 ? $0.offset + 1 : nil }
+        let displayStarts = projection.collapsed.isEmpty ? starts : TextLineIndex(projection.text).starts
         lines = displayStarts.map { offset in
-            let original = projection.sourceOffset(offset)
+            let original = projection.collapsed.isEmpty ? offset : projection.sourceOffset(offset)
             while line + 1 < starts.count && starts[line + 1] <= original { line += 1 }
             return (offset, line, foldLines.contains(line))
         }
@@ -604,7 +694,7 @@ private final class CodeLineRuler: NSRulerView {
 final class CodeTextContainer: NSTextContainer {
     // Code punctuation defines wrapping opportunities independently of natural
     // language word boundaries. The storage remains the original editable text.
-    private var paragraph: (range: NSRange, text: NSString, font: NSFont, ascii: Bool, typesetter: CTTypesetter?)?
+    private var paragraph: (range: NSRange, lineStart: Int, text: NSString, font: NSFont, ascii: Bool, typesetter: CTTypesetter?)?
 
     func invalidateParagraph() { paragraph = nil }
 
@@ -617,21 +707,26 @@ final class CodeTextContainer: NSTextContainer {
         guard let storage = layoutManager?.textStorage, index < storage.length else { return rect }
         let font = storage.attribute(.font, at: index, effectiveRange: nil) as? NSFont
             ?? .monospacedSystemFont(ofSize: 12, weight: .regular)
-        if paragraph == nil || !NSLocationInRange(index, paragraph!.range) || paragraph!.font != font {
+        let advance = (" " as NSString).size(withAttributes: [.font: font]).width
+        // Shape enough context for several visual lines, never the entire minified document.
+        let contextLength = max(2048, Int(min(32768, rect.width / max(1, advance) * 8)))
+        if paragraph == nil || !NSLocationInRange(index, paragraph!.range) || paragraph!.font != font
+            || (NSMaxRange(paragraph!.range) < storage.length && NSMaxRange(paragraph!.range) - index < contextLength / 2) {
             let source = storage.string as NSString
-            let range = source.lineRange(for: NSRange(location: index, length: 0))
+            let logical = source.lineRange(for: NSRange(location: index, length: 0))
+            let end = min(NSMaxRange(logical), index + contextLength)
+            let range = source.rangeOfComposedCharacterSequences(for: NSRange(location: index, length: end - index))
             let text = source.substring(with: range) as NSString
             let ascii = (0..<text.length).allSatisfy { (32...126).contains(text.character(at: $0)) || text.character(at: $0) == 10 || text.character(at: $0) == 13 }
             let typesetter = ascii ? nil : CTTypesetterCreateWithAttributedStringAndOptions(NSAttributedString(string: text as String,
                 attributes: [.font: font]) as CFAttributedString, [kCTTypesetterOptionAllowUnboundedLayout: true] as CFDictionary)
-            paragraph = (range, text, font, ascii, typesetter)
+            paragraph = (range, logical.location, text, font, ascii, typesetter)
         }
         guard let paragraph else { return rect }
         let text = paragraph.text
         let start = index - paragraph.range.location
         let style = storage.attribute(.paragraphStyle, at: index, effectiveRange: nil) as? NSParagraphStyle
-        let indent = start == 0 ? (style?.firstLineHeadIndent ?? 0) : (style?.headIndent ?? 0)
-        let advance = (" " as NSString).size(withAttributes: [.font: font]).width
+        let indent = index == paragraph.lineStart ? (style?.firstLineHeadIndent ?? 0) : (style?.headIndent ?? 0)
         let available = max(1, rect.width - indent)
         var contentEnd = text.length
         while contentEnd > start && (text.character(at: contentEnd - 1) == 10 || text.character(at: contentEnd - 1) == 13) { contentEnd -= 1 }
