@@ -260,6 +260,9 @@ private struct WorkspaceSidebar: View {
             .disclosureGroupStyle(SidebarDisclosureStyle())
         }
         .scrollIndicators(.never)
+        .overlay {
+            if showsMaterial { SidebarSearchEmptyState(model: model, interface: interface) }
+        }
         .clipped()
         .focusable().focusEffectDisabled().focused($sidebarIsFocused)
         .onChange(of: interface.focusSidebarTrigger) {
@@ -303,6 +306,32 @@ private struct WorkspaceSidebar: View {
 
     }
 
+}
+
+private struct SidebarSearchEmptyState: View {
+    let model: WireboltModel
+    let interface: WorkspaceUIState
+
+    var body: some View {
+        let query = interface.sidebarFilter
+        if !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+           model.sidebarRows(query: query, collapsed: interface.collapsedSidebarCollections, expanded: interface.expandedSidebarGroups).isEmpty {
+            VStack(spacing: 10) {
+                Image(systemName: "magnifyingglass")
+                    .font(.system(size: 26))
+                    .accessibilityHidden(true)
+                Text("0 matches for “\(query)”")
+                    .font(.system(size: 13))
+                    .multilineTextAlignment(.center)
+                    .lineLimit(4)
+            }
+            .foregroundStyle(.secondary)
+            .padding(24)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .accessibilityElement(children: .combine)
+            .allowsHitTesting(false)
+        }
+    }
 }
 
 private struct WorkspaceNameEditor: View {
