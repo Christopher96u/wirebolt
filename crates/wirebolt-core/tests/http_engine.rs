@@ -1515,3 +1515,133 @@ async fn read_http1_request(stream: &mut tokio::net::TcpStream) -> Vec<u8> {
         }
     }
 }
+
+#[tokio::test]
+async fn redirect_cookies_are_sent_captured_and_isolated_between_runs() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        let mut requests = Vec::new();
+        for response in [
+            &b"HTTP/1.1 302 Found\r\nLocation: /final\r\nSet-Cookie: session=fixture; Path=/\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"[..],
+            &b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"[..],
+            &b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"[..],
+        ] {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            requests.push(read_http1_request(&mut stream).await);
+            stream.write_all(response).await.unwrap();
+            stream.shutdown().await.unwrap();
+        }
+        requests
+    });
+    let engine = HttpEngine::new(&HttpEngineConfig {
+        maximum_redirects: Some(3),
+        ..Default::default()
+    })
+    .unwrap();
+    let mut updates = Vec::new();
+    engine
+        .run_observed_with_cookies(
+            get_request(address, "/start"),
+            RunOptions::default(),
+            &RunCancellation::new(),
+            |_| {},
+            |_| StreamControl::Continue,
+            |url, headers| updates.push((url.clone(), headers.clone())),
+        )
+        .await
+        .unwrap();
+    assert_eq!(updates.len(), 1);
+    assert_eq!(updates[0].0.path(), "/start");
+    assert_eq!(updates[0].1["set-cookie"], "session=fixture; Path=/");
+    engine
+        .run(
+            get_request(address, "/separate-run"),
+            RunOptions::default(),
+            &RunCancellation::new(),
+            |_| StreamControl::Continue,
+        )
+        .await
+        .unwrap();
+    let requests = server.await.unwrap();
+    assert!(String::from_utf8_lossy(&requests[1]).contains("cookie: session=fixture"));
+    assert!(!String::from_utf8_lossy(&requests[2]).contains("cookie:"));
+}
+
+#[tokio::test]
+async fn cookies_are_reported_even_when_redirect_limit_fails() {
+    let (address, server) = spawn_http1_once(b"HTTP/1.1 302 Found\r\nLocation: /again\r\nSet-Cookie: session=fixture; Path=/\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").await;
+    let engine = HttpEngine::new(&HttpEngineConfig {
+        maximum_redirects: Some(0),
+        ..Default::default()
+    })
+    .unwrap();
+    let mut count = 0;
+    let result = engine
+        .run_observed_with_cookies(
+            get_request(address, "/start"),
+            RunOptions::default(),
+            &RunCancellation::new(),
+            |_| {},
+            |_| StreamControl::Continue,
+            |_, _| count += 1,
+        )
+        .await;
+    assert!(result.is_err());
+    assert_eq!(count, 1);
+    server.await.unwrap();
+}
+
+#[tokio::test]
+async fn concurrent_redirects_do_not_share_cookies_on_a_pooled_engine() {
+    async fn fixture(value: &str) -> (SocketAddr, JoinHandle<Vec<u8>>) {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let response = format!(
+            "HTTP/1.1 302 Found\r\nLocation: /final\r\nSet-Cookie: isolated={value}; Path=/\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+        );
+        let task = tokio::spawn(async move {
+            let (mut first, _) = listener.accept().await.unwrap();
+            read_http1_request(&mut first).await;
+            first.write_all(response.as_bytes()).await.unwrap();
+            first.shutdown().await.unwrap();
+            let (mut second, _) = listener.accept().await.unwrap();
+            let request = read_http1_request(&mut second).await;
+            tokio::time::sleep(Duration::from_millis(20)).await;
+            second
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+                .await
+                .unwrap();
+            request
+        });
+        (address, task)
+    }
+    let (first, first_server) = fixture("a").await;
+    let (second, second_server) = fixture("b").await;
+    let engine = HttpEngine::new(&HttpEngineConfig {
+        maximum_redirects: Some(3),
+        ..Default::default()
+    })
+    .unwrap();
+    let cancellation = RunCancellation::new();
+    let (a, b) = tokio::join!(
+        engine.run(
+            get_request(first, "/start"),
+            RunOptions::default(),
+            &cancellation,
+            |_| StreamControl::Continue
+        ),
+        engine.run(
+            get_request(second, "/start"),
+            RunOptions::default(),
+            &cancellation,
+            |_| StreamControl::Continue
+        ),
+    );
+    a.unwrap();
+    b.unwrap();
+    let a = String::from_utf8(first_server.await.unwrap()).unwrap();
+    let b = String::from_utf8(second_server.await.unwrap()).unwrap();
+    assert!(a.contains("cookie: isolated=a\r\n"));
+    assert!(b.contains("cookie: isolated=b\r\n"));
+}

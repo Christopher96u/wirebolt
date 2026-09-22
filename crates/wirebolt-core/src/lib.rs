@@ -49,7 +49,7 @@ pub use storage::{
     WorkspaceStore,
 };
 
-pub const STREAM_ABI_VERSION: u32 = 3;
+pub const STREAM_ABI_VERSION: u32 = 4;
 
 #[derive(Debug, Eq, PartialEq)]
 pub struct CoreHandshake {
@@ -78,7 +78,7 @@ mod tests {
             CoreHandshake {
                 product: "Wirebolt",
                 core_version: "0.1.0",
-                stream_abi_version: 3,
+                stream_abi_version: 4,
             }
         );
     }

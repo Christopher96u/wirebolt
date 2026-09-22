@@ -17,6 +17,7 @@ typedef struct wirebolt_run_callbacks {
     wirebolt_on_chunk_fn on_chunk;
     wirebolt_on_complete_fn on_complete;
     wirebolt_on_error_fn on_error;
+    wirebolt_on_head_fn on_cookies;
 } wirebolt_run_callbacks;
 
 uint32_t wirebolt_stream_abi_version(void);
@@ -35,7 +36,9 @@ uint8_t wirebolt_runtime_warmup(void);
  * remain valid only for the duration of each callback. Callbacks are serialized
  * in head -> chunks -> complete/error order. Do not free the session from a
  * callback; schedule cleanup after the terminal callback returns. Successful
- * runs are serialized as prepared -> head -> chunks -> complete.
+ * runs are serialized as prepared -> cookies* -> head -> chunks -> complete.
+ * Cookie JSON contains the response URL and Set-Cookie headers; it is runtime
+ * storage input, never a diagnostic snapshot. Cookies may also precede errors.
  */
 wirebolt_run_session *wirebolt_run_start(
     const uint8_t *input_json,

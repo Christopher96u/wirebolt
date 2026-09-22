@@ -83,6 +83,7 @@ public final class DocumentSession: Identifiable {
     public func consume(_ event: RunEvent, runID: RunID) async {
         guard activeRunID == runID else { return }
         switch event {
+        case .cookies: break
         case let .prepared(snapshot):
             preparedRun = snapshot
         case let .head(head):

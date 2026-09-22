@@ -1,3 +1,5 @@
+mod redirect_cookies;
+
 use std::{
     convert::Infallible,
     error::Error,
@@ -204,6 +206,7 @@ impl HttpEngine {
                     }),
             )
             .danger_accept_invalid_certs(!config.validate_tls)
+            .cookie_provider(Arc::new(redirect_cookies::ScopedCookies))
             .retry(retry::never())
             .default_headers(default_headers);
         if let Some(user_agent) = &config.user_agent {
@@ -275,11 +278,42 @@ impl HttpEngine {
         request: PreparedRequest,
         options: RunOptions,
         cancellation: &RunCancellation,
-        mut on_headers: H,
+        on_headers: H,
         on_chunk: F,
     ) -> Result<Run, RunError>
     where
         H: FnMut(&RunHead),
+        F: FnMut(&[u8]) -> StreamControl,
+    {
+        self.run_observed_with_cookies(
+            request,
+            options,
+            cancellation,
+            on_headers,
+            on_chunk,
+            |_, _| {},
+        )
+        .await
+    }
+
+    /// Runs a request and reports response cookies with their actual origins,
+    /// including intermediate redirects and cookies received before a failure.
+    /// Cookie notifications precede the final head or terminal error.
+    ///
+    /// # Errors
+    /// Returns the same errors as [`Self::run_observed`].
+    pub async fn run_observed_with_cookies<H, F, C>(
+        &self,
+        request: PreparedRequest,
+        options: RunOptions,
+        cancellation: &RunCancellation,
+        mut on_headers: H,
+        on_chunk: F,
+        mut on_cookies: C,
+    ) -> Result<Run, RunError>
+    where
+        H: FnMut(&RunHead),
+        C: FnMut(&url::Url, &HeaderMap),
         F: FnMut(&[u8]) -> StreamControl,
     {
         let started = Instant::now();
@@ -310,18 +344,21 @@ impl HttpEngine {
         let cancelled = cancellation.cancelled();
         tokio::pin!(cancelled);
 
-        let mut response = self
-            .send(
-                request,
-                RunTimers {
-                    read_timeout: options.read_timeout,
-                    progress: &progress,
-                    deadline: deadline.as_mut(),
-                    stall: stall.as_mut(),
-                    cancelled: cancelled.as_mut(),
-                },
-            )
-            .await?;
+        let (response, cookies) = redirect_cookies::capture(self.send(
+            request,
+            RunTimers {
+                read_timeout: options.read_timeout,
+                progress: &progress,
+                deadline: deadline.as_mut(),
+                stall: stall.as_mut(),
+                cancelled: cancelled.as_mut(),
+            },
+        ))
+        .await;
+        for (url, headers) in cookies {
+            on_cookies(&url, &headers);
+        }
+        let mut response = response?;
 
         let content_encoding = if auto_decode {
             response

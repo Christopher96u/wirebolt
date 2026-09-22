@@ -163,11 +163,7 @@ public final class OAuth2Service: NSObject, OAuth2Authorizing, ASWebAuthenticati
         var request = URLRequest(url: tokenURL)
         request.httpMethod = "POST"
         request.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
-        var components = URLComponents()
-        components.queryItems = form.sorted(by: { $0.key < $1.key }).map {
-            URLQueryItem(name: $0.key, value: $0.value)
-        }
-        request.httpBody = Data((components.percentEncodedQuery ?? "").utf8)
+        request.httpBody = Self.encodeForm(form)
         let configuration = URLSessionConfiguration.ephemeral
         configuration.waitsForConnectivity = false
         configuration.timeoutIntervalForRequest = 30
@@ -188,6 +184,15 @@ public final class OAuth2Service: NSObject, OAuth2Authorizing, ASWebAuthenticati
             scope: object["scope"] as? String
         )
         return (token, receipt)
+    }
+
+    nonisolated static func encodeForm(_ form: [String: String]) -> Data {
+        var components = URLComponents()
+        components.queryItems = form.sorted(by: { $0.key < $1.key }).map {
+            URLQueryItem(name: $0.key, value: $0.value)
+        }
+        // Query encoding leaves '+' literal; form decoders interpret it as a space.
+        return Data((components.percentEncodedQuery ?? "").replacingOccurrences(of: "+", with: "%2B").utf8)
     }
 
     private static func keychainSecret(named name: String) -> String? {

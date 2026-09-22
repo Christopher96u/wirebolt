@@ -51,7 +51,8 @@ final class RustRequestRunner: @unchecked Sendable, RequestRunner {
                 on_head: wireboltOnHead,
                 on_chunk: wireboltOnChunk,
                 on_complete: wireboltOnComplete,
-                on_error: wireboltOnError
+                on_error: wireboltOnError,
+                on_cookies: wireboltOnCookies
             )
             let startedSession = encoded.withUnsafeBytes { bytes in
                 wirebolt_run_start(
@@ -247,4 +248,10 @@ private func copiedData(_ bytes: UnsafePointer<UInt8>?, _ length: UInt) -> Data?
     guard length == 0 || bytes != nil else { return nil }
     guard let bytes else { return Data() }
     return Data(bytes: bytes, count: Int(length))
+}
+
+private let wireboltOnCookies: @convention(c) (UnsafeMutableRawPointer?, UnsafePointer<UInt8>?, UInt) -> Void = { context, bytes, length in
+    guard let box = callbackBox(context), let data = copiedData(bytes, length) else { return }
+    do { box.continuation.yield(.cookies(try JSONDecoder().decode(ResponseCookies.self, from: data))) }
+    catch { box.runner.cancel(runID: box.runID) }
 }

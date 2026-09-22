@@ -906,6 +906,7 @@ public struct PreparedRunSnapshot: Codable, Equatable, Sendable {
 public enum RunEvent: Equatable, Sendable {
     case prepared(PreparedRunSnapshot)
     case head(ResponseHead)
+    case cookies(ResponseCookies)
     case chunk(Data)
     case complete(RunCompletion)
 }
@@ -1055,4 +1056,10 @@ public extension RequestField {
             return field
         }
     }
+}
+
+/// Runtime cookie updates are deliberately separate from persisted response heads.
+public struct ResponseCookies: Decodable, Equatable, Sendable {
+    public let url: String
+    public let headers: [ResponseHeader]
 }

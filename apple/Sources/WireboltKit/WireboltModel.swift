@@ -283,10 +283,10 @@ public final class WireboltModel {
                     session.cancel(runID: runID)
                     return
                 }
-                if case let .head(head) = event,
-                   let url = effectiveURL
-                {
-                    session.setResponseCookies(await cookieJar.store(headers: head.headers, requestURL: url))
+                if case let .cookies(update) = event, let url = URL(string: update.url) {
+                    let received = await cookieJar.store(headers: update.headers, requestURL: url)
+                    guard session.activeRunID == runID else { return }
+                    session.setResponseCookies(session.responseCookies + received)
                 }
                 await session.consume(event, runID: runID)
             }
@@ -534,13 +534,25 @@ public final class WireboltModel {
         var draft = draft
         if draft.inheritsWorkspaceTransport { draft.transport = workspace.transport }
         let variables = activeVariables
+        let proxy: ProxyDocument = switch draft.proxy {
+        case .inherit: workspace.proxy ?? .system
+        case .direct: .direct
+        case .system: .system
+        case let .manual(value): value
+        }
         do {
             try await flushSecrets()
             let sources = draft.curlValueSources
             let values = try await runner.resolveValues(sources, variables: variables)
             guard sources.count == values.count else { throw RunFailure(kind: "export", issues: []) }
             let resolved = Dictionary(zip(sources, values), uniquingKeysWith: { first, _ in first })
-            return draft.curlCommand { resolved[$0]! }
+            let url = resolved[.literal(draft.url)]!
+            var credentials: [String] = []
+            if let references = proxy.curlRoute(for: url)?.credentials {
+                credentials = try await runner.resolveValues([.secret(references.username), .secret(references.password)], variables: variables)
+                guard credentials.count == 2 else { throw RunFailure(kind: "export", issues: []) }
+            }
+            return draft.curlCommand { resolved[$0]! } + proxy.curlArguments(for: url, credentials: credentials)
         } catch {
             operationFailure = (error as? RunFailure) ?? RunFailure(kind: "export", issues: [])
             return nil

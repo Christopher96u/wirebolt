@@ -23,6 +23,25 @@ struct ResolvedExportTests {
         #expect(draft.headers[0].value == .secret("token"))
     }
 
+    @Test("Export honors inherited proxy, request override and resolved URL scheme")
+    @MainActor
+    func proxyRouting() async throws {
+        let model = WireboltModel(runner: ExportResolver())
+        model.workspace.proxy = .manual(routes: [ProxyRouteDocument(destination: "https", endpoint: "http://proxy.test:8080", credentials: ProxyCredentialsDocument(username: "token", password: "token"))])
+        var draft = RequestDraft(url: "https://{{host}}/echo")
+        let command = try #require(await model.curlCommand(for: draft))
+        #expect(command.contains("--proxy 'http://proxy.test:8080' --noproxy ''"))
+        #expect(command.contains("--proxy-user 'fixture-secret:fixture-secret'"))
+        draft.proxy = .direct
+        let direct = try #require(await model.curlCommand(for: draft))
+        #expect(direct.contains("--noproxy '*'"))
+        #expect(!direct.contains("--proxy "))
+        draft.proxy = .inherit; draft.url = "http://example.com/echo"
+        let unmatched = try #require(await model.curlCommand(for: draft))
+        #expect(unmatched.contains("--noproxy '*'"))
+        #expect(!unmatched.contains("--proxy-user"))
+    }
+
     @Test("Failed resolution cannot produce an executable partial export")
     @MainActor
     func failedExport() async {

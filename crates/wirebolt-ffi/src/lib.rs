@@ -1392,6 +1392,7 @@ pub struct WireboltRunCallbacks {
     pub on_chunk: Option<extern "C" fn(*mut c_void, *const u8, usize) -> u8>,
     pub on_complete: Option<extern "C" fn(*mut c_void, *const u8, usize)>,
     pub on_error: Option<extern "C" fn(*mut c_void, *const u8, usize)>,
+    pub on_cookies: Option<extern "C" fn(*mut c_void, *const u8, usize)>,
 }
 
 #[derive(Debug)]
@@ -1726,7 +1727,7 @@ async fn execute_run_with_secrets<R>(
         .map(Into::into)
         .collect();
     let result = engine
-        .run_observed(
+        .run_observed_with_cookies(
             prepared,
             options,
             &cancellation,
@@ -1740,6 +1741,20 @@ async fn execute_run_with_secrets<R>(
                 } else {
                     StreamControl::Continue
                 }
+            },
+            |url, headers| {
+                let values: Vec<_> = headers
+                    .iter()
+                    .map(|(name, value)| ResponseHeaderDocument {
+                        name: name.as_str(),
+                        value: String::from_utf8_lossy(value.as_bytes()),
+                    })
+                    .collect();
+                emit_json(
+                    callbacks.on_cookies,
+                    context,
+                    &serde_json::json!({"url": url.as_str(), "headers": values}),
+                );
             },
         )
         .await;
@@ -2686,6 +2701,7 @@ mod tests {
     fn run_to_completion(input: &str) -> (Vec<String>, *mut CallbackState) {
         let state_pointer = Box::into_raw(Box::new(CallbackState::default()));
         let callbacks = WireboltRunCallbacks {
+            on_cookies: None,
             on_prepared: Some(record_prepared),
             on_head: Some(record_head),
             on_chunk: Some(record_chunk),

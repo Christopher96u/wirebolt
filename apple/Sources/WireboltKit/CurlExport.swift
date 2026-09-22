@@ -114,3 +114,27 @@ public extension RequestDraft {
         return (arguments + streams).joined(separator: " ")
     }
 }
+
+internal extension ProxyDocument {
+    func curlRoute(for url: String) -> ProxyRouteDocument? {
+        guard case let .manual(routes) = self,
+              let scheme = URL(string: url.trimmingCharacters(in: .whitespacesAndNewlines))?.scheme?.lowercased()
+        else { return nil }
+        return routes.first { $0.destination == "all" || $0.destination == scheme }
+    }
+
+    func curlArguments(for url: String, credentials: [String]) -> String {
+        func quote(_ value: String) -> String { "'" + value.replacingOccurrences(of: "'", with: "'\"'\"'") + "'" }
+        switch self {
+        case .system: return ""
+        case .direct: return " --noproxy '*'"
+        case .manual:
+            guard let route = curlRoute(for: url) else { return " --noproxy '*'" }
+            var arguments = " --proxy " + quote(route.endpoint) + " --noproxy ''"
+            if credentials.count == 2 {
+                arguments += " --proxy-user " + quote(credentials[0] + ":" + credentials[1])
+            }
+            return arguments
+        }
+    }
+}

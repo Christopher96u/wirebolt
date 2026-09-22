@@ -447,7 +447,8 @@ private enum PerformanceContract {
             on_head: performanceHeadCallback,
             on_chunk: performanceChunkCallback,
             on_complete: performanceTerminalCallback,
-            on_error: performanceTerminalCallback
+            on_error: performanceTerminalCallback,
+            on_cookies: nil
         )
 
         return try (0 ..< metricSamples).map { _ in
