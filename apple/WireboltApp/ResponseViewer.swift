@@ -701,6 +701,7 @@ private struct JSONTreeView: NSViewRepresentable {
     }
     func makeNSView(context: Context) -> NSScrollView {
         let scroll = NSScrollView()
+        CodeScroller.configure(scroll)
         let outline = NSOutlineView()
         outline.style = .plain
         outline.rowSizeStyle = .custom
@@ -724,7 +725,6 @@ private struct JSONTreeView: NSViewRepresentable {
         outline.delegate = context.coordinator
         scroll.documentView = outline
         scroll.hasVerticalScroller = true
-        scroll.autohidesScrollers = true
         scroll.drawsBackground = true
         scroll.backgroundColor = .textBackgroundColor
         updateNSView(scroll, context: context)

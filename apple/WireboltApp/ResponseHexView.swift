@@ -8,8 +8,8 @@ struct ResponseHexView: NSViewRepresentable {
 
     func makeNSView(context: Context) -> NSScrollView {
         let scroll = HexScrollView()
+        CodeScroller.configure(scroll)
         scroll.hasVerticalScroller = true
-        scroll.autohidesScrollers = true
         scroll.drawsBackground = true
         scroll.backgroundColor = .textBackgroundColor
         scroll.documentView = HexGridView()

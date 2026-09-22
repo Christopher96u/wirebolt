@@ -296,6 +296,29 @@ final class ProbeWindow: NSWindow { override var canBecomeKey: Bool { true } }
         let received = try Data(contentsOf: session.bodyStore!.url)
         precondition(received == Data(raw.utf8), "presentation must not change received bytes")
     }
+    struct Element {
+        let role: String
+        let name: String
+        let frame: NSRect
+    }
+    static func elements(_ object: Any, depth: Int = 0) -> [Element] {
+        guard depth < 30, let object = object as? NSObject else { return [] }
+        // macOS 27 can return NSAttributedString for nominally String AX
+        // labels. Preserve it rather than dropping names or force-bridging.
+        func value(_ key: String) -> Any? {
+            object.responds(to: NSSelectorFromString(key)) ? object.value(forKey: key) : nil
+        }
+        func text(_ key: String) -> String {
+            let raw = value(key)
+            return (raw as? NSAttributedString)?.string ?? (raw as? String) ?? ""
+        }
+        let name = ["accessibilityLabel", "accessibilityTitle", "accessibilityValue"]
+            .map(text).first { !$0.isEmpty } ?? ""
+        let current = Element(role: text("accessibilityRole"), name: name,
+            frame: (value("accessibilityFrame") as? NSValue)?.rectValue ?? .zero)
+        return [current] + (value("accessibilityChildren") as? [Any] ?? []).flatMap { elements($0, depth: depth + 1) }
+    }
+
     static func verifyInterface(root: URL) throws {
         let model = WireboltModel(runner: OfflineRunner(), history: HistoryRepository(root: root.appending(path: "history")),
             cookieJar: CookieJar(storageURL: root.appending(path: "cookies.json")))
@@ -308,28 +331,6 @@ final class ProbeWindow: NSWindow { override var canBecomeKey: Bool { true } }
         let (window, host, _) = mount(ContentView(model: model, interface: interface, loadsWorkspace: false), height: 580)
         defer { window.close() }
         spin(); flush(host)
-        struct Element {
-            let role: String
-            let name: String
-            let frame: NSRect
-        }
-        func elements(_ object: Any, depth: Int = 0) -> [Element] {
-            guard depth < 30, let object = object as? NSObject else { return [] }
-            // macOS 27 can return NSAttributedString for nominally String AX
-            // labels. Preserve it rather than dropping names or force-bridging.
-            func value(_ key: String) -> Any? {
-                object.responds(to: NSSelectorFromString(key)) ? object.value(forKey: key) : nil
-            }
-            func text(_ key: String) -> String {
-                let raw = value(key)
-                return (raw as? NSAttributedString)?.string ?? (raw as? String) ?? ""
-            }
-            let name = ["accessibilityLabel", "accessibilityTitle", "accessibilityValue"]
-                .map(text).first { !$0.isEmpty } ?? ""
-            let current = Element(role: text("accessibilityRole"), name: name,
-                frame: (value("accessibilityFrame") as? NSValue)?.rectValue ?? .zero)
-            return [current] + (value("accessibilityChildren") as? [Any] ?? []).flatMap { elements($0, depth: depth + 1) }
-        }
         // Enable the local accessibility tree without requiring permission to
         // inspect another process. These flags exist only in the test executable.
         NSApp.accessibilitySetValue(true, forAttribute: NSAccessibility.Attribute(rawValue: "AXEnhancedUserInterface"))
@@ -381,6 +382,55 @@ final class ProbeWindow: NSWindow { override var canBecomeKey: Bool { true } }
         print("interface_regressions=passed")
     }
 
+    static func requestClicks(root: URL) throws {
+        let model = WireboltModel(runner: OfflineRunner(), history: HistoryRepository(root: root.appending(path: "history")), cookieJar: CookieJar())
+        let interface = WorkspaceUIState(defaults: fixtureDefaults)
+        let requests = (0..<20).map { RequestLocation(collectionID: "clicks", request: RequestDraft(id: "r\($0)", name: "Click Request \($0)", url: "https://example.invalid/\($0)")) }
+        model.workspace.collections = [CollectionDraft(id: "clicks", name: "Click Audit", requests: requests)]
+        interface.activateSavedRequest(requests[0], model: model)
+        let (window, host, _) = mount(ContentView(model: model, interface: interface, loadsWorkspace: false), height: 720)
+        defer { window.close() }
+        window.makeKey()
+        NSApp.accessibilitySetValue(true, forAttribute: NSAccessibility.Attribute(rawValue: "AXEnhancedUserInterface"))
+        NSApp.accessibilitySetValue(true, forAttribute: NSAccessibility.Attribute(rawValue: "AXManualAccessibility"))
+        spin(0.4); flush(host)
+        func namePoint(_ index: Int) -> NSPoint {
+            guard let row = elements(window).first(where: { $0.name == "GET request, Click Request \(index)" }) else {
+                preconditionFailure("Request row is missing from the accessibility tree")
+            }
+            let rect = window.convertFromScreen(row.frame)
+            return NSPoint(x: rect.minX + min(100, rect.width * 0.7), y: rect.midY)
+        }
+        func click(_ point: NSPoint, count: Int = 1) {
+            for type in [NSEvent.EventType.leftMouseDown, .leftMouseUp] {
+                let event = NSEvent.mouseEvent(with: type, location: point, modifierFlags: [],
+                    timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber,
+                    context: nil, eventNumber: count, clickCount: count, pressure: type == .leftMouseDown ? 1 : 0)!
+                window.sendEvent(event)
+            }
+        }
+        var times: [Double] = []
+        for index in [1, 2, 3, 1, 4, 2] {
+            let point = namePoint(index)
+            let start = ContinuousClock.now
+            click(point)
+            while model.sessions.activeSession?.requestID != "r\(index)" && ms(start) < 2000 { spin(0.001) }
+            flush(host)
+            times.append(ms(start))
+            precondition(model.sessions.activeSession?.requestID == "r\(index)", "Name click must open its request")
+            spin(0.15)
+        }
+        record("request_name_click", times, budget: 150, details: ["path": "NSWindow mouse down/up on sidebar name through selection and layout", "double_click_interval_ms": NSEvent.doubleClickInterval * 1000])
+        spin(NSEvent.doubleClickInterval)
+        let point = namePoint(2)
+        click(point); spin(0.05); click(point, count: 2); spin(0.15); flush(host)
+        func fields(_ view: NSView) -> [NSTextField] {
+            (view as? NSTextField).map { [$0] } ?? view.subviews.flatMap { fields($0) }
+        }
+        precondition(fields(host).contains { $0.isEditable && $0.stringValue == "Click Request 2" }, "Double-click must still enter rename")
+        print("request_click_regressions=passed")
+    }
+
     static func main() throws {
         windowFirstContentBudget = try JSONDecoder().decode(Budgets.self,
             from: Data(contentsOf: URL(fileURLWithPath: "performance/budgets.json"))).nativeColdWindowFirstContentMilliseconds
@@ -404,6 +454,7 @@ final class ProbeWindow: NSWindow { override var canBecomeKey: Bool { true } }
         else if mode=="workspace" { try workspace(size,root:root) }
         else if mode=="response" { try response(size) }
         else if mode=="interface" { try verifyInterface(root: root) }
+        else if mode=="request-click" { try requestClicks(root: root) }
         else { preconditionFailure("unknown mode") }
         var usage=rusage(); getrusage(RUSAGE_SELF,&usage)
         let output:[String:Any]=["mode":mode,"size":size,"measurements":measurements,

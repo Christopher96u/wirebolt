@@ -13,6 +13,7 @@ swiftc -O -whole-module-optimization -g -parse-as-library -swift-version 6 -emit
   apple/Benchmarks/NativeWorkloads.swift "${wirebolt_app_inputs[@]}"
 if [[ "${1:-}" == build ]]; then exit 0; fi
 build/native-performance/workloads interface 1 build/native-performance/interface.json
+build/native-performance/workloads request-click 20 build/native-performance/request-click.json
 build/native-performance/workloads editor 10000 build/native-performance/editor.json
 build/native-performance/workloads editor 100000 build/native-performance/editor-large.json
 build/native-performance/workloads workspace 1000 build/native-performance/workspace.json

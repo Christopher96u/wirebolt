@@ -743,7 +743,13 @@ private final class CodeLayoutManager: NSLayoutManager {
 
 @MainActor
 final class CodeScroller: NSScroller {
+    private var hovered = false
+    private var dragging = false
+    private var hoverArea: NSTrackingArea?
+
+    // Keep a generous native hit target and stable viewport while drawing a slim thumb.
     override class func scrollerWidth(for controlSize: NSControl.ControlSize, scrollerStyle: NSScroller.Style) -> CGFloat { 14 }
+    override var isOpaque: Bool { false }
 
     static func configure(_ scroll: NSScrollView) {
         scroll.verticalScroller = CodeScroller()
@@ -752,18 +758,41 @@ final class CodeScroller: NSScroller {
         scroll.autohidesScrollers = false
     }
 
-    override func drawKnobSlot(in slotRect: NSRect, highlight flag: Bool) {
-        NSColor.textBackgroundColor.setFill()
-        slotRect.fill()
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let hoverArea { removeTrackingArea(hoverArea) }
+        let area = NSTrackingArea(rect: .zero, options: [.mouseEnteredAndExited, .activeInKeyWindow, .inVisibleRect], owner: self)
+        addTrackingArea(area)
+        hoverArea = area
     }
 
+    override func mouseEntered(with event: NSEvent) { hovered = true; needsDisplay = true }
+    override func mouseExited(with event: NSEvent) { hovered = false; needsDisplay = true }
+    override func mouseDown(with event: NSEvent) {
+        dragging = true; needsDisplay = true
+        defer { dragging = false; needsDisplay = true }
+        super.mouseDown(with: event)
+    }
+
+    override func drawKnobSlot(in slotRect: NSRect, highlight flag: Bool) {}
+
     override func drawKnob() {
+        guard isEnabled, knobProportion < 1 else { return }
         var knob = rect(for: .knob)
-        guard knobProportion < 1 else { return }
-        if bounds.height > bounds.width { knob.origin.x = 0; knob.size.width = bounds.width }
-        else { knob.origin.y = 0; knob.size.height = bounds.height }
-        NSColor.secondaryLabelColor.withAlphaComponent(0.4).setFill()
-        knob.fill()
+        let thickness: CGFloat = hovered || dragging ? 8 : 6
+        if bounds.height > bounds.width {
+            knob.origin.x = (bounds.width - thickness) / 2
+            knob.size.width = thickness
+            knob = knob.insetBy(dx: 0, dy: 2)
+        } else {
+            knob.origin.y = (bounds.height - thickness) / 2
+            knob.size.height = thickness
+            knob = knob.insetBy(dx: 2, dy: 0)
+        }
+        let contrast = NSWorkspace.shared.accessibilityDisplayShouldIncreaseContrast
+        let opacity: CGFloat = contrast ? (dragging ? 0.8 : 0.65) : dragging ? 0.5 : hovered ? 0.36 : 0.22
+        NSColor.labelColor.withAlphaComponent(opacity).setFill()
+        NSBezierPath(roundedRect: knob, xRadius: thickness / 2, yRadius: thickness / 2).fill()
     }
 }
 

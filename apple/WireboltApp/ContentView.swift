@@ -893,9 +893,10 @@ private struct SidebarRequestButton: View, @MainActor Equatable {
                 }
             }
         .buttonStyle(.plain)
-        .onTapGesture {
+        // Selection must not wait for the name's double-click rename gesture to fail.
+        .simultaneousGesture(TapGesture().onEnded {
             if !isRenaming && interface.renamingRequestID != location.id { action() }
-        }
+        })
         .accessibilityElement(children: isRenaming || interface.renamingRequestID == location.id ? .contain : .combine)
         .accessibilityAction(.default, action)
         .frame(height: 24)
