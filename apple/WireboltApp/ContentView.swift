@@ -68,6 +68,9 @@ struct ContentView: View {
         )
         .fileDialogMessage("Choose a collection or archive to import.")
         .fileDialogConfirmationLabel("Import")
+        .sheet(isPresented: $model.isShowingWorkspaceSettings) {
+            WorkspaceNetworkSettings(model: model)
+        }
         .sheet(isPresented: $model.isShowingGitCollaboration) {
             GitCollaborationView(model: model)
         }
@@ -165,6 +168,10 @@ struct ContentView: View {
 
         }
 
+        ToolbarItem(id: "workspace-settings", placement: .primaryAction) {
+            Button("Workspace Settings", systemImage: "gearshape") { model.isShowingWorkspaceSettings = true }
+                .labelStyle(.iconOnly).buttonStyle(.borderless).help("Workspace Settings")
+        }
         ToolbarItem(id: "response-placement", placement: .primaryAction) {
             Button {
                 interface.responseOrientation = interface.responseOrientation == .bottom ? .right : .bottom
@@ -444,6 +451,8 @@ private struct CollectionActionMenu: View {
                 interface.makeNewFolder(model: model)
             }
                 .keyboardShortcut("n", modifiers: [.command, .option])
+            Divider()
+            Button("Workspace Settings…") { model.isShowingWorkspaceSettings = true }
             Divider()
             WorkspaceImportMenu(interface: interface)
             Button("Export") {
@@ -1194,125 +1203,6 @@ private struct DocumentTabBar: View {
     }
 }
 
-private struct TransportSettingsEditor: View {
-    @Bindable var model: WireboltModel
-    @Bindable var session: DocumentSession
-    @Environment(\.dismiss) private var dismiss
-
-    var body: some View {
-        VStack(spacing: 0) {
-            Form {
-                Toggle("Use workspace defaults", isOn: $session.draft.inheritsWorkspaceTransport)
-                Text(session.draft.inheritsWorkspaceTransport ? "Editing Workspace Defaults" : "Editing Request Overrides")
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(.secondary)
-                Toggle("Validate TLS certificates", isOn: transport.validateTLS)
-                Toggle("Follow redirects", isOn: transport.followRedirects)
-                Stepper(
-                    "Maximum redirects: \(transport.wrappedValue.maximumRedirects)",
-                    value: transport.maximumRedirects,
-                    in: 0 ... 10
-                )
-                .disabled(!transport.wrappedValue.followRedirects)
-                LabeledContent("Total timeout") {
-                    TextField(
-                        "Milliseconds",
-                        value: transport.totalTimeoutMS,
-                        format: .number
-                    )
-                    .frame(width: 120)
-                    Text("ms")
-                }
-                LabeledContent("Read timeout") {
-                    TextField(
-                        "Milliseconds",
-                        value: transport.readTimeoutMS,
-                        format: .number
-                    )
-                    .frame(width: 120)
-                    Text("ms")
-                }
-                TextField("Client certificate secret", text: Binding(
-                    get: { transport.wrappedValue.clientCertificateReference ?? "" },
-                    set: { transport.wrappedValue.clientCertificateReference = $0.isEmpty ? nil : $0 }
-                ))
-                Button("Import Client Identity PEM…", action: importClientIdentity)
-                    .disabled(transport.wrappedValue.clientCertificateReference?.isEmpty != false)
-                LabeledContent("Custom CA bundle") {
-                    HStack {
-                        TextField("System trust store", text: Binding(
-                            get: { transport.wrappedValue.customCAPath ?? "" },
-                            set: { transport.wrappedValue.customCAPath = $0.isEmpty ? nil : $0 }
-                        ))
-                        Button("Choose…", action: chooseCustomCA)
-                    }
-                }
-                Text("Client identities are PEM bundles read only from Keychain; private keys are never written to the workspace.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                Text("A timeout of 0 disables that deadline. Redirects are capped at 10.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-            .formStyle(.grouped)
-            Divider()
-            HStack {
-                Spacer()
-                Button("Done") {
-                    Task { await model.saveWorkspaceTransport() }
-                    dismiss()
-                }
-                    .keyboardShortcut(.defaultAction)
-            }
-            .padding(12)
-        }
-        .frame(width: 520, height: 500)
-    }
-
-    private var transport: Binding<TransportSettings> {
-        Binding(
-            get: {
-                session.draft.inheritsWorkspaceTransport
-                    ? model.workspace.transport
-                    : session.draft.transport
-            },
-            set: { value in
-                if session.draft.inheritsWorkspaceTransport {
-                    model.workspace.transport = value
-                } else {
-                    session.draft.transport = value
-                }
-            }
-        )
-    }
-
-    private func chooseCustomCA() {
-        let panel = NSOpenPanel()
-        panel.canChooseDirectories = false
-        panel.canChooseFiles = true
-        panel.allowsMultipleSelection = false
-        panel.allowedContentTypes = [.data]
-        if panel.runModal() == .OK {
-            transport.wrappedValue.customCAPath = panel.url?.path
-        }
-    }
-
-    private func importClientIdentity() {
-        guard let reference = transport.wrappedValue.clientCertificateReference,
-              reference.isEmpty == false
-        else { return }
-        let panel = NSOpenPanel()
-        panel.canChooseDirectories = false
-        panel.canChooseFiles = true
-        panel.allowsMultipleSelection = false
-        panel.allowedContentTypes = [.data]
-        guard panel.runModal() == .OK, let url = panel.url,
-              let material = try? String(contentsOf: url, encoding: .utf8)
-        else { return }
-        Task { await model.saveSecret(name: reference, value: material) }
-    }
-}
-
 private struct DocumentTabButton: View {
     let tab: DocumentSession
     let isSelected: Bool
@@ -1441,6 +1331,8 @@ private struct RequestWorkspace: View {
             AuthenticationEditor(model: model, session: session, authentication: $session.draft.authentication)
         case .body:
             BodyEditor(requestBody: $session.draft.body, headers: $session.draft.headers)
+        case .settings:
+            NetworkSettingsPage(model: model, scope: .request, session: session).id(session.id)
         case .note:
             BodyTextEditor(text: $session.note, label: "Note")
         }
@@ -1464,7 +1356,7 @@ private struct WebSocketRequestWorkspace: View {
     var body: some View {
         VStack(spacing: 0) {
             HStack(spacing: 10) {
-                ForEach([RequestPanelSection.body, .params, .headers, .auth, .note]) { section in
+                ForEach([RequestPanelSection.body, .params, .headers, .auth, .note, .settings]) { section in
                     PanelTabButton(
                         title: section == .body ? "Message" : section.rawValue,
                         badge: badge(for: section),
@@ -1511,6 +1403,8 @@ private struct WebSocketRequestWorkspace: View {
             FieldEditor(title: "Header List", fields: $session.draft.headers, kind: .header)
         case .auth:
             AuthenticationEditor(model: model, session: session, authentication: $session.draft.authentication)
+        case .settings:
+            NetworkSettingsPage(model: model, scope: .request, session: session).id(session.id)
         case .note:
             BodyTextEditor(text: $session.note, label: "Note")
         }
@@ -1584,7 +1478,7 @@ private struct WebSocketRequestWorkspace: View {
         switch section {
         case .params: session.draft.query.filter(\.enabled).count
         case .headers: session.draft.headers.filter(\.enabled).count
-        case .body, .auth, .note: nil
+        case .body, .auth, .note, .settings: nil
         }
     }
 }
@@ -1638,6 +1532,9 @@ private struct RequestURLBar: View {
                 .onSubmit(send)
                 .accessibilityLabel("Request URL")
 
+            ProxyConnectionIndicator(model: model, session: session) {
+                interface.presentation(for: session).requestSection = .settings
+            }
             InlineResponseStatus(session: session)
             if session.kind == .webSocket && session.socket.status == .connected {
                 Label("101 Switching Protocols", systemImage: "info.circle.fill")
@@ -2070,7 +1967,7 @@ private struct RequestSectionBar: View {
         switch section {
         case .params: session.draft.query.filter(\.enabled).count
         case .headers: session.draft.headers.filter(\.enabled).count
-        case .auth, .body, .note: nil
+        case .auth, .body, .note, .settings: nil
         }
     }
 
@@ -2078,7 +1975,7 @@ private struct RequestSectionBar: View {
         switch interface.requestSection {
         case .params: $session.draft.query
         case .headers: $session.draft.headers
-        case .body, .auth, .note: nil
+        case .body, .auth, .note, .settings: nil
         }
     }
 

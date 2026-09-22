@@ -62,3 +62,27 @@ and Cask to `Christopher96u/homebrew-tap`; the source repository remains private
 Release notes and the distribution repository description stay empty. An interrupted
 publication can be retried with the same package without replacing an existing asset.
 These betas use ad-hoc signing, so macOS requires approval on first launch.
+
+### Proxy settings
+
+Configure **Settings → Network** for the app default on this Mac, use the
+**Workspace Settings** gear for a workspace override, or open a request's
+**Settings** tab for a request override. The precedence is request → workspace
+→ app default. New installations use the system proxy.
+
+Choose **Inherit**, **System**, **Direct — No proxy**, or **Manual**. Inherit is
+available at workspace and request scope; Direct bypasses parent proxies, and
+System explicitly uses macOS settings. Manual supports HTTP, HTTPS and SOCKS,
+with separate routes for HTTP and HTTPS destinations. An unmatched destination
+connects directly; proxy connection failures never trigger a direct retry.
+
+Save app/workspace changes using **Save**. For a request, use **Apply to request**
+and then save the request with ⌘S. The indicator beside Send shows the current
+policy and its source; the response's **Request** tab records the policy captured
+for that execution. HTTP and WebSocket execution and Copy cURL use the same
+inheritance. Reconnect an open WebSocket to apply a new policy.
+
+App defaults stay local. Workspace/request proxy definitions are shareable files;
+usernames and passwords are kept in Keychain, with only references in those files.
+Use **Test connection** with an explicit URL for a cancellable HEAD probe without
+request auth, headers, body or cookies. Host exclusions are not yet exposed.

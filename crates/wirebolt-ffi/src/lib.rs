@@ -231,6 +231,9 @@ struct SavedEnvironmentDocument {
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "snake_case", tag = "kind")]
 enum WorkspaceCommandDocument {
+    SaveWorkspaceProxy {
+        proxy: Option<ProxyMode>,
+    },
     SaveWorkspaceSettings {
         transport: TransportSettings,
     },
@@ -734,6 +737,20 @@ impl WorkspaceBridge {
         command: WorkspaceCommandDocument,
     ) -> Result<(&'static str, Vec<String>), WorkspaceBridgeError> {
         match command {
+            WorkspaceCommandDocument::SaveWorkspaceProxy { proxy } => {
+                let mut workspace = self
+                    .store
+                    .load()
+                    .map_err(|_| WorkspaceBridgeError::operation("workspace could not be loaded"))?
+                    .workspace;
+                workspace.proxy = proxy;
+                self.store
+                    .save(&WorkspaceDocument::Workspace(workspace))
+                    .map_err(|_| {
+                        WorkspaceBridgeError::operation("workspace proxy could not be saved")
+                    })?;
+                Ok(("workspace", vec!["proxy".to_owned()]))
+            }
             WorkspaceCommandDocument::SaveWorkspaceSettings { transport } => {
                 let mut workspace = self
                     .store
@@ -1429,6 +1446,8 @@ struct RunInput {
     #[serde(default)]
     workspace_proxy: Option<ProxyMode>,
     #[serde(default)]
+    app_proxy: Option<ProxyMode>,
+    #[serde(default)]
     request_proxy: Option<ProxyMode>,
     #[serde(default = "default_total_timeout_ms")]
     total_timeout_ms: u64,
@@ -1501,6 +1520,7 @@ struct PreparedRunSnapshotDocument {
     headers: Vec<PreparedHeaderDocument>,
     body: PreparedBodyDocument,
     transport: TransportSettings,
+    proxy: serde_json::Value,
 }
 
 #[derive(Debug, Serialize)]
@@ -1873,7 +1893,9 @@ fn prepare_protocol_run<R: SecretResolver + ?Sized>(
         kind: "invalid_request",
         issues: error.issues.into_iter().map(Into::into).collect(),
     })?;
-    let proxy = ProxyPolicy::new(input.workspace_proxy).resolve(request.proxy_override.as_ref());
+    let proxy = ProxyPolicy::new(input.workspace_proxy)
+        .with_app_default(input.app_proxy)
+        .resolve(request.proxy_override.as_ref());
     let config = HttpEngineConfig {
         validate_tls: request.transport.validate_tls,
         maximum_redirects: request
@@ -1890,7 +1912,7 @@ fn prepare_protocol_run<R: SecretResolver + ?Sized>(
     .map_err(|_| RunFailureDocument::new("tls_configuration"))?;
     let engine = shared_http_engine(&proxy, &config, secrets)
         .map_err(|error| RunFailureDocument::from_run_error(&error))?;
-    let snapshot = prepared_run_snapshot(&prepared, request.transport);
+    let snapshot = prepared_run_snapshot(&prepared, request.transport, &proxy);
     Ok((prepared, engine, snapshot))
 }
 
@@ -1907,6 +1929,7 @@ fn shared_http_engine<R: SecretResolver + ?Sized>(
 fn prepared_run_snapshot(
     prepared: &wirebolt_core::PreparedRequest,
     transport: TransportSettings,
+    proxy: &ResolvedProxy,
 ) -> PreparedRunSnapshotDocument {
     let headers = if prepared.header_names_are_sensitive() {
         vec![PreparedHeaderDocument {
@@ -1956,6 +1979,21 @@ fn prepared_run_snapshot(
             redacted,
         },
         transport,
+        proxy: serde_json::json!({
+            "configuration": match proxy.mode() {
+                ProxyMode::Direct => serde_json::json!({"mode": "direct"}),
+                ProxyMode::System => serde_json::json!({"mode": "system"}),
+                ProxyMode::Manual(_) => serde_json::json!({"mode": "manual", "routes": proxy.diagnostic().routes().iter().map(|route| serde_json::json!({
+                    "destination": route.destination(), "endpoint": route.endpoint()
+                })).collect::<Vec<_>>() }),
+            },
+            "source": match proxy.source() {
+                wirebolt_core::ProxySource::Request => "request",
+                wirebolt_core::ProxySource::Workspace => "workspace",
+                wirebolt_core::ProxySource::AppDefault => "app_default",
+                wirebolt_core::ProxySource::SystemDefault => "system_default",
+            }
+        }),
     }
 }
 
@@ -2237,6 +2275,122 @@ mod tests {
         thread,
         time::Duration,
     };
+
+    #[test]
+    fn workspace_proxy_commands_round_trip_and_reset_without_changing_transport() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().to_string_lossy().into_owned();
+        let mut workspace = Workspace::new("Proxy fixture");
+        workspace.transport.total_timeout_ms = 123;
+        WorkspaceStore::create(directory.path(), &workspace).unwrap();
+        let bridge = WorkspaceBridge::open_or_create(path.clone(), "Proxy fixture".into()).unwrap();
+        let proxy = serde_json::json!({"mode":"manual","routes":[{"destination":"all","endpoint":"http://localhost:8080"}]});
+        bridge
+            .apply_workspace_command(
+                &serde_json::json!({"kind":"save_workspace_proxy","proxy":proxy}).to_string(),
+            )
+            .unwrap();
+        let reopened = WorkspaceBridge::open_or_create(path, "Proxy fixture".into()).unwrap();
+        let snapshot: serde_json::Value =
+            serde_json::from_str(&reopened.snapshot_json().unwrap()).unwrap();
+        assert_eq!(snapshot["proxy"]["mode"], "manual");
+        assert_eq!(snapshot["transport"]["total_timeout_ms"], 123);
+        reopened
+            .apply_workspace_command(r#"{"kind":"save_workspace_proxy","proxy":null}"#)
+            .unwrap();
+        let reset: serde_json::Value =
+            serde_json::from_str(&reopened.snapshot_json().unwrap()).unwrap();
+        assert!(reset["proxy"].is_null());
+        assert_eq!(reset["transport"]["total_timeout_ms"], 123);
+    }
+
+    #[test]
+    fn a_failed_app_proxy_never_retries_the_destination_directly() {
+        let destination = TcpListener::bind("127.0.0.1:0").unwrap();
+        destination.set_nonblocking(true).unwrap();
+        let unused = TcpListener::bind("127.0.0.1:0").unwrap();
+        let proxy_address = unused.local_addr().unwrap();
+        drop(unused);
+        let input = serde_json::json!({"method":"GET", "url":format!("http://{}/must-not-arrive", destination.local_addr().unwrap()),
+            "app_proxy":{"mode":"manual", "routes":[{"destination":"all", "endpoint":format!("http://{proxy_address}")}]}});
+        let (events, pointer) = run_to_completion(&input.to_string());
+        // SAFETY: The worker has joined and this is the sole free of its context.
+        let state = unsafe { Box::from_raw(pointer) };
+        assert_eq!(events, ["prepared", "error"]);
+        assert_eq!(
+            state.failure.lock().unwrap().as_ref().unwrap()["kind"],
+            "connection"
+        );
+        assert!(
+            matches!(destination.accept(), Err(error) if error.kind() == std::io::ErrorKind::WouldBlock)
+        );
+    }
+
+    #[test]
+    fn app_proxy_routes_over_the_stream_bridge_and_request_direct_bypasses_it() {
+        for direct in [false, true] {
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            listener.set_nonblocking(true).unwrap();
+            let address = listener.local_addr().unwrap();
+            let server = thread::spawn(move || {
+                let deadline = std::time::Instant::now() + Duration::from_secs(5);
+                let mut stream = loop {
+                    if let Ok((stream, _)) = listener.accept() {
+                        break stream;
+                    }
+                    assert!(
+                        std::time::Instant::now() < deadline,
+                        "proxy was never reached"
+                    );
+                    thread::sleep(Duration::from_millis(5));
+                };
+                stream
+                    .set_read_timeout(Some(Duration::from_secs(2)))
+                    .unwrap();
+                let mut bytes = [0_u8; 4096];
+                let count = stream.read(&mut bytes).unwrap();
+                stream
+                    .write_all(
+                        b"HTTP/1.1 200 OK\r\nContent-Length: 4\r\nConnection: close\r\n\r\npong",
+                    )
+                    .unwrap();
+                String::from_utf8_lossy(&bytes[..count]).into_owned()
+            });
+            let endpoint = if direct {
+                "http://127.0.0.1:9".to_owned()
+            } else {
+                format!("http://{address}")
+            };
+            let url = if direct {
+                format!("http://{address}/proxy-test")
+            } else {
+                "http://127.0.0.1:9/proxy-test".to_owned()
+            };
+            let mut input = serde_json::json!({"method":"GET","url":url,"app_proxy":{"mode":"manual","routes":[{"destination":"all","endpoint":endpoint}]}});
+            if direct {
+                input["request_proxy"] = serde_json::json!({"mode":"direct"});
+            }
+            let (events, pointer) = run_to_completion(&input.to_string());
+            // SAFETY: run_to_completion joined the worker and this is the sole free.
+            let state = unsafe { Box::from_raw(pointer) };
+            assert_eq!(events, ["prepared", "head", "chunk:pong", "complete"]);
+            let snapshot = state.prepared.lock().unwrap().clone().unwrap();
+            assert_eq!(
+                snapshot["proxy"]["source"],
+                if direct { "request" } else { "app_default" }
+            );
+            assert_eq!(
+                snapshot["proxy"]["configuration"]["mode"],
+                if direct { "direct" } else { "manual" }
+            );
+            let request = server.join().unwrap();
+            assert!(request.starts_with(if direct {
+                "GET /proxy-test "
+            } else {
+                "GET http://127.0.0.1:9/proxy-test "
+            }));
+        }
+    }
 
     #[test]
     fn imports_after_reopening_keep_previously_imported_collections() {
@@ -2727,6 +2881,7 @@ mod tests {
     struct CallbackState {
         events: Mutex<Vec<String>>,
         failure: Mutex<Option<serde_json::Value>>,
+        prepared: Mutex<Option<serde_json::Value>>,
         terminal: Condvar,
     }
 
@@ -2755,6 +2910,7 @@ mod tests {
             serde_json::from_slice(callback_bytes(json, length)).expect("prepared snapshot JSON");
         assert_eq!(document["method"], "GET");
         assert!(document["headers"].is_array());
+        *state.prepared.lock().unwrap() = Some(document);
         state
             .events
             .lock()

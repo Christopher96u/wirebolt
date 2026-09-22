@@ -633,6 +633,7 @@ public enum WorkspaceNodeKind: String, Codable, Equatable, Sendable {
 }
 
 public enum WorkspaceCommand: Equatable, Sendable {
+    case saveWorkspaceProxy(ProxyDocument?)
     case saveWorkspaceSettings(TransportSettings)
     case createCollection(CollectionDraft)
     case renameCollection(id: String, name: String)
@@ -896,6 +897,7 @@ public struct PreparedBodySnapshot: Codable, Equatable, Sendable {
 }
 
 public struct PreparedRunSnapshot: Codable, Equatable, Sendable {
+    public var proxy: EffectiveProxy? = nil
     public let method: String
     public let url: String
     public let headers: [PreparedHeaderSnapshot]
@@ -919,6 +921,7 @@ public struct RunInput: Encodable, Sendable {
     public let authentication: RequestAuthentication
     public let body: RequestBody
     public let variables: [String: ValueSource]
+    public let appProxy: ProxyDocument?
     public let workspaceProxy: ProxyDocument?
     public let requestProxy: ProxyDocument?
     public let totalTimeoutMS: UInt64
@@ -932,6 +935,7 @@ public struct RunInput: Encodable, Sendable {
 
     enum CodingKeys: String, CodingKey {
         case method, url, query, headers, authentication, body, variables
+        case appProxy = "app_proxy"
         case workspaceProxy = "workspace_proxy"
         case requestProxy = "request_proxy"
         case totalTimeoutMS = "total_timeout_ms"
@@ -947,7 +951,8 @@ public struct RunInput: Encodable, Sendable {
     public init(
         draft: RequestDraft,
         variables: [String: ValueSource],
-        workspaceProxy: ProxyDocument? = nil
+        workspaceProxy: ProxyDocument? = nil,
+        appProxy: ProxyDocument? = nil
     ) {
         method = draft.method.rawValue
         url = draft.url
@@ -956,6 +961,7 @@ public struct RunInput: Encodable, Sendable {
         authentication = draft.authentication
         body = draft.body
         self.variables = variables
+        self.appProxy = appProxy
         self.workspaceProxy = workspaceProxy
         requestProxy = switch draft.proxy {
         case .inherit: nil

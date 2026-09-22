@@ -78,13 +78,23 @@ impl From<&ProxyMode> for ProxyModeKind {
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct ProxyPolicy {
+    app: Option<ProxyMode>,
     workspace: Option<ProxyMode>,
 }
 
 impl ProxyPolicy {
     #[must_use]
     pub const fn new(workspace: Option<ProxyMode>) -> Self {
-        Self { workspace }
+        Self {
+            app: None,
+            workspace,
+        }
+    }
+
+    #[must_use]
+    pub fn with_app_default(mut self, app: Option<ProxyMode>) -> Self {
+        self.app = app;
+        self
     }
 
     #[must_use]
@@ -106,6 +116,12 @@ impl ProxyPolicy {
                 source: ProxySource::Workspace,
             };
         }
+        if let Some(mode) = &self.app {
+            return ResolvedProxy {
+                mode: mode.clone(),
+                source: ProxySource::AppDefault,
+            };
+        }
         ResolvedProxy {
             mode: ProxyMode::System,
             source: ProxySource::SystemDefault,
@@ -115,6 +131,7 @@ impl ProxyPolicy {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ProxySource {
+    AppDefault,
     SystemDefault,
     Workspace,
     Request,

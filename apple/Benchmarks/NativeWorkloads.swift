@@ -382,6 +382,97 @@ final class ProbeWindow: NSWindow { override var canBecomeKey: Bool { true } }
         print("interface_regressions=passed")
     }
 
+    static func proxyScreenshots(root: URL) throws {
+        let model = WireboltModel(runner: OfflineRunner(), history: HistoryRepository(root: root.appending(path: "history")), cookieJar: CookieJar())
+        model.workspace.name = "Demo workspace"
+        let manual = ProxyDocument.manual(routes: [ProxyRouteDocument(destination: "all", endpoint: "http://127.0.0.1:18766")])
+        try model.proxyPreferences.save(manual)
+        model.settingsTab = "network"
+        let output = root.deletingLastPathComponent()
+        func capture<V: View>(_ view: V, name: String, width: CGFloat, height: CGFloat) throws {
+            let (window, host, _) = mount(view, width: width, height: height)
+            defer { window.close() }
+            spin(0.15); flush(host)
+            guard let bitmap = host.bitmapImageRepForCachingDisplay(in: host.bounds) else { preconditionFailure("Could not capture native view") }
+            host.cacheDisplay(in: host.bounds, to: bitmap)
+            try bitmap.representation(using: .png, properties: [:])!.write(to: output.appending(path: name + ".png"))
+        }
+        try capture(WireboltSettingsView(model: model), name: "01-app-default", width: 620, height: 570)
+        try capture(WorkspaceNetworkSettings(model: model), name: "02-workspace-inherited", width: 590, height: 580)
+        model.workspace.proxy = manual
+        try capture(WorkspaceNetworkSettings(model: model), name: "03-workspace-manual", width: 590, height: 680)
+        let session = model.sessions.open(draft: RequestDraft(name: "Local API", url: "http://127.0.0.1:18765/json"))
+        let interface = WorkspaceUIState(defaults: fixtureDefaults)
+        interface.responseOrientation = .right
+        interface.synchronizeSelection(model: model)
+        interface.presentation(for: session).requestSection = .settings
+        try capture(ContentView(model: model, interface: interface, loadsWorkspace: false), name: "04-request-inherited", width: 1248, height: 760)
+        session.draft.proxy = .direct
+        try capture(ContentView(model: model, interface: interface, loadsWorkspace: false), name: "05-request-direct", width: 1248, height: 760)
+        let credentials = ProxyCredentialsDocument(username: "demo.proxy.user", password: "demo.proxy.password")
+        session.draft.proxy = .manual(.manual(routes: [ProxyRouteDocument(destination: "all", endpoint: "socks5h://localhost:1080", credentials: credentials)]))
+        try capture(NetworkSettingsPage(model: model, scope: .request, session: session), name: "06-request-authentication", width: 590, height: 680)
+        print("native_proxy_screenshots=written")
+    }
+
+    static func proxySettings(root: URL) throws {
+        let model = WireboltModel(runner: OfflineRunner(), history: HistoryRepository(root: root.appending(path: "history")), cookieJar: CookieJar())
+        try model.proxyPreferences.save(.manual(routes: [ProxyRouteDocument(destination: "all", endpoint: "http://localhost:8080")]))
+        let session = model.sessions.open(draft: RequestDraft(name: "Proxy fixture", url: "https://example.invalid"))
+        let (window, host, _) = mount(NetworkSettingsPage(model: model, scope: .request, session: session), width: 590, height: 850)
+        defer { window.close() }
+        NSApp.accessibilitySetValue(true, forAttribute: NSAccessibility.Attribute(rawValue: "AXEnhancedUserInterface"))
+        NSApp.accessibilitySetValue(true, forAttribute: NSAccessibility.Attribute(rawValue: "AXManualAccessibility"))
+        spin(); flush(host)
+        precondition(elements(host).contains { $0.name.contains("Source: App default") }, "Request must explain inherited app policy")
+        precondition(session.draft.proxy == .inherit && model.workspace.proxy == nil)
+        session.draft.proxy = .manual(.manual(routes: [ProxyRouteDocument(destination: "all", endpoint: "http://localhost:8080")]))
+        spin(); flush(host)
+        for width in [590.0, 390.0] {
+            window.setContentSize(NSSize(width: width, height: 850))
+            spin(); flush(host)
+            let frame = window.convertToScreen(host.convert(host.bounds, to: nil))
+            let tree = elements(host)
+            for name in ["Proxy host", "Proxy port", "Proxy protocol"] {
+                guard let field = tree.first(where: { $0.name == name }) else { preconditionFailure("Missing proxy field: \(name)") }
+                precondition(field.frame.minX >= frame.minX && field.frame.maxX <= frame.maxX, "Proxy field clipped at \(width): \(name)")
+            }
+        }
+        window.setContentSize(NSSize(width: 590, height: 850))
+        spin(); flush(host)
+        func fields(_ view: NSView) -> [NSTextField] {
+            (view as? NSTextField).map { [$0] } ?? view.subviews.flatMap { fields($0) }
+        }
+        guard let hostField = fields(host).first(where: { $0.isEditable && $0.stringValue == "localhost" }) else {
+            preconditionFailure("Proxy host must be a native editable field")
+        }
+        window.makeKey()
+        hostField.selectText(nil)
+        guard let editor = hostField.currentEditor() as? NSTextView else { preconditionFailure("Proxy host must accept text input") }
+        editor.insertText("127.0.0.1", replacementRange: NSRange(location: 0, length: editor.string.utf16.count))
+        window.makeFirstResponder(nil)
+        spin(); flush(host)
+        guard let portField = fields(host).first(where: { $0.isEditable && $0.stringValue == "8080" }) else { preconditionFailure("Missing proxy port") }
+        portField.selectText(nil)
+        guard let portEditor = portField.currentEditor() as? NSTextView else { preconditionFailure("Port must accept input") }
+        portEditor.insertText("12345", replacementRange: NSRange(location: 0, length: portEditor.string.utf16.count))
+        window.makeFirstResponder(nil)
+        spin(); flush(host)
+        precondition(elements(host).contains { $0.name == "HTTP · 127.0.0.1:12345" }, "The accessible connection preview must track host and port edits")
+        guard let apply = elements(host).first(where: { $0.name == "Apply to request" }) else { preconditionFailure("Missing apply action") }
+        let rect = window.convertFromScreen(apply.frame)
+        for type in [NSEvent.EventType.leftMouseDown, .leftMouseUp] {
+            let event = NSEvent.mouseEvent(with: type, location: NSPoint(x: rect.midX, y: rect.midY), modifierFlags: [],
+                timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber,
+                context: nil, eventNumber: 1, clickCount: 1, pressure: type == .leftMouseDown ? 1 : 0)!
+            window.sendEvent(event)
+        }
+        spin(0.2); flush(host)
+        precondition(session.draft.proxy == .manual(.manual(routes: [ProxyRouteDocument(destination: "all", endpoint: "http://127.0.0.1:12345")])), "Native text editing and Apply must update the request")
+        precondition(model.workspace.proxy == nil && model.proxyPreferences.configuration != .direct, "Request UI must not mutate parents")
+        print("proxy_settings_interface=passed")
+    }
+
     static func requestClicks(root: URL, tabs: Bool = false, tabCount: Int = 2) throws {
         let model = WireboltModel(runner: OfflineRunner(), history: HistoryRepository(root: root.appending(path: "history")), cookieJar: CookieJar())
         let interface = WorkspaceUIState(defaults: fixtureDefaults)
@@ -459,6 +550,8 @@ final class ProbeWindow: NSWindow { override var canBecomeKey: Bool { true } }
         else if mode=="response" { try response(size) }
         else if mode=="interface" { try verifyInterface(root: root) }
         else if mode=="request-click" { try requestClicks(root: root) }
+        else if mode=="proxy-screenshots" { try proxyScreenshots(root: root) }
+        else if mode=="proxy-settings" { try proxySettings(root: root) }
         else if mode=="tab-click" { try requestClicks(root: root, tabs: true, tabCount: size) }
         else { preconditionFailure("unknown mode") }
         var usage=rusage(); getrusage(RUSAGE_SELF,&usage)

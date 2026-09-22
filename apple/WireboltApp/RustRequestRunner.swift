@@ -1,7 +1,14 @@
 import Foundation
+import SystemConfiguration
 import WireboltStreamFFI
 
 final class RustRequestRunner: @unchecked Sendable, RequestRunner {
+    private static let proxyMonitor = SystemProxyMonitor()
+
+    init() { _ = Self.proxyMonitor }
+
+    func proxySettingsChanged() { resetHttpEngines() }
+
     private let lock = NSLock()
     private var sessions: [RunID: OpaquePointer] = [:]
     private var terminalBeforeInstall: Set<RunID> = []
@@ -254,4 +261,21 @@ private let wireboltOnCookies: @convention(c) (UnsafeMutableRawPointer?, UnsafeP
     guard let box = callbackBox(context), let data = copiedData(bytes, length) else { return }
     do { box.continuation.yield(.cookies(try JSONDecoder().decode(ResponseCookies.self, from: data))) }
     catch { box.runner.cancel(runID: box.runID) }
+}
+
+/// The shared HTTP engine snapshots macOS proxy settings. Invalidate pooled engines
+/// when those settings change; in-flight runs retain their existing engine.
+private final class SystemProxyMonitor: @unchecked Sendable {
+    private let store: SCDynamicStore?
+    init() {
+        store = SCDynamicStoreCreate(nil, "Wirebolt.ProxySettings" as CFString, { _, _, _ in
+            resetHttpEngines()
+        }, nil)
+        if let store {
+            SCDynamicStoreSetNotificationKeys(store,
+                ["State:/Network/Global/Proxies", "Setup:/Network/Global/Proxies"] as CFArray,
+                ["State:/Network/Service/.*/Proxies", "Setup:/Network/Service/.*/Proxies"] as CFArray)
+            SCDynamicStoreSetDispatchQueue(store, DispatchQueue(label: "Wirebolt.ProxySettings"))
+        }
+    }
 }

@@ -626,7 +626,19 @@ private struct ResponseKeyValueTable: View {
 private struct SentRequestViewer: View {
     let snapshot: PreparedRunSnapshot?
 
-    var body: some View { ResponseSourceView(title: "Raw Request", text: sentRequestText) }
+    var body: some View {
+        VStack(spacing: 0) {
+            if let proxy = snapshot?.proxy {
+                HStack {
+                    Label(proxy.summary(for: snapshot?.url), systemImage: "network")
+                    Spacer()
+                    Text("Source: \(proxy.source.title)").foregroundStyle(.secondary)
+                }.font(.caption).padding(10).background(WireboltTheme.barBackground)
+                Divider()
+            }
+            ResponseSourceView(title: "Raw Request", text: sentRequestText)
+        }
+    }
 
     private var sentRequestText: String {
         guard let snapshot else { return "No request has been sent from this tab." }

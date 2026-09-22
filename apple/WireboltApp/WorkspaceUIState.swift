@@ -9,6 +9,7 @@ enum RequestPanelSection: String, CaseIterable, Identifiable {
     case body = "Body"
     case auth = "Auth"
     case note = "Note"
+    case settings = "Settings"
 
     var id: Self { self }
 }

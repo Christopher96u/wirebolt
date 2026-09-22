@@ -121,3 +121,28 @@ fn reports_a_missing_apple_keychain_secret_without_modifying_keychain() {
 
     assert_eq!(error.kind(), SecretResolutionErrorKind::NotFound);
 }
+
+#[test]
+fn app_default_is_used_only_when_both_child_levels_inherit() {
+    let app = ProxyMode::Manual(
+        ManualProxy::new(vec![ProxyRoute::new(
+            ProxyDestination::All,
+            ProxyEndpoint::new("http://localhost:8080").unwrap(),
+        )])
+        .unwrap(),
+    );
+    let inherited = ProxyPolicy::default()
+        .with_app_default(Some(app.clone()))
+        .resolve(None);
+    assert_eq!(inherited.mode(), &app);
+    assert_eq!(inherited.source(), ProxySource::AppDefault);
+    for workspace in [ProxyMode::Direct, ProxyMode::System] {
+        let policy =
+            ProxyPolicy::with_workspace(workspace.clone()).with_app_default(Some(app.clone()));
+        assert_eq!(policy.resolve(None).mode(), &workspace);
+        assert_eq!(policy.resolve(None).source(), ProxySource::Workspace);
+        let request = policy.resolve(Some(&ProxyMode::Direct));
+        assert_eq!(request.mode(), &ProxyMode::Direct);
+        assert_eq!(request.source(), ProxySource::Request);
+    }
+}

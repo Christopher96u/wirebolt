@@ -48,6 +48,19 @@ enum BridgeSmoke {
             guard workspace.collections.map(\.id) == ["custom"] else {
                 fatalError("opening a workspace mutated its collections")
             }
+            let proxy = ProxyDocument.manual(routes: [ProxyRouteDocument(destination: "all", endpoint: "http://localhost:8080")])
+            _ = try await persistence.apply(.saveWorkspaceProxy(proxy))
+            let withProxy = try await persistence.load()
+            let normalizedProxy = try ProxyFormDraft(configuration: withProxy.proxy).document()
+            precondition(normalizedProxy == proxy, "workspace proxy must cross the Swift/Rust persistence bridge")
+            let request = RequestDraft(id: "proxy-request", name: "Proxy override", url: "http://localhost:18765/json", proxy: .direct)
+            try await persistence.save(request: request, in: "custom")
+            let savedRequest = try await persistence.load().collections[0].requests[0].request
+            precondition(savedRequest.proxy == .direct, "request override must survive disk round-trip")
+            _ = try await persistence.apply(.saveWorkspaceProxy(nil))
+            let inherited = try await persistence.load()
+            precondition(inherited.proxy == nil, "resetting workspace proxy must restore inheritance")
+
         } catch {
             fatalError("workspace open smoke failed: \(error)")
         }

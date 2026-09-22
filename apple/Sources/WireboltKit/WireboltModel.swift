@@ -4,10 +4,12 @@ import Observation
 public protocol RequestRunner: Sendable {
     func events(for input: RunInput, runID: RunID) -> AsyncThrowingStream<RunEvent, any Error>
     func cancel(runID: RunID)
+    func proxySettingsChanged()
     func resolveValues(_ values: [ValueSource], variables: [String: ValueSource]) async throws -> [String]
 }
 
 public extension RequestRunner {
+    func proxySettingsChanged() {}
     func resolveValues(_ values: [ValueSource], variables: [String: ValueSource]) async throws -> [String] {
         try values.map { value in
             guard case let .literal(text) = value, !text.contains("{{") else {
@@ -98,6 +100,7 @@ public final class WireboltModel {
         return rows
     }
     public var selectedEnvironmentID: String?
+    public let proxyPreferences: ProxyPreferences
     public let sessions: DocumentSessionStore
     public private(set) var isLoadingWorkspace = false
     public private(set) var gitStatus: GitStatusSnapshot?
@@ -114,6 +117,8 @@ public final class WireboltModel {
     public private(set) var oauthFailureMessage: String?
     public private(set) var isOAuthBusy = false
     public var isShowingGitCollaboration = false
+    public var isShowingWorkspaceSettings = false
+    public var settingsTab = "general"
 
     @ObservationIgnored private let socketConnector: (any WebSocketConnecting)?
     @ObservationIgnored private let runner: any RequestRunner
@@ -137,8 +142,10 @@ public final class WireboltModel {
             storageURL: FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
                 .appending(path: "Wirebolt/Cookies/cookies.json")
         ),
-        oauth2: (any OAuth2Authorizing)? = nil
+        oauth2: (any OAuth2Authorizing)? = nil,
+        proxyPreferences: ProxyPreferences? = nil
     ) {
+        self.proxyPreferences = proxyPreferences ?? ProxyPreferences()
         self.socketConnector = socketConnector
         self.runner = runner
         self.persistence = persistence
@@ -222,7 +229,7 @@ public final class WireboltModel {
         var draft = session.draft
         if draft.inheritsWorkspaceTransport { draft.transport = workspace.transport }
         session.socket.connect(input: RunInput(draft: draft, variables: activeVariables,
-            workspaceProxy: workspace.proxy), connector: socketConnector)
+            workspaceProxy: workspace.proxy, appProxy: proxyPreferences.configuration), connector: socketConnector)
     }
 
     public func send(_ target: DocumentSession? = nil) async {
@@ -245,6 +252,8 @@ public final class WireboltModel {
             runDraft.transport = workspace.transport
         }
         let variables = activeVariables
+        let workspaceProxy = workspace.proxy
+        let appProxy = proxyPreferences.configuration
         session.beginRun(runID)
         let effectiveURL: URL?
         do {
@@ -272,7 +281,8 @@ public final class WireboltModel {
         let input = RunInput(
             draft: runDraft,
             variables: variables,
-            workspaceProxy: workspace.proxy
+            workspaceProxy: workspaceProxy,
+            appProxy: appProxy
         )
 
         do {
@@ -504,6 +514,33 @@ public final class WireboltModel {
         }
     }
 
+    public func makeProxyConnectionTest() -> ProxyConnectionTest { ProxyConnectionTest(runner: runner) }
+
+    public func effectiveProxy(for draft: RequestDraft) -> EffectiveProxy {
+        .resolve(request: draft.proxy.document, workspace: workspace.proxy, app: proxyPreferences.configuration)
+    }
+
+    /// Validate and persist before publishing. Failed saves leave the active policy intact.
+    public func applyProxy(_ configuration: ProxyDocument?, scope: ProxyScope,
+                           session: DocumentSession? = nil, secrets: [String: String] = [:]) async throws {
+        try configuration?.validate()
+        if scope == .app && configuration == nil { throw ProxyValidationError("Choose an app default.") }
+        if scope == .request && session == nil { throw WorkspaceMutationError.unsupported }
+        for (name, value) in secrets {
+            guard let persistence else { throw WorkspaceMutationError.unsupported }
+            try await persistence.saveSecret(name: name, value: value)
+        }
+        switch scope {
+        case .app: try proxyPreferences.save(configuration ?? .system)
+        case .workspace:
+            guard let persistence else { throw WorkspaceMutationError.unsupported }
+            _ = try await persistence.apply(.saveWorkspaceProxy(configuration))
+            workspace.proxy = configuration
+        case .request: session?.draft.proxy = ProxySelection(document: configuration)
+        }
+        runner.proxySettingsChanged()
+    }
+
     public func saveWorkspaceTransport() async {
         guard let persistence else { return }
         do {
@@ -535,7 +572,7 @@ public final class WireboltModel {
         if draft.inheritsWorkspaceTransport { draft.transport = workspace.transport }
         let variables = activeVariables
         let proxy: ProxyDocument = switch draft.proxy {
-        case .inherit: workspace.proxy ?? .system
+        case .inherit: workspace.proxy ?? proxyPreferences.configuration
         case .direct: .direct
         case .system: .system
         case let .manual(value): value

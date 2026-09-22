@@ -237,6 +237,56 @@ mod tests {
     }
 
     #[test]
+    fn websocket_handshake_uses_the_app_manual_proxy() {
+        use std::io::Write;
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let address = listener.local_addr().unwrap();
+        let peer = thread::spawn(move || {
+            let deadline = std::time::Instant::now() + Duration::from_secs(5);
+            let mut stream = loop {
+                if let Ok((stream, _)) = listener.accept() {
+                    break stream;
+                }
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "proxy handshake never arrived"
+                );
+                thread::sleep(Duration::from_millis(5));
+            };
+            stream
+                .set_read_timeout(Some(Duration::from_secs(2)))
+                .unwrap();
+            let mut buffer = [0; 4096];
+            let count = stream.read(&mut buffer).unwrap();
+            stream
+                .write_all(
+                    b"HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                )
+                .unwrap();
+            String::from_utf8_lossy(&buffer[..count]).into_owned()
+        });
+        let input = serde_json::to_vec(&serde_json::json!({"method":"GET", "url":"ws://127.0.0.1:9/socket", "app_proxy":{"mode":"manual", "routes":[{"destination":"all", "endpoint":format!("http://{address}")}]}})).unwrap();
+        let (sender, receiver) = mpsc::channel::<(u8, Vec<u8>)>();
+        let context = &raw const sender;
+        // SAFETY: Payload is copied and context remains alive until free joins.
+        let session = unsafe {
+            wirebolt_socket_start(
+                input.as_ptr(),
+                input.len(),
+                Some(collect),
+                context.cast_mut().cast(),
+            )
+        };
+        assert_eq!(receiver.recv_timeout(Duration::from_secs(5)).unwrap().0, 4);
+        // SAFETY: This is the sole owner and no callbacks outlive the joined worker.
+        unsafe { wirebolt_socket_free(session) };
+        let request = peer.join().unwrap();
+        assert!(request.starts_with("GET http://127.0.0.1:9/socket HTTP/1.1"));
+        assert!(request.to_lowercase().contains("upgrade: websocket"));
+    }
+
+    #[test]
     fn malformed_input_has_one_terminal_callback_and_can_be_freed() {
         let (sender, receiver) = mpsc::channel::<(u8, Vec<u8>)>();
         let context = &raw const sender;

@@ -11,6 +11,7 @@ swiftc \
   -swift-version 6 \
   -target arm64-apple-macosx15.0 \
   -o build/editor-performance \
+  apple/Sources/WireboltKit/ProxySettings.swift \
   apple/Sources/WireboltKit/Models.swift \
   apple/Sources/WireboltKit/CodeFolding.swift \
   apple/Sources/WireboltKit/TextLineIndex.swift \

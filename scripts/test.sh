@@ -17,6 +17,8 @@ swiftc \
   -target arm64-apple-macosx15.0 \
   -o build/bridge-smoke \
   apple/Generated/wirebolt_ffi.swift \
+  apple/Sources/WireboltKit/ProxyConnectionTest.swift \
+  apple/Sources/WireboltKit/ProxySettings.swift \
   apple/Sources/WireboltKit/Models.swift \
   apple/Sources/WireboltKit/CurlExport.swift \
   apple/Sources/WireboltKit/WebSocket.swift \
