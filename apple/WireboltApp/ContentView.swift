@@ -1345,7 +1345,8 @@ private struct DocumentTabButton: View {
             }
             .buttonStyle(.plain)
             .accessibilityLabel(tab.title)
-            .highPriorityGesture(TapGesture(count: 2).onEnded { beginRenaming() })
+            // Select immediately while still recognizing a double-click to rename.
+            .simultaneousGesture(TapGesture(count: 2).onEnded { beginRenaming() })
             }
 
             Button("Close \(tab.title)", systemImage: "xmark", action: onClose)

@@ -382,11 +382,14 @@ final class ProbeWindow: NSWindow { override var canBecomeKey: Bool { true } }
         print("interface_regressions=passed")
     }
 
-    static func requestClicks(root: URL) throws {
+    static func requestClicks(root: URL, tabs: Bool = false, tabCount: Int = 2) throws {
         let model = WireboltModel(runner: OfflineRunner(), history: HistoryRepository(root: root.appending(path: "history")), cookieJar: CookieJar())
         let interface = WorkspaceUIState(defaults: fixtureDefaults)
-        let requests = (0..<20).map { RequestLocation(collectionID: "clicks", request: RequestDraft(id: "r\($0)", name: "Click Request \($0)", url: "https://example.invalid/\($0)")) }
+        let requests = (0..<(tabs ? max(2, tabCount) : 20)).map { RequestLocation(collectionID: "clicks", request: RequestDraft(id: "r\($0)", name: "Click Request \($0)", url: "https://example.invalid/\($0)")) }
         model.workspace.collections = [CollectionDraft(id: "clicks", name: "Click Audit", requests: requests)]
+        if tabs {
+            for request in requests { interface.activateSavedRequest(request, model: model) }
+        }
         interface.activateSavedRequest(requests[0], model: model)
         let (window, host, _) = mount(ContentView(model: model, interface: interface, loadsWorkspace: false), height: 720)
         defer { window.close() }
@@ -395,11 +398,11 @@ final class ProbeWindow: NSWindow { override var canBecomeKey: Bool { true } }
         NSApp.accessibilitySetValue(true, forAttribute: NSAccessibility.Attribute(rawValue: "AXManualAccessibility"))
         spin(0.4); flush(host)
         func namePoint(_ index: Int) -> NSPoint {
-            guard let row = elements(window).first(where: { $0.name == "GET request, Click Request \(index)" }) else {
+            guard let row = elements(window).first(where: { $0.name == (tabs ? "Click Request \(index)" : "GET request, Click Request \(index)") }) else {
                 preconditionFailure("Request row is missing from the accessibility tree")
             }
             let rect = window.convertFromScreen(row.frame)
-            return NSPoint(x: rect.minX + min(100, rect.width * 0.7), y: rect.midY)
+            return NSPoint(x: tabs ? rect.midX : rect.minX + min(100, rect.width * 0.7), y: rect.midY)
         }
         func click(_ point: NSPoint, count: Int = 1) {
             for type in [NSEvent.EventType.leftMouseDown, .leftMouseUp] {
@@ -410,7 +413,7 @@ final class ProbeWindow: NSWindow { override var canBecomeKey: Bool { true } }
             }
         }
         var times: [Double] = []
-        for index in [1, 2, 3, 1, 4, 2] {
+        for index in (tabs && tabCount < 5 ? [1, 0, 1, 0, 1, 0] : [1, 2, 3, 1, 4, 2]) {
             let point = namePoint(index)
             let start = ContinuousClock.now
             click(point)
@@ -420,14 +423,15 @@ final class ProbeWindow: NSWindow { override var canBecomeKey: Bool { true } }
             precondition(model.sessions.activeSession?.requestID == "r\(index)", "Name click must open its request")
             spin(0.15)
         }
-        record("request_name_click", times, budget: 150, details: ["path": "NSWindow mouse down/up on sidebar name through selection and layout", "double_click_interval_ms": NSEvent.doubleClickInterval * 1000])
+        record(tabs ? "request_tab_click" : "request_name_click", times, budget: 150, details: ["path": tabs ? "NSWindow mouse down/up on document tab through selection and layout" : "NSWindow mouse down/up on sidebar name through selection and layout", "double_click_interval_ms": NSEvent.doubleClickInterval * 1000])
         spin(NSEvent.doubleClickInterval)
-        let point = namePoint(2)
+        let renameIndex = tabs ? 0 : 2
+        let point = namePoint(renameIndex)
         click(point); spin(0.05); click(point, count: 2); spin(0.15); flush(host)
         func fields(_ view: NSView) -> [NSTextField] {
             (view as? NSTextField).map { [$0] } ?? view.subviews.flatMap { fields($0) }
         }
-        precondition(fields(host).contains { $0.isEditable && $0.stringValue == "Click Request 2" }, "Double-click must still enter rename")
+        precondition(fields(host).contains { $0.isEditable && $0.stringValue == "Click Request \(renameIndex)" }, "Double-click must still enter rename")
         print("request_click_regressions=passed")
     }
 
@@ -455,6 +459,7 @@ final class ProbeWindow: NSWindow { override var canBecomeKey: Bool { true } }
         else if mode=="response" { try response(size) }
         else if mode=="interface" { try verifyInterface(root: root) }
         else if mode=="request-click" { try requestClicks(root: root) }
+        else if mode=="tab-click" { try requestClicks(root: root, tabs: true, tabCount: size) }
         else { preconditionFailure("unknown mode") }
         var usage=rusage(); getrusage(RUSAGE_SELF,&usage)
         let output:[String:Any]=["mode":mode,"size":size,"measurements":measurements,
