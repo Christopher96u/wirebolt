@@ -4,6 +4,69 @@ import Testing
 
 @Suite("Wirebolt model")
 struct WireboltModelTests {
+    @Test("Reordering mixed siblings persists exact positions and preserves open edits")
+    @MainActor func reorderMixedSiblings() async throws {
+        let persistence = MutationRecorder()
+        let model = WireboltModel(runner: StubRunner(), persistence: persistence)
+        let a = RequestLocation(collectionID: "api", order: 0, request: RequestDraft(id: "a", name: "A"))
+        let b = RequestLocation(collectionID: "api", order: 9, request: RequestDraft(id: "b", name: "B"))
+        let nested = RequestLocation(collectionID: "api", groupID: "folder", order: 42, request: RequestDraft(id: "nested"))
+        model.workspace.collections = [CollectionDraft(id: "api", name: "API",
+            groups: [GroupDraft(id: "folder", name: "Folder", order: 0)], requests: [a, b, nested])]
+        model.select(b)
+        model.draft.note = "Unsaved edit"
+        // Also populate the sidebar cache before changing order.
+        _ = model.sidebarRows(query: "", collapsed: [], expanded: [])
+        await model.reorderSidebar("request|api|b", relativeTo: "group:folder", after: false, collectionID: "api", parentID: nil)
+        #expect(model.workspace.collections[0].orderedChildren(parentID: nil) == ["request:b", "group:folder", "request:a"])
+        #expect(model.workspace.collections[0].requests.first { $0.request.id == "nested" }?.order == 42)
+        let rows = model.sidebarRows(query: "", collapsed: [], expanded: [])
+        #expect(rows.map(\.id) == ["collection:api", "request:api/b", "group:api:folder", "request:api/a"])
+        #expect(model.sessions.activeSession?.requestID == "b")
+        #expect(model.draft.note == "Unsaved edit")
+        #expect(model.sessions.activeSession?.isDirty == true)
+        await model.reorderSidebar("group|api|folder", relativeTo: "request:a", after: true, collectionID: "api", parentID: nil)
+        #expect(model.workspace.collections[0].orderedChildren(parentID: nil) == ["request:b", "request:a", "group:folder"])
+        // Saving a previously opened request must retain its new position.
+        await model.saveCurrentRequest(collectionID: "api")
+        let commands = await persistence.commands
+        #expect(commands.count == 3)
+        guard case let .saveRequest(_, saved) = commands.last else { Issue.record("Expected save"); return }
+        #expect(saved.order == 0)
+        #expect(saved.request.note == "Unsaved edit")
+    }
+
+    @Test("Reorder rejects invalid, self, cross-folder and cross-collection drops; adjacent drops do nothing")
+    @MainActor func reorderValidation() async {
+        let persistence = MutationRecorder()
+        let model = WireboltModel(runner: StubRunner(), persistence: persistence)
+        model.workspace.collections = [CollectionDraft(id: "api", name: "API", requests: [
+            RequestLocation(collectionID: "api", groupID: "folder", order: 0, request: RequestDraft(id: "a")),
+            RequestLocation(collectionID: "api", groupID: "folder", order: 1, request: RequestDraft(id: "b")),
+            RequestLocation(collectionID: "api", request: RequestDraft(id: "outside"))])]
+        for identifier in ["invalid", "request|other|a", "request|api|outside", "request|api|b", "group|api|a"] {
+            await model.reorderSidebar(identifier, relativeTo: "request:b", after: false, collectionID: "api", parentID: "folder")
+        }
+        await model.reorderSidebar("request|api|a", relativeTo: "request:b", after: false, collectionID: "api", parentID: "folder")
+        #expect(await persistence.commands.isEmpty)
+        await model.reorderSidebar("request|api|a", relativeTo: "request:b", after: true, collectionID: "api", parentID: "folder")
+        #expect(model.workspace.collections[0].orderedChildren(parentID: "folder") == ["request:b", "request:a"])
+        #expect(await persistence.commands.count == 1)
+    }
+
+    @Test("Failed reorder leaves the displayed order unchanged")
+    @MainActor func failedReorder() async {
+        let persistence = MutationRecorder(fails: true)
+        let model = WireboltModel(runner: StubRunner(), persistence: persistence)
+        let collection = CollectionDraft(id: "api", name: "API", requests: [
+            RequestLocation(collectionID: "api", order: 0, request: RequestDraft(id: "a")),
+            RequestLocation(collectionID: "api", order: 1, request: RequestDraft(id: "b"))])
+        model.workspace.collections = [collection]
+        await model.reorderSidebar("request|api|b", relativeTo: "request:a", after: false, collectionID: "api", parentID: nil)
+        #expect(model.workspace.collections == [collection])
+        #expect(model.operationFailure?.kind == "workspace")
+    }
+
     @Test("New global requests persist at the workspace root and contextual requests keep their folder")
     @MainActor
     func createRequestsInContext() async throws {
@@ -860,6 +923,8 @@ private actor SequencedPersistence: WorkspacePersistence {
 }
 
 private actor MutationRecorder: WorkspacePersistence {
+    let fails: Bool
+    init(fails: Bool = false) { self.fails = fails }
     private(set) var commands: [WorkspaceCommand] = []
     private(set) var loadCount = 0
 
@@ -873,6 +938,7 @@ private actor MutationRecorder: WorkspacePersistence {
     func saveSecret(name _: String, value _: String) async throws {}
 
     func apply(_ command: WorkspaceCommand) async throws -> WorkspaceDelta {
+        if fails { throw RunFailure(kind: "workspace", issues: []) }
         commands.append(command)
         return WorkspaceDelta(
             version: UInt64(commands.count),

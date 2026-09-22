@@ -57,6 +57,14 @@ enum BridgeSmoke {
             try await persistence.save(request: request, in: "custom")
             let savedRequest = try await persistence.load().collections[0].requests[0].request
             precondition(savedRequest.proxy == .direct, "request override must survive disk round-trip")
+            _ = try await persistence.apply(.createGroup(collectionID: "custom", group: GroupDraft(id: "folder", name: "Folder")))
+            let second = RequestLocation(collectionID: "custom", order: 0, request: RequestDraft(id: "second", name: "Second"))
+            _ = try await persistence.apply(.saveRequest(collectionID: "custom", location: second))
+            _ = try await persistence.apply(.reorderChildren(collectionID: "custom", parentID: nil,
+                items: ["request:second", "group:folder", "request:proxy-request"]))
+            let reopened = try RustWorkspacePersistence(path: temporaryWorkspace, mode: .open)
+            let reordered = try await reopened.load()
+            precondition(reordered.collections[0].orderedChildren(parentID: nil) == ["request:second", "group:folder", "request:proxy-request"], "mixed sibling order must survive reopening through Swift/Rust")
             _ = try await persistence.apply(.saveWorkspaceProxy(nil))
             let inherited = try await persistence.load()
             precondition(inherited.proxy == nil, "resetting workspace proxy must restore inheritance")

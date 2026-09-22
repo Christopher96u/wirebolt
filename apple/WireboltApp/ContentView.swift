@@ -523,8 +523,130 @@ private struct WorkspaceSidebarOutline: View {
             }
             .padding(.leading, Double(row.depth) * 14)
             .frame(height: 24)
+            .modifier(SidebarReorderTarget(row: row, model: model, interface: interface))
         }
     }
+}
+
+@MainActor
+private func sidebarDragProvider(_ identifier: String, interface: WorkspaceUIState) -> NSItemProvider {
+    interface.sidebarDragIdentifier = identifier
+    return NSItemProvider(object: identifier as NSString)
+}
+
+private enum SidebarDropPosition: Sendable { case before, after, inside }
+
+private struct SidebarReorderTarget: ViewModifier {
+    let row: SidebarSnapshot.Row
+    let model: WireboltModel
+    let interface: WorkspaceUIState
+    @State private var position: SidebarDropPosition?
+
+    func body(content: Content) -> some View {
+        switch row.content {
+        case .collection:
+            content
+        default:
+            content
+                .onDrag {
+                    let identifier: String
+                    switch row.content {
+                    case .group(let collection, let group): identifier = "group|\(collection.id)|\(group.id)"
+                    case .request(let location): identifier = "request|\(location.collectionID)|\(location.request.id)"
+                    case .collection: identifier = ""
+                    }
+                    return sidebarDragProvider(identifier, interface: interface)
+                }
+                .overlay(alignment: position == .after ? .bottom : .top) {
+                    if let position {
+                        if position == .inside {
+                            RoundedRectangle(cornerRadius: 4).stroke(Color.accentColor, lineWidth: 2)
+                                .allowsHitTesting(false)
+                        } else {
+                            Rectangle().fill(Color.accentColor).frame(height: 2)
+                                .allowsHitTesting(false)
+                        }
+                    }
+                }
+                .onDrop(of: [UTType.text], delegate: SidebarReorderDrop(
+                    row: row, model: model, interface: interface, position: $position))
+        }
+    }
+}
+
+private struct SidebarReorderDrop: DropDelegate {
+    let row: SidebarSnapshot.Row
+    let model: WireboltModel
+    let interface: WorkspaceUIState
+    @Binding var position: SidebarDropPosition?
+
+    private var target: (collection: String, parent: String?, item: String, folder: String?) {
+        switch row.content {
+        case .group(let collection, let group):
+            return (collection.id, group.parentID, "group:" + group.id, group.id)
+        case .request(let location):
+            return (location.collectionID, location.groupID, "request:" + location.request.id, nil)
+        case .collection(let collection):
+            return (collection.id, nil, "", nil)
+        }
+    }
+
+    private func destination(_ info: DropInfo) -> SidebarDropPosition? {
+        guard let identifier = interface.sidebarDragIdentifier else { return nil }
+        let target = target
+        if let folder = target.folder, info.location.y >= 6, info.location.y <= 18 {
+            let parts = identifier.split(separator: "|", omittingEmptySubsequences: false).map(String.init)
+            guard parts.count == 3 else { return nil }
+            if parts[0] == "request" { return .inside }
+            if parts[0] == "group", parts[1] == target.collection,
+               let collection = model.workspace.collections.first(where: { $0.id == target.collection }),
+               !collection.descendantGroupIDs(of: parts[2]).contains(folder) { return .inside }
+            return nil
+        }
+        guard model.canReorderSidebar(identifier, relativeTo: target.item,
+            collectionID: target.collection, parentID: target.parent) else { return nil }
+        return info.location.y < 12 ? .before : .after
+    }
+
+    func validateDrop(info: DropInfo) -> Bool { destination(info) != nil }
+    func dropEntered(info: DropInfo) { position = destination(info) }
+    func dropExited(info: DropInfo) { position = nil }
+    func dropUpdated(info: DropInfo) -> DropProposal? {
+        position = destination(info)
+        return DropProposal(operation: position == nil ? .forbidden : .move)
+    }
+    func performDrop(info: DropInfo) -> Bool {
+        guard let destination = destination(info), let expected = interface.sidebarDragIdentifier,
+              let provider = info.itemProviders(for: [UTType.text]).first else { return false }
+        position = nil
+        interface.sidebarDragIdentifier = nil
+        let target = target
+        let model = model
+        // Verify the actual pasteboard payload, rather than trusting a previous drag's UI state.
+        provider.loadObject(ofClass: NSString.self) { value, _ in
+            guard let identifier = value as? String, identifier == expected else { return }
+            Task { @MainActor in
+                if destination == .inside, let folder = target.folder {
+                    let parts = identifier.split(separator: "|", omittingEmptySubsequences: false).map(String.init)
+                    guard parts.count == 3,
+                          let collection = model.workspace.collections.first(where: { $0.id == target.collection }) else { return }
+                    let order = max(collection.groups.filter { $0.parentID == folder }.map(\.order).max() ?? -1,
+                                    collection.requests.filter { $0.groupID == folder }.map(\.order).max() ?? -1) + 1
+                    if parts[0] == "request" {
+                        await model.moveRequest(fromCollectionID: parts[1], requestID: parts[2],
+                                                toCollectionID: target.collection, groupID: folder, order: order)
+                    } else {
+                        await model.moveGroup(collectionID: target.collection, id: parts[2], parentID: folder, order: order)
+                    }
+                } else {
+                    await model.reorderSidebar(identifier, relativeTo: target.item, after: destination == .after,
+                                               collectionID: target.collection, parentID: target.parent)
+                }
+            }
+        }
+        return true
+    }
+
 }
 
 private struct SavedRequestRow: View {
@@ -719,16 +841,9 @@ private struct SavedCollectionDisclosure: View {
         }
     }
 
-    private var rootGroups: [GroupDraft] {
-        collection.groups
-            .filter { $0.parentID == nil }
-            .sorted { ($0.order, $0.name) < ($1.order, $1.name) }
-    }
-
-    private var rootRequests: [RequestLocation] {
-        collection.requests
-            .filter { $0.groupID == nil }
-            .sorted { ($0.order, $0.request.name) < ($1.order, $1.request.name) }
+    private var nextRootOrder: Int {
+        max(collection.groups.filter { $0.parentID == nil }.map(\.order).max() ?? -1,
+            collection.requests.filter { $0.groupID == nil }.map(\.order).max() ?? -1) + 1
     }
 
     private func handleDrop(_ identifier: String?, parentID: String?) -> Bool {
@@ -743,7 +858,7 @@ private struct SavedCollectionDisclosure: View {
                     requestID: parts[2],
                     toCollectionID: collection.id,
                     groupID: parentID,
-                    order: rootRequests.count
+                    order: nextRootOrder
                 )
             }
         case "group" where parts[1] == collection.id:
@@ -752,7 +867,7 @@ private struct SavedCollectionDisclosure: View {
                     collectionID: collection.id,
                     id: parts[2],
                     parentID: parentID,
-                    order: rootGroups.count
+                    order: nextRootOrder
                 )
             }
         default:
@@ -788,7 +903,6 @@ private struct SavedGroupDisclosure: View {
                     Task { await model.renameGroup(collectionID: collection.id, id: group.id, name: name) }
                 }
             }
-                .draggable("group|\(collection.id)|\(group.id)")
                 .contextMenu {
                     NewRequestMenu(model: model, interface: interface, collectionID: collection.id, groupID: group.id)
                     Button("New Folder") {
@@ -806,52 +920,9 @@ private struct SavedGroupDisclosure: View {
                 }
         }
         .disclosureGroupStyle(SidebarDisclosureStyle(isEditing: isRenaming || interface.renamingGroupID == group.id))
-        .dropDestination(for: String.self) { identifiers, _ in
-            handleDrop(identifiers.first)
-        }
     }
 
-    private var childGroups: [GroupDraft] {
-        collection.groups
-            .filter { $0.parentID == group.id }
-            .sorted { ($0.order, $0.name) < ($1.order, $1.name) }
-    }
 
-    private var requests: [RequestLocation] {
-        collection.requests
-            .filter { $0.groupID == group.id }
-            .sorted { ($0.order, $0.request.name) < ($1.order, $1.request.name) }
-    }
-
-    private func handleDrop(_ identifier: String?) -> Bool {
-        guard let identifier else { return false }
-        let parts = identifier.split(separator: "|", omittingEmptySubsequences: false).map(String.init)
-        guard parts.count == 3 else { return false }
-        switch parts[0] {
-        case "request":
-            Task {
-                await model.moveRequest(
-                    fromCollectionID: parts[1],
-                    requestID: parts[2],
-                    toCollectionID: collection.id,
-                    groupID: group.id,
-                    order: requests.count
-                )
-            }
-        case "group" where parts[1] == collection.id && parts[2] != group.id:
-            Task {
-                await model.moveGroup(
-                    collectionID: collection.id,
-                    id: parts[2],
-                    parentID: group.id,
-                    order: childGroups.count
-                )
-            }
-        default:
-            return false
-        }
-        return true
-    }
 }
 
 private struct SidebarRequestButton: View, @MainActor Equatable {
@@ -926,7 +997,6 @@ private struct SidebarRequestButton: View, @MainActor Equatable {
             Divider()
             Button("Delete", role: .destructive, action: onDelete)
         }
-        .draggable("request|\(location.collectionID)|\(location.request.id)")
         .accessibilityLabel("\(location.request.method.rawValue) request, \(location.request.name)")
         .accessibilityAddTraits(isSelected ? .isSelected : [])
     }

@@ -633,6 +633,7 @@ public enum WorkspaceNodeKind: String, Codable, Equatable, Sendable {
 }
 
 public enum WorkspaceCommand: Equatable, Sendable {
+    case reorderChildren(collectionID: String, parentID: String?, items: [String])
     case saveWorkspaceProxy(ProxyDocument?)
     case saveWorkspaceSettings(TransportSettings)
     case createCollection(CollectionDraft)

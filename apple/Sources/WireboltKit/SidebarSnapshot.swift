@@ -85,3 +85,18 @@ public struct SidebarSnapshot: Sendable {
         text.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: Locale(identifier: "en_US_POSIX"))
     }
 }
+
+/// Stable, typed sibling identities; folders and requests share one ordering space.
+public extension CollectionDraft {
+    func orderedChildren(parentID: String?) -> [String] {
+        let groups = groups.filter { $0.parentID == parentID }.map {
+            ($0.order, 0, $0.name, $0.id, "group:" + $0.id)
+        }
+        let requests = requests.filter { $0.groupID == parentID }.map {
+            ($0.order, 1, $0.request.name, $0.request.id, "request:" + $0.request.id)
+        }
+        return (groups + requests).sorted {
+            ($0.0, $0.1, $0.2, $0.3) < ($1.0, $1.1, $1.2, $1.3)
+        }.map { $0.4 }
+    }
+}

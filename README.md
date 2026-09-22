@@ -86,3 +86,10 @@ App defaults stay local. Workspace/request proxy definitions are shareable files
 usernames and passwords are kept in Keychain, with only references in those files.
 Use **Test connection** with an explicit URL for a cancellable HEAD probe without
 request auth, headers, body or cookies. Host exclusions are not yet exposed.
+
+### Sidebar ordering
+
+Drag a request or subfolder to the upper or lower edge of a sibling row to reorder
+items in the same folder. The insertion line shows the destination. Requests and
+subfolders can be mixed, and their order is saved in the workspace TOML files.
+Dropping in the center of a folder still moves the item into that folder.

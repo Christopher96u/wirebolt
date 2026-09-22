@@ -262,6 +262,11 @@ enum WorkspaceCommandDocument {
         collection_id: String,
         id: String,
     },
+    ReorderChildren {
+        collection_id: String,
+        parent_id: Option<String>,
+        items: Vec<String>,
+    },
     MoveGroup {
         collection_id: String,
         id: String,
@@ -876,6 +881,14 @@ impl WorkspaceBridge {
                 self.save_collection_document(collection)?;
                 Ok(("group", vec![collection_id, id]))
             }
+            WorkspaceCommandDocument::ReorderChildren {
+                collection_id,
+                parent_id,
+                items,
+            } => {
+                self.reorder_children(&collection_id, parent_id, items)?;
+                Ok(("collection", vec![collection_id]))
+            }
             WorkspaceCommandDocument::MoveGroup {
                 collection_id,
                 id,
@@ -1013,6 +1026,93 @@ impl WorkspaceBridge {
                 Ok(("environment", vec![id]))
             }
         }
+    }
+
+    fn reorder_children(
+        &self,
+        collection_id: &str,
+        parent_id: Option<String>,
+        items: Vec<String>,
+    ) -> Result<(), WorkspaceBridgeError> {
+        let id = document_id(collection_id.to_owned())?;
+        let parent = parent_id.map(document_id).transpose()?;
+        let mut snapshot = self
+            .store
+            .load()
+            .map_err(|_| WorkspaceBridgeError::operation("workspace could not be loaded"))?
+            .collections
+            .into_iter()
+            .find(|entry| entry.collection.id == id)
+            .ok_or_else(|| WorkspaceBridgeError::operation("collection does not exist"))?;
+        let expected: std::collections::HashSet<String> = snapshot
+            .collection
+            .groups
+            .iter()
+            .filter(|group| group.parent_id == parent)
+            .map(|group| format!("group:{}", group.id))
+            .chain(
+                snapshot
+                    .requests
+                    .iter()
+                    .filter(|request| request.group_id == parent)
+                    .map(|request| format!("request:{}", request.id)),
+            )
+            .collect();
+        let supplied: std::collections::HashSet<String> = items.iter().cloned().collect();
+        if supplied != expected || supplied.len() != items.len() {
+            return Err(WorkspaceBridgeError::operation(
+                "reorder must contain each sibling exactly once",
+            ));
+        }
+        let orders: std::collections::HashMap<String, i64> = items
+            .into_iter()
+            .enumerate()
+            .map(|(index, item)| (item, i64::try_from(index).expect("sibling count fits i64")))
+            .collect();
+        let mut changes = Vec::new();
+        let original_collection = snapshot.collection.clone();
+        for group in &mut snapshot.collection.groups {
+            if let Some(order) = orders.get(&format!("group:{}", group.id)) {
+                group.order = *order;
+            }
+        }
+        if snapshot.collection != original_collection {
+            changes.push((
+                WorkspaceDocument::Collection(original_collection),
+                WorkspaceDocument::Collection(snapshot.collection),
+            ));
+        }
+        for mut request in snapshot.requests {
+            if let Some(order) = orders.get(&format!("request:{}", request.id))
+                && request.order != *order
+            {
+                let original = request.clone();
+                request.order = *order;
+                changes.push((
+                    WorkspaceDocument::Request {
+                        collection_id: id.clone(),
+                        request: original,
+                    },
+                    WorkspaceDocument::Request {
+                        collection_id: id.clone(),
+                        request,
+                    },
+                ));
+            }
+        }
+        for (index, (_, updated)) in changes.iter().enumerate() {
+            if self.store.save(updated).is_err() {
+                for (original, _) in changes[..index].iter().rev() {
+                    self.store
+                        .save(original)
+                        .map_err(|_| WorkspaceBridgeError::operation("reorder rollback failed"))?;
+                }
+                return Err(WorkspaceBridgeError::operation(
+                    "items could not be reordered",
+                ));
+            }
+        }
+        Ok(())
     }
 
     fn collection(&self, id: &str) -> Result<Collection, WorkspaceBridgeError> {
@@ -2275,6 +2375,45 @@ mod tests {
         thread,
         time::Duration,
     };
+
+    #[test]
+    fn reorder_mixed_siblings_persists_and_rejects_incomplete_or_foreign_items() {
+        let directory = tempfile::tempdir().unwrap();
+        WorkspaceStore::create(directory.path(), &Workspace::new("Reorder")).unwrap();
+        let path = directory.path().to_string_lossy().into_owned();
+        let bridge = WorkspaceBridge::open_or_create(path.clone(), "Reorder".into()).unwrap();
+        for command in [
+            serde_json::json!({"kind":"create_collection","id":"api","name":"API","order":0}),
+            serde_json::json!({"kind":"create_group","collection_id":"api","group":{"id":"folder","name":"Folder","order":0}}),
+            serde_json::json!({"kind":"save_request","collection_id":"api","request":{"id":"a","name":"A","order":0,"method":"GET","url":"https://example.com/a","body":{"kind":"empty"}}}),
+            serde_json::json!({"kind":"save_request","collection_id":"api","request":{"id":"b","name":"B","order":99,"method":"GET","url":"https://example.com/b","body":{"kind":"empty"}}}),
+            serde_json::json!({"kind":"save_request","collection_id":"api","request":{"id":"nested","name":"Nested","group_id":"folder","order":42,"method":"GET","url":"https://example.com/nested","body":{"kind":"empty"}}}),
+        ] {
+            bridge
+                .apply_workspace_command(&command.to_string())
+                .unwrap();
+        }
+        bridge.apply_workspace_command(&serde_json::json!({"kind":"reorder_children","collection_id":"api","items":["request:b","group:folder","request:a"]}).to_string()).unwrap();
+        let reopened = WorkspaceBridge::open_or_create(path, "Reorder".into()).unwrap();
+        assert_eq!(reopened.request("api", "b").unwrap().order, 0);
+        assert_eq!(reopened.collection("api").unwrap().groups[0].order, 1);
+        assert_eq!(reopened.request("api", "a").unwrap().order, 2);
+        assert_eq!(reopened.request("api", "nested").unwrap().order, 42);
+        assert_eq!(
+            reopened.request("api", "b").unwrap().url,
+            "https://example.com/b"
+        );
+        let before = reopened.snapshot_json().unwrap();
+        for invalid in [
+            vec!["request:a"],
+            vec!["request:a", "request:a", "group:folder"],
+            vec!["request:a", "request:nested", "group:folder"],
+            vec!["request:a", "request:missing", "group:folder"],
+        ] {
+            assert!(reopened.apply_workspace_command(&serde_json::json!({"kind":"reorder_children","collection_id":"api","items":invalid}).to_string()).is_err());
+            assert_eq!(reopened.snapshot_json().unwrap(), before);
+        }
+    }
 
     #[test]
     fn workspace_proxy_commands_round_trip_and_reset_without_changing_transport() {

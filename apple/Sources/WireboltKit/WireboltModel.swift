@@ -881,6 +881,51 @@ public final class WireboltModel {
         }
     }
 
+    private var isReorderingSidebar = false
+
+    public func canReorderSidebar(_ identifier: String, relativeTo target: String,
+                                  collectionID: String, parentID: String?) -> Bool {
+        let parts = identifier.split(separator: "|", omittingEmptySubsequences: false).map(String.init)
+        guard parts.count == 3, parts[1] == collectionID,
+              let collection = workspace.collections.first(where: { $0.id == collectionID }) else { return false }
+        let source = parts[0] + ":" + parts[2]
+        let siblings = collection.orderedChildren(parentID: parentID)
+        return source != target && siblings.contains(source) && siblings.contains(target)
+    }
+
+    public func reorderSidebar(_ identifier: String, relativeTo target: String, after: Bool,
+                               collectionID: String, parentID: String?) async {
+        guard !isReorderingSidebar, let persistence,
+              canReorderSidebar(identifier, relativeTo: target, collectionID: collectionID, parentID: parentID),
+              let collection = workspace.collections.first(where: { $0.id == collectionID }) else { return }
+        let parts = identifier.split(separator: "|", omittingEmptySubsequences: false)
+        let source = String(parts[0]) + ":" + String(parts[2])
+        let previous = collection.orderedChildren(parentID: parentID)
+        var items = previous.filter { $0 != source }
+        guard let targetIndex = items.firstIndex(of: target) else { return }
+        items.insert(source, at: targetIndex + (after ? 1 : 0))
+        guard items != previous else { return }
+        isReorderingSidebar = true
+        defer { isReorderingSidebar = false }
+        do {
+            _ = try await persistence.apply(.reorderChildren(collectionID: collectionID, parentID: parentID, items: items))
+            guard let index = workspace.collections.firstIndex(where: { $0.id == collectionID }) else { return }
+            let orders = Dictionary(uniqueKeysWithValues: items.enumerated().map { ($0.element, $0.offset) })
+            for i in workspace.collections[index].groups.indices {
+                if let order = orders["group:" + workspace.collections[index].groups[i].id] {
+                    workspace.collections[index].groups[i].order = order
+                }
+            }
+            for i in workspace.collections[index].requests.indices {
+                if let order = orders["request:" + workspace.collections[index].requests[i].request.id] {
+                    workspace.collections[index].requests[i].order = order
+                }
+            }
+        } catch {
+            operationFailure = RunFailure(kind: "workspace", issues: [])
+        }
+    }
+
     public func moveRequest(
         fromCollectionID: String,
         requestID: String,

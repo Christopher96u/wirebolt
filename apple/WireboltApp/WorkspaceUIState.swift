@@ -99,6 +99,7 @@ struct WorkspaceDeleteRequest: Identifiable, Equatable {
 @MainActor
 @Observable
 final class WorkspaceUIState {
+    var sidebarDragIdentifier: String?
     @ObservationIgnored private let defaults: UserDefaults
 
     var columnVisibility = NavigationSplitViewVisibility.all

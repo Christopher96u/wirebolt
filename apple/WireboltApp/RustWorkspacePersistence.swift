@@ -357,7 +357,7 @@ private struct WorkspaceCommandDocument: Encodable {
 
     private enum CodingKeys: String, CodingKey {
         case kind, id, name, order, groups, requests, group, location, request, transport
-        case environment, proxy
+        case environment, proxy, items
         case collectionID = "collection_id"
         case parentID = "parent_id"
         case newID = "new_id"
@@ -370,6 +370,11 @@ private struct WorkspaceCommandDocument: Encodable {
     func encode(to encoder: any Encoder) throws {
         var container = encoder.container(keyedBy: CodingKeys.self)
         switch command {
+        case let .reorderChildren(collectionID, parentID, items):
+            try container.encode("reorder_children", forKey: .kind)
+            try container.encode(collectionID, forKey: .collectionID)
+            try container.encodeIfPresent(parentID, forKey: .parentID)
+            try container.encode(items, forKey: .items)
         case let .saveWorkspaceProxy(proxy):
             try container.encode("save_workspace_proxy", forKey: .kind)
             try container.encode(proxy, forKey: .proxy)
