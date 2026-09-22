@@ -29,7 +29,7 @@ struct WireboltApp: App {
         .windowToolbarStyle(.unified)
         .commands {
             TextEditingCommands()
-            CommandGroup(replacing: .newItem) {
+            CommandGroup(after: .newItem) {
                 Button("New Tab") { interface.makeNewRequest(model: model, rename: false) }
                     .keyboardShortcut("t", modifiers: .command)
                     .disabled(focusedWorkspace == nil)

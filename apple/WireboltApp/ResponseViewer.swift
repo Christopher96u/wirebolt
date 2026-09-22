@@ -177,41 +177,46 @@ private struct ResponseSectionBar: View {
     @Bindable var session: DocumentSession
 
     var body: some View {
-        GeometryReader { geometry in
-        HStack(spacing: 0) {
-                HStack(spacing: 10) {
-                    ForEach([
-                        ResponsePanelSection.headers,
-                        .body,
-                        .cookies,
-                        .raw,
-                        .request,
-                    ]) { section in
-                        PanelTabButton(
-                            title: section.rawValue,
-                            badge: section == .headers ? session.responseHead?.headers.count : nil,
-                            isSelected: interface.responseSection == section,
-                            action: { interface.responseSection = section }
-                        )
-                        .offset(y: -0.5)
-                        if section == .raw { Divider().frame(height: 14).padding(.horizontal, 1) }
-                    }
-                }
-                .padding(.leading, 11)
-                .padding(.trailing, 10)
-                .fixedSize(horizontal: true, vertical: false)
-
-            Spacer(minLength: 4)
-            ResponseTransferMetrics(session: session)
-                .padding(.trailing, 10)
+        ViewThatFits(in: .horizontal) {
+            HStack(spacing: 4) {
+                tabs
+                Spacer(minLength: 0)
+                ResponseTransferMetrics(session: session).padding(.trailing, 10)
+            }.frame(height: 34)
+            VStack(spacing: 0) {
+                tabs.frame(maxWidth: .infinity, alignment: .leading).frame(height: 34)
+                ResponseTransferMetrics(session: session)
+                    .padding(.horizontal, 10)
+                    .frame(maxWidth: .infinity, alignment: .trailing).frame(height: 26)
+            }
         }
-        .frame(minWidth: geometry.size.width, maxHeight: .infinity, alignment: .leading)
-        }
-        .frame(height: 34)
-        .clipped()
         .background(WireboltTheme.barBackground)
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Response sections")
+    }
+
+    private var tabs: some View {
+        HStack(spacing: 10) {
+            ForEach([
+                ResponsePanelSection.headers,
+                .body,
+                .cookies,
+                .raw,
+                .request,
+            ]) { section in
+                PanelTabButton(
+                    title: section.rawValue,
+                    badge: section == .headers ? session.responseHead?.headers.count : nil,
+                    isSelected: interface.responseSection == section,
+                    action: { interface.responseSection = section }
+                )
+                .offset(y: -0.5)
+                if section == .raw { Divider().frame(height: 14).padding(.horizontal, 1) }
+            }
+        }
+        .padding(.leading, 11)
+        .padding(.trailing, 10)
+        .fixedSize(horizontal: true, vertical: false)
     }
 }
 

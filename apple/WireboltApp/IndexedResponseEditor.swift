@@ -36,10 +36,23 @@ struct IndexedResponseEditor: View {
             }
             .opacity(index == nil || index?.url == url ? 1 : 0)
             .overlay { if let index, index.url != url { ProgressView() } }
+            .overlay(alignment: .bottomTrailing) {
+                if index?.isComplete == false {
+                    ProgressView().controlSize(.small).padding(8).help("Loading response…")
+                }
+            }
             .task(id: "\(url.path):\(columns):\(fontSize):\(width):\(prefix):\(isActive)") {
                 guard isActive else { return }
                 failure = false
                 do {
+                    if index == nil || index?.url != url {
+                        let first = try await ResponseIndexCache.shared.firstViewport(url: url, columns: columns, prefix: prefix, wrapping: wrapping)
+                        try Task.checkCancellation()
+                        index = first
+                        if first.isComplete { return }
+                        // Give SwiftUI a turn to draw the first viewport before publishing the full layout.
+                        await Task.yield()
+                    }
                     let result = try await ResponseIndexCache.shared.index(url: url, columns: columns, prefix: prefix, wrapping: wrapping)
                     try Task.checkCancellation()
                     index = result
@@ -81,7 +94,12 @@ private struct IndexedCodeScrollView: NSViewRepresentable {
         let restore = view.presentation == nil
         if restore { view.presentation = editorStorage?.state(for: storageKey) }
         (scroll.contentView as? EditorClipView)?.changed = { [weak view] point in view?.presentation?.origin = point }
-        let changed = view.index?.url != index.url || view.index?.columns != index.columns || view.index?.wrapping != index.wrapping || view.fontSize != fontSize || view.language != language
+        let changed = view.index?.rowCount != index.rowCount || view.index?.url != index.url || view.index?.columns != index.columns || view.index?.wrapping != index.wrapping || view.fontSize != fontSize || view.language != language
+        let oldIndex = view.index
+        let oldOrigin = scroll.contentView.bounds.origin
+        let oldRow = max(0, Int(oldOrigin.y / view.lineHeight))
+        let fraction = oldOrigin.y / view.lineHeight - Double(oldRow)
+        let anchor = changed && oldIndex?.url == index.url ? try? oldIndex?.rows(start: oldRow, count: 1).first : nil
         view.index = index
         view.fontSize = fontSize
         view.language = language
@@ -90,7 +108,14 @@ private struct IndexedCodeScrollView: NSViewRepresentable {
         let width = wraps ? scroll.contentSize.width : max(scroll.contentSize.width, Double(index.maximumColumns) * (" " as NSString).size(withAttributes: [.font: NSFont.monospacedSystemFont(ofSize: fontSize, weight: .regular)]).width + view.gutterWidth + 22)
         view.setFrameSize(NSSize(width: width, height: max(scroll.contentSize.height, Double(index.rowCount) * view.lineHeight + 2 * CodeEditorMetrics.textTopInset(fontSize) + (beyond ? max(0, scroll.contentSize.height - view.lineHeight) : 0))))
         scroll.contentInsets = NSEdgeInsets(top: 0, left: 0, bottom: 0, right: 0)
-        if changed { view.invalidateRows() }
+        if changed {
+            view.invalidateRows()
+            if let anchor, let mapped = try? index.row(preserving: anchor) {
+                let origin = NSPoint(x: oldOrigin.x, y: (Double(mapped) + fraction) * view.lineHeight)
+                scroll.contentView.scroll(to: origin)
+                scroll.reflectScrolledClipView(scroll.contentView)
+            }
+        }
         if restore, let presentation = view.presentation {
             let origin = presentation.origin
             view.restoreSelection()
@@ -123,15 +148,18 @@ final class IndexedCodeView: NSView, NSUserInterfaceValidations {
         let fontSize: Double
         let appearance: NSAppearance.Name
         let line: IndexedTextLine
+        var complete = true
     }
     private var shapedLines: [ShapedLine] = []
+    private var shapingTask: Task<Void, Never>?
+    private var shapingText: String?
     private var cachedRows: [ResponseTextIndex.Row] = []
     private var loadingRange: Range<Int>?
     private var loadTask: Task<Void, Never>?
     private var findTask: Task<Void, Never>?
     private var selectionStart: (row: Int, column: Int)?
     private var selectionEnd: (row: Int, column: Int)?
-    deinit { loadTask?.cancel(); findTask?.cancel() }
+    deinit { loadTask?.cancel(); findTask?.cancel(); shapingTask?.cancel() }
 
     func restoreSelection() {
         guard let selection = presentation?.indexedSelection else { return }
@@ -162,7 +190,7 @@ final class IndexedCodeView: NSView, NSUserInterfaceValidations {
         findState = state
         guard let index else { return }
         let query = state.isVisible ? state.query : TextSearchQuery()
-        let source = "\(index.url.path):\(index.columns):\(String(describing: index.wrapping))"
+        let source = "\(index.url.path):\(index.rowCount):\(index.columns):\(String(describing: index.wrapping))"
         if query != findQuery || state.selectionOnly != findScopeOnly || source != findSource {
             findQuery = query
             findScopeOnly = state.selectionOnly
@@ -220,6 +248,8 @@ final class IndexedCodeView: NSView, NSUserInterfaceValidations {
     }
 
     func invalidateRows() {
+        shapingTask?.cancel()
+        shapingText = nil
         loadTask?.cancel()
         hasDrawnViewport = false
         cachedRows = []
@@ -239,6 +269,7 @@ final class IndexedCodeView: NSView, NSUserInterfaceValidations {
         }
         let numberAttributes: [NSAttributedString.Key: Any] = [.font: NSFont.monospacedSystemFont(ofSize: fontSize, weight: .regular), .foregroundColor: NSColor.secondaryLabelColor]
         let selection = orderedSelection
+        let singleLongLine = cachedRows.filter { $0.text.utf16.count > 2048 }.count == 1
         for row in cachedRows where range.contains(row.number) {
             let y = Double(row.number) * lineHeight + CodeEditorMetrics.textTopInset(fontSize)
             if !row.continuation {
@@ -250,10 +281,14 @@ final class IndexedCodeView: NSView, NSUserInterfaceValidations {
                 if let found = shapedLines.firstIndex(where: { $0.text == row.text && $0.language == language && $0.fontSize == fontSize && $0.appearance == effectiveAppearance.name }) {
                     cached = shapedLines.remove(at: found)
                 } else {
+                    let source = row.text as NSString
+                    let progressive = singleLongLine && source.length <= 2 * 1024 * 1024
+                    let prefix = progressive ? source.substring(with: source.rangeOfComposedCharacterSequences(for: NSRange(location: 0, length: min(2048, source.length)))) : row.text
                     cached = ShapedLine(text: row.text, language: language, fontSize: fontSize, appearance: effectiveAppearance.name,
-                        line: IndexedTextLine(SyntaxHighlighter.attributedString(text: row.text, language: language, fontSize: fontSize), fontSize: fontSize))
+                        line: IndexedTextLine(SyntaxHighlighter.attributedString(text: prefix, language: language, fontSize: fontSize), fontSize: fontSize), complete: !progressive)
                 }
                 shapedLines.append(cached)
+                if !cached.complete { prepareLongLine(row.text) }
                 while shapedLines.count > 2 || shapedLines.reduce(0, { $0 + $1.text.utf16.count }) > 2 * 1024 * 1024 { shapedLines.removeFirst() }
                 cached.line.draw(at: CGPoint(x: gutterWidth + 4 + row.indent, y: y), visible: visibleRect)
                 hasDrawnViewport = true
@@ -274,6 +309,28 @@ final class IndexedCodeView: NSView, NSUserInterfaceValidations {
             }
             attributed.draw(at: NSPoint(x: gutterWidth + 4 + row.indent, y: y))
             hasDrawnViewport = true
+        }
+    }
+
+    private func prepareLongLine(_ text: String) {
+        guard shapingText == nil else { return }
+        shapingTask?.cancel()
+        shapingText = text
+        let fontSize = fontSize, language = language, appearance = effectiveAppearance.name
+        shapingTask = Task { [weak self] in
+            do {
+                let styled = SyntaxHighlighter.attributedString(text: text, language: language, fontSize: fontSize)
+                let line = try await IndexedTextLine.prepare(styled, fontSize: fontSize)
+                try Task.checkCancellation()
+                guard let self, self.fontSize == fontSize, self.language == language, self.effectiveAppearance.name == appearance else { return }
+                self.shapedLines.removeAll { $0.text == text }
+                self.shapedLines.append(ShapedLine(text: text, language: language, fontSize: fontSize, appearance: appearance, line: line))
+                while self.shapedLines.count > 2 { self.shapedLines.removeFirst() }
+                self.shapingText = nil
+                self.needsDisplay = true
+            } catch {
+                if !Task.isCancelled { self?.shapingText = nil }
+            }
         }
     }
 

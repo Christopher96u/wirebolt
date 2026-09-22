@@ -3,6 +3,22 @@ import Testing
 @testable import WireboltKit
 
 @Suite struct ResponseIndexCacheTests {
+    @Test func firstViewportUpgradesToFullIndexAndInvalidatesWithFile() async throws {
+        let url = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: url) }
+        try Data(String(repeating: "row\n", count: 1000).utf8).write(to: url)
+        let cache = ResponseIndexCache()
+        let first = try await cache.firstViewport(url: url, columns: 80)
+        #expect(!first.isComplete && first.rowCount == 256)
+        #expect(try first.rows(start: 250, count: 100).count == 6)
+        let full = try await cache.index(url: url, columns: 80)
+        #expect(full.isComplete && full.rowCount == 1001)
+        #expect(try await cache.firstViewport(url: url, columns: 80).isComplete)
+        try Data("replacement".utf8).write(to: url)
+        let changed = try await cache.firstViewport(url: url, columns: 80)
+        #expect(try changed.rows(start: 0, count: 1).first?.text == "replacement")
+    }
+
     @Test func cacheSeparatesFilesWidthsPrefixesAndFileRevisions() async throws {
         let url = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: url) }

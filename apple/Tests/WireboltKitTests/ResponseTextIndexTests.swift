@@ -4,6 +4,48 @@ import Testing
 @testable import WireboltKit
 
 @Suite struct ResponseTextIndexTests {
+    @Test func boundedIndexShowsSameFirstRowsAsCompleteIndex() throws {
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: url) }
+        try Data(String(repeating: "  café 東京 👨‍👩‍👧‍👦 /some/long/path\n", count: 1000).utf8).write(to: url)
+        let layout = wrapping(width: 90)
+        let partial = try ResponseTextIndex(url: url, columns: 10, wrapping: layout, rowLimit: 256)
+        let full = try ResponseTextIndex(url: url, columns: 10, wrapping: layout)
+        #expect(!partial.isComplete)
+        #expect(full.isComplete)
+        #expect(partial.rowCount == 256)
+        #expect(try partial.rows(start: 0, count: 256) == full.rows(start: 0, count: 256))
+    }
+
+    @Test func byteAnchorSurvivesWrappingChangesAcrossCheckpoints() throws {
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: url) }
+        try Data((0..<1000).map { "\($0) café 東京 🚀 /some/long/path" }.joined(separator: "\n").utf8).write(to: url)
+        let wide = try ResponseTextIndex(url: url, columns: 100, wrapping: wrapping(width: 900))
+        let narrow = try ResponseTextIndex(url: url, columns: 10, wrapping: wrapping(width: 90))
+        for original in [0, 127, 500, 999] {
+            let row = try #require(wide.rows(start: original, count: 1).first)
+            let mapped = try narrow.row(containingByteOffset: row.byteOffset)
+            let restored = try #require(narrow.rows(start: mapped, count: 1).first)
+            #expect(restored.line == row.line)
+            #expect(restored.byteOffset == row.byteOffset)
+            #expect(try wide.row(containingByteOffset: restored.byteOffset) == original)
+        }
+    }
+
+    @Test func resizeAnchorKeepsRawHeadersAboveTheBody() throws {
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: url) }
+        try Data("body\nsecond".utf8).write(to: url)
+        let prefix = "HTTP/1.1 200 OK\nContent-Type: application/json\n\n"
+        let wide = try ResponseTextIndex(url: url, columns: 100, prefix: prefix, wrapping: wrapping(width: 900))
+        let narrow = try ResponseTextIndex(url: url, columns: 10, prefix: prefix, wrapping: wrapping(width: 90))
+        for row in try wide.rows(start: 0, count: wide.rowCount) {
+            let mapped = try narrow.row(preserving: row)
+            #expect(try narrow.rows(start: mapped, count: 1).first?.line == row.line)
+        }
+    }
+
     private func wrapping(width: Double = 160) -> CodeTextWrapping {
         let font = CTFontCreateUIFontForLanguage(.userFixedPitch, 12, nil)!
         return CodeTextWrapping(fontName: CTFontCopyPostScriptName(font) as String, fontSize: 12, width: width)

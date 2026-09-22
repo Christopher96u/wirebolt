@@ -35,7 +35,11 @@ Performance budgets distinguish the response engine's cold first viewport (50 ms
 from a complete native window's first content (300 ms, including AppKit/SwiftUI
 construction and, for JSON responses, formatting). Native workloads in
 `scripts/check.sh` enforce every reported budget, including initial display and
-resizing, and check narrow-panel layout and accessible control names.
+resizing, cold renderer switches, and scroll over 100,000-row documents. They also
+check narrow/split-panel controls and preserve the reading position across wrapping
+changes. Large response viewers draw a bounded first viewport while completing
+the file index in the background. Narrow editor groups place the response below
+the request to keep all controls reachable.
 
 Benchmark the Rust HTTP engine over loopback:
 

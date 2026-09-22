@@ -133,6 +133,7 @@ struct NativeCodeEditor: NSViewRepresentable {
         layoutManager.backgroundLayoutEnabled = false
         layoutManager.delegate = context.coordinator
         view.textContainer?.replaceLayoutManager(layoutManager)
+        layoutManager.replaceTextStorage(CodeTextStorage())
         view.isRichText = false
         view.isAutomaticQuoteSubstitutionEnabled = false
         view.isAutomaticDashSubstitutionEnabled = false
@@ -278,6 +279,7 @@ struct NativeCodeEditor: NSViewRepresentable {
         var projection = CodeProjection(source: "")
         private var highlightsViewport = false
         private var highlightedRange = NSRange(location: NSNotFound, length: 0)
+        private var viewportStyle: NSAttributedString?
         private var edit: (range: NSRange, replacement: String, removed: String)?
         private var lineIndex = TextLineIndex()
         private var foldTask: Task<Void, Never>?
@@ -377,7 +379,7 @@ struct NativeCodeEditor: NSViewRepresentable {
             let viewport = view.visibleRect.offsetBy(dx: -view.textContainerOrigin.x, dy: -view.textContainerOrigin.y)
             let glyphs = manager.glyphRange(forBoundingRect: viewport, in: container)
             let characters = manager.characterRange(forGlyphRange: glyphs, actualGlyphRange: nil)
-            let source = projection.text as NSString
+            let source = storage.mutableString
             guard NSMaxRange(characters) <= source.length else { return }
             let range = source.lineRange(for: characters)
             guard range.length > 0, range != highlightedRange else { return }
@@ -385,11 +387,29 @@ struct NativeCodeEditor: NSViewRepresentable {
             updating = true
             defer { updating = false }
             let styled = SyntaxHighlighter.attributedString(text: source.substring(with: range), language: language, fontSize: fontSize)
-            storage.beginEditing()
+            viewportStyle = styled
             styled.enumerateAttributes(in: NSRange(location: 0, length: styled.length)) { attributes, local, _ in
-                storage.setAttributes(attributes, range: NSRange(location: range.location + local.location, length: local.length))
+                let target = NSRange(location: range.location + local.location, length: local.length)
+                if let link = attributes[.link] as? String,
+                   storage.attribute(.link, at: target.location, effectiveRange: nil) as? String != link {
+                    storage.addAttribute(.link, value: link, range: target)
+                }
             }
-            storage.endEditing()
+        }
+
+        func layoutManager(_ layoutManager: NSLayoutManager, shouldUseTemporaryAttributes attrs: [NSAttributedString.Key: Any],
+            forDrawingToScreen toScreen: Bool, atCharacterIndex charIndex: Int, effectiveRange effectiveCharRange: NSRangePointer?) -> [NSAttributedString.Key: Any]? {
+            guard toScreen else { return nil }
+            guard highlightsViewport, NSLocationInRange(charIndex, highlightedRange), let viewportStyle else { return attrs }
+            var local = NSRange()
+            let style = viewportStyle.attributes(at: charIndex - highlightedRange.location, effectiveRange: &local)
+            if let effectiveCharRange {
+                effectiveCharRange.pointee = NSIntersectionRange(effectiveCharRange.pointee,
+                    NSRange(location: highlightedRange.location + local.location, length: local.length))
+            }
+            var result = attrs
+            for key in [NSAttributedString.Key.foregroundColor, .underlineStyle] { result[key] = style[key] }
+            return result
         }
 
         func textView(_ textView: NSTextView, shouldChangeTextIn affectedCharRange: NSRange, replacementString: String?) -> Bool {
@@ -489,6 +509,13 @@ struct NativeCodeEditor: NSViewRepresentable {
 }
 
 private final class FindableCodeTextView: NSTextView {
+    override func prepareContent(in rect: NSRect) {
+        guard let manager = layoutManager, let container = textContainer else { return }
+        let viewport = visibleRect.offsetBy(dx: -textContainerInset.width, dy: -textContainerInset.height)
+        manager.ensureLayout(forBoundingRect: viewport, in: container)
+        preparedContentRect = visibleRect
+    }
+
     var findAction: ((Int) -> Bool)?
     var prepareVisibleText: (() -> Void)?
     weak var findState: EditorFindState?
@@ -525,6 +552,154 @@ private final class FindableCodeTextView: NSTextView {
     }
 }
 
+/// Cache AppKit's font fallback for bounded Unicode runs. ASCII code already has
+/// a complete monospaced font; rescanning it on every distant scroll is unnecessary.
+final class CodeTextStorage: NSTextStorage {
+    private let backing = NSMutableAttributedString(string: "")
+    private var fixingFonts = false
+    private var cachedAttributes: (range: NSRange, values: [NSAttributedString.Key: Any])?
+    private var longestAttributes: (range: NSRange, values: [NSAttributedString.Key: Any])?
+    override var string: String { backing.string }
+    override var fixesAttributesLazily: Bool { true }
+    private var validated = IndexSet()
+    override func invalidateAttributes(in range: NSRange) {
+        validated.remove(integersIn: range.location..<NSMaxRange(range))
+    }
+    override func ensureAttributesAreFixed(in range: NSRange) {
+        guard !fixingFonts, range.length > 0, range.location < length else { return }
+        if validated.contains(integersIn: range.location..<min(length, NSMaxRange(range))) { return }
+        let lower = range.location / 4096 * 4096
+        let upper = min(length, max(NSMaxRange(range), lower + 4096))
+        let requested = backing.mutableString.rangeOfComposedCharacterSequences(for: NSRange(location: lower, length: upper - lower))
+        let pending = IndexSet(integersIn: requested.location..<NSMaxRange(requested)).subtracting(validated)
+        for part in pending.rangeView { fixAttributes(in: NSRange(part)) }
+        validated.formUnion(pending)
+    }
+    private func constrain(_ range: NSRangePointer?, at location: Int) {
+        guard let range, let valid = validated.rangeView.first(where: { $0.contains(location) }) else { return }
+        range.pointee = NSIntersectionRange(range.pointee, NSRange(valid))
+    }
+
+    override var length: Int { backing.length }
+    override func fixAttributes(in range: NSRange) {
+        // This plain-text editor owns paragraph styles and never stores attachments
+        // or glyph-info overrides. Only font fallback needs lazy validation.
+        fixFontAttribute(in: range)
+    }
+    override func attribute(_ attrName: NSAttributedString.Key, at location: Int, effectiveRange range: NSRangePointer?) -> Any? {
+        if !fixingFonts { ensureAttributesAreFixed(in: NSRange(location: location, length: 1)) }
+        let value = backing.attribute(attrName, at: location, effectiveRange: range)
+        constrain(range, at: location)
+        return value
+    }
+    override func attribute(_ attrName: NSAttributedString.Key, at location: Int, longestEffectiveRange range: NSRangePointer?, in rangeLimit: NSRange) -> Any? {
+        if !fixingFonts { ensureAttributesAreFixed(in: NSRange(location: location, length: 1)) }
+        let value = backing.attribute(attrName, at: location, longestEffectiveRange: range, in: rangeLimit)
+        constrain(range, at: location)
+        return value
+    }
+
+    override func attributes(at location: Int, effectiveRange range: NSRangePointer?) -> [NSAttributedString.Key: Any] {
+        if !fixingFonts { ensureAttributesAreFixed(in: NSRange(location: location, length: 1)) }
+        if let cachedAttributes, NSLocationInRange(location, cachedAttributes.range) {
+            range?.pointee = cachedAttributes.range
+            constrain(range, at: location)
+            return cachedAttributes.values
+        }
+        var effective = NSRange()
+        let value = backing.attributes(at: location, effectiveRange: &effective)
+        cachedAttributes = (effective, value)
+        range?.pointee = effective
+        constrain(range, at: location)
+        return value
+    }
+    override func attributes(at location: Int, longestEffectiveRange range: NSRangePointer?, in rangeLimit: NSRange) -> [NSAttributedString.Key: Any] {
+        if !fixingFonts { ensureAttributesAreFixed(in: NSRange(location: location, length: 1)) }
+        if let longestAttributes, NSLocationInRange(location, longestAttributes.range) {
+            range?.pointee = NSIntersectionRange(longestAttributes.range, rangeLimit)
+            constrain(range, at: location)
+            return longestAttributes.values
+        }
+        var effective = NSRange()
+        let value = backing.attributes(at: location, longestEffectiveRange: &effective, in: NSRange(location: 0, length: length))
+        longestAttributes = (effective, value)
+        range?.pointee = NSIntersectionRange(effective, rangeLimit)
+        constrain(range, at: location)
+        return value
+    }
+    override func replaceCharacters(in range: NSRange, with str: String) {
+        cachedAttributes = nil; longestAttributes = nil
+        backing.replaceCharacters(in: range, with: str)
+        validated.removeAll()
+        edited(.editedCharacters, range: range, changeInLength: (str as NSString).length - range.length)
+    }
+    override func setAttributes(_ attrs: [NSAttributedString.Key: Any]?, range: NSRange) {
+        cachedAttributes = nil; longestAttributes = nil
+        backing.setAttributes(attrs, range: range)
+        if !fixingFonts { edited(.editedAttributes, range: range, changeInLength: 0) }
+    }
+    private struct FontKey: Hashable { let font: NSFont; let text: String }
+    private struct FontRun { let range: NSRange; let font: NSFont }
+    private var fallbacks: [FontKey: [FontRun]] = [:]
+
+    override func fixFontAttribute(in range: NSRange) {
+        guard !fixingFonts else { return }
+        fixingFonts = true
+        defer { fixingFonts = false }
+        var offset = range.location
+        while offset < NSMaxRange(range) {
+            let part = backing.mutableString.rangeOfComposedCharacterSequences(for:
+                NSRange(location: offset, length: min(4096, NSMaxRange(range) - offset)))
+            fixFontChunk(part)
+            offset = NSMaxRange(part)
+        }
+    }
+
+    private func fixFontChunk(_ range: NSRange) {
+        // Resolve attributes in a bounded scratch buffer, then splice once. Adding
+        // each fallback run to a large RLE attributed string causes quadratic moves.
+        let chunk = NSMutableAttributedString(attributedString: backing.attributedSubstring(from: range))
+        let source = chunk.mutableString
+        var units = [UInt16](repeating: 0, count: range.length)
+        source.getCharacters(&units, range: NSRange(location: 0, length: range.length))
+        var cursor = 0, changed = false
+        while cursor < units.count {
+            if units[cursor] < 128 { cursor += 1; continue }
+            let start = cursor
+            while cursor < units.count && units[cursor] >= 128 { cursor += 1 }
+            let run = source.rangeOfComposedCharacterSequences(for: NSRange(location: start, length: cursor - start))
+            guard run.length <= 256, let font = chunk.attribute(.font, at: run.location, effectiveRange: nil) as? NSFont else {
+                chunk.fixFontAttribute(in: run)
+                changed = true
+                continue
+            }
+            let key = FontKey(font: font, text: source.substring(with: run))
+            if let cached = fallbacks[key] {
+                for replacement in cached {
+                    let target = NSRange(location: run.location + replacement.range.location, length: replacement.range.length)
+                    if chunk.attribute(.font, at: target.location, effectiveRange: nil) as? NSFont != replacement.font {
+                        chunk.addAttribute(.font, value: replacement.font, range: target)
+                        changed = true
+                    }
+                }
+            } else {
+                chunk.fixFontAttribute(in: run)
+                var resolved: [FontRun] = []
+                chunk.enumerateAttribute(.font, in: run) { value, part, _ in
+                    if let value = value as? NSFont, value != font {
+                        resolved.append(FontRun(range: NSRange(location: part.location - run.location, length: part.length), font: value))
+                    }
+                }
+                changed = changed || !resolved.isEmpty
+                if fallbacks.count >= 256 { fallbacks.removeAll(keepingCapacity: true) }
+                fallbacks[key] = resolved
+            }
+        }
+        if changed { cachedAttributes = nil; longestAttributes = nil; backing.replaceCharacters(in: range, with: chunk) }
+    }
+
+}
+
 private final class CodeLayoutManager: NSLayoutManager {
     var drawInvisibles = false
     override func processEditing(for textStorage: NSTextStorage, edited editMask: NSTextStorageEditActions,
@@ -535,20 +710,34 @@ private final class CodeLayoutManager: NSLayoutManager {
     }
     override func drawGlyphs(forGlyphRange glyphsToShow: NSRange, at origin: NSPoint) {
         super.drawGlyphs(forGlyphRange: glyphsToShow, at: origin)
-        guard drawInvisibles, let storage = textStorage, let container = textContainers.first else { return }
-        let string = storage.string as NSString
+        guard drawInvisibles, let storage = textStorage else { return }
+        let string = storage.mutableString
         let chars = characterRange(forGlyphRange: glyphsToShow, actualGlyphRange: nil)
+        guard let context = NSGraphicsContext.current?.cgContext else { return }
+        let font = NSFont.monospacedSystemFont(ofSize: textContainers.first?.textView?.font?.pointSize ?? 12, weight: .regular)
+        let ctFont = CTFontCreateWithName(font.fontName as CFString, font.pointSize, nil)
+        var character: UniChar = 0x00B7, markerGlyph: CGGlyph = 0
+        guard CTFontGetGlyphsForCharacters(ctFont, &character, &markerGlyph, 1) else { return }
+        var advance = CGSize.zero
+        CTFontGetAdvancesForGlyphs(ctFont, .horizontal, &markerGlyph, &advance, 1)
+        let spaceWidth = (" " as NSString).size(withAttributes: [.font: font]).width
+        let baseline = defaultBaselineOffset(for: font)
+        var positions: [CGPoint] = []
         for index in chars.location ..< NSMaxRange(chars) where string.character(at: index) == 32 {
             let glyph = glyphIndexForCharacter(at: index)
-            let bounds = boundingRect(forGlyphRange: NSRange(location: glyph, length: 1), in: container)
-            let font = storage.attribute(.font, at: index, effectiveRange: nil) as? NSFont
-                ?? .monospacedSystemFont(ofSize: 12, weight: .regular)
-            let attributes: [NSAttributedString.Key: Any] = [.font: font, .foregroundColor: NSColor.tertiaryLabelColor]
-            let marker = "·" as NSString
-            let width = marker.size(withAttributes: attributes).width
             let line = lineFragmentRect(forGlyphAt: glyph, effectiveRange: nil)
-            marker.draw(at: NSPoint(x: origin.x + bounds.midX - width / 2, y: origin.y + line.minY), withAttributes: attributes)
+            let position = location(forGlyphAt: glyph)
+            positions.append(CGPoint(x: origin.x + line.minX + position.x + (spaceWidth - advance.width) / 2,
+                y: -(origin.y + line.minY + baseline)))
         }
+        guard !positions.isEmpty else { return }
+        let glyphs = [CGGlyph](repeating: markerGlyph, count: positions.count)
+        context.saveGState()
+        context.setFillColor(NSColor.tertiaryLabelColor.cgColor)
+        context.textMatrix = .identity
+        context.scaleBy(x: 1, y: -1)
+        CTFontDrawGlyphs(ctFont, glyphs, positions, positions.count, context)
+        context.restoreGState()
     }
 }
 
@@ -701,7 +890,7 @@ private final class CodeLineRuler: NSRulerView {
         hitAreas.removeAll(keepingCapacity: true)
         for line in lines where line.offset >= chars.location && line.offset <= NSMaxRange(chars) {
             let point: NSPoint
-            if line.offset < (view.string as NSString).length {
+            if line.offset < (view.textStorage?.length ?? 0) {
                 let glyph = manager.glyphIndexForCharacter(at: line.offset)
                 point = manager.lineFragmentRect(forGlyphAt: glyph, effectiveRange: nil).origin
             } else { point = manager.extraLineFragmentRect.origin }
@@ -733,6 +922,9 @@ final class CodeTextContainer: NSTextContainer {
     // language word boundaries. The storage remains the original editable text.
     private var paragraph: (range: NSRange, lineStart: Int, text: NSString, font: NSFont, ascii: Bool, typesetter: CTTypesetter?)?
 
+    private var fontMetrics: (font: NSFont, advance: Double)?
+    private var maximumAdvances: [NSFont: Double] = [:]
+
     func invalidateParagraph() { paragraph = nil }
 
     override var isSimpleRectangularTextContainer: Bool { true }
@@ -744,17 +936,42 @@ final class CodeTextContainer: NSTextContainer {
         guard let storage = layoutManager?.textStorage, index < storage.length else { return rect }
         let font = storage.attribute(.font, at: index, effectiveRange: nil) as? NSFont
             ?? .monospacedSystemFont(ofSize: 12, weight: .regular)
-        let advance = (" " as NSString).size(withAttributes: [.font: font]).width
+        if fontMetrics?.font != font {
+            fontMetrics = (font, (" " as NSString).size(withAttributes: [.font: font]).width)
+        }
+        let advance = fontMetrics!.advance
         // Shape enough context for several visual lines, never the entire minified document.
         let contextLength = max(2048, Int(min(32768, rect.width / max(1, advance) * 8)))
         if paragraph == nil || !NSLocationInRange(index, paragraph!.range) || paragraph!.font != font
             || (NSMaxRange(paragraph!.range) < storage.length && NSMaxRange(paragraph!.range) - index < contextLength / 2) {
-            let source = storage.string as NSString
+            let source = storage.mutableString
             let logical = source.lineRange(for: NSRange(location: index, length: 0))
             let end = min(NSMaxRange(logical), index + contextLength)
             let range = source.rangeOfComposedCharacterSequences(for: NSRange(location: index, length: end - index))
             let text = source.substring(with: range) as NSString
             let ascii = (0..<text.length).allSatisfy { (32...126).contains(text.character(at: $0)) || text.character(at: $0) == 10 || text.character(at: $0) == 13 }
+            // Short Latin/CJK/emoji lines often fit without wrapping. Bound their
+            // advances using the resolved fonts, avoiding a second shaping pass.
+            // Other scripts and tabs keep the full contextual Core Text path.
+            if !ascii, NSMaxRange(range) == NSMaxRange(logical), text.length <= 256 {
+                var bound = 0.0
+                for offset in 0..<text.length {
+                    let unit = text.character(at: offset)
+                    if unit == 10 || unit == 13 { continue }
+                    if (32...126).contains(unit) { bound += advance; continue }
+                    guard (0xA0...0xFF).contains(unit) || (0x4E00...0x9FFF).contains(unit) || (0xD800...0xDFFF).contains(unit),
+                          let resolved = storage.attribute(.font, at: range.location + offset, effectiveRange: nil) as? NSFont else {
+                        bound = .infinity; break
+                    }
+                    let maximum = maximumAdvances[resolved] ?? resolved.maximumAdvancement.width
+                    maximumAdvances[resolved] = maximum
+                    guard maximum > 0 else { bound = .infinity; break }
+                    bound += maximum
+                }
+                let style = storage.attribute(.paragraphStyle, at: index, effectiveRange: nil) as? NSParagraphStyle
+                let indent = index == logical.location ? (style?.firstLineHeadIndent ?? 0) : (style?.headIndent ?? 0)
+                if bound <= max(1, rect.width - indent) { return rect }
+            }
             let typesetter = ascii ? nil : CTTypesetterCreateWithAttributedStringAndOptions(NSAttributedString(string: text as String,
                 attributes: [.font: font]) as CFAttributedString, [kCTTypesetterOptionAllowUnboundedLayout: true] as CFDictionary)
             paragraph = (range, logical.location, text, font, ascii, typesetter)

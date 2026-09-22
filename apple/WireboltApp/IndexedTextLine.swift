@@ -2,8 +2,7 @@ import AppKit
 import CoreText
 
 /// Retains shaping for a long horizontal line and draws only visible glyphs.
-@MainActor
-final class IndexedTextLine {
+final class IndexedTextLine: @unchecked Sendable {
     private struct Run {
         let value: CTRun
         let lower: Double
@@ -14,13 +13,40 @@ final class IndexedTextLine {
     private let baseline: Double
     private let margin: Double
 
-    init(_ attributed: NSAttributedString, fontSize: Double) {
+    private struct Source: @unchecked Sendable {
+        let text: NSAttributedString
+        let baseline: Double
+        let fontSize: Double
+    }
+
+    @MainActor private static func source(_ attributed: NSAttributedString, fontSize: Double) -> Source {
         let colored = NSMutableAttributedString(attributedString: attributed)
         attributed.enumerateAttribute(.foregroundColor, in: NSRange(location: 0, length: attributed.length)) { color, range, _ in
             if let color = color as? NSColor { colored.addAttribute(.foregroundColor, value: color.cgColor, range: range) }
         }
-        line = CTLineCreateWithAttributedString(colored)
-        baseline = NSLayoutManager().defaultBaselineOffset(for: NSFont.monospacedSystemFont(ofSize: fontSize, weight: .regular))
+        return Source(text: NSAttributedString(attributedString: colored),
+            baseline: NSLayoutManager().defaultBaselineOffset(for: NSFont.monospacedSystemFont(ofSize: fontSize, weight: .regular)), fontSize: fontSize)
+    }
+
+    @MainActor convenience init(_ attributed: NSAttributedString, fontSize: Double) {
+        self.init(Self.source(attributed, fontSize: fontSize))
+    }
+
+    @MainActor static func prepare(_ attributed: NSAttributedString, fontSize: Double) async throws -> IndexedTextLine {
+        let source = source(attributed, fontSize: fontSize)
+        let worker = Task.detached(priority: .userInitiated) {
+            try Task.checkCancellation()
+            let line = IndexedTextLine(source)
+            try Task.checkCancellation()
+            return line
+        }
+        return try await withTaskCancellationHandler { try await worker.value } onCancel: { worker.cancel() }
+    }
+
+    private init(_ source: Source) {
+        let fontSize = source.fontSize
+        line = CTLineCreateWithAttributedString(source.text)
+        baseline = source.baseline
         margin = fontSize * 4
         runs = (CTLineGetGlyphRuns(line) as! [CTRun]).compactMap { run in
             let count = CTRunGetGlyphCount(run)
@@ -33,7 +59,7 @@ final class IndexedTextLine {
         }
     }
 
-    func draw(at point: CGPoint, visible: CGRect) {
+    @MainActor func draw(at point: CGPoint, visible: CGRect) {
         guard let context = NSGraphicsContext.current?.cgContext else { return }
         let left = visible.minX - point.x - margin, right = visible.maxX - point.x + margin
         context.saveGState()

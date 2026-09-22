@@ -52,6 +52,7 @@ private struct EditorWorkloads {
         verifyCodeWrapping()
         verifyLongUnicodeWrapping()
         verifyFontMetrics()
+        verifyFontFallback()
         verifyIndexedLineClipping()
         verifyFieldHeights()
         verifySyntaxChunks()
@@ -139,32 +140,39 @@ private struct EditorWorkloads {
             let reference = NSAttributedString(string: source, attributes: [.font: font, .foregroundColor: NSColor.black.cgColor])
             let fullLine = CTLineCreateWithAttributedString(reference)
             let clippedLine = IndexedTextLine(styled, fontSize: size)
-            for origin in [0.0, 97.0, 733.0, 2200.0] {
-                func render(clipped: Bool) -> NSBitmapImageRep {
-                    let bitmap = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: 280, pixelsHigh: 80,
-                        bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false,
-                        colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0)!
-                    bitmap.bitmapData!.initialize(repeating: 0, count: bitmap.bytesPerRow * bitmap.pixelsHigh)
-                    let context = NSGraphicsContext(bitmapImageRep: bitmap)!.cgContext
-                    context.translateBy(x: -origin, y: 80)
-                    context.scaleBy(x: 1, y: -1)
-                    let prior = NSGraphicsContext.current
-                    NSGraphicsContext.current = NSGraphicsContext(cgContext: context, flipped: true)
-                    defer { NSGraphicsContext.current = prior }
-                    let visible = CGRect(x: origin, y: 0, width: 280, height: 80)
-                    if clipped { clippedLine.draw(at: CGPoint(x: 0, y: 3), visible: visible) }
-                    else {
-                        context.clip(to: visible)
-                        context.textMatrix = CGAffineTransform(scaleX: 1, y: -1)
-                        context.textPosition = CGPoint(x: 0, y: 3 + NSLayoutManager().defaultBaselineOffset(for: font))
-                        CTLineDraw(fullLine, context)
+            var prepared: IndexedTextLine?
+            Task { prepared = try? await IndexedTextLine.prepare(styled, fontSize: size) }
+            let deadline = Date(timeIntervalSinceNow: 5)
+            while prepared == nil && Date() < deadline { RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.001)) }
+            precondition(prepared != nil, "Background shaping must finish")
+            for candidate in [clippedLine, prepared!] {
+                for origin in [0.0, 97.0, 733.0, 2200.0, 22000.0] {
+                    func render(clipped: Bool) -> NSBitmapImageRep {
+                        let bitmap = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: 280, pixelsHigh: 80,
+                            bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false,
+                            colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0)!
+                        bitmap.bitmapData!.initialize(repeating: 0, count: bitmap.bytesPerRow * bitmap.pixelsHigh)
+                        let context = NSGraphicsContext(bitmapImageRep: bitmap)!.cgContext
+                        context.translateBy(x: -origin, y: 80)
+                        context.scaleBy(x: 1, y: -1)
+                        let prior = NSGraphicsContext.current
+                        NSGraphicsContext.current = NSGraphicsContext(cgContext: context, flipped: true)
+                        defer { NSGraphicsContext.current = prior }
+                        let visible = CGRect(x: origin, y: 0, width: 280, height: 80)
+                        if clipped { candidate.draw(at: CGPoint(x: 0, y: 3), visible: visible) }
+                        else {
+                            context.clip(to: visible)
+                            context.textMatrix = CGAffineTransform(scaleX: 1, y: -1)
+                            context.textPosition = CGPoint(x: 0, y: 3 + NSLayoutManager().defaultBaselineOffset(for: font))
+                            CTLineDraw(fullLine, context)
+                        }
+                        return bitmap
                     }
-                    return bitmap
+                    let expected = render(clipped: false), actual = render(clipped: true)
+                    let bytes = expected.bytesPerRow * expected.pixelsHigh
+                    precondition(UnsafeBufferPointer(start: expected.bitmapData!, count: bytes).elementsEqual(
+                        UnsafeBufferPointer(start: actual.bitmapData!, count: bytes)), "Synchronous and background shaping must preserve Unicode glyphs at every horizontal position")
                 }
-                let expected = render(clipped: false), actual = render(clipped: true)
-                let bytes = expected.bytesPerRow * expected.pixelsHigh
-                precondition(UnsafeBufferPointer(start: expected.bitmapData!, count: bytes).elementsEqual(
-                    UnsafeBufferPointer(start: actual.bitmapData!, count: bytes)), "Clipping must preserve Unicode glyphs at every horizontal position")
             }
         }
     }
@@ -196,7 +204,9 @@ private struct EditorWorkloads {
             editor.setSelectedRange(key)
             editor.scrollRangeToVisible(key)
             editor.display()
-            let color = editor.textStorage?.attribute(.foregroundColor, at: key.location, effectiveRange: nil) as? NSColor
+            let drawn = (editor.delegate as? NativeCodeEditor.Coordinator)?.layoutManager(editor.layoutManager!,
+                shouldUseTemporaryAttributes: [:], forDrawingToScreen: true, atCharacterIndex: key.location, effectiveRange: nil)
+            let color = (drawn?[.foregroundColor] ?? editor.textStorage?.attribute(.foregroundColor, at: key.location, effectiveRange: nil)) as? NSColor
             precondition(color == WireboltTheme.nsJSONKey, "Newly visible JSON keys must be highlighted")
             let link = source.range(of: "https://example.invalid", range: NSRange(location: key.location, length: source.length - key.location))
             precondition(editor.textStorage?.attribute(.link, at: link.location, effectiveRange: nil) as? String == "https://example.invalid",
@@ -273,6 +283,35 @@ private struct EditorWorkloads {
         }
     }
 
+    @MainActor private static func verifyFontFallback() {
+        let source = "ASCII café e\u{301} 東京 العربية עברית हिन्दी ไทย 👨‍👩‍👧‍👦 🚀\nsecond line"
+        func layout(_ storage: NSTextStorage, source: String, edit: Bool) -> ([String], [NSRect]) {
+            let probe = GlyphFontProbe()
+            let manager = NSLayoutManager()
+            manager.delegate = probe
+            storage.setAttributedString(SyntaxHighlighter.attributedString(text: source, language: .plain))
+            if edit {
+                storage.ensureAttributesAreFixed(in: NSRange(location: 0, length: storage.length))
+                storage.replaceCharacters(in: NSRange(location: 4093, length: 3), with: "e\u{301} 👨‍👩‍👧‍👦")
+            }
+            storage.addLayoutManager(manager)
+            let container = CodeTextContainer(containerSize: NSSize(width: 267, height: CGFloat.greatestFiniteMagnitude))
+            container.lineFragmentPadding = 0
+            manager.addTextContainer(container)
+            manager.ensureLayout(for: container)
+            var rects: [NSRect] = []
+            manager.enumerateLineFragments(forGlyphRange: NSRange(location: 0, length: manager.numberOfGlyphs)) { rect, _, _, _, _ in rects.append(rect) }
+            return (probe.glyphs, rects)
+        }
+        for (fixture, edit) in [(source, false), (String(repeating: "a", count: 4093) + source + String(repeating: "b", count: 5000) + source, false),
+                                (String(repeating: "a", count: 4093) + source + source, true)] {
+            let native = layout(NSTextStorage(), source: fixture, edit: edit)
+            let code = layout(CodeTextStorage(), source: fixture, edit: edit)
+            precondition(!native.0.isEmpty && native.0 == code.0, "Font fallback must generate the same glyphs and fonts for Unicode scripts, chunk boundaries and edits")
+            precondition(native.1 == code.1, "Font fallback must preserve line metrics and wrapping")
+        }
+    }
+
     @MainActor private static func verifyFontMetrics() {
         // Measured reference sizes: 10/12/28 pt use 15/18/42 pt lines and
         // start their content 57/63/113 pt from the response panel's left edge.
@@ -297,5 +336,15 @@ private struct EditorWorkloads {
     private static func milliseconds(since start: ContinuousClock.Instant) -> Double {
         let duration = start.duration(to: .now).components
         return Double(duration.seconds) * 1000 + Double(duration.attoseconds) / 1e15
+    }
+}
+
+@MainActor private final class GlyphFontProbe: NSObject, @preconcurrency NSLayoutManagerDelegate {
+    var glyphs: [String] = []
+    func layoutManager(_ layoutManager: NSLayoutManager, shouldGenerateGlyphs glyphs: UnsafePointer<CGGlyph>,
+        properties props: UnsafePointer<NSLayoutManager.GlyphProperty>, characterIndexes charIndexes: UnsafePointer<Int>,
+        font: NSFont, forGlyphRange glyphRange: NSRange) -> Int {
+        for i in 0..<glyphRange.length { self.glyphs.append("\(charIndexes[i]):\(font.fontName):\(glyphs[i])") }
+        return 0
     }
 }

@@ -26,6 +26,21 @@ public actor ResponseIndexCache {
     private let capacity: Int
     public init(capacity: Int = 8) { self.capacity = max(0, capacity) }
 
+    /// A bounded first viewport while the complete sparse index is prepared.
+    public func firstViewport(url: URL, columns: Int, prefix: String = "", wrapping: CodeTextWrapping? = nil) async throws -> ResponseTextIndex {
+        try Task.checkCancellation()
+        let metadata = try FileManager.default.attributesOfItem(atPath: url.path)
+        let key = Key(url: url, size: (metadata[.size] as? NSNumber)?.intValue ?? 0, modified: metadata[.modificationDate] as? Date,
+            columns: columns, prefix: prefix, wrapping: wrapping)
+        if let entry = entries.first(where: { $0.key == key }) { return entry.index }
+        let worker = Task.detached(priority: .userInitiated) {
+            try ResponseTextIndex(url: url, columns: columns, prefix: prefix, wrapping: wrapping, rowLimit: 256)
+        }
+        let result = try await withTaskCancellationHandler { try await worker.value } onCancel: { worker.cancel() }
+        try Task.checkCancellation()
+        return result
+    }
+
     public func index(url: URL, columns: Int, prefix: String = "", wrapping: CodeTextWrapping? = nil) async throws -> ResponseTextIndex {
         try Task.checkCancellation()
         let metadata = try FileManager.default.attributesOfItem(atPath: url.path)

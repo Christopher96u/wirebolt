@@ -1040,7 +1040,7 @@ private struct EditorGroupDeck: View {
                 let presentation = interface.presentation(for: session)
                 RequestURLBar(model: model, interface: interface, session: session, groupID: groupID)
                     .id(session.id)
-                ResponseSplit(layout: interface.responseLayout(for: groupID), orientation: interface.responseOrientation, minimumResponseWidth: session.kind == .http && session.responseHead == nil ? 330 : 349) {
+                ResponseSplit(layout: interface.responseLayout(for: groupID), orientation: interface.responseOrientation, minimumResponseWidth: 349) {
                     RequestWorkspace(
                         model: model,
                         interface: interface,
@@ -3298,9 +3298,10 @@ private struct ResponseSplit<RequestContent: View, ResponseContent: View>: View 
 
     var body: some View {
         GeometryReader { geometry in
-            let vertical = orientation == .bottom
+            // Narrow groups use a vertical split so every section remains reachable.
+            let vertical = orientation == .bottom || geometry.size.width < 700
             let length = vertical ? geometry.size.height : geometry.size.width
-            let minimum: CGFloat = 100
+            let minimum: CGFloat = vertical ? 132 : 320
             let maximum = max(minimum, length - (vertical ? 200 : minimumResponseWidth) - 1)
             let position = min(maximum, max(minimum, (vertical ? layout.requestHeight : layout.requestWidth) ?? (length / 2).rounded(.down)))
             let arrangement = vertical ? AnyLayout(VStackLayout(spacing: 0)) : AnyLayout(HStackLayout(spacing: 0))

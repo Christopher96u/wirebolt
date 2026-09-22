@@ -29,13 +29,14 @@ public struct ResponseTextIndex: Sendable {
     public let wrapping: CodeTextWrapping?
     public let rowCount: Int
     public let lineCount: Int
+    public let isComplete: Bool
     public let maximumColumns: Int
     private let checkpoints: [Checkpoint]
     private let prefixRows: [Row]
     private let prefixLines: Int
     private let prefix: String
 
-    public init(url: URL, columns: Int, prefix: String = "", wrapping: CodeTextWrapping? = nil) throws {
+    public init(url: URL, columns: Int, prefix: String = "", wrapping: CodeTextWrapping? = nil, rowLimit: Int = .max) throws {
         self.wrapping = wrapping
         self.url = url
         self.prefix = prefix
@@ -70,6 +71,7 @@ public struct ResponseTextIndex: Sendable {
         var count = 0
         var maximum = 0
         var lastLine = 0
+        var complete = true
         try Self.scan(url: url, columns: self.columns, wrapping: wrapping, from: nil, collectText: false) { row in
             if row.number.isMultiple(of: 128) {
                 checkpoints.append(Checkpoint(row: row.number, line: row.line, continuation: row.continuation, offset: row.byteOffset, indent: row.indent))
@@ -77,8 +79,10 @@ public struct ResponseTextIndex: Sendable {
             count = row.number + 1
             maximum = max(maximum, row.columns)
             lastLine = row.line
+            if count >= max(1, rowLimit) { complete = false; return false }
             return true
         }
+        isComplete = complete
         rowCount = count + prefixRows.count
         lineCount = lastLine + prefixLines + 1
         maximumColumns = max(maximum, prefixRows.map(\.columns).max() ?? 0)
@@ -88,6 +92,7 @@ public struct ResponseTextIndex: Sendable {
     public func rows(start: Int, count: Int) throws -> [Row] {
         guard count > 0, start < rowCount else { return [] }
         let start = max(0, start)
+        let count = min(count, rowCount - start)
         let bodyStart = max(0, start - prefixRows.count)
         let checkpoint = checkpoints[min(bodyStart / 128, checkpoints.count - 1)]
         var rows = Array(prefixRows.dropFirst(start).prefix(count))
@@ -100,6 +105,31 @@ public struct ResponseTextIndex: Sendable {
             return rows.count < count
         }
         return rows
+    }
+
+    /// Prefix rows have no body byte offset; preserve their logical header line separately.
+    public func row(preserving anchor: Row) throws -> Int {
+        if anchor.line < prefixLines {
+            return prefixRows.first(where: { $0.line == anchor.line })?.number ?? 0
+        }
+        return try row(containingByteOffset: anchor.byteOffset)
+    }
+
+    /// Resolve a source byte anchor using sparse checkpoints, independent of wrapping.
+    public func row(containingByteOffset offset: UInt64) throws -> Int {
+        var lower = 0, upper = checkpoints.count
+        while lower < upper {
+            let middle = (lower + upper) / 2
+            if checkpoints[middle].offset <= offset { lower = middle + 1 } else { upper = middle }
+        }
+        let checkpoint = checkpoints[max(0, lower - 1)]
+        var result = checkpoint.row
+        try Self.scan(url: url, columns: columns, wrapping: wrapping, from: checkpoint, collectText: false) { row in
+            guard row.byteOffset <= offset else { return false }
+            result = row.number
+            return true
+        }
+        return result + prefixRows.count
     }
 
     public struct SearchPosition: Equatable, Sendable {

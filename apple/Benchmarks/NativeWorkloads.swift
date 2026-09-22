@@ -96,6 +96,20 @@ final class ProbeWindow: NSWindow { override var canBecomeKey: Bool { true } }
             spin(0.01)
         }
         record("editor_resize",resized,budget:16,details:["rows":rows])
+        var scrolling: [Double] = []
+        if let scroll = editor.enclosingScrollView {
+            for i in 0..<samples {
+                let start = ContinuousClock.now
+                let y = max(0, editor.bounds.height - scroll.contentView.bounds.height) * CGFloat(i % 10) / 9
+                scroll.contentView.scroll(to: NSPoint(x: 0, y: y))
+                scroll.reflectScrolledClipView(scroll.contentView)
+                flush(host)
+                editor.display()
+                scrolling.append(ms(start))
+                spin(0.01)
+            }
+        }
+        if !scrolling.isEmpty { record("editor_scroll", scrolling, budget: 16, details: ["rows": rows]) }
         window.makeKey()
         window.makeFirstResponder(editor)
         let before = fixture.text
@@ -221,6 +235,7 @@ final class ProbeWindow: NSWindow { override var canBecomeKey: Bool { true } }
             os_signpost(.end,log:log,name:"ResponseRendererSwitch")
             spin(0.02)
         }
+        record("response_renderer_first_switch",[switches[0]],budget:50,details:["rows":rows,"raw_bytes":raw.utf8.count])
         record("response_renderer_switch",Array(switches.dropFirst(2)),budget:50,details:["rows":rows,"raw_bytes":raw.utf8.count,"alternating":"Raw,JSON","readiness":"expected text or indexed first viewport drawn; not GPU presentation", "cold_switches_ms":Array(switches.prefix(2))])
         if let editor = textViews(host).first(where: { $0.string.hasPrefix("[\n  {") }),
            let coordinator = editor.delegate as? NativeCodeEditor.Coordinator, let scroll = editor.enclosingScrollView {
@@ -241,6 +256,42 @@ final class ProbeWindow: NSWindow { override var canBecomeKey: Bool { true } }
                 while find.matchCount != rows && ms(started) < 10000 { spin(0.002); flush(host) }
                 precondition(find.matchCount == rows && editor.string == pretty, "Find must unfold and search the entire response")
             } else { preconditionFailure("the active editor must handle Find") }
+        }
+        state.responseRenderer = .json
+        flush(host)
+        let waitStart = ContinuousClock.now
+        while !contentReady() && ms(waitStart) < 20000 { spin(0.002); flush(host) }
+        func indexedViews(_ v: NSView) -> [IndexedCodeView] {
+            (v as? IndexedCodeView).map { [$0] } ?? v.subviews.flatMap { indexedViews($0) }
+        }
+        if fixtureDefaults.bool(forKey: "editor.wordWrap"), let source = indexedViews(host).first(where: { $0.language == .json }) {
+            let fullStart = ContinuousClock.now
+            while source.index?.isComplete != true && ms(fullStart) < 10000 { spin(0.002); flush(host) }
+            precondition(source.index?.isComplete == true, "The complete response must remain available after the first viewport")
+            // Exercise the actual viewport independently of the surrounding toolbar's minimum width.
+            let (resizeWindow, resizeHost, _) = mount(IndexedResponseEditor(url: source.index!.url, preview: "", language: .json, search: ""))
+            defer { resizeWindow.close() }
+            let readyStart = ContinuousClock.now
+            while (indexedViews(resizeHost).first?.index?.isComplete != true || indexedViews(resizeHost).first?.hasDrawnViewport != true) && ms(readyStart) < 10000 {
+                spin(0.002); flush(resizeHost)
+            }
+            let v = indexedViews(resizeHost).first!
+            let scroll = v.enclosingScrollView!
+            let old = v.index!
+            let targetRow = old.rowCount / 2
+            scroll.contentView.scroll(to: NSPoint(x: 0, y: Double(targetRow) * v.lineHeight))
+            scroll.reflectScrolledClipView(scroll.contentView); flush(resizeHost)
+            let beforeRow = Int(scroll.contentView.bounds.minY / v.lineHeight)
+            let beforeLine = try old.rows(start: beforeRow, count: 1).first!.line
+            resizeWindow.setContentSize(NSSize(width: 260, height: 800)); flush(resizeHost)
+            let resizeStart = ContinuousClock.now
+            while (v.index?.wrapping == old.wrapping || v.index?.isComplete != true || !v.hasDrawnViewport) && ms(resizeStart) < 10000 { spin(0.002); flush(resizeHost) }
+            spin(0.1); flush(resizeHost)
+            let afterRow = Int(scroll.contentView.bounds.minY / v.lineHeight)
+            let afterLine = try v.index!.rows(start: afterRow, count: 1).first!.line
+            precondition(v.index!.rowCount > old.rowCount, "The resize fixture must exercise soft wrapping")
+            precondition(beforeLine == afterLine, "Resize must preserve the logical line being read")
+            print("RESIZE_ANCHOR beforeLine=\(beforeLine) afterLine=\(afterLine) oldRows=\(old.rowCount) newRows=\(v.index!.rowCount)")
         }
         let received = try Data(contentsOf: session.bodyStore!.url)
         precondition(received == Data(raw.utf8), "presentation must not change received bytes")
@@ -285,7 +336,7 @@ final class ProbeWindow: NSWindow { override var canBecomeKey: Bool { true } }
         NSApp.accessibilitySetValue(true, forAttribute: NSAccessibility.Attribute(rawValue: "AXManualAccessibility"))
         for orientation in [ResponseOrientation.right, .bottom] {
             interface.responseOrientation = orientation
-            for width in [1248.0, 1000.0, 900.0] {
+            for width in [1248.0, 1000.0, 900.0, 720.0] {
                 window.setContentSize(NSSize(width: width, height: 580))
                 spin(); flush(host)
                 let tree = elements(host)
@@ -298,7 +349,34 @@ final class ProbeWindow: NSWindow { override var canBecomeKey: Bool { true } }
                 }
                 precondition(!note.frame.isEmpty && !type.frame.isEmpty)
                 precondition(!note.frame.intersects(type.frame), "Note and Content Type must not overlap")
+                let panes = textViews(host).compactMap { $0.enclosingScrollView }.map { window.convertToScreen($0.convert($0.bounds, to: nil)) }
+                for control in tree where ["Params", "Headers", "Body", "Auth", "Note", "Content Type", "Format Body"].contains(control.name) {
+                    precondition(panes.contains { $0.minX <= control.frame.minX && $0.maxX >= control.frame.maxX }, "Clipped request control: \(control.name)")
+                }
             }
+        }
+        interface.responseOrientation = .right
+        window.setContentSize(NSSize(width: 1248, height: 580))
+        interface.responseLayout(for: model.sessions.activeGroupID).requestWidth = 1000
+        spin(); flush(host)
+        let before = elements(host).first { $0.name == "Content Type" }!.frame
+        let run = RunID(); session.beginRun(run)
+        var done = false
+        Task { @MainActor in
+            await session.consume(.head(ResponseHead(status: 200, version: "HTTP/1.1", headers: [], timeToHeadersNS: 1)), runID: run)
+            await session.consume(.complete(RunCompletion(bytesReceived: 0, totalTimeNS: 1)), runID: run)
+            done = true
+        }
+        while !done { spin(0.002) }
+        spin(); flush(host)
+        precondition(elements(host).first { $0.name == "Content Type" }!.frame == before, "Receiving headers must not shift request controls")
+        _ = model.sessions.split(tabID: session.id)
+        interface.synchronizeSelection(model: model)
+        if let copy = model.sessions.activeSession { interface.presentation(for: copy).requestSection = .body }
+        spin(); flush(host)
+        let panes = textViews(host).compactMap { $0.enclosingScrollView }.map { window.convertToScreen($0.convert($0.bounds, to: nil)) }
+        for control in elements(host) where ["Params", "Auth", "Note", "Content Type", "Format Body"].contains(control.name) {
+            precondition(panes.contains { $0.minX <= control.frame.minX && $0.maxX >= control.frame.maxX }, "Clipped split control: \(control.name)")
         }
         print("interface_regressions=passed")
     }
