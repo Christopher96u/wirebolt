@@ -2473,6 +2473,7 @@ mod tests {
             &["init", "-b", "main"][..],
             &["config", "user.name", "Wirebolt Tests"][..],
             &["config", "user.email", "wirebolt@example.invalid"][..],
+            &["config", "commit.gpgsign", "false"][..],
         ] {
             let output = Command::new("git")
                 .arg("-C")

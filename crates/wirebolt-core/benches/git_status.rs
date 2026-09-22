@@ -50,6 +50,7 @@ fn repository(root: &Path) {
     git(root, &["init", "-b", "main"]);
     git(root, &["config", "user.name", "Wirebolt Bench"]);
     git(root, &["config", "user.email", "bench@example.invalid"]);
+    git(root, &["config", "commit.gpgsign", "false"]);
     git(root, &["add", "--all"]);
     git(root, &["commit", "-q", "-m", "benchmark workspace"]);
     for index in 0..3 {

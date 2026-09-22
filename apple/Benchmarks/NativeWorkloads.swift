@@ -21,6 +21,10 @@ final class ProbeWindow: NSWindow { override var canBecomeKey: Bool { true } }
 @main @MainActor struct NativeWorkloads {
     static let log = OSLog(subsystem: "com.wirebolt.profiling", category: .pointsOfInterest)
     static var measurements: [[String: Any]] = []
+    private struct Budgets: Decodable {
+        let nativeColdWindowFirstContentMilliseconds: Double
+    }
+    static var windowFirstContentBudget = 0.0
     static var samples = 100
     static let defaultsName = "wirebolt-native-workloads-\(UUID().uuidString)"
     static let fixtureDefaults = UserDefaults(suiteName: defaultsName)!
@@ -67,7 +71,7 @@ final class ProbeWindow: NSWindow { override var canBecomeKey: Bool { true } }
         defer { window.close() }
         spin()
         guard let editor = textViews(host).first else { throw CocoaError(.coderValueNotFound) }
-        record("editor_mount",[cold],budget:50,details:["bytes":json.utf8.count,"rows":rows])
+        record("editor_mount",[cold],budget:windowFirstContentBudget,details:["bytes":json.utf8.count,"rows":rows])
         var values: [Double] = []
         for _ in 0..<samples {
             os_signpost(.begin,log:log,name:"EditorInsert")
@@ -136,7 +140,7 @@ final class ProbeWindow: NSWindow { override var canBecomeKey: Bool { true } }
         defer { window.close() }
         spin(0.4)
         flush(host)
-        record("workspace_mount",[cold],budget:50,details:["requests":count,"tabs":tabs.count,"excludes_deferred_content":false])
+        record("workspace_mount",[cold],budget:windowFirstContentBudget,details:["requests":count,"tabs":tabs.count,"excludes_deferred_content":false])
         var switches:[Double]=[]
         for i in 0..<samples {
             os_signpost(.begin,log:log,name:"TabSwitch")
@@ -203,7 +207,7 @@ final class ProbeWindow: NSWindow { override var canBecomeKey: Bool { true } }
         }
         while !contentReady() && ms(start)<20000 { spin(0.002); flush(host) }
         precondition(contentReady())
-        record("response_pretty_ready",[ms(start)],budget:50,details:["rows":rows,"raw_bytes":raw.utf8.count,"poll_interval_ms":2,"includes_framework_and_window_construction":true])
+        record("response_pretty_ready",[ms(start)],budget:windowFirstContentBudget,details:["rows":rows,"raw_bytes":raw.utf8.count,"poll_interval_ms":2,"includes_framework_and_window_construction":true])
         os_signpost(.end,log:log,name:"ResponseMount")
         var switches:[Double]=[]
         for i in 0..<(samples + 2) {
@@ -241,7 +245,67 @@ final class ProbeWindow: NSWindow { override var canBecomeKey: Bool { true } }
         let received = try Data(contentsOf: session.bodyStore!.url)
         precondition(received == Data(raw.utf8), "presentation must not change received bytes")
     }
+    static func verifyInterface(root: URL) throws {
+        let model = WireboltModel(runner: OfflineRunner(), history: HistoryRepository(root: root.appending(path: "history")),
+            cookieJar: CookieJar(storageURL: root.appending(path: "cookies.json")))
+        let interface = WorkspaceUIState(defaults: fixtureDefaults)
+        interface.responseOrientation = .right
+        let session = model.sessions.open(draft: RequestDraft(name: "JSON request", url: "https://example.invalid"))
+        session.draft.body = .json(value: "{\"ok\":true}")
+        interface.presentation(for: session).requestSection = .body
+        interface.synchronizeSelection(model: model)
+        let (window, host, _) = mount(ContentView(model: model, interface: interface, loadsWorkspace: false), height: 580)
+        defer { window.close() }
+        spin(); flush(host)
+        struct Element {
+            let role: String
+            let name: String
+            let frame: NSRect
+        }
+        func elements(_ object: Any, depth: Int = 0) -> [Element] {
+            guard depth < 30, let object = object as? NSObject else { return [] }
+            // macOS 27 can return NSAttributedString for nominally String AX
+            // labels. Preserve it rather than dropping names or force-bridging.
+            func value(_ key: String) -> Any? {
+                object.responds(to: NSSelectorFromString(key)) ? object.value(forKey: key) : nil
+            }
+            func text(_ key: String) -> String {
+                let raw = value(key)
+                return (raw as? NSAttributedString)?.string ?? (raw as? String) ?? ""
+            }
+            let name = ["accessibilityLabel", "accessibilityTitle", "accessibilityValue"]
+                .map(text).first { !$0.isEmpty } ?? ""
+            let current = Element(role: text("accessibilityRole"), name: name,
+                frame: (value("accessibilityFrame") as? NSValue)?.rectValue ?? .zero)
+            return [current] + (value("accessibilityChildren") as? [Any] ?? []).flatMap { elements($0, depth: depth + 1) }
+        }
+        // Enable the local accessibility tree without requiring permission to
+        // inspect another process. These flags exist only in the test executable.
+        NSApp.accessibilitySetValue(true, forAttribute: NSAccessibility.Attribute(rawValue: "AXEnhancedUserInterface"))
+        NSApp.accessibilitySetValue(true, forAttribute: NSAccessibility.Attribute(rawValue: "AXManualAccessibility"))
+        for orientation in [ResponseOrientation.right, .bottom] {
+            interface.responseOrientation = orientation
+            for width in [1248.0, 1000.0, 900.0] {
+                window.setContentSize(NSSize(width: width, height: 580))
+                spin(); flush(host)
+                let tree = elements(host)
+                for name in ["Send request", "Edit Long URL", "Params", "Headers", "Body", "Auth", "Note", "Format Body"] {
+                    precondition(tree.contains { $0.role == "AXButton" && $0.name == name }, "Missing accessible button: \(name)")
+                }
+                guard let note = tree.first(where: { $0.name == "Note" }),
+                      let type = tree.first(where: { $0.name == "Content Type" }) else {
+                    preconditionFailure("Section labels must be accessible")
+                }
+                precondition(!note.frame.isEmpty && !type.frame.isEmpty)
+                precondition(!note.frame.intersects(type.frame), "Note and Content Type must not overlap")
+            }
+        }
+        print("interface_regressions=passed")
+    }
+
     static func main() throws {
+        windowFirstContentBudget = try JSONDecoder().decode(Budgets.self,
+            from: Data(contentsOf: URL(fileURLWithPath: "performance/budgets.json"))).nativeColdWindowFirstContentMilliseconds
         _ = NSApplication.shared
         NSApp.setActivationPolicy(.prohibited)
         defer { fixtureDefaults.removePersistentDomain(forName: defaultsName) }
@@ -261,13 +325,13 @@ final class ProbeWindow: NSWindow { override var canBecomeKey: Bool { true } }
         if mode=="editor" { try editor(size) }
         else if mode=="workspace" { try workspace(size,root:root) }
         else if mode=="response" { try response(size) }
+        else if mode=="interface" { try verifyInterface(root: root) }
         else { preconditionFailure("unknown mode") }
         var usage=rusage(); getrusage(RUSAGE_SELF,&usage)
         let output:[String:Any]=["mode":mode,"size":size,"measurements":measurements,
             "peak_rss_bytes":usage.ru_maxrss,"thermal_state":ProcessInfo.processInfo.thermalState.rawValue,
             "physical_frames_measured":false,"optimized":true]
         try JSONSerialization.data(withJSONObject:output,options:[.prettyPrinted,.sortedKeys]).write(to:URL(fileURLWithPath:args[3]))
-        let gated: Set<String> = ["editor_insert", "tab_switch", "sidebar_filter", "response_renderer_switch"]
-        if measurements.contains(where: { gated.contains($0["name"] as? String ?? "") && $0["over_budget"] as? Bool == true }) { exit(1) }
+        if measurements.contains(where: { $0["over_budget"] as? Bool == true }) { exit(1) }
     }
 }

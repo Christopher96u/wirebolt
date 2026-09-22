@@ -1650,6 +1650,7 @@ private struct RequestURLBar: View {
                 .buttonStyle(.borderless)
                 .foregroundStyle(.secondary)
                 .frame(width: 24, height: 30)
+                .accessibilityLabel("Edit Long URL")
                 .help("Edit Long URL")
 
             RequestHistoryMenu(model: model, session: session)
@@ -1660,13 +1661,16 @@ private struct RequestURLBar: View {
                     if session.socket.status == .disconnected { Task { await model.connectWebSocket(session) } }
                     else { session.socket.disconnect() }
                 }.buttonStyle(WorkspaceActionButtonStyle(color: WireboltTheme.primaryAccent))
+                    .accessibilityLabel(session.socket.status == .disconnected ? "Connect" : "Disconnect")
                     .disabled(session.draft.url.isEmpty)
             } else if session.isRunning {
                 Button("CANCEL", systemImage: "stop.fill", action: cancel)
                     .buttonStyle(WorkspaceActionButtonStyle(color: .red))
+                    .accessibilityLabel("Cancel request")
             } else {
                 Button("SEND ⌘⏎", action: send)
                 .buttonStyle(WorkspaceActionButtonStyle(color: WireboltTheme.primaryAccent))
+                .accessibilityLabel("Send request")
                 .disabled(session.draft.url.isEmpty)
                 .help("Send Request (⌘↩)")
             }
@@ -2001,8 +2005,25 @@ private struct RequestSectionBar: View {
     @Binding var isBulkEditing: Bool
 
     var body: some View {
-        ZStack(alignment: .leading) {
-                HStack(spacing: 10) {
+        ViewThatFits(in: .horizontal) {
+            HStack(spacing: 12) {
+                tabs
+                Spacer(minLength: 0)
+                tools
+            }
+            VStack(spacing: 0) {
+                tabs.frame(maxWidth: .infinity, alignment: .leading)
+                tools.frame(maxWidth: .infinity, alignment: .trailing)
+            }
+        }
+        .padding(.horizontal, 11)
+        .background(WireboltTheme.barBackground)
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Request sections")
+    }
+
+    private var tabs: some View {
+        HStack(spacing: 10) {
             ForEach(RequestPanelSection.allCases) { section in
                 PanelTabButton(
                     title: section.rawValue,
@@ -2010,15 +2031,15 @@ private struct RequestSectionBar: View {
                     indicator: (section == .body && session.draft.body != .empty)
                         || (section == .auth && session.draft.authentication != .none),
                     isSelected: interface.requestSection == section,
+                    height: 32,
                     action: { interface.requestSection = section }
                 )
             }
-                }
-                .fixedSize(horizontal: true, vertical: false)
-                .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
-        }
-        .overlay(alignment: .trailing) {
-            HStack(spacing: 0) {
+        }.fixedSize(horizontal: true, vertical: false)
+    }
+
+    @ViewBuilder private var tools: some View {
+        HStack(spacing: 0) {
             if interface.requestSection == .body {
                 BodyTools(requestBody: $session.draft.body)
             } else if interface.requestSection == .auth {
@@ -2041,14 +2062,7 @@ private struct RequestSectionBar: View {
                 .labelStyle(.iconOnly).foregroundStyle(.secondary).fixedSize()
                 .frame(width: 30, height: 32)
             }
-            }
-        }
-        .padding(.leading, 11)
-        .padding(.trailing, 11)
-        .frame(height: 32)
-        .background(WireboltTheme.barBackground)
-        .accessibilityElement(children: .contain)
-        .accessibilityLabel("Request sections")
+        }.fixedSize().frame(height: 32)
     }
 
     private func badge(for section: RequestPanelSection) -> Int? {
@@ -2149,6 +2163,8 @@ struct PanelTabButton: View {
                 .frame(height: 2)
         }
         .accessibilityAddTraits(isSelected ? .isSelected : [])
+        .accessibilityLabel(title)
+        .accessibilityValue(badge.map { $0 > 0 ? "\($0) entries" : "" } ?? "")
     }
 }
 

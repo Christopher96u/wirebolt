@@ -399,6 +399,8 @@ impl TestRepository {
     fn configure_identity(&self) {
         self.git_ok(["config", "user.name", "Wirebolt Tests"]);
         self.git_ok(["config", "user.email", "wirebolt@example.invalid"]);
+        // Fixtures must not require the developer's signing key or agent.
+        self.git_ok(["config", "commit.gpgsign", "false"]);
     }
 
     fn commit_all(&self, message: &str) {

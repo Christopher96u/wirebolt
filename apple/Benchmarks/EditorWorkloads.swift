@@ -54,7 +54,9 @@ private struct EditorWorkloads {
         verifyFontMetrics()
         verifyIndexedLineClipping()
         verifyFieldHeights()
+        verifySyntaxChunks()
         verifyScrollRestoration(scroll)
+        verifyViewportHighlighting(document: document, editor: editor, host: host)
         // Switching a binary response to Raw must keep TextKit responsive, including
         // its idle layout pass. Control bytes previously trapped that pass in layout.
         let watchdog = DispatchWorkItem { exit(86) }
@@ -164,6 +166,43 @@ private struct EditorWorkloads {
                 precondition(UnsafeBufferPointer(start: expected.bitmapData!, count: bytes).elementsEqual(
                     UnsafeBufferPointer(start: actual.bitmapData!, count: bytes)), "Clipping must preserve Unicode glyphs at every horizontal position")
             }
+        }
+    }
+
+    @MainActor private static func verifySyntaxChunks() {
+        // Chunk boundaries must not split Unicode, tokens, indentation, or links.
+        // A line-at-a-time oracle also catches missing/duplicated boundary text.
+        for language in [SyntaxLanguage.json, .http, .plain] {
+            let line = "    {\"message\":\"café 東京 👨‍👩‍👧‍👦 https://example.invalid/path\",\"active\":true,\"n\":123,\"v\":null}\n"
+            let source = String(repeating: line, count: 700) + "  \"last\": false"
+            let expected = NSMutableAttributedString(string: "")
+            let styled = SyntaxHighlighter.attributedString(text: line, language: language)
+            for _ in 0..<700 { expected.append(styled) }
+            expected.append(SyntaxHighlighter.attributedString(text: "  \"last\": false", language: language))
+            let actual = SyntaxHighlighter.attributedString(text: source, language: language)
+            precondition(actual.isEqual(to: expected), "Chunked syntax must preserve every character and style")
+        }
+    }
+
+    @MainActor private static func verifyViewportHighlighting(document: EditorDocument, editor: NSTextView, host: NSView) {
+        let line = "    {\"message\":\"café 東京 👨‍👩‍👧‍👦\",\"url\":\"https://example.invalid\"},\n"
+        document.text = "[\n" + String(repeating: line, count: 2000) + "{}\n]"
+        RunLoop.current.run(until: Date().addingTimeInterval(0.02))
+        host.layoutSubtreeIfNeeded()
+        for fraction in [0, 1, 2] {
+            let source = editor.string as NSString
+            let offset = source.length * fraction / 3
+            let key = source.range(of: "\"message\"", range: NSRange(location: offset, length: source.length - offset))
+            editor.setSelectedRange(key)
+            editor.scrollRangeToVisible(key)
+            editor.display()
+            let color = editor.textStorage?.attribute(.foregroundColor, at: key.location, effectiveRange: nil) as? NSColor
+            precondition(color == WireboltTheme.nsJSONKey, "Newly visible JSON keys must be highlighted")
+            let link = source.range(of: "https://example.invalid", range: NSRange(location: key.location, length: source.length - key.location))
+            precondition(editor.textStorage?.attribute(.link, at: link.location, effectiveRange: nil) as? String == "https://example.invalid",
+                "Viewport highlighting must preserve clickable links")
+            precondition(editor.selectedRange() == key, "Highlighting must not move the selection")
+            precondition(editor.string == document.text, "Highlighting must preserve the entire Unicode document")
         }
     }
 

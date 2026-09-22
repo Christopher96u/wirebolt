@@ -162,6 +162,9 @@ struct NativeCodeEditor: NSViewRepresentable {
         view.textContainerInset = NSSize(width: 4, height: 3)
         view.textContainer?.lineFragmentPadding = 0
         view.delegate = context.coordinator
+        view.prepareVisibleText = { [weak coordinator = context.coordinator, weak view] in
+            if let view { coordinator?.highlightViewport(in: view) }
+        }
         scroll.documentView = view
         scroll.verticalRulerView = CodeLineRuler(scrollView: scroll, orientation: .verticalRuler)
         scroll.hasVerticalRuler = true
@@ -273,6 +276,8 @@ struct NativeCodeEditor: NSViewRepresentable {
         var restored = false
         var collapsed: Set<Int> = []
         var projection = CodeProjection(source: "")
+        private var highlightsViewport = false
+        private var highlightedRange = NSRange(location: NSNotFound, length: 0)
         private var edit: (range: NSRange, replacement: String, removed: String)?
         private var lineIndex = TextLineIndex()
         private var foldTask: Task<Void, Never>?
@@ -355,11 +360,36 @@ struct NativeCodeEditor: NSViewRepresentable {
             foldRevision += 1
             lineIndex = TextLineIndex(text.wrappedValue)
             projection = CodeProjection(source: text.wrappedValue, collapsed: collapsed, syntax: language.folding)
-            view.textStorage?.setAttributedString(SyntaxHighlighter.attributedString(text: projection.text, language: language, fontSize: fontSize))
+            highlightsViewport = projection.text.utf8.count > 64 * 1024 && (language == .json || language == .http)
+            highlightedRange = NSRange(location: NSNotFound, length: 0)
+            view.textStorage?.setAttributedString(SyntaxHighlighter.attributedString(text: projection.text,
+                language: highlightsViewport ? .plain : language, fontSize: fontSize))
             view.setSelectedRange(NSRange(location: min(projection.displayOffset(sourceSelection), (projection.text as NSString).length), length: 0))
             needsHighlight = false
             (scroll.verticalRulerView as? CodeLineRuler)?.updateProjection(projection, folding: language.folding != .none, index: lineIndex)
             updating = false
+        }
+
+        func highlightViewport(in view: NSTextView) {
+            guard highlightsViewport, !updating, let storage = view.textStorage,
+                  let manager = view.layoutManager, let container = view.textContainer,
+                  view.visibleRect.width > 0, view.visibleRect.height > 0 else { return }
+            let viewport = view.visibleRect.offsetBy(dx: -view.textContainerOrigin.x, dy: -view.textContainerOrigin.y)
+            let glyphs = manager.glyphRange(forBoundingRect: viewport, in: container)
+            let characters = manager.characterRange(forGlyphRange: glyphs, actualGlyphRange: nil)
+            let source = projection.text as NSString
+            guard NSMaxRange(characters) <= source.length else { return }
+            let range = source.lineRange(for: characters)
+            guard range.length > 0, range != highlightedRange else { return }
+            highlightedRange = range
+            updating = true
+            defer { updating = false }
+            let styled = SyntaxHighlighter.attributedString(text: source.substring(with: range), language: language, fontSize: fontSize)
+            storage.beginEditing()
+            styled.enumerateAttributes(in: NSRange(location: 0, length: styled.length)) { attributes, local, _ in
+                storage.setAttributes(attributes, range: NSRange(location: range.location + local.location, length: local.length))
+            }
+            storage.endEditing()
         }
 
         func textView(_ textView: NSTextView, shouldChangeTextIn affectedCharRange: NSRange, replacementString: String?) -> Bool {
@@ -381,6 +411,7 @@ struct NativeCodeEditor: NSViewRepresentable {
 
         func textDidChange(_ notification: Notification) {
             guard !updating, let view = notification.object as? NSTextView else { return }
+            highlightedRange = NSRange(location: NSNotFound, length: 0)
             // Apply the same UTF-16 edit to our immutable native snapshot. Bridging
             // the entire mutable TextKit string per keystroke is linear in body size.
             let source: String
@@ -459,7 +490,13 @@ struct NativeCodeEditor: NSViewRepresentable {
 
 private final class FindableCodeTextView: NSTextView {
     var findAction: ((Int) -> Bool)?
+    var prepareVisibleText: (() -> Void)?
     weak var findState: EditorFindState?
+
+    override func viewWillDraw() {
+        prepareVisibleText?()
+        super.viewWillDraw()
+    }
 
     override func validateUserInterfaceItem(_ item: NSValidatedUserInterfaceItem) -> Bool {
         if let state = findState, item.action == #selector(performFindPanelAction(_:)) || item.action == #selector(performTextFinderAction(_:)) {
@@ -763,6 +800,28 @@ enum SyntaxHighlighter {
         return expression
     }
     static func attributedString(text: String, language: SyntaxLanguage, fontSize: Double = 12) -> NSAttributedString {
+        // Applying successive token passes to one large attributed string inserts
+        // into its run array repeatedly (quadratic memmoves). These grammars have
+        // no multiline tokens, so style bounded, whole-paragraph chunks and append.
+        guard language == .json || language == .plain || language == .http,
+              text.utf8.count > 16 * 1024 else {
+            return attributedChunk(text: text, language: language, fontSize: fontSize)
+        }
+        let source = text as NSString
+        let result = NSMutableAttributedString(string: "")
+        var offset = 0
+        while offset < source.length {
+            let end = NSMaxRange(source.lineRange(for: NSRange(
+                location: offset, length: min(16 * 1024, source.length - offset)
+            )))
+            result.append(attributedChunk(text: source.substring(with: NSRange(location: offset, length: end - offset)),
+                language: language, fontSize: fontSize))
+            offset = end
+        }
+        return result
+    }
+
+    private static func attributedChunk(text: String, language: SyntaxLanguage, fontSize: Double) -> NSAttributedString {
         let paragraph = NSMutableParagraphStyle()
         paragraph.lineSpacing = CodeEditorMetrics.lineSpacing(fontSize)
         paragraph.lineBreakMode = .byCharWrapping
@@ -777,6 +836,7 @@ enum SyntaxHighlighter {
 
         let source = text as NSString
         let spaceWidth = (" " as NSString).size(withAttributes: [.font: NSFont.monospacedSystemFont(ofSize: fontSize, weight: .regular)]).width
+        var paragraphStyles: [Int: NSParagraphStyle] = [:]
         var cursor = 0
         while cursor < source.length {
             let range = source.lineRange(for: NSRange(location: cursor, length: 0))
@@ -788,10 +848,16 @@ enum SyntaxHighlighter {
                 start += 1
             }
             if columns > 0 {
-                let indented = paragraph.mutableCopy() as! NSMutableParagraphStyle
-                indented.headIndent = Double(columns) * spaceWidth
-                indented.tabStops = []
-                indented.defaultTabInterval = spaceWidth * 4
+                let indented: NSParagraphStyle
+                if let cached = paragraphStyles[columns] { indented = cached }
+                else {
+                    let style = paragraph.mutableCopy() as! NSMutableParagraphStyle
+                    style.headIndent = Double(columns) * spaceWidth
+                    style.tabStops = []
+                    style.defaultTabInterval = spaceWidth * 4
+                    indented = style
+                    paragraphStyles[columns] = style
+                }
                 result.addAttribute(.paragraphStyle, value: indented, range: range)
             }
             cursor = NSMaxRange(range)

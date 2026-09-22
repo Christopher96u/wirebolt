@@ -31,6 +31,12 @@ Measure the performance contract on an idle Apple Silicon Mac:
 ./scripts/performance.sh check
 ```
 
+Performance budgets distinguish the response engine's cold first viewport (50 ms)
+from a complete native window's first content (300 ms, including AppKit/SwiftUI
+construction and, for JSON responses, formatting). Native workloads in
+`scripts/check.sh` enforce every reported budget, including initial display and
+resizing, and check narrow-panel layout and accessible control names.
+
 Benchmark the Rust HTTP engine over loopback:
 
 ```sh
