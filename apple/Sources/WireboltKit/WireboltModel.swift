@@ -4,6 +4,18 @@ import Observation
 public protocol RequestRunner: Sendable {
     func events(for input: RunInput, runID: RunID) -> AsyncThrowingStream<RunEvent, any Error>
     func cancel(runID: RunID)
+    func resolveValues(_ values: [ValueSource], variables: [String: ValueSource]) async throws -> [String]
+}
+
+public extension RequestRunner {
+    func resolveValues(_ values: [ValueSource], variables: [String: ValueSource]) async throws -> [String] {
+        try values.map { value in
+            guard case let .literal(text) = value, !text.contains("{{") else {
+                throw RunFailure(kind: "invalid_request", issues: [RequestIssue(path: "values", kind: "unresolved_value", reference: nil)])
+            }
+            return text
+        }
+    }
 }
 
 public protocol WorkspacePersistence: Sendable {
@@ -232,7 +244,18 @@ public final class WireboltModel {
         if runDraft.inheritsWorkspaceTransport {
             runDraft.transport = workspace.transport
         }
-        if let url = URL(string: runDraft.url),
+        let variables = activeVariables
+        session.beginRun(runID)
+        let effectiveURL: URL?
+        do {
+            let values = try await runner.resolveValues([.literal(runDraft.url)], variables: variables)
+            effectiveURL = values.first.flatMap { URL(string: $0.trimmingCharacters(in: .whitespacesAndNewlines)) }
+        } catch {
+            await session.finish(runID: runID, failure: (error as? RunFailure) ?? RunFailure(kind: "invalid_request", issues: []))
+            return
+        }
+        guard session.activeRunID == runID, sessions.session(id: session.id) != nil else { return }
+        if let url = effectiveURL,
            runDraft.headers.contains(where: {
                $0.enabled && $0.name.caseInsensitiveCompare("cookie") == .orderedSame
            }) == false,
@@ -245,13 +268,12 @@ public final class WireboltModel {
                 sensitive: true
             ))
         }
-        guard sessions.session(id: session.id) != nil else { return }
+        guard session.activeRunID == runID, sessions.session(id: session.id) != nil else { return }
         let input = RunInput(
             draft: runDraft,
-            variables: activeVariables,
+            variables: variables,
             workspaceProxy: workspace.proxy
         )
-        session.beginRun(runID)
 
         do {
             for try await event in runner.events(for: input, runID: runID) {
@@ -262,7 +284,7 @@ public final class WireboltModel {
                     return
                 }
                 if case let .head(head) = event,
-                   let url = URL(string: runDraft.url)
+                   let url = effectiveURL
                 {
                     session.setResponseCookies(await cookieJar.store(headers: head.headers, requestURL: url))
                 }
@@ -504,6 +526,24 @@ public final class WireboltModel {
         } catch {
             operationFailure = RunFailure(kind: "workspace", issues: [])
             return false
+        }
+    }
+
+    /// Explicit export: resolved credentials are returned only to the caller, never persisted.
+    public func curlCommand(for draft: RequestDraft) async -> String? {
+        var draft = draft
+        if draft.inheritsWorkspaceTransport { draft.transport = workspace.transport }
+        let variables = activeVariables
+        do {
+            try await flushSecrets()
+            let sources = draft.curlValueSources
+            let values = try await runner.resolveValues(sources, variables: variables)
+            guard sources.count == values.count else { throw RunFailure(kind: "export", issues: []) }
+            let resolved = Dictionary(zip(sources, values), uniquingKeysWith: { first, _ in first })
+            return draft.curlCommand { resolved[$0]! }
+        } catch {
+            operationFailure = (error as? RunFailure) ?? RunFailure(kind: "export", issues: [])
+            return nil
         }
     }
 

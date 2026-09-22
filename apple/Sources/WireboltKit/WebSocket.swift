@@ -180,3 +180,88 @@ public struct WebSocketUIError: LocalizedError, Sendable {
     public let errorDescription: String?
     public init(_ message: String) { errorDescription = message }
 }
+
+/// A byte-bounded handoff from the native callback to one async consumer.
+/// Full buffers slow the producer; cancellation wakes both sides immediately.
+final class WebSocketEventBuffer: @unchecked Sendable {
+    private let condition = NSCondition()
+    private let byteLimit: Int
+    private let eventLimit: Int
+    private var pending: [(WebSocketEvent, Int)?] = []
+    private var head = 0
+    private var bytes = 0
+    private var ended = false
+    private var failure: (any Error)?
+    private var waiter: CheckedContinuation<WebSocketEvent?, any Error>?
+
+    init(byteLimit: Int = 16 * 1024 * 1024 + 1024, eventLimit: Int = 256) {
+        self.byteLimit = max(1, byteLimit)
+        self.eventLimit = max(1, eventLimit)
+    }
+
+    func push(_ event: WebSocketEvent) -> Bool {
+        let cost: Int = switch event {
+        case let .message(data, _, _, _): data.count + 64
+        case let .connected(headers): headers.reduce(64) { $0 + $1.name.utf8.count + $1.value.utf8.count }
+        case .closed: 64
+        }
+        condition.lock()
+        guard cost <= byteLimit else {
+            condition.unlock()
+            finish(WebSocketUIError("The message exceeds the receive buffer limit."))
+            return false
+        }
+        while !ended && waiter == nil && (pending.count - head >= eventLimit || bytes + cost > byteLimit) {
+            condition.wait()
+        }
+        guard !ended else { condition.unlock(); return false }
+        if let consumer = waiter {
+            waiter = nil
+            condition.unlock()
+            consumer.resume(returning: event)
+        } else {
+            pending.append((event, cost)); bytes += cost
+            condition.unlock()
+        }
+        return true
+    }
+
+    func next() async throws -> WebSocketEvent? {
+        try await withCheckedThrowingContinuation { continuation in
+            condition.lock()
+            if head < pending.count, let (event, cost) = pending[head] {
+                pending[head] = nil; head += 1; bytes -= cost
+                if head >= 128 { pending.removeFirst(head); head = 0 }
+                condition.broadcast()
+                condition.unlock()
+                continuation.resume(returning: event)
+            } else if ended {
+                let error = failure
+                condition.unlock()
+                if let error { continuation.resume(throwing: error) }
+                else { continuation.resume(returning: nil) }
+            } else {
+                precondition(waiter == nil, "Only one WebSocket receiver is supported")
+                waiter = continuation
+                condition.broadcast()
+                condition.unlock()
+            }
+        }
+    }
+
+    func finish(_ error: (any Error)? = nil, discardingPending: Bool = false) {
+        condition.lock()
+        ended = true
+        if let error { failure = error }
+        if discardingPending { pending.removeAll(); head = 0; bytes = 0 }
+        let consumer = waiter
+        waiter = nil
+        let error = failure
+        condition.broadcast()
+        condition.unlock()
+        if let consumer {
+            if let error { consumer.resume(throwing: error) }
+            else { consumer.resume(returning: nil) }
+        }
+    }
+}

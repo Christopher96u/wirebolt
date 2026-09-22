@@ -930,8 +930,7 @@ private struct SidebarRequestButton: View, @MainActor Equatable {
 @MainActor
 func copyRequestAsCurl(_ request: RequestDraft, model: WireboltModel) {
     Task {
-        for source in request.curlValueSources { await model.loadSecret(source) }
-        let command = request.curlCommand { model.secretMaterial(for: $0) }
+        guard let command = await model.curlCommand(for: request) else { return }
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(command, forType: .string)
     }
@@ -2096,9 +2095,11 @@ private struct BulkFieldEditor: View {
     @Binding var fields: [RequestField]
     @Environment(\.dismiss) private var dismiss
     @State private var text: String
+    @State private var originalFields: [RequestField]
 
     init(fields: Binding<[RequestField]>) {
         _fields = fields
+        _originalFields = State(initialValue: fields.wrappedValue)
         _text = State(initialValue: fields.wrappedValue.map {
             "\($0.enabled ? "" : "# ")\($0.name): \($0.value.editableValue)"
         }.joined(separator: "\n"))
@@ -2110,21 +2111,9 @@ private struct BulkFieldEditor: View {
     }
 
     private func parse(_ source: String) -> [RequestField] {
-        var unused = fields
-        return source.split(separator: "\n", omittingEmptySubsequences: true).compactMap { line in
-            var value = String(line)
-            let enabled = value.hasPrefix("#") == false
-            if enabled == false { value.removeFirst(); value = value.trimmingCharacters(in: .whitespaces) }
-            guard let separator = value.firstIndex(of: ":") else { return nil }
-            let name = String(value[..<separator]).trimmingCharacters(in: .whitespaces)
-            let index = unused.firstIndex { $0.name == name && $0.enabled == enabled }
-            let id = index.map { unused.remove(at: $0).id } ?? UUID().uuidString.lowercased()
-            return RequestField(
-                id: id, name: name,
-                value: .literal(String(value[value.index(after: separator)...]).trimmingCharacters(in: .whitespaces)),
-                enabled: enabled
-            )
-        }
+        // Keep metadata while an incomplete line is temporarily absent during typing.
+        let ids = Set(fields.map(\.id))
+        return RequestField.parseBulk(source, preserving: fields + originalFields.filter { !ids.contains($0.id) })
     }
 }
 
@@ -2835,7 +2824,7 @@ private struct BodyTools: View {
                     .labelStyle(.iconOnly).buttonStyle(.borderless)
             } else {
                 Button("Format Body", systemImage: "wand.and.stars", action: formatBody)
-                    .labelStyle(.iconOnly).buttonStyle(.borderless).disabled(!requestBody.isTextual)
+                    .labelStyle(.iconOnly).buttonStyle(.borderless).disabled(!requestBody.canFormat)
             }
             Menu("Body Actions", systemImage: "ellipsis.circle") {
                 if case .multipart = requestBody {
@@ -2947,10 +2936,10 @@ private enum BodyKind: CaseIterable, Identifiable {
 }
 
 private extension RequestBody {
-    var isTextual: Bool {
+    var canFormat: Bool {
         switch self {
-        case .json, .text, .xml, .html, .raw: true
-        case .empty, .formURLEncoded, .multipart, .file: false
+        case .json, .xml, .html: true
+        case .empty, .text, .raw, .formURLEncoded, .multipart, .file: false
         }
     }
 }

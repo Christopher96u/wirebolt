@@ -741,3 +741,36 @@ fn prepares_environment_query_bearer_and_json_as_one_request() {
         "secret-derived headers must not appear in Debug output"
     );
 }
+
+#[test]
+fn routing_and_exports_share_transport_template_resolution() {
+    let environment = Environment::new(
+        id("active"),
+        "Active".to_owned(),
+        BTreeMap::from([
+            (
+                "host".to_owned(),
+                ValueSource::literal("http://localhost:1234"),
+            ),
+            ("endpoint".to_owned(), ValueSource::literal("{{host}}/echo")),
+        ]),
+    );
+    let secrets = FixtureSecrets::default();
+    let pipeline = RequestPipeline::new(Some(&environment), &secrets);
+    let values = pipeline
+        .resolve_values(&[
+            ValueSource::literal("{{endpoint}}"),
+            ValueSource::literal("plain"),
+        ])
+        .unwrap();
+    let request = Request::new(id("request"), "Request", "GET", "{{endpoint}}");
+    assert_eq!(
+        values,
+        [pipeline.prepare(&request).unwrap().url().as_str(), "plain"]
+    );
+    let error = pipeline
+        .resolve_values(&[ValueSource::literal("{{absent}}")])
+        .unwrap_err();
+    assert_eq!(error.issues[0].kind, RequestIssueKind::MissingVariable);
+    assert_eq!(error.issues[0].path, "values[0].value");
+}

@@ -43,7 +43,7 @@ public struct HTTPMethod: RawRepresentable, CaseIterable, Codable, Hashable, Sen
     public static let allCases: [HTTPMethod] = [.get, .post, .put, .patch, .delete, .head, .options]
 }
 
-public enum ValueSource: Codable, Equatable, Sendable {
+public enum ValueSource: Codable, Equatable, Hashable, Sendable {
     case literal(String)
     case secret(String)
 
@@ -1026,5 +1026,33 @@ public struct ProxyCredentialsDocument: Codable, Hashable, Sendable {
     public init(username: String, password: String) {
         self.username = username
         self.password = password
+    }
+}
+
+public extension RequestField {
+    /// Bulk editing changes values, not the credential storage or redaction policy.
+    static func parseBulk(_ source: String, preserving previous: [RequestField]) -> [RequestField] {
+        var unused = previous
+        return source.split(separator: "\n", omittingEmptySubsequences: true).compactMap { line in
+            var text = String(line)
+            let enabled = !text.hasPrefix("#")
+            if !enabled { text.removeFirst(); text = text.trimmingCharacters(in: .whitespaces) }
+            guard let separator = text.firstIndex(of: ":") else { return nil }
+            let name = String(text[..<separator]).trimmingCharacters(in: .whitespaces)
+            let value = String(text[text.index(after: separator)...]).trimmingCharacters(in: .whitespaces)
+            let match = unused.firstIndex { $0.name == name && $0.value.editableValue == value }
+                ?? unused.firstIndex { $0.name == name }
+                ?? unused.firstIndex { field in
+                    guard field.value.editableValue == value else { return false }
+                    if case .secret = field.value { return true }
+                    return field.sensitive
+                }
+            var field = match.map { unused.remove(at: $0) } ?? RequestField()
+            field.name = name
+            field.enabled = enabled
+            if case .secret = field.value { field.value = .secret(value) }
+            else { field.value = .literal(value) }
+            return field
+        }
     }
 }

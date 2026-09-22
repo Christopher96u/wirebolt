@@ -2,18 +2,45 @@ import Foundation
 
 public extension RequestDraft {
     var curlValueSources: [ValueSource] {
-        var result = headers.filter(\.enabled).map(\.value) + query.filter(\.enabled).map(\.value)
+        var sources: [ValueSource] = []
+        _ = resolvingCurlValues { source in sources.append(source); return source.editableValue }
+        return sources
+    }
+
+    private func resolvingCurlValues(_ resolve: (ValueSource) -> String) -> RequestDraft {
+        var result = self
+        func text(_ value: String) -> String { resolve(.literal(value)) }
+        func fields(_ values: [RequestField]) -> [RequestField] {
+            values.map { field in
+                guard field.enabled else { return field }
+                var field = field; field.name = text(field.name); field.value = .literal(resolve(field.value)); return field
+            }
+        }
+        result.url = text(url)
+        result.query = fields(query)
+        result.headers = fields(headers)
         switch authentication {
         case .none: break
-        case let .basic(username, password): result += [username, password]
-        case let .bearer(token): result.append(token)
-        case let .apiKey(_, _, value): result.append(value)
-        case let .oauth2(configuration): result.append(.secret(configuration.accessTokenReference))
+        case let .basic(username, password): result.authentication = .basic(username: .literal(resolve(username)), password: .literal(resolve(password)))
+        case let .bearer(token): result.authentication = .bearer(token: .literal(resolve(token)))
+        case let .apiKey(placement, name, value): result.authentication = .apiKey(placement: placement, name: text(name), value: .literal(resolve(value)))
+        case let .oauth2(configuration): result.authentication = .bearer(token: .literal(resolve(.secret(configuration.accessTokenReference))))
         }
         switch body {
-        case let .formURLEncoded(fields): result += fields.filter(\.enabled).map(\.value)
-        case let .multipart(parts): result += parts.filter(\.enabled).map(\.value)
-        default: break
+        case .empty: break
+        case let .json(value): result.body = .json(value: text(value))
+        case let .xml(value): result.body = .xml(value: text(value))
+        case let .html(value): result.body = .html(value: text(value))
+        case let .text(mime, value): result.body = .text(contentType: mime.map(text), value: text(value))
+        case let .raw(mime, value): result.body = .raw(contentType: mime.map(text), value: text(value))
+        case let .file(path, mime): result.body = .file(path: path, contentType: mime.map(text))
+        case let .formURLEncoded(values): result.body = .formURLEncoded(fields: fields(values))
+        case let .multipart(parts): result.body = .multipart(parts: parts.map { part in
+            guard part.enabled else { return part }
+            var part = part; part.name = text(part.name)
+            if part.kind != .file { part.value = .literal(resolve(part.value)) }
+            return part
+        })
         }
         return result
     }
@@ -21,6 +48,11 @@ public extension RequestDraft {
     /// Produces a shell command for the current draft. The caller decides whether
     /// to resolve credentials for an explicit copy action or retain placeholders.
     func curlCommand(resolve: (ValueSource) -> String) -> String {
+        resolvingCurlValues(resolve).renderCurlCommand()
+    }
+
+    private func renderCurlCommand() -> String {
+        func resolve(_ value: ValueSource) -> String { value.editableValue }
         func quote(_ value: String) -> String { "'" + value.replacingOccurrences(of: "'", with: "'\"'\"'") + "'" }
         func formQuote(_ value: String) -> String {
             "\"" + value.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "\"", with: "\\\"") + "\""
@@ -40,6 +72,10 @@ public extension RequestDraft {
         case let .oauth2(configuration): auth += ["--header", quote("Authorization: Bearer " + resolve(.secret(configuration.accessTokenReference)))]
         }
         var arguments = ["curl", "--request", quote(method.rawValue), quote(request.displayURL)] + auth
+        if transport.followRedirects { arguments += ["--location", "--max-redirs", String(transport.maximumRedirects)] }
+        if !transport.validateTLS { arguments.append("--insecure") }
+        if transport.totalTimeoutMS != 30_000 { arguments += ["--max-time", String(Double(transport.totalTimeoutMS) / 1000)] }
+        if let path = transport.customCAPath { arguments += ["--cacert", quote(path)] }
         for header in headers where header.enabled {
             if case .multipart = body, header.name.caseInsensitiveCompare("Content-Type") == .orderedSame { continue }
             arguments += ["--header", quote(header.name + ": " + resolve(header.value))]

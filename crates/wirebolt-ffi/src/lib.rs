@@ -1310,6 +1310,46 @@ pub fn prepare_request(
     })
 }
 
+#[uniffi::export]
+/// Resolves values with the transport's template rules, without sending a request.
+/// This is only for runtime routing and explicit exports, never persisted snapshots.
+///
+/// # Errors
+/// Returns a redacted preparation failure for invalid input, templates or missing secrets.
+#[allow(clippy::needless_pass_by_value)] // UniFFI exports require owned strings.
+pub fn resolve_request_values(
+    values_json: String,
+    variables_json: String,
+) -> Result<Vec<String>, RequestPreparationError> {
+    let invalid = || RequestPreparationError::InvalidRequest {
+        reason: "invalid resolution input".to_owned(),
+    };
+    let values: Vec<ValueSource> = serde_json::from_str(&values_json).map_err(|_| invalid())?;
+    let variables: BTreeMap<String, ValueSource> =
+        serde_json::from_str(&variables_json).map_err(|_| invalid())?;
+    let environment = Environment::new(
+        DocumentId::new("active").map_err(|_| invalid())?,
+        "Active".to_owned(),
+        variables,
+    );
+    #[cfg(target_vendor = "apple")]
+    let secrets = wirebolt_core::KeychainSecretResolver::default();
+    #[cfg(not(target_vendor = "apple"))]
+    let secrets = NoSecrets;
+    RequestPipeline::new(Some(&environment), &secrets)
+        .resolve_values(&values)
+        .map_err(|error| {
+            let failure = RunFailureDocument {
+                kind: "invalid_request",
+                issues: error.issues.into_iter().map(Into::into).collect(),
+            };
+            RequestPreparationError::InvalidRequest {
+                reason: serde_json::to_string(&failure)
+                    .unwrap_or_else(|_| "invalid resolution input".to_owned()),
+            }
+        })
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn wirebolt_stream_abi_version() -> u32 {
     wirebolt_core::STREAM_ABI_VERSION

@@ -83,6 +83,32 @@ impl<'a, R: SecretResolver + ?Sized> RequestPipeline<'a, R> {
         self.prepare_protocol(request, true)
     }
 
+    /// Resolves a bounded batch for cookie routing or an explicit credential-bearing export.
+    /// Resolved values must never be used as diagnostic or history snapshots.
+    ///
+    /// # Errors
+    /// Returns the same redacted, field-scoped template and secret failures as preparation.
+    pub fn resolve_values(
+        &self,
+        values: &[ValueSource],
+    ) -> Result<Vec<String>, RequestPipelineError> {
+        let mut resolver = TemplateResolver::new(self.environment, self.secrets);
+        let output = values
+            .iter()
+            .enumerate()
+            .filter_map(|(index, value)| {
+                resolver
+                    .resolve_source(value, FieldPath::indexed("values", index, "value"))
+                    .map(std::borrow::Cow::into_owned)
+            })
+            .collect();
+        if resolver.issues.is_empty() {
+            Ok(output)
+        } else {
+            Err(resolver.finish())
+        }
+    }
+
     fn prepare_protocol(
         &self,
         request: &Request,

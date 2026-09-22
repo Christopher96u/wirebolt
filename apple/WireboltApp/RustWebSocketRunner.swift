@@ -11,30 +11,34 @@ private final class RustWebSocketConnection: @unchecked Sendable, WebSocketTrans
     private var session: OpaquePointer?
     private var started = false
     private var disconnected = false
+    private let buffer = WebSocketEventBuffer()
 
     init(input: RunInput) { self.input = input }
 
     func events() -> AsyncThrowingStream<WebSocketEvent, any Error> {
-        AsyncThrowingStream(bufferingPolicy: .bufferingOldest(2)) { continuation in
-            do {
-                let data = try JSONEncoder().encode(input)
-                let box = SocketCallbackBox(owner: self, continuation: continuation)
-                let context = Unmanaged.passRetained(box).toOpaque()
-                let active: Bool = lock.withLock {
-                    guard !started, !disconnected else { return false }
-                    started = true
-                    session = data.withUnsafeBytes { bytes in
-                        wirebolt_socket_start(bytes.bindMemory(to: UInt8.self).baseAddress, UInt(bytes.count), socketEvent, context)
-                    }
-                    return session != nil
+        do {
+            let data = try JSONEncoder().encode(input)
+            let box = SocketCallbackBox(owner: self, buffer: buffer)
+            let context = Unmanaged.passRetained(box).toOpaque()
+            let active: Bool = lock.withLock {
+                guard !started, !disconnected else { return false }
+                started = true
+                session = data.withUnsafeBytes { bytes in
+                    wirebolt_socket_start(bytes.bindMemory(to: UInt8.self).baseAddress, UInt(bytes.count), socketEvent, context)
                 }
-                if !active {
-                    Unmanaged<SocketCallbackBox>.fromOpaque(context).release()
-                    continuation.finish(throwing: WebSocketUIError("The connection could not be started."))
-                }
-                continuation.onTermination = { [weak self] _ in self?.disconnect() }
-            } catch { continuation.finish(throwing: error) }
-        }
+                return session != nil
+            }
+            if !active {
+                Unmanaged<SocketCallbackBox>.fromOpaque(context).release()
+                buffer.finish(WebSocketUIError("The connection could not be started."))
+            }
+        } catch { buffer.finish(error) }
+        return AsyncThrowingStream(unfolding: { [self] in
+            try await withTaskCancellationHandler {
+                try Task.checkCancellation()
+                return try await buffer.next()
+            } onCancel: { self.disconnect() }
+        })
     }
 
     func send(_ data: Data, binary: Bool) -> Bool {
@@ -47,6 +51,7 @@ private final class RustWebSocketConnection: @unchecked Sendable, WebSocketTrans
     }
 
     func disconnect() {
+        buffer.finish(CancellationError(), discardingPending: true)
         lock.withLock {
             disconnected = true
             if let session { wirebolt_socket_cancel(session) }
@@ -68,10 +73,10 @@ private final class RustWebSocketConnection: @unchecked Sendable, WebSocketTrans
 
 private final class SocketCallbackBox: @unchecked Sendable {
     let owner: RustWebSocketConnection
-    let continuation: AsyncThrowingStream<WebSocketEvent, any Error>.Continuation
-    init(owner: RustWebSocketConnection, continuation: AsyncThrowingStream<WebSocketEvent, any Error>.Continuation) {
+    let buffer: WebSocketEventBuffer
+    init(owner: RustWebSocketConnection, buffer: WebSocketEventBuffer) {
         self.owner = owner
-        self.continuation = continuation
+        self.buffer = buffer
     }
 }
 
@@ -81,18 +86,11 @@ private func socketEvent(_ context: UnsafeMutableRawPointer?, _ kind: UInt8, _ b
     let box = kind == 3 || kind == 4 ? reference.takeRetainedValue() : reference.takeUnretainedValue()
     let data = bytes.map { Data(bytes: $0, count: Int(length)) } ?? Data()
     if kind == 3 || kind == 4 {
-        if kind == 4 { box.continuation.finish(throwing: WebSocketUIError(String(decoding: data, as: UTF8.self))) }
-        else { box.continuation.finish() }
+        if kind == 4 { box.buffer.finish(WebSocketUIError(String(decoding: data, as: UTF8.self))) }
+        else { box.buffer.finish() }
         box.owner.finished()
         return 1
     }
     let event: WebSocketEvent = kind == 0 ? .connected((try? JSONDecoder().decode([ResponseHeader].self, from: data)) ?? []) : .message(data, binary: kind == 2 || kind == 6 || kind >= 7, outgoing: kind == 5 || kind == 6 || kind == 9, control: kind == 7 ? "Ping" : kind >= 8 ? "Pong" : nil)
-    switch box.continuation.yield(event) {
-    case .enqueued: return 1
-    case .dropped:
-        box.continuation.finish(throwing: WebSocketUIError("Messages arrived faster than they could be displayed."))
-        return 0
-    case .terminated: return 0
-    @unknown default: return 0
-    }
+    return box.buffer.push(event) ? 1 : 0
 }
