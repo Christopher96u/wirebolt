@@ -30,6 +30,24 @@ struct WireboltApp: App {
         .windowToolbarStyle(.unified)
         .commands {
             TextEditingCommands()
+            CommandGroup(replacing: .help) {
+                Button("Wirebolt Help") { model.isShowingHelp = true }
+                    .keyboardShortcut("?", modifiers: .command)
+            }
+            CommandGroup(after: .newItem) {
+                Button("New Workspace…") { chooseWorkspace(model: model, interface: interface, create: true) }
+                    .disabled(model.isLoadingWorkspace || model.isGitBusy || model.isOAuthBusy)
+                Button("Open Workspace…") { chooseWorkspace(model: model, interface: interface, create: false) }
+                    .disabled(model.isLoadingWorkspace || model.isGitBusy || model.isOAuthBusy)
+                    .keyboardShortcut("o", modifiers: .command)
+                Button("New Collection…") { interface.promptForNewCollection() }
+            }
+            CommandMenu("Workspace") {
+                Button("Workspace Settings…") { model.isShowingWorkspaceSettings = true }
+                Button("Git Collaboration…") { model.isShowingGitCollaboration = true }
+                    .keyboardShortcut("g", modifiers: [.command, .shift])
+                    .disabled(model.isLoadingWorkspace)
+            }
             CommandGroup(after: .newItem) {
                 Button("New Tab") { interface.makeNewRequest(model: model, rename: false) }
                     .keyboardShortcut("t", modifiers: .command)

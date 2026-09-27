@@ -114,6 +114,7 @@ struct EnvironmentEditor: View {
                                 let height = FieldEditorMetrics.height(key: variable.key, value: variable.value.editableValue, valueWidth: 392)
                                 HStack(alignment: .top, spacing: 0) {
                                     FieldCheckbox(isOn: $variable.enabled)
+                                        .accessibilityLabel("Enable variable \(variable.key)")
                                     FieldTextInput("Key", text: $variable.key, height: height).frame(width: 175).padding(.horizontal, 4)
                                     Color.clear.frame(width: 1)
                                     FieldTextInput("Value", text: Binding(
@@ -148,6 +149,7 @@ struct EnvironmentEditor: View {
                 }
                 Spacer()
                 Button { Task { await saveAndClose() } } label: { Text("Close").frame(width: 66) }
+                    .accessibilityLabel("Save environments and close")
                     .keyboardShortcut(.cancelAction)
                     .disabled(isSaving)
             }.controlSize(.regular).frame(height: 24)

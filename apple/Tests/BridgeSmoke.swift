@@ -53,9 +53,10 @@ enum BridgeSmoke {
             let withProxy = try await persistence.load()
             let normalizedProxy = try ProxyFormDraft(configuration: withProxy.proxy).document()
             precondition(normalizedProxy == proxy, "workspace proxy must cross the Swift/Rust persistence bridge")
-            let request = RequestDraft(id: "proxy-request", name: "Proxy override", url: "http://localhost:18765/json", proxy: .direct)
+            let request = RequestDraft(id: "proxy-request", name: "Proxy override", url: "http://localhost:18765/json", note: "# Markdown\n\n**Bold** and `code`\n\n- café 🚀", proxy: .direct)
             try await persistence.save(request: request, in: "custom")
             let savedRequest = try await persistence.load().collections[0].requests[0].request
+            precondition(savedRequest.note == request.note, "Markdown source must survive TOML round-trip unchanged")
             precondition(savedRequest.proxy == .direct, "request override must survive disk round-trip")
             _ = try await persistence.apply(.createGroup(collectionID: "custom", group: GroupDraft(id: "folder", name: "Folder")))
             let second = RequestLocation(collectionID: "custom", order: 0, request: RequestDraft(id: "second", name: "Second"))

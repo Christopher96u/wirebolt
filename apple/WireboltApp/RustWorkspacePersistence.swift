@@ -104,22 +104,34 @@ struct RustWorkspacePersistence: WorkspacePersistence, GitCollaboration {
     func exportWorkspace() async throws -> String {
         let bridge = bridge
         return try await Task.detached(priority: .userInitiated) {
-            try bridge.exportWorkspaceJson()
+            try Self.exportDocument { try bridge.exportWorkspaceJson() }
         }.value
     }
 
     func exportCollection(id: String) async throws -> String {
         let bridge = bridge
         return try await Task.detached(priority: .userInitiated) {
-            try bridge.exportCollectionJson(id: id)
+            try Self.exportDocument { try bridge.exportCollectionJson(id: id) }
         }.value
     }
 
     func exportRequest(collectionID: String, id: String) async throws -> String {
         let bridge = bridge
         return try await Task.detached(priority: .userInitiated) {
-            try bridge.exportRequestJson(collectionId: collectionID, id: id)
+            try Self.exportDocument { try bridge.exportRequestJson(collectionId: collectionID, id: id) }
         }.value
+    }
+
+    private static func exportDocument(_ operation: () throws -> String) throws -> String {
+        do { return try operation() }
+        catch let WorkspaceBridgeError.OperationFailed(reason) {
+            throw ExportError(reason: reason)
+        }
+    }
+
+    private struct ExportError: LocalizedError {
+        let reason: String
+        var errorDescription: String? { reason }
     }
 
     func status() async throws -> GitStatusSnapshot {
@@ -163,6 +175,9 @@ struct RustWorkspacePersistence: WorkspacePersistence, GitCollaboration {
         if let index = arguments.firstIndex(of: "--workspace"), arguments.indices.contains(index + 1) {
             return URL(fileURLWithPath: arguments[index + 1], isDirectory: true)
         }
+        if let path = UserDefaults.standard.string(forKey: "workspace.lastOpenedPath") {
+            return URL(fileURLWithPath: path, isDirectory: true)
+        }
         let applicationSupport = FileManager.default.urls(
             for: .applicationSupportDirectory,
             in: .userDomainMask
@@ -196,9 +211,15 @@ enum WorkspaceOpenMode {
     case openOrCreate
 }
 
-private enum WorkspaceSelectionError: Error {
+private enum WorkspaceSelectionError: LocalizedError {
     case workspaceNotFound
     case workspaceAlreadyExists
+    var errorDescription: String? {
+        switch self {
+        case .workspaceNotFound: "Choose a folder containing wirebolt.toml."
+        case .workspaceAlreadyExists: "This folder already contains a workspace. Use Open Workspace."
+        }
+    }
 }
 
 private struct WorkspaceSnapshotDocument: Decodable {

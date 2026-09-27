@@ -10,11 +10,16 @@ private struct OfflineRunner: RequestRunner {
 }
 @MainActor @Observable private final class TextFixture {
     var text: String
+    var preview = false
     init(_ text: String) { self.text = text }
 }
 private struct EditorFixture: View {
     @Bindable var fixture: TextFixture
     var body: some View { NativeCodeEditor(text: $fixture.text, language: .json) }
+}
+private struct NotesFixture: View {
+    @Bindable var fixture: TextFixture
+    var body: some View { NotesEditor(text: $fixture.text, preview: $fixture.preview) }
 }
 final class ProbeWindow: NSWindow { override var canBecomeKey: Bool { true } }
 
@@ -473,10 +478,11 @@ final class ProbeWindow: NSWindow { override var canBecomeKey: Bool { true } }
         print("proxy_settings_interface=passed")
     }
 
-    static func requestClicks(root: URL, tabs: Bool = false, tabCount: Int = 2) throws {
+    static func requestClicks(root: URL, tabs: Bool = false, tabCount: Int = 2, noteBytes: Int = 0) throws {
         let model = WireboltModel(runner: OfflineRunner(), history: HistoryRepository(root: root.appending(path: "history")), cookieJar: CookieJar())
         let interface = WorkspaceUIState(defaults: fixtureDefaults)
-        let requests = (0..<(tabs ? max(2, tabCount) : 20)).map { RequestLocation(collectionID: "clicks", request: RequestDraft(id: "r\($0)", name: "Click Request \($0)", url: "https://example.invalid/\($0)")) }
+        let note = String(repeating: "# Hidden note\n\n", count: noteBytes / 15)
+        let requests = (0..<(tabs ? max(2, tabCount) : 20)).map { RequestLocation(collectionID: "clicks", request: RequestDraft(id: "r\($0)", name: "Click Request \($0)", url: "https://example.invalid/\($0)", note: note)) }
         model.workspace.collections = [CollectionDraft(id: "clicks", name: "Click Audit", requests: requests)]
         if tabs {
             for request in requests { interface.activateSavedRequest(request, model: model) }
@@ -526,7 +532,74 @@ final class ProbeWindow: NSWindow { override var canBecomeKey: Bool { true } }
         print("request_click_regressions=passed")
     }
 
-    static func main() throws {
+    static func verifyNotes() async throws {
+        let fixture = TextFixture("# Original\n\n**Saved** note")
+        let (window, host, _) = mount(NotesFixture(fixture: fixture), width: 430, height: 420)
+        defer { window.close() }
+        try await Task.sleep(for: .milliseconds(50)); flush(host)
+        let before = await MarkdownPreviewCache.shared.parseCount
+        precondition(before == 0, "Edit must never start a preview parse")
+        fixture.preview = true
+        for _ in 0..<100 {
+            try await Task.sleep(for: .milliseconds(10)); flush(host)
+            if textViews(host).contains(where: { !$0.isEditable && $0.string == "Original\nSaved note" }) { break }
+        }
+        guard let preview = textViews(host).first(where: { !$0.isEditable }) else { preconditionFailure("Preview missing") }
+        precondition(preview.string == "Original\nSaved note")
+        guard let scroll = preview.enclosingScrollView else { preconditionFailure("Preview must scroll") }
+        precondition(scroll.frame.height > 350, "The mode toolbar must not consume the preview height")
+        fixture.text = String(repeating: "# Obsolete\n\nold text\n\n", count: 40_000)
+        flush(host)
+        try await Task.sleep(for: .milliseconds(5))
+        fixture.text = "# Latest\n\nCorrect request"
+        for _ in 0..<300 {
+            try await Task.sleep(for: .milliseconds(10)); flush(host)
+            if textViews(host).contains(where: { !$0.isEditable && $0.string == "Latest\nCorrect request" }) { break }
+        }
+        precondition(textViews(host).contains(where: { !$0.isEditable && $0.string == "Latest\nCorrect request" }), "An obsolete render must not replace current content")
+        fixture.preview = false
+        try await Task.sleep(for: .milliseconds(50)); flush(host)
+        precondition(textViews(host).contains(where: { $0.isEditable && $0.string == fixture.text }), "Edit must retain original Markdown")
+        print("notes_modes_cancellation_layout=passed")
+    }
+
+    static func markdownPreview(_ bytes: Int) async throws {
+        let paragraph = "# Endpoint\n\nUse **authorization** and *JSON*.\n\n- First item\n- Second item\n\n```json\n{\"ok\":true}\n```\n\n"
+        let source = String(repeating: paragraph, count: max(1, bytes / paragraph.utf8.count))
+        let cache = MarkdownPreviewCache()
+        let initialParses = await cache.parseCount
+        precondition(initialParses == 0, "Creating a cache must not parse hidden notes")
+        let start = ContinuousClock.now
+        let render = Task { try await cache.render(source) }
+        // A main-actor hop must remain available while the background parser runs.
+        let pulse = ContinuousClock.now
+        try await Task.sleep(for: .milliseconds(5))
+        record("markdown_main_actor_pulse", [ms(pulse)], budget: 100)
+        let document = try await render.value
+        record("markdown_parse", [ms(start)], budget: 10_000, details: ["bytes": source.utf8.count])
+        if document.cost <= 8 * 1_024 * 1_024 {
+            let hit = ContinuousClock.now
+            let cached = try await cache.render(source)
+            precondition(cached === document)
+            record("markdown_cache_hit", [ms(hit)], budget: 50)
+        } else {
+            let bytes = await cache.retainedBytes
+            precondition(bytes == 0, "Oversized previews must not occupy the cache")
+        }
+        let (window, host, mounted) = mount(MarkdownTextView(rendered: document), width: 600, height: 500)
+        defer { window.close() }
+        record("markdown_native_first_view", [mounted], budget: 150)
+        guard let text = textViews(host).first else { preconditionFailure("Missing native preview") }
+        precondition(text.string.contains("Endpoint") && !text.isEditable && text.isSelectable)
+        let scrollStart = ContinuousClock.now
+        text.scrollToEndOfDocument(nil); flush(host)
+        record("markdown_scroll_to_end", [ms(scrollStart)], budget: 150)
+        let finalParses = await cache.parseCount
+        precondition(finalParses == 1, "Cached previews must not reparse")
+        print("markdown_native=passed")
+    }
+
+    static func main() async throws {
         windowFirstContentBudget = try JSONDecoder().decode(Budgets.self,
             from: Data(contentsOf: URL(fileURLWithPath: "performance/budgets.json"))).nativeColdWindowFirstContentMilliseconds
         _ = NSApplication.shared
@@ -545,10 +618,17 @@ final class ProbeWindow: NSWindow { override var canBecomeKey: Bool { true } }
         let watchdog=DispatchWorkItem { exit(86) }
         DispatchQueue.global().asyncAfter(deadline:.now()+120,execute:watchdog)
         defer { watchdog.cancel() }
-        if mode=="editor" { try editor(size) }
+        if mode=="notes-ui" { try await verifyNotes() }
+        else if mode=="markdown" { try await markdownPreview(size) }
+        else if mode=="editor" { try editor(size) }
         else if mode=="workspace" { try workspace(size,root:root) }
         else if mode=="response" { try response(size) }
         else if mode=="interface" { try verifyInterface(root: root) }
+        else if mode=="request-click-notes" || mode=="tab-click-notes" {
+            try requestClicks(root: root, tabs: mode=="tab-click-notes", tabCount: 5, noteBytes: size)
+            let count = await MarkdownPreviewCache.shared.parseCount
+            precondition(count == 0, "Hidden notes must never be parsed when switching requests")
+        }
         else if mode=="request-click" { try requestClicks(root: root) }
         else if mode=="proxy-screenshots" { try proxyScreenshots(root: root) }
         else if mode=="proxy-settings" { try proxySettings(root: root) }

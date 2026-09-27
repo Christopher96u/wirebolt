@@ -116,6 +116,7 @@ public final class WireboltModel {
     public private(set) var oauthReceipts: [String: OAuth2TokenReceipt] = [:]
     public private(set) var oauthFailureMessage: String?
     public private(set) var isOAuthBusy = false
+    public var isShowingHelp = false
     public var isShowingGitCollaboration = false
     public var isShowingWorkspaceSettings = false
     public var settingsTab = "general"
@@ -129,6 +130,9 @@ public final class WireboltModel {
     @ObservationIgnored private let oauth2: any OAuth2Authorizing
     @ObservationIgnored private var requestSearchIndex: [String: String] = [:]
     @ObservationIgnored private var rootCreation: Task<Void, any Error>?
+    @ObservationIgnored private var transportSave: Task<Void, Never>?
+    @ObservationIgnored private var persistedTransport: TransportSettings?
+    public private(set) var exportFailureMessage: String?
     public var operationFailure: RunFailure?
 
     public init(
@@ -389,12 +393,13 @@ public final class WireboltModel {
 
     public func exportWorkspace() async -> String? {
         do { return try await persistence?.exportWorkspace() }
-        catch { operationFailure = RunFailure(kind: "export", issues: []); return nil }
+        catch { exportFailureMessage = error.localizedDescription; operationFailure = RunFailure(kind: "export", issues: []); return nil }
     }
 
     public func exportCollection(id: String) async -> String? {
         do { return try await persistence?.exportCollection(id: id) }
         catch {
+            exportFailureMessage = error.localizedDescription
             operationFailure = RunFailure(kind: "export", issues: [])
             return nil
         }
@@ -403,6 +408,7 @@ public final class WireboltModel {
     public func exportRequest(collectionID: String, id: String) async -> String? {
         do { return try await persistence?.exportRequest(collectionID: collectionID, id: id) }
         catch {
+            exportFailureMessage = error.localizedDescription
             operationFailure = RunFailure(kind: "export", issues: [])
             return nil
         }
@@ -419,17 +425,33 @@ public final class WireboltModel {
         }
     }
 
+    @discardableResult
     public func openWorkspace(
         using persistence: any WorkspacePersistence,
         gitCollaboration: (any GitCollaboration)? = nil
-    ) async {
-        self.persistence = persistence
-        self.gitCollaboration = gitCollaboration
-        gitStatus = nil
-        gitOperation = nil
-        gitFailure = nil
-        sessions.removeAll()
-        await loadWorkspace()
+    ) async -> Bool {
+        isLoadingWorkspace = true
+        defer { isLoadingWorkspace = false }
+        do {
+            await flushWorkspaceTransport()
+            let loaded = try await persistence.load()
+            for session in sessions.sessions.values { cancel(session) }
+            sessions.removeAll()
+            configurePersistence(persistence, gitCollaboration: gitCollaboration)
+            transportSave = nil
+            persistedTransport = nil
+            selectedEnvironmentID = nil
+            oauthReceipts = [:]
+            historyEntries = []
+            gitStatus = nil
+            gitOperation = nil
+            gitFailure = nil
+            applyLoadedWorkspace(loaded)
+            return true
+        } catch {
+            operationFailure = RunFailure(kind: "workspace", issues: [])
+            return false
+        }
     }
 
     public func refreshGitStatus() async {
@@ -447,6 +469,7 @@ public final class WireboltModel {
             )
             return
         }
+        await flushWorkspaceTransport()
         await performGitOperation { collaboration in
             let operation = try await collaboration.pull()
             self.apply(operation)
@@ -540,6 +563,28 @@ public final class WireboltModel {
         }
         runner.proxySettingsChanged()
     }
+
+    /// The model owns pending writes so dismissing a settings view cannot cancel them.
+    public func updateWorkspaceTransport(_ value: TransportSettings) {
+        guard let persistence else { return }
+        if persistedTransport == nil { persistedTransport = workspace.transport }
+        workspace.transport = value
+        let previous = transportSave
+        previous?.cancel()
+        transportSave = Task {
+            await previous?.value
+            do { try await Task.sleep(for: .milliseconds(250)) } catch { return }
+            do {
+                _ = try await persistence.apply(.saveWorkspaceSettings(value))
+                persistedTransport = value
+            } catch {
+                if workspace.transport == value, let persistedTransport { workspace.transport = persistedTransport }
+                operationFailure = RunFailure(kind: "workspace", issues: [])
+            }
+        }
+    }
+
+    public func flushWorkspaceTransport() async { await transportSave?.value }
 
     public func saveWorkspaceTransport() async {
         guard let persistence else { return }
@@ -662,6 +707,7 @@ public final class WireboltModel {
 
     private func commitDocument(source: String, format: ImportFormat, fileName: String? = nil) async {
         guard let persistence else { return }
+        await flushWorkspaceTransport()
         let previousIDs = Set(workspace.collections.map(\.id))
         do {
             if let fileName {
@@ -830,6 +876,10 @@ public final class WireboltModel {
         do {
             _ = try await persistence.apply(.deleteGroup(collectionID: collectionID, id: id))
             let descendantIDs = workspace.collections[collectionIndex].descendantGroupIDs(of: id)
+            let removedRequestIDs = workspace.collections[collectionIndex].requests.filter {
+                $0.groupID.map(descendantIDs.contains) ?? false
+            }.map { $0.request.id }
+            for requestID in removedRequestIDs { closeSessions(collectionID: collectionID, requestID: requestID) }
             workspace.collections[collectionIndex].groups.removeAll { descendantIDs.contains($0.id) }
             workspace.collections[collectionIndex].requests.removeAll { location in
                 location.groupID.map(descendantIDs.contains) ?? false
@@ -963,6 +1013,9 @@ public final class WireboltModel {
                 $0.id == toCollectionID
             }) ?? destinationIndex
             workspace.collections[resolvedDestinationIndex].requests.append(location)
+            for session in sessions.sessions.values where session.collectionID == fromCollectionID && session.requestID == requestID {
+                session.relocate(to: toCollectionID)
+            }
             rebuildRequestSearchIndex()
         } catch {
             operationFailure = RunFailure(kind: "workspace", issues: [])
@@ -995,6 +1048,7 @@ public final class WireboltModel {
 
     private func applyLoadedWorkspace(_ loaded: WorkspaceDraft) {
         workspace = loaded
+        persistedTransport = loaded.transport
         rebuildRequestSearchIndex()
         selectedEnvironmentID = loaded.environments.first(where: { $0.id != WorkspaceDraft.globalEnvironmentID })?.id
         guard sessions.activeSession == nil,

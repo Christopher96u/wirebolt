@@ -381,7 +381,7 @@ impl WorkspaceBridge {
             .load()
             .map_err(|_| WorkspaceBridgeError::operation("workspace could not be loaded"))?;
         wirebolt_core::export_legacy_v1_workspace(&snapshot)
-            .map_err(|_| WorkspaceBridgeError::operation("workspace could not be exported"))
+            .map_err(|error| WorkspaceBridgeError::operation(&error.to_string()))
     }
 
     /// Exports one collection and all of its requests as a portable JSON document.
@@ -401,7 +401,7 @@ impl WorkspaceBridge {
             .find(|collection| collection.collection.id == id)
             .ok_or_else(|| WorkspaceBridgeError::operation("collection does not exist"))?;
         wirebolt_core::export_legacy_v1_collection(&snapshot.collection, &snapshot.requests)
-            .map_err(|_| WorkspaceBridgeError::operation("collection could not be exported"))
+            .map_err(|error| WorkspaceBridgeError::operation(&error.to_string()))
     }
 
     /// Exports one saved request as portable JSON with secret references intact.
@@ -416,7 +416,7 @@ impl WorkspaceBridge {
     ) -> Result<String, WorkspaceBridgeError> {
         let request = self.request(collection_id, id)?;
         wirebolt_core::export_legacy_v1_request(&request)
-            .map_err(|_| WorkspaceBridgeError::operation("request could not be exported"))
+            .map_err(|error| WorkspaceBridgeError::operation(&error.to_string()))
     }
 
     /// Creates or updates a collection.

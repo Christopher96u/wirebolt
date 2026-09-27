@@ -45,6 +45,7 @@ struct ContentView: View {
 
     private var workspaceSurface: some View {
         workspacePanels
+        .disabled(model.isLoadingWorkspace)
         .navigationTitle("")
         .frame(minWidth: model.sessions.groups.count > 1
             ? (interface.columnVisibility == .detailOnly ? 0 : 208) + Double(model.sessions.groups.count * 440 + model.sessions.groups.count - 1)
@@ -71,6 +72,7 @@ struct ContentView: View {
         .sheet(isPresented: $model.isShowingWorkspaceSettings) {
             WorkspaceNetworkSettings(model: model)
         }
+        .sheet(isPresented: $model.isShowingHelp) { WireboltHelpView() }
         .sheet(isPresented: $model.isShowingGitCollaboration) {
             GitCollaborationView(model: model)
         }
@@ -95,7 +97,9 @@ struct ContentView: View {
         } message: {
             Text(model.operationFailure?.kind == "keychain"
                 ? "The credentials could not be read or saved in Keychain. Check access and try again."
-                : "The operation could not be completed. Check access to the workspace and try again.")
+                : model.operationFailure?.kind == "export"
+                    ? (model.exportFailureMessage ?? "The saved request could not be exported.")
+                    : "The operation could not be completed. Check access to the workspace and try again.")
         }
         .sheet(item: $interface.workspaceNamePrompt) { prompt in
             WorkspaceNameEditor(prompt: prompt, model: model)
@@ -122,7 +126,7 @@ struct ContentView: View {
                 interface.confirmWorkspaceDelete(model: model)
             }
         } message: {
-            Text("This action cannot be reverted.")
+            Text("This deletes the item and its descendants, closes their tabs and discards any unsaved edits. This action cannot be reverted.")
         }
         .onAppear {
             interface.reopenLastDocument(model: model)
@@ -452,10 +456,16 @@ private struct CollectionActionMenu: View {
             }
                 .keyboardShortcut("n", modifiers: [.command, .option])
             Divider()
+            Button("New Collection…") { interface.promptForNewCollection() }
+            Button("Open Workspace…") { chooseWorkspace(model: model, interface: interface, create: false) }
+                .disabled(model.isLoadingWorkspace || model.isGitBusy || model.isOAuthBusy)
+            Button("New Workspace…") { chooseWorkspace(model: model, interface: interface, create: true) }
+                .disabled(model.isLoadingWorkspace || model.isGitBusy || model.isOAuthBusy)
             Button("Workspace Settings…") { model.isShowingWorkspaceSettings = true }
+            Button("Git Collaboration…") { model.isShowingGitCollaboration = true }
             Divider()
             WorkspaceImportMenu(interface: interface)
-            Button("Export") {
+            Button("Export Wirebolt JSON…") {
                 Task { if let document = await model.exportWorkspace() {
                     saveExportedDocument(named: model.workspace.name, content: document)
                 } }
@@ -482,7 +492,7 @@ private struct WorkspaceImportMenu: View {
             Button("cURL") { interface.isShowingCurlImporter = true }
             Button("HAR") { open(.har) }
             Divider()
-            Button("Legacy Collection v1") { open(.legacyWorkspaceV1) }
+            Button("Wirebolt / Legacy Collection v1 JSON") { open(.legacyWorkspaceV1) }
             Button("Postman Collection v2") { open(.postmanV2) }
         }
     }
@@ -676,6 +686,7 @@ private struct SavedRequestRow: View {
 
 private struct SidebarDisclosureStyle: DisclosureGroupStyle {
     var isEditing = false
+    var title = "Folder"
 
     func makeBody(configuration: Configuration) -> some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -686,7 +697,7 @@ private struct SidebarDisclosureStyle: DisclosureGroupStyle {
                     Image(systemName: configuration.isExpanded ? "chevron.down" : "chevron.right")
                         .font(.system(size: 9, weight: .semibold)).foregroundStyle(.secondary)
                         .frame(width: 12, height: 24).padding(.trailing, 6).contentShape(.rect)
-                }.buttonStyle(.plain).accessibilityLabel(configuration.isExpanded ? "Collapse" : "Expand")
+                }.buttonStyle(.plain).accessibilityLabel("\(configuration.isExpanded ? "Collapse" : "Expand") \(title)")
                 if isEditing {
                     configuration.label.font(.system(size: 13)).frame(maxWidth: .infinity, alignment: .leading)
                 } else {
@@ -695,6 +706,8 @@ private struct SidebarDisclosureStyle: DisclosureGroupStyle {
                             .frame(maxWidth: .infinity, minHeight: 24, alignment: .leading)
                             .contentShape(.rect)
                     }.buttonStyle(.plain)
+                        .accessibilityLabel(title)
+                        .accessibilityValue(configuration.isExpanded ? "Expanded" : "Collapsed")
                 }
             }.frame(height: 24)
             if configuration.isExpanded {
@@ -819,7 +832,7 @@ private struct SavedCollectionDisclosure: View {
                     }
                     Divider()
                     WorkspaceImportMenu(interface: interface)
-                    Button("Export") {
+                    Button("Export Wirebolt JSON…") {
                         Task {
                             if let document = await model.exportCollection(id: collection.id) {
                                 saveExportedDocument(named: collection.name, content: document)
@@ -835,7 +848,7 @@ private struct SavedCollectionDisclosure: View {
                     }
                 }
         }
-        .disclosureGroupStyle(SidebarDisclosureStyle(isEditing: isRenaming))
+        .disclosureGroupStyle(SidebarDisclosureStyle(isEditing: isRenaming, title: collection.name))
         .dropDestination(for: String.self) { identifiers, _ in
             handleDrop(identifiers.first, parentID: nil)
         }
@@ -919,7 +932,7 @@ private struct SavedGroupDisclosure: View {
                     }
                 }
         }
-        .disclosureGroupStyle(SidebarDisclosureStyle(isEditing: isRenaming || interface.renamingGroupID == group.id))
+        .disclosureGroupStyle(SidebarDisclosureStyle(isEditing: isRenaming || interface.renamingGroupID == group.id, title: group.name))
     }
 
 
@@ -988,7 +1001,7 @@ private struct SidebarRequestButton: View, @MainActor Equatable {
             Button("Open in new split", action: onSplit)
             Divider()
             WorkspaceImportMenu(interface: interface)
-            Button("Export", action: onExport)
+            Button("Export Wirebolt JSON…", action: onExport)
             Divider()
             Button("Copy cURL") { copyRequestAsCurl(location.request, model: model) }
             Divider()
@@ -997,7 +1010,7 @@ private struct SidebarRequestButton: View, @MainActor Equatable {
             Divider()
             Button("Delete", role: .destructive, action: onDelete)
         }
-        .accessibilityLabel("\(location.request.method.rawValue) request, \(location.request.name)")
+        .accessibilityLabel("\(location.request.webSocket ? "WebSocket" : location.request.method.rawValue) request, \(location.request.name)")
         .accessibilityAddTraits(isSelected ? .isSelected : [])
     }
 
@@ -1316,7 +1329,7 @@ private struct DocumentTabButton: View {
                 .foregroundStyle(.secondary)
                 .opacity(isHovered && !isRenaming ? 1 : 0)
                 .allowsHitTesting(!isRenaming)
-                .accessibilityHidden(!isHovered || isRenaming)
+                .accessibilityHidden(isRenaming)
         }
         .padding(.leading, 19)
         .padding(.trailing, 12)
@@ -1404,7 +1417,7 @@ private struct RequestWorkspace: View {
         case .settings:
             NetworkSettingsPage(model: model, scope: .request, session: session).id(session.id)
         case .note:
-            BodyTextEditor(text: $session.note, label: "Note")
+            NotesEditor(text: $session.note, preview: $presentation.previewsNotes).id(session.id)
         }
     }
 }
@@ -1476,7 +1489,7 @@ private struct WebSocketRequestWorkspace: View {
         case .settings:
             NetworkSettingsPage(model: model, scope: .request, session: session).id(session.id)
         case .note:
-            BodyTextEditor(text: $session.note, label: "Note")
+            NotesEditor(text: $session.note, preview: $interface.previewsNotes).id(session.id)
         }
     }
 

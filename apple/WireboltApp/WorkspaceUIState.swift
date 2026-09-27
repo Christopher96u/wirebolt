@@ -58,6 +58,7 @@ final class DocumentPresentationState {
     var responseRenderer: ResponseRenderer = .json
     var usesAutomaticRenderer = true
     var isBulkEditing = false
+    var previewsNotes = false
     var focusNewKeyTrigger = 0
 
     init(requestSection: RequestPanelSection = .params) {
@@ -240,6 +241,21 @@ final class WorkspaceUIState {
         }
     }
 
+    func resetForWorkspace(model: WireboltModel) {
+        presentationByTabID = [:]
+        responseLayoutsByGroupID = [:]
+        lastClosedSession = nil
+        lastClosedPresentation = nil
+        fallbackPresentation = DocumentPresentationState()
+        activeTabID = nil
+        sidebarFilter = ""
+        collapsedSidebarCollections = []
+        expandedSidebarGroups = []
+        renamingRequestID = nil
+        renamingGroupID = nil
+        synchronizeSelection(model: model)
+    }
+
     func promptForNewCollection() {
         workspaceNamePrompt = WorkspaceNamePrompt(
             target: .collection(id: nil),
@@ -303,6 +319,9 @@ final class WorkspaceUIState {
     func confirmWorkspaceDelete(model: WireboltModel) {
         guard let request = workspaceDeleteRequest else { return }
         workspaceDeleteRequest = nil
+        // Deleted documents must not be restored by the last-closed-tab fallback.
+        lastClosedSession = nil
+        lastClosedPresentation = nil
         Task {
             switch request.target {
             case let .collection(id): await model.deleteCollection(id: id)

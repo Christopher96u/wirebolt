@@ -24,7 +24,7 @@ public final class DocumentSession: Identifiable {
     public let id: String
     public let socket = WebSocketDocumentState()
     public let kind: DocumentKind
-    public let collectionID: String?
+    public private(set) var collectionID: String?
     public let requestID: String
     public var draft: RequestDraft
     public var note: String {
@@ -68,6 +68,8 @@ public final class DocumentSession: Identifiable {
     public var title: String { draft.name }
     public var isDirty: Bool { savedDraft != draft }
     public var isRunning: Bool { activeRunID != nil }
+
+    public func relocate(to collectionID: String) { self.collectionID = collectionID }
 
     public func renameSavedRequest(_ name: String) {
         draft.name = name

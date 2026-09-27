@@ -192,9 +192,9 @@ fn request_node(request: &Request, id: &str, parent_path: &str) -> Result<Value,
             json!({"mode":"bearer","bearer":{"token":source(token)}})
         }
         RequestAuthentication::ApiKey { .. } | RequestAuthentication::Oauth2 { .. } => {
-            return Err(ExportError(
-                "legacy collection v1 does not support this authentication type",
-            ));
+            // Explicit extension: never pretend an advanced-auth request has no auth.
+            // Wirebolt imports the typed metadata below without resolving secrets.
+            json!({"mode":"wirebolt"})
         }
     };
     let method = if request.web_socket {
@@ -273,6 +273,64 @@ fn body(body: &RequestBody) -> Result<Value, ExportError> {
 mod tests {
     use super::*;
     use crate::{Group, ImportEngine, ImportFormat, MultipartPart, RequestValueField, SecretName};
+    #[test]
+    fn advanced_auth_exports_reimport_without_losing_secret_references() {
+        let auths = [
+            RequestAuthentication::ApiKey {
+                placement: crate::ApiKeyPlacement::Header,
+                name: "X-API-Key".into(),
+                value: ValueSource::secret(SecretName::new("api.key").unwrap()),
+            },
+            RequestAuthentication::ApiKey {
+                placement: crate::ApiKeyPlacement::Query,
+                name: "key".into(),
+                value: ValueSource::secret(SecretName::new("query.key").unwrap()),
+            },
+            RequestAuthentication::Oauth2 {
+                configuration: crate::Oauth2Configuration {
+                    grant: crate::Oauth2Grant::AuthorizationCodePkce,
+                    authorization_url: "https://example.test/authorize".into(),
+                    token_url: "https://example.test/token".into(),
+                    client_id: "client".into(),
+                    client_secret_reference: SecretName::new("oauth.client").unwrap(),
+                    scopes: "read write".into(),
+                    audience: "api".into(),
+                    redirect_uri: "wirebolt://oauth/callback".into(),
+                    access_token_reference: SecretName::new("oauth.token").unwrap(),
+                },
+            },
+        ];
+        for authentication in auths {
+            let mut request = Request::new(
+                DocumentId::new("request").unwrap(),
+                "Auth",
+                "GET",
+                "https://example.test",
+            );
+            request.authentication = authentication.clone();
+            let collection = Collection::new(DocumentId::new("api").unwrap(), "API".into());
+            let snapshot = WorkspaceSnapshot {
+                workspace: crate::Workspace::new("Auth"),
+                collections: vec![crate::CollectionSnapshot {
+                    collection: collection.clone(),
+                    requests: vec![request.clone()],
+                }],
+                environments: vec![],
+                problems: vec![],
+            };
+            for exported in [
+                export_legacy_v1_request(&request),
+                export_legacy_v1_collection(&collection, &[request]),
+                export_legacy_v1_workspace(&snapshot),
+            ] {
+                let exported = exported.expect("advanced auth export");
+                let imported =
+                    ImportEngine::parse(ImportFormat::LegacyWorkspaceV1, &exported).unwrap();
+                assert_eq!(imported.requests[0].authentication, authentication);
+            }
+        }
+    }
+
     #[test]
     fn workspace_export_preserves_all_collections_and_unwrapped_root_requests() {
         let id = |value: &str| DocumentId::new(value).unwrap();

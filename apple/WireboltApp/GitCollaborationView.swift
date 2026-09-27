@@ -17,11 +17,6 @@ struct GitCollaborationView: View {
         .task {
             await model.refreshGitStatus()
         }
-        .toolbar {
-            ToolbarItem(placement: .cancellationAction) {
-                Button("Close", action: dismiss.callAsFunction)
-            }
-        }
     }
 
     private var header: some View {
@@ -34,6 +29,7 @@ struct GitCollaborationView: View {
                         .foregroundStyle(.secondary)
                 }
                 Spacer()
+                Button("Close") { dismiss() }.keyboardShortcut(.cancelAction)
                 if model.isGitBusy {
                     ProgressView()
                         .controlSize(.small)
@@ -46,7 +42,7 @@ struct GitCollaborationView: View {
                     Label(status.branch ?? "Detached HEAD", systemImage: "arrow.triangle.branch")
                     if let upstream = status.upstream {
                         Text(upstream).foregroundStyle(.secondary)
-                    }
+                    } else { Text("No upstream configured").foregroundStyle(.secondary) }
                     if status.ahead > 0 {
                         Text("↑ \(status.ahead)").help("Commits ahead of upstream")
                     }
@@ -131,18 +127,18 @@ struct GitCollaborationView: View {
                     .onSubmit(commit)
 
                 Button("Commit", action: commit)
-                    .disabled(model.isGitBusy || trimmedCommitMessage.isEmpty)
+                    .disabled(model.isGitBusy || model.gitStatus == nil || trimmedCommitMessage.isEmpty)
 
                 Button("Pull") {
                     Task { await model.pullGit() }
                 }
-                .disabled(model.isGitBusy || model.hasUnsavedRequestChanges)
+                .disabled(model.isGitBusy || model.gitStatus?.upstream == nil || model.hasUnsavedRequestChanges)
                 .help("Pull the configured upstream. Conflicts are never resolved automatically.")
 
                 Button("Push") {
                     Task { await model.pushGit() }
                 }
-                .disabled(model.isGitBusy)
+                .disabled(model.isGitBusy || model.gitStatus == nil)
 
                 Button("Refresh", systemImage: "arrow.clockwise") {
                     Task { await model.refreshGitStatus() }

@@ -4,6 +4,111 @@ import Testing
 
 @Suite("Wirebolt model")
 struct WireboltModelTests {
+    @Test("A workspace that cannot load leaves the current documents and edits intact")
+    @MainActor func failedWorkspaceOpenPreservesDraft() async throws {
+        let model = WireboltModel(runner: StubRunner(), persistence: MutationRecorder())
+        model.workspace.name = "Keep workspace"
+        let tab = model.sessions.open(draft: RequestDraft(id: "keep", name: "Keep tab"))
+        tab.draft.note = "Unsaved"
+        #expect(!(await model.openWorkspace(using: UnreadableWorkspace())))
+        #expect(model.workspace.name == "Keep workspace")
+        #expect(model.sessions.activeSession?.id == tab.id)
+        #expect(tab.draft.note == "Unsaved")
+    }
+
+    @Test("Failed folder deletion and move preserve open drafts and location")
+    @MainActor func failedHierarchyMutationsPreserveSessions() async throws {
+        let model = WireboltModel(runner: StubRunner(), persistence: MutationRecorder(fails: true))
+        let location = RequestLocation(collectionID: "api", groupID: "folder", request: RequestDraft(id: "r"))
+        model.workspace.collections = [CollectionDraft(id: "api", name: "API", groups: [GroupDraft(id: "folder", name: "Folder")], requests: [location]), CollectionDraft(id: "target", name: "Target")]
+        model.select(location)
+        let tab = try #require(model.sessions.activeSession)
+        tab.draft.note = "Keep"
+        await model.deleteGroup(collectionID: "api", id: "folder")
+        await model.moveRequest(fromCollectionID: "api", requestID: "r", toCollectionID: "target", groupID: nil, order: 0)
+        #expect(model.sessions.session(id: tab.id) != nil)
+        #expect(tab.collectionID == "api")
+        #expect(tab.draft.note == "Keep")
+        #expect(model.workspace.collections[0].requests == [location])
+    }
+
+    @Test("Workspace switching cancels old HTTP runs and clears the selected environment")
+    @MainActor func workspaceSwitchClosesRuns() async throws {
+        let model = WireboltModel(runner: StubRunner(), persistence: MutationRecorder())
+        let old = model.sessions.open(draft: RequestDraft(id: "old", name: "Old"))
+        old.beginRun(RunID())
+        model.selectedEnvironmentID = "old-environment"
+        #expect(await model.openWorkspace(using: MutationRecorder()))
+        #expect(!old.isRunning)
+        #expect(model.sessions.sessions.isEmpty)
+        #expect(model.selectedEnvironmentID == nil)
+        #expect(model.workspace.name == "Mutations")
+    }
+
+    @Test("Transport edits survive view lifetime, coalesce and roll back failed persistence")
+    @MainActor func transportWritesOwnedByModel() async {
+        for fails in [false, true] {
+            let persistence = MutationRecorder(fails: fails)
+            let model = WireboltModel(runner: StubRunner(), persistence: persistence)
+            let before = model.workspace.transport
+            var first = before; first.totalTimeoutMS = 4321
+            model.updateWorkspaceTransport(first)
+            var latest = first; latest.followRedirects = true
+            model.updateWorkspaceTransport(latest)
+            await model.flushWorkspaceTransport()
+            #expect(model.workspace.transport == (fails ? before : latest))
+            #expect((model.operationFailure != nil) == fails)
+            if !fails {
+                #expect(await persistence.commands.count == 1)
+                #expect(await persistence.commands.last == .saveWorkspaceSettings(latest))
+            }
+        }
+    }
+
+    @Test("Moving open split sessions updates their save destination without losing edits")
+    @MainActor func movedSessionsSaveAtDestination() async throws {
+        let persistence = MutationRecorder()
+        let model = WireboltModel(runner: StubRunner(), persistence: persistence)
+        let location = RequestLocation(collectionID: "source", request: RequestDraft(id: "r", name: "Request"))
+        model.workspace.collections = [CollectionDraft(id: "source", name: "Source", requests: [location]), CollectionDraft(id: "target", name: "Target")]
+        model.select(location)
+        let original = try #require(model.sessions.activeSession)
+        original.draft.note = "Unsaved original"
+        _ = model.sessions.split(tabID: original.id)
+        let split = try #require(model.sessions.activeSession)
+        split.draft.note = "Unsaved split"
+        await model.moveRequest(fromCollectionID: "source", requestID: "r", toCollectionID: "target", groupID: nil, order: 4)
+        #expect(original.collectionID == "target")
+        #expect(split.collectionID == "target")
+        #expect(original.draft.note == "Unsaved original")
+        #expect(split.isDirty)
+        await model.saveCurrentRequest(collectionID: "source")
+        guard case let .saveRequest(destination, saved) = await persistence.commands.last else { Issue.record("Missing save"); return }
+        #expect(destination == "target")
+        #expect(saved.order == 4)
+        #expect(saved.request.note == "Unsaved split")
+        #expect(model.workspace.collections[0].requests.isEmpty)
+    }
+
+    @Test("Deleting a folder closes descendant splits and cancels their runs")
+    @MainActor func deletedFolderClosesDescendants() async throws {
+        let persistence = MutationRecorder()
+        let model = WireboltModel(runner: StubRunner(), persistence: persistence)
+        let location = RequestLocation(collectionID: "api", groupID: "child", request: RequestDraft(id: "r"))
+        model.workspace.collections = [CollectionDraft(id: "api", name: "API", groups: [GroupDraft(id: "parent", name: "Parent"), GroupDraft(id: "child", name: "Child", parentID: "parent")], requests: [location])]
+        model.select(location)
+        let original = try #require(model.sessions.activeSession)
+        _ = model.sessions.split(tabID: original.id)
+        original.beginRun(RunID())
+        original.draft.note = "Discarded with folder"
+        await model.deleteGroup(collectionID: "api", id: "parent")
+        #expect(model.sessions.sessions.isEmpty)
+        #expect(!original.isRunning)
+        await model.saveCurrentRequest(collectionID: "api")
+        #expect(await persistence.commands.count == 1)
+        #expect(model.workspace.collections[0].requests.isEmpty)
+    }
+
     @Test("Reordering mixed siblings persists exact positions and preserves open edits")
     @MainActor func reorderMixedSiblings() async throws {
         let persistence = MutationRecorder()
@@ -985,4 +1090,11 @@ private extension GitStatusSnapshot {
         behind: 0,
         changes: []
     )
+}
+
+private struct UnreadableWorkspace: WorkspacePersistence {
+    func load() async throws -> WorkspaceDraft { throw RunFailure(kind: "workspace", issues: []) }
+    func save(request: RequestDraft, in collectionID: String) async throws {}
+    func save(environment: EnvironmentDraft) async throws {}
+    func saveSecret(name: String, value: String) async throws {}
 }

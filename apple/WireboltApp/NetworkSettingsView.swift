@@ -332,7 +332,7 @@ struct TransportSettingsFields: View {
         Binding(get: { session.map { $0.draft.inheritsWorkspaceTransport ? model.workspace.transport : $0.draft.transport } ?? model.workspace.transport },
                 set: { value in
                     if let session { session.draft.transport = value }
-                    else { model.workspace.transport = value }
+                    else { model.updateWorkspaceTransport(value) }
                 })
     }
     var body: some View {
@@ -359,11 +359,6 @@ struct TransportSettingsFields: View {
                 Text("A timeout of 0 disables that deadline.").font(.caption).foregroundStyle(.secondary)
             }.disabled(inherited)
         }.font(.callout)
-        .task(id: model.workspace.transport) {
-            guard session == nil else { return }
-            do { try await Task.sleep(for: .milliseconds(250)) } catch { return }
-            await model.saveWorkspaceTransport()
-        }
     }
 }
 
@@ -423,7 +418,7 @@ struct WireboltSettingsView: View {
                     GridRow(alignment: .top) {
                         Text("Analytics:").frame(width: 104, alignment: .trailing)
                         VStack(alignment: .leading, spacing: 6) {
-                            Toggle("Share analytics with Wirebolt", isOn: .constant(false)).disabled(true)
+                            Label("Not collected", systemImage: "checkmark.shield")
                                 .frame(height: 18, alignment: .top).padding(.leading, 2)
                             Text("Wirebolt does not collect usage analytics or send identifiers automatically. Your collections, requests and environments stay in your workspace.")
                                 .font(.system(size: 11)).foregroundStyle(.secondary)
@@ -433,7 +428,7 @@ struct WireboltSettingsView: View {
                     GridRow(alignment: .top) {
                         Text("Crash Report:").frame(width: 104, alignment: .trailing)
                         VStack(alignment: .leading, spacing: 6) {
-                            Toggle("Share crash reports with Wirebolt", isOn: .constant(false)).disabled(true)
+                            Label("Not uploaded automatically", systemImage: "checkmark.shield")
                                 .frame(height: 18, alignment: .top).padding(.leading, 2)
                             Text("Wirebolt does not upload crash reports or diagnostics automatically. You decide what information to include when reporting a problem.")
                                 .font(.system(size: 11)).foregroundStyle(.secondary)

@@ -93,3 +93,33 @@ Drag a request or subfolder to the upper or lower edge of a sibling row to reord
 items in the same folder. The insertion line shows the destination. Requests and
 subfolders can be mixed, and their order is saved in the workspace TOML files.
 Dropping in the center of a folder still moves the item into that folder.
+
+### Markdown notes
+
+Each request's Note tab offers **Edit** and **Preview**. The original Markdown is
+saved with the request (Cmd+S) in its existing TOML `note` field. Preview supports
+headings, emphasis, nested lists, quotes, links and fenced code using native text.
+Images show their alternative text; previews do not fetch remote resources or run HTML.
+
+Parsing runs off the main actor only while Preview is visible. The content cache
+retains at most eight previews within an 8 MiB estimated memory budget; larger
+previews remain viewable but are not cached. Editing does not continuously render
+Markdown, and hidden notes are not parsed when switching requests or tabs.
+
+### Workspace commands and help
+
+Use **File → New Workspace / Open Workspace** (⌘O) to switch folders, and
+**New Collection** to create a top-level collection. Unsaved request edits require
+an explicit discard decision before switching. A failed open preserves the current
+workspace. The last chosen folder opens on the next launch unless `--workspace`
+provides an explicit path.
+
+**Workspace → Git Collaboration** (⇧⌘G) exposes status, commit, pull and push.
+Configure the repository and remote with Git first. **Help → Wirebolt Help**
+provides offline instructions for requests, variables, proxy, export and shortcuts.
+
+**Export Wirebolt JSON** preserves API Key and OAuth configuration with typed
+Wirebolt authentication metadata and secret references. Reimport via
+**Wirebolt / Legacy Collection v1 JSON**. Other clients may not understand the
+Wirebolt extensions; exports do not resolve Keychain secrets or include history.
+Workspace transport settings save automatically, even when the settings sheet closes.
