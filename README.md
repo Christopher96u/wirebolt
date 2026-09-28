@@ -1,125 +1,107 @@
-# Wirebolt
+<p align="center">
+  <img src="docs/assets/icon.png" width="112" alt="Wirebolt app icon">
+</p>
 
-A blazing-fast, native HTTP client for macOS: offline-first, Git-friendly, and free of telemetry.
+<h1 align="center">Wirebolt</h1>
+<p align="center"><strong>A blazing-fast API client, built natively for macOS.</strong></p>
+<p align="center">Rust-powered. Local-first. Zero telemetry. Zero accounts.</p>
+<p align="center">Free and open source.</p>
 
-Wirebolt currently includes a native request composer, incremental response viewer, versioned
-file-based workspaces, environment variables, Keychain-backed secrets, layered proxy policy, and
-explicit Git collaboration. Workspaces live locally and remain readable, deterministic TOML.
-Git status, pull, commit, and push run only when requested; conflicts are surfaced without automatic
-resolution, and commits created by Wirebolt include only its managed workspace documents.
+<p align="center">
+  <a href="https://github.com/Christopher96u/homebrew-tap/releases"><img alt="Release channel: beta" src="https://img.shields.io/badge/channel-beta-orange"></a>
+  <img alt="Requires macOS 15 or later" src="https://img.shields.io/badge/macOS-15%2B-black">
+  <a href="LICENSE"><img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-green"></a>
+  <img alt="Apple Silicon" src="https://img.shields.io/badge/architecture-Apple_Silicon-blue">
+  <a href="https://github.com/Christopher96u/wirebolt/actions/workflows/ci.yml"><img alt="CI status" src="https://github.com/Christopher96u/wirebolt/actions/workflows/ci.yml/badge.svg"></a>
+</p>
 
-Keyboard shortcuts:
+<p align="center">
+  <a href="https://github.com/Christopher96u/homebrew-tap/releases">Download beta</a> ·
+  <a href="docs/quick-start.md">Quick start</a> ·
+  <a href="docs/README.md">Documentation</a> ·
+  <a href="https://github.com/Christopher96u/wirebolt/issues/new/choose">Report a bug</a>
+</p>
 
-- `⌘↩` sends the current request.
-- `⌘S` saves it to the workspace.
-- `⇧⌘N` creates a new request draft (`⌘N` keeps the native New Window behavior).
-- `⇧⌘G` opens Git collaboration.
+![Wirebolt sending a JSON order to a local API and displaying its response](docs/assets/screenshots/overview.png)
 
-## Development
+Built for speed, from switching tabs to inspecting large responses. Wirebolt pairs a native SwiftUI/AppKit interface with a Rust core, streams response bodies to disk, and renders only the visible portion of large responses. [Performance budgets are enforced by automated checks](docs/development.md#performance).
 
-Requirements: macOS, `mise`, Rust 1.98.0, and Xcode 26.6.
+Send HTTP requests, connect to WebSockets, and keep your API work in readable local files. No account. No telemetry. Share through Git when you choose.
 
-```sh
-./scripts/check.sh
-./scripts/build-app.sh
-open build/Wirebolt.app
-```
+> **Beta:** this documentation describes the current source on `main`. Published beta builds can lag behind it. See the [changelog](CHANGELOG.md) for unreleased work and [installation](docs/installation.md) for supported hardware and first-launch instructions.
 
-Measure the performance contract on an idle Apple Silicon Mac:
+## Install
 
-```sh
-./scripts/performance.sh check
-```
-
-Performance budgets distinguish the response engine's cold first viewport (50 ms)
-from a complete native window's first content (300 ms, including AppKit/SwiftUI
-construction and, for JSON responses, formatting). Native workloads in
-`scripts/check.sh` enforce every reported budget, including initial display and
-resizing, cold renderer switches, and scroll over 100,000-row documents. They also
-check narrow/split-panel controls and preserve the reading position across wrapping
-changes. Large response viewers draw a bounded first viewport while completing
-the file index in the background. Narrow editor groups place the response below
-the request to keep all controls reachable.
-
-Benchmark the Rust HTTP engine over loopback:
+Requires **Apple Silicon and macOS 15 or later**.
 
 ```sh
-./scripts/http-benchmark.sh
+brew install --cask Christopher96u/tap/wirebolt
 ```
 
-## Beta releases
+Or download the ZIP from [beta releases](https://github.com/Christopher96u/homebrew-tap/releases), extract it, and move Wirebolt to Applications. Current beta packages are ad-hoc signed, not notarized; see [first launch](docs/installation.md#first-launch) if macOS blocks opening the app.
 
-On an Apple Silicon Mac with Python 3 and the authenticated GitHub CLI:
+## Your first request
 
-```sh
-./scripts/package-beta.sh 0.1.0-beta.2
-./scripts/publish-beta.sh 0.1.0-beta.2
-```
+1. Open Wirebolt and choose **File → New Workspace…**.
+2. Choose **File → New Collection…**, then create an HTTP request from the **+** menu.
+3. Enter your API URL, choose a method, and press **⌘Return** to send.
+4. Inspect the response and press **⌘S** to save the request.
 
-Use a new version for each build. Packages target Apple Silicon and macOS 15 or later.
-The package contains the app and dependency notices. The publisher uploads only the ZIP
-and Cask to `Christopher96u/homebrew-tap`; the source repository remains private.
-Release notes and the distribution repository description stay empty. An interrupted
-publication can be retried with the same package without replacing an existing asset.
-These betas use ad-hoc signing, so macOS requires approval on first launch.
+The [quick start](docs/quick-start.md) includes a local demo server and copyable requests, so you can try Wirebolt without an account or API key.
 
-### Proxy settings
+## What you can do
 
-Configure **Settings → Network** for the app default on this Mac, use the
-**Workspace Settings** gear for a workspace override, or open a request's
-**Settings** tab for a request override. The precedence is request → workspace
-→ app default. New installations use the system proxy.
+| Feature | What it gives you |
+| --- | --- |
+| [HTTP requests](docs/requests.md) | Methods, query parameters, headers, JSON, forms, multipart and file uploads |
+| [Response inspection](docs/requests.md#inspect-the-response) | JSON, tree, raw, XML, HTML, image and hex views; headers, cookies and the executed request |
+| [Workspaces](docs/workspaces.md) | Collections, folders, drag ordering, tabs and split editors, saved as readable TOML |
+| [Environments](docs/environments-and-secrets.md) | Global variables, environment overrides and Keychain secret references |
+| [Authentication](docs/authentication.md) | Basic, Bearer, API key and OAuth 2.0 configuration |
+| [Proxy and network](docs/proxy-and-network.md) | App, workspace and request proxy policies; timeouts, redirects and TLS validation |
+| [WebSockets](docs/websockets.md) | Connect, send text or binary messages, inspect replies and disconnect |
+| [Markdown notes](docs/notes.md) | Request documentation with local Edit/Preview modes |
+| [Git collaboration](docs/git-collaboration.md) | Review status and explicitly commit, pull or push workspace documents |
+| [Import and export](docs/import-export.md) | cURL, HAR, Postman v2 and Wirebolt JSON import; Wirebolt JSON export |
 
-Choose **Inherit**, **System**, **Direct — No proxy**, or **Manual**. Inherit is
-available at workspace and request scope; Direct bypasses parent proxies, and
-System explicitly uses macOS settings. Manual supports HTTP, HTTPS and SOCKS,
-with separate routes for HTTP and HTTPS destinations. An unmatched destination
-connects directly; proxy connection failures never trigger a direct retry.
+### Configure once, reuse across requests
 
-Save app/workspace changes using **Save**. For a request, use **Apply to request**
-and then save the request with ⌘S. The indicator beside Send shows the current
-policy and its source; the response's **Request** tab records the policy captured
-for that execution. HTTP and WebSocket execution and Copy cURL use the same
-inheritance. Reconnect an open WebSocket to apply a new policy.
+![Environment editor with local demo variables](docs/assets/screenshots/environments.png)
 
-App defaults stay local. Workspace/request proxy definitions are shareable files;
-usernames and passwords are kept in Keychain, with only references in those files.
-Use **Test connection** with an explicit URL for a cancellable HEAD probe without
-request auth, headers, body or cookies. Host exclusions are not yet exposed.
+Use `{{base_url}}` in your requests and switch environments without rewriting URLs. [Set up environments →](docs/environments-and-secrets.md)
 
-### Sidebar ordering
+### Choose how each request connects
 
-Drag a request or subfolder to the upper or lower edge of a sibling row to reorder
-items in the same folder. The insertion line shows the destination. Requests and
-subfolders can be mixed, and their order is saved in the workspace TOML files.
-Dropping in the center of a folder still moves the item into that folder.
+![Workspace proxy settings with a manual route](docs/assets/screenshots/proxy.png)
 
-### Markdown notes
+Inherit a default, use the system proxy, connect directly, or configure a manual route. [Understand proxy precedence →](docs/proxy-and-network.md)
 
-Each request's Note tab offers **Edit** and **Preview**. The original Markdown is
-saved with the request (Cmd+S) in its existing TOML `note` field. Preview supports
-headings, emphasis, nested lists, quotes, links and fenced code using native text.
-Images show their alternative text; previews do not fetch remote resources or run HTML.
+### Keep documentation beside the request
 
-Parsing runs off the main actor only while Preview is visible. The content cache
-retains at most eight previews within an 8 MiB estimated memory budget; larger
-previews remain viewable but are not cached. Editing does not continuously render
-Markdown, and hidden notes are not parsed when switching requests or tabs.
+![Markdown notes rendered beside a JSON response](docs/assets/screenshots/notes.png)
 
-### Workspace commands and help
+Notes are saved with the request. Preview renders locally when opened and does not fetch remote images. [Write request notes →](docs/notes.md)
 
-Use **File → New Workspace / Open Workspace** (⌘O) to switch folders, and
-**New Collection** to create a top-level collection. Unsaved request edits require
-an explicit discard decision before switching. A failed open preserves the current
-workspace. The last chosen folder opens on the next launch unless `--workspace`
-provides an explicit path.
+## Local by design
 
-**Workspace → Git Collaboration** (⇧⌘G) exposes status, commit, pull and push.
-Configure the repository and remote with Git first. **Help → Wirebolt Help**
-provides offline instructions for requests, variables, proxy, export and shortcuts.
+Wirebolt does not collect telemetry or automatically upload diagnostics. Workspace files contain saved request definitions and environments. Responses, history and credentials are local runtime data. Use Keychain-backed fields for credentials: ordinary text fields and literal variables are stored in workspace files. See [data and secrets](docs/environments-and-secrets.md#what-is-shared).
 
-**Export Wirebolt JSON** preserves API Key and OAuth configuration with typed
-Wirebolt authentication metadata and secret references. Reimport via
-**Wirebolt / Legacy Collection v1 JSON**. Other clients may not understand the
-Wirebolt extensions; exports do not resolve Keychain secrets or include history.
-Workspace transport settings save automatically, even when the settings sheet closes.
+Git operations run only when requested. There is no background cloud sync and no Wirebolt account to create.
+
+## Beta limitations
+
+- Packages currently target Apple Silicon; Intel, Windows and Linux packages are not provided.
+- API key secret provisioning requires Keychain Access; there is no general secret manager in the app yet.
+- Wirebolt JSON preserves advanced authentication through extensions that other clients may not understand.
+- Markdown images display alternative text; previews do not execute HTML.
+- Proxy host exclusions are not exposed in the UI.
+
+See [troubleshooting](docs/troubleshooting.md) for setup and compatibility details. Local performance checks are part of development; see [how to reproduce them](docs/development.md#performance) rather than treating a single machine's timings as a guarantee.
+
+## Contribute
+
+Read [CONTRIBUTING.md](CONTRIBUTING.md) to report an issue, improve the documentation or work on the app. Build instructions and checks live in the [development guide](docs/development.md). Security reporting guidance is in [SECURITY.md](SECURITY.md).
+
+## License
+
+Wirebolt is free and open source under the [MIT License](LICENSE). Third-party dependencies retain their respective licenses; beta packages include dependency notices.
