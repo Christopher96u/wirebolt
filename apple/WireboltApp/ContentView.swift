@@ -2123,8 +2123,9 @@ private struct LongURLEditor: View {
             HStack {
                 Button("Cancel", role: .cancel) { dismiss() }.keyboardShortcut(.cancelAction)
                 Spacer()
-                Button("Done (⌘↩)") { url = editedURL; dismiss() }
+                Button("Done") { url = editedURL; dismiss() }
                     .keyboardShortcut(.return, modifiers: .command)
+                    .help("Done (⌘↩)")
             }.controlSize(.small)
         }.padding(16).frame(width: 566, height: 362)
     }
@@ -2294,6 +2295,7 @@ private struct RequestSectionBar: View {
                     interface.isBulkEditing = false; interface.focusNewKeyTrigger += 1
                 }
                 .labelStyle(.iconOnly).buttonStyle(.borderless).foregroundStyle(.secondary)
+                .help("Add Key (⇧⌘K)")
                 .frame(width: 30, height: 32)
                 Menu("Section Actions", systemImage: "ellipsis.circle") {
                     Button("New Entry") { interface.isBulkEditing = false; interface.focusNewKeyTrigger += 1 }
@@ -2547,7 +2549,7 @@ private struct NewFieldTableRow: View {
                 } else {
                     FieldCheckbox(isOn: $isEnabled)
                 }
-                FieldTextInput("New Key (⌘K)", text: $name, height: fieldHeight)
+                FieldTextInput("New Key", text: $name, height: fieldHeight)
                     .focused($focusedField, equals: .key)
                     .frame(width: 175)
                     .padding(.horizontal, 4)
@@ -2662,7 +2664,7 @@ private struct EmptyNewFieldRow: View {
         HStack(spacing: 0) {
             Color.clear.frame(width: 27)
             Color.clear.frame(width: 1)
-            Text("New Key (⌘K)")
+            Text("New Key")
                 .frame(width: 175, alignment: .leading)
                 .padding(.horizontal, 4)
             Color.clear.frame(width: 1)
