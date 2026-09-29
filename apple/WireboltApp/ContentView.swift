@@ -2682,9 +2682,13 @@ private struct RequestSectionBar: View {
     @Bindable var interface: DocumentPresentationState
     @Bindable var session: DocumentSession
     @Binding var isBulkEditing: Bool
+    @State private var scrollMetrics = SectionScrollMetrics()
+    @State private var tabExtents: [RequestPanelSection: ClosedRange<CGFloat>] = [:]
 
     /// One row of constant height: section actions stay pinned at the trailing edge and
     /// the section tabs scroll when the pane is too narrow, so the editor never jumps.
+    /// A clipped edge fades out, and a chevron menu lists the sections that are not fully
+    /// visible; choosing one (or selecting it any other way) scrolls it into view.
     var body: some View {
         HStack(spacing: WireboltTheme.Spacing.medium) {
             ScrollViewReader { scroll in
@@ -2693,10 +2697,27 @@ private struct RequestSectionBar: View {
                 }
                 .scrollIndicators(.never)
                 .scrollBounceBehavior(.basedOnSize, axes: .horizontal)
+                .onScrollGeometryChange(for: SectionScrollMetrics.self) { geometry in
+                    SectionScrollMetrics(offset: geometry.contentOffset.x, contentWidth: geometry.contentSize.width,
+                        visibleWidth: geometry.containerSize.width)
+                } action: { _, metrics in scrollMetrics = metrics }
+                .mask { edgeFadeMask }
                 .onChange(of: interface.requestSection) { _, section in
-                    scroll.scrollTo(section, anchor: .center)
+                    withAnimation(.snappy(duration: 0.2)) { scroll.scrollTo(section, anchor: .center) }
                 }
             }
+            if !hiddenSections.isEmpty {
+                Menu("More Sections", systemImage: "chevron.forward.2") {
+                    ForEach(hiddenSections) { section in
+                        Button(section.rawValue) { interface.requestSection = section }
+                    }
+                }
+                .menuStyle(.borderlessButton).menuIndicator(.hidden)
+                .labelStyle(.iconOnly).foregroundStyle(.secondary).fixedSize()
+                .help("More Sections")
+            }
+            // Separates the section tabs from the current section's controls.
+            Divider().frame(height: 16)
             tools
         }
         .frame(height: 32)
@@ -2719,8 +2740,37 @@ private struct RequestSectionBar: View {
                     action: { interface.requestSection = section }
                 )
                 .id(section)
+                .onGeometryChange(for: ClosedRange<CGFloat>.self) { proxy in
+                    let frame = proxy.frame(in: .named(Self.tabSpace))
+                    return frame.minX...frame.maxX
+                } action: { tabExtents[section] = $0 }
             }
-        }.fixedSize(horizontal: true, vertical: false)
+        }
+        .fixedSize(horizontal: true, vertical: false)
+        .coordinateSpace(.named(Self.tabSpace))
+    }
+
+    private static let tabSpace = "request-section-tabs"
+    private static let fadeWidth: CGFloat = 18
+
+    /// Sections whose tab is at least partly scrolled out of view, in tab order.
+    private var hiddenSections: [RequestPanelSection] {
+        guard scrollMetrics.overflows else { return [] }
+        let visible = scrollMetrics.offset...(scrollMetrics.offset + scrollMetrics.visibleWidth)
+        return RequestPanelSection.allCases.filter { section in
+            guard let extent = tabExtents[section] else { return false }
+            return extent.lowerBound < visible.lowerBound - 0.5 || extent.upperBound > visible.upperBound + 0.5
+        }
+    }
+
+    private var edgeFadeMask: some View {
+        HStack(spacing: 0) {
+            LinearGradient(colors: [scrollMetrics.clipsLeading ? .clear : .black, .black], startPoint: .leading, endPoint: .trailing)
+                .frame(width: Self.fadeWidth)
+            Color.black
+            LinearGradient(colors: [.black, scrollMetrics.clipsTrailing ? .clear : .black], startPoint: .leading, endPoint: .trailing)
+                .frame(width: Self.fadeWidth)
+        }
     }
 
     @ViewBuilder private var tools: some View {
@@ -2777,6 +2827,16 @@ private struct RequestSectionBar: View {
     private func clearFields() {
         fieldsBinding?.wrappedValue = []
     }
+}
+
+private struct SectionScrollMetrics: Equatable {
+    var offset: CGFloat = 0
+    var contentWidth: CGFloat = 0
+    var visibleWidth: CGFloat = 0
+
+    var overflows: Bool { contentWidth > visibleWidth + 0.5 }
+    var clipsLeading: Bool { overflows && offset > 0.5 }
+    var clipsTrailing: Bool { overflows && offset + visibleWidth < contentWidth - 0.5 }
 }
 
 private struct BulkFieldEditor: View {
@@ -3397,9 +3457,18 @@ private struct AuthenticationEditor: View {
 private struct AuthenticationTypePicker: View {
     @Binding var authentication: RequestAuthentication
     var body: some View {
-        Picker("Auth Type", selection: kindBinding) {
-            ForEach(AuthenticationKind.allCases.filter { [.none, .basic, .bearer, kindBinding.wrappedValue].contains($0) }) { kind in Text(kind.title).tag(kind) }
-        }.font(.system(size: 13)).controlSize(.small).frame(width: 180)
+        Menu {
+            Picker("Auth Type", selection: kindBinding) {
+                ForEach(AuthenticationKind.allCases.filter { [.none, .basic, .bearer, kindBinding.wrappedValue].contains($0) }) { kind in Text(kind.title).tag(kind) }
+            }
+            .pickerStyle(.inline).labelsHidden()
+        } label: {
+            Text(kindBinding.wrappedValue.title)
+        }
+        .menuStyle(.borderlessButton).controlSize(.small).fixedSize()
+        .accessibilityLabel("Auth Type")
+        .accessibilityValue(kindBinding.wrappedValue.title)
+        .help("Auth Type")
     }
     private var kindBinding: Binding<AuthenticationKind> {
         Binding(
@@ -3536,13 +3605,23 @@ private struct BodyTools: View {
     @AppStorage("editor.wordWrap") private var wrapsLines = true
     var body: some View {
         HStack(spacing: 7) {
-            Picker("Content Type", selection: kindBinding) {
-                ForEach(BodyKind.allCases) { kind in
-                    Text(kind.title).tag(kind)
-                    if [.form, .html, .raw, .file].contains(kind) { Divider() }
+            // A borderless menu sized to the chosen type, so it reads as a value rather
+            // than another section tab and leaves the section tabs as much room as possible.
+            Menu {
+                Picker("Content Type", selection: kindBinding) {
+                    ForEach(BodyKind.allCases) { kind in
+                        Text(kind.title).tag(kind)
+                        if [.form, .html, .raw, .file].contains(kind) { Divider() }
+                    }
                 }
+                .pickerStyle(.inline).labelsHidden()
+            } label: {
+                Text(kindBinding.wrappedValue.title)
             }
-            .font(.system(size: 13)).controlSize(.small).frame(width: 168)
+            .menuStyle(.borderlessButton).controlSize(.small).fixedSize()
+            .accessibilityLabel("Content Type")
+            .accessibilityValue(kindBinding.wrappedValue.title)
+            .help("Content Type")
             if case let .multipart(parts) = requestBody {
                 Button("Add Part", systemImage: "plus") { requestBody = .multipart(parts: parts + [MultipartPart()]) }
                     .labelStyle(.iconOnly).buttonStyle(.borderless)
