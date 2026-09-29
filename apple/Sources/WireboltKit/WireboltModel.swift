@@ -947,7 +947,12 @@ public final class WireboltModel {
 
     /// Whether Move Up (-1) or Move Down (+1) can swap the item with a sibling.
     public func canMoveSidebarItem(_ identifier: String, by delta: Int) -> Bool {
-        sidebarNeighbor(of: identifier, by: delta) != nil
+        // Evaluated for menus on every selection change: use the cached, ordered snapshot.
+        let parts = identifier.split(separator: "|", omittingEmptySubsequences: false).map(String.init)
+        guard parts.count == 3 else { return false }
+        let rowID = parts[0] == "request" ? "request:\(parts[1])/\(parts[2])" : "group:\(parts[1]):\(parts[2])"
+        if sidebarSnapshot == nil { sidebarSnapshot = SidebarSnapshot(collections: workspace.collections) }
+        return sidebarSnapshot?.sibling(of: rowID, by: delta) != nil
     }
 
     /// Moves a request or folder one position among its siblings, like dragging it past its neighbor.

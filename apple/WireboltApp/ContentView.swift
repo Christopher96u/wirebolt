@@ -393,10 +393,7 @@ private struct WorkspaceSidebar: View {
         .onChange(of: interface.focusSidebarTrigger) {
             if !interface.isRenamingInSidebar { sidebarIsFocused = true }
         }
-        .onChange(of: model.selectedRequestID) {
-            // Opening a request elsewhere (tabs, history) moves the highlight back to it.
-            interface.sidebarCursor = nil
-        }
+        .background { SidebarCursorReset(model: model, interface: interface) }
         .onDeleteCommand {
             if !interface.isRenamingInSidebar { interface.requestDeleteOfSelection(model: model) }
         }
@@ -456,6 +453,19 @@ private struct WorkspaceSidebar: View {
 
     }
 
+}
+
+/// Opening a request elsewhere (tabs, history) moves the highlight back to it. Isolated so
+/// tab switches don't re-render the whole sidebar.
+private struct SidebarCursorReset: View {
+    let model: WireboltModel
+    let interface: WorkspaceUIState
+
+    var body: some View {
+        Color.clear
+            .onChange(of: model.selectedRequestID) { interface.sidebarCursor = nil }
+            .accessibilityHidden(true)
+    }
 }
 
 private extension EnvironmentValues {

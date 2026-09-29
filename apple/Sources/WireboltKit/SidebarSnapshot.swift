@@ -24,6 +24,10 @@ public struct SidebarSnapshot: Sendable {
             }
         }
 
+        var isCollectionHeader: Bool {
+            if case .collection = content { true } else { false }
+        }
+
         public var isContainer: Bool {
             if case .request = content { false } else { true }
         }
@@ -35,6 +39,14 @@ public struct SidebarSnapshot: Sendable {
             case .collection(let collection): filtering || !collapsed.contains(collection.id)
             case .group(let collection, let group): filtering || expanded.contains(collection.id + ":" + group.id)
             case .request: false
+            }
+        }
+
+        var collectionID: String {
+            switch content {
+            case .collection(let collection): collection.id
+            case .group(let collection, _): collection.id
+            case .request(let location): location.collectionID
             }
         }
 
@@ -113,6 +125,24 @@ public struct SidebarSnapshot: Sendable {
             }
         }
         return result
+    }
+
+    /// The neighbor `delta` (±1) places away among the row's siblings, skipping descendants;
+    /// matches `CollectionDraft.orderedChildren` without sorting every sibling.
+    public func sibling(of rowID: String, by delta: Int) -> Row? {
+        guard delta == 1 || delta == -1, let index = rows.firstIndex(where: { $0.id == rowID }) else { return nil }
+        let row = rows[index]
+        var position = index + delta
+        while rows.indices.contains(position) {
+            let candidate = rows[position]
+            if candidate.depth < row.depth { return nil }
+            if candidate.depth == row.depth {
+                return candidate.parentID == row.parentID && candidate.collectionID == row.collectionID
+                    && !candidate.isCollectionHeader ? candidate : nil
+            }
+            position += delta
+        }
+        return nil
     }
 
     static func normalize(_ text: String) -> String {

@@ -91,4 +91,17 @@ import Testing
         #expect(collection.subtreeGroups(of: nil).map(\.id) == ["folder", "nested"])
         #expect(collection.folderOutline().map { "\($0.group.id):\($0.depth)" } == ["folder:0", "nested:1"])
     }
+
+    @Test func siblingsSkipDescendantsAndStayInTheirContainer() {
+        var collection = fixture()
+        collection.requests.append(RequestLocation(collectionID: "c", order: 1, request: RequestDraft(id: "last", name: "Last")))
+        let snapshot = SidebarSnapshot(collections: [collection, CollectionDraft(id: "d", name: "D", order: 1,
+            requests: [RequestLocation(collectionID: "d", request: RequestDraft(id: "other"))])])
+        #expect(snapshot.sibling(of: "request:c/root", by: -1)?.id == "group:c:folder")
+        #expect(snapshot.sibling(of: "group:c:folder", by: 1)?.id == "request:c/root")
+        #expect(snapshot.sibling(of: "request:c/last", by: 1) == nil)
+        #expect(snapshot.sibling(of: "group:c:nested", by: -1) == nil)
+        #expect(snapshot.sibling(of: "request:d/other", by: -1) == nil)
+    }
 }
+
