@@ -19,6 +19,8 @@ swiftc \
   apple/Sources/WireboltKit/CodeTextWrapping.swift \
   apple/Sources/WireboltKit/ResponseTextIndex.swift \
   apple/Sources/WireboltKit/ResponseIndexCache.swift \
+  apple/Sources/WireboltKit/SemanticPalette.swift \
+  apple/Sources/WireboltKit/VariableTemplates.swift \
   apple/WireboltApp/FieldTextInput.swift \
   apple/WireboltApp/NativeCodeEditor.swift \
   apple/WireboltApp/IndexedTextLine.swift \
