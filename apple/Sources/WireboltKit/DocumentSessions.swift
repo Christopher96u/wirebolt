@@ -247,6 +247,62 @@ public struct EditorGroup: Identifiable, Codable, Equatable, Sendable {
     }
 }
 
+/// The restorable shape of the editor: saved requests open per group and the selection.
+public struct SessionLayout: Codable, Equatable, Sendable {
+    public struct Tab: Codable, Equatable, Sendable {
+        public let collectionID: String
+        public let requestID: String
+
+        public init(collectionID: String, requestID: String) {
+            self.collectionID = collectionID
+            self.requestID = requestID
+        }
+    }
+
+    public struct Group: Codable, Equatable, Sendable {
+        public let tabs: [Tab]
+        public let selectedIndex: Int?
+
+        public init(tabs: [Tab], selectedIndex: Int?) {
+            self.tabs = tabs
+            self.selectedIndex = selectedIndex
+        }
+    }
+
+    public let groups: [Group]
+    public let activeGroupIndex: Int
+
+    public init(groups: [Group], activeGroupIndex: Int = 0) {
+        self.groups = groups
+        self.activeGroupIndex = activeGroupIndex
+    }
+
+    public var isEmpty: Bool { groups.isEmpty }
+}
+
+/// Remembers the editor layout per workspace folder so relaunch reopens the same tabs.
+public struct SessionLayoutStore {
+    public static let defaultsKey = "workspace.sessionLayouts"
+    private let defaults: UserDefaults
+
+    public init(defaults: UserDefaults = .standard) {
+        self.defaults = defaults
+    }
+
+    public func layout(forWorkspace path: String) -> SessionLayout? {
+        guard let data = (defaults.dictionary(forKey: Self.defaultsKey) as? [String: Data])?[path] else { return nil }
+        return try? JSONDecoder().decode(SessionLayout.self, from: data)
+    }
+
+    /// Entries for workspace folders that no longer exist are dropped on each save.
+    public func save(_ layout: SessionLayout, forWorkspace path: String) {
+        var stored = (defaults.dictionary(forKey: Self.defaultsKey) as? [String: Data] ?? [:])
+            .filter { FileManager.default.fileExists(atPath: $0.key) }
+        stored[path] = try? JSONEncoder().encode(layout)
+        defaults.set(stored, forKey: Self.defaultsKey)
+    }
+}
+
 public enum TabCloseScope: Equatable, Sendable {
     case one(String)
     case others(String)
@@ -258,7 +314,12 @@ public enum TabCloseScope: Equatable, Sendable {
 @Observable
 public final class DocumentSessionStore {
     public private(set) var sessions: [String: DocumentSession]
-    public private(set) var groups: [EditorGroup]
+    public private(set) var groups: [EditorGroup] {
+        didSet { if groupCount != groups.count { groupCount = groups.count } }
+    }
+    /// Changes only when a split opens or closes, so layout that depends on the
+    /// number of editor groups does not re-render on every tab selection.
+    public private(set) var groupCount = 1
     public var activeGroupID: String
 
     public init() {
@@ -266,6 +327,64 @@ public final class DocumentSessionStore {
         sessions = [:]
         groups = [group]
         activeGroupID = group.id
+    }
+
+    /// Saved-request tabs per editor group. Unsaved temporary tabs are not restorable.
+    public var layout: SessionLayout {
+        var restorable: [(id: String, group: SessionLayout.Group)] = []
+        for group in groups {
+            let tabs = group.tabIDs.compactMap { id -> (String, SessionLayout.Tab)? in
+                guard let session = sessions[id], let collectionID = session.collectionID else { return nil }
+                return (id, SessionLayout.Tab(collectionID: collectionID, requestID: session.requestID))
+            }
+            guard !tabs.isEmpty else { continue }
+            restorable.append((group.id, SessionLayout.Group(
+                tabs: tabs.map(\.1),
+                selectedIndex: tabs.firstIndex { $0.0 == group.selectedTabID }
+            )))
+        }
+        return SessionLayout(
+            groups: restorable.map(\.group),
+            activeGroupIndex: restorable.firstIndex { $0.id == activeGroupID } ?? 0
+        )
+    }
+
+    /// Reopens a persisted layout into an empty store. Tabs whose request no longer
+    /// exists are skipped; groups left without tabs are dropped.
+    @discardableResult
+    public func restore(
+        _ layout: SessionLayout,
+        resolve: (SessionLayout.Tab) -> RequestLocation?
+    ) -> [DocumentSession] {
+        guard sessions.isEmpty else { return [] }
+        var restoredGroups: [EditorGroup] = []
+        var restored: [DocumentSession] = []
+        var activeID: String?
+        for (groupIndex, saved) in layout.groups.enumerated() {
+            var group = EditorGroup()
+            var selectedID: String?
+            for (tabIndex, tab) in saved.tabs.enumerated() {
+                guard let location = resolve(tab) else { continue }
+                let session = DocumentSession(
+                    collectionID: location.collectionID,
+                    requestID: location.request.id,
+                    draft: location.request,
+                    savedDraft: location.request
+                )
+                sessions[session.id] = session
+                group.tabIDs.append(session.id)
+                restored.append(session)
+                if tabIndex == saved.selectedIndex { selectedID = session.id }
+            }
+            guard !group.tabIDs.isEmpty else { continue }
+            group.selectedTabID = selectedID ?? group.tabIDs.last
+            restoredGroups.append(group)
+            if groupIndex == layout.activeGroupIndex { activeID = group.id }
+        }
+        guard let first = restoredGroups.first else { return [] }
+        groups = restoredGroups
+        activeGroupID = activeID ?? first.id
+        return restored
     }
 
     public var activeGroup: EditorGroup? {

@@ -211,7 +211,7 @@ enum WorkspaceOpenMode {
     case openOrCreate
 }
 
-private enum WorkspaceSelectionError: LocalizedError {
+enum WorkspaceSelectionError: LocalizedError {
     case workspaceNotFound
     case workspaceAlreadyExists
     var errorDescription: String? {

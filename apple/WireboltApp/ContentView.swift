@@ -6,11 +6,17 @@ struct ContentView: View {
     @Bindable var model: WireboltModel
     @Bindable var interface: WorkspaceUIState
 
-    @AppStorage("interfaceAppearance") private var interfaceAppearance = "system"
     var loadsWorkspace = true
-    @AppStorage("workspace.sidebarWidth") private var sidebarWidth = 250.0
+    @AppStorage("workspace.sidebarWidth") private var storedSidebarWidth = 250.0
+    /// Width while the divider is dragged; stored once the drag ends.
+    @State private var liveSidebarWidth: Double?
     @State private var sidebarDragOrigin: Double?
+    @State private var isDropTargeted = false
+    private var sidebarWidth: Double { liveSidebarWidth ?? storedSidebarWidth }
     private var toolbarGap: Double { max(0, sidebarWidth - 184) }
+    /// Until the first workspace load finishes, show placeholders instead of an empty sidebar
+    /// and "No Open Request".
+    private var showsLaunchSkeleton: Bool { loadsWorkspace && !model.hasLoadedWorkspace }
 
     var body: some View {
         workspaceWithDialogs
@@ -19,11 +25,17 @@ struct ContentView: View {
     private var workspacePanels: some View {
         HStack(spacing: 0) {
             if interface.columnVisibility != .detailOnly {
-                WorkspaceSidebar(
-                    model: model,
-                    interface: interface,
-                    showsMaterial: true
-                )
+                Group {
+                    if showsLaunchSkeleton {
+                        SidebarLoadingSkeleton()
+                    } else {
+                        WorkspaceSidebar(
+                            model: model,
+                            interface: interface,
+                            showsMaterial: true
+                        )
+                    }
+                }
                     .frame(width: sidebarWidth - 1)
                 Rectangle().fill(WireboltTheme.separator).frame(width: 1)
                     .overlay {
@@ -31,36 +43,69 @@ struct ContentView: View {
                             .gesture(DragGesture(minimumDistance: 1, coordinateSpace: .global)
                                 .onChanged { value in
                                     if sidebarDragOrigin == nil { sidebarDragOrigin = sidebarWidth }
-                                    sidebarWidth = min(480, max(180, (sidebarDragOrigin ?? sidebarWidth) + value.translation.width))
+                                    liveSidebarWidth = min(480, max(180, (sidebarDragOrigin ?? sidebarWidth) + value.translation.width))
                                 }
-                                .onEnded { _ in sidebarDragOrigin = nil })
+                                .onEnded { _ in
+                                    if let liveSidebarWidth { storedSidebarWidth = liveSidebarWidth }
+                                    liveSidebarWidth = nil
+                                    sidebarDragOrigin = nil
+                                })
                             .onHover { inside in
                                 if inside { NSCursor.resizeLeftRight.push() } else { NSCursor.pop() }
                             }
                     }
             }
-            WorkspaceDeck(model: model, interface: interface)
+            if showsLaunchSkeleton {
+                InitialDetailPane()
+            } else {
+                WorkspaceDeck(model: model, interface: interface)
+            }
         }
     }
 
     private var workspaceSurface: some View {
-        workspacePanels
+        let groupCount = model.sessions.groupCount
+        return workspacePanels
         .disabled(model.isLoadingWorkspace)
-        .navigationTitle("")
-        .frame(minWidth: model.sessions.groups.count > 1
-            ? (interface.columnVisibility == .detailOnly ? 0 : 208) + Double(model.sessions.groups.count * 440 + model.sessions.groups.count - 1)
+        .background { WorkspaceWindowTitle(model: model) }
+        .frame(minWidth: groupCount > 1
+            ? (interface.columnVisibility == .detailOnly ? 0 : 208) + Double(groupCount * 440 + groupCount - 1)
             : 720, minHeight: 411)
         .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { width in
-            if model.sessions.groups.count > 1 {
-                let detailMinimum = Double(model.sessions.groups.count * 440 + model.sessions.groups.count - 1)
-                sidebarWidth = min(sidebarWidth, max(208, width - detailMinimum))
+            let groupCount = model.sessions.groupCount
+            if groupCount > 1 {
+                let detailMinimum = Double(groupCount * 440 + groupCount - 1)
+                let fitted = min(storedSidebarWidth, max(208, width - detailMinimum))
+                if fitted != storedSidebarWidth { storedSidebarWidth = fitted }
             }
         }
         .tint(WireboltTheme.primaryAccent)
         .toolbar(id: "workspace-toolbar") { workspaceToolbar }
         .toolbar(removing: .sidebarToggle)
-        .preferredColorScheme(preferredColorScheme)
-        .background(WindowConfigurator(sidebarWidth: interface.columnVisibility == .detailOnly ? 0 : sidebarWidth))
+        .background(WindowConfigurator(
+            sidebarWidth: interface.columnVisibility == .detailOnly ? 0 : sidebarWidth,
+            isWorkspaceWindow: loadsWorkspace,
+            requestClose: { window in requestWorkspaceWindowClose(window, model: model, interface: interface) }
+        ))
+        .onDrop(of: [.fileURL], isTargeted: $isDropTargeted) { providers in
+            guard loadsWorkspace else { return false }
+            for provider in providers {
+                _ = provider.loadObject(ofClass: URL.self) { url, _ in
+                    guard let url else { return }
+                    Task { @MainActor in ExternalFileQueue.shared.enqueue([url]) }
+                }
+            }
+            return !providers.isEmpty
+        }
+        .overlay {
+            if isDropTargeted {
+                RoundedRectangle(cornerRadius: 10)
+                    .strokeBorder(Color.accentColor, lineWidth: 3)
+                    .padding(4)
+                    .allowsHitTesting(false)
+                    .accessibilityHidden(true)
+            }
+        }
         .fileImporter(
             isPresented: $interface.isShowingImporter,
             allowedContentTypes: [.json, .data],
@@ -72,7 +117,6 @@ struct ContentView: View {
         .sheet(isPresented: $model.isShowingWorkspaceSettings) {
             WorkspaceNetworkSettings(model: model)
         }
-        .sheet(isPresented: $model.isShowingHelp) { WireboltHelpView() }
         .sheet(isPresented: $model.isShowingGitCollaboration) {
             GitCollaborationView(model: model)
         }
@@ -133,19 +177,35 @@ struct ContentView: View {
             interface.synchronizeSelection(model: model)
         }
         .task {
-            guard loadsWorkspace else { return }
+            // The model outlives the window; reopening it must not reload the workspace.
+            guard loadsWorkspace, !model.hasLoadedWorkspace else { return }
             PerformanceProbe.beginWorkspaceLoad()
+            let url = RustWorkspacePersistence.defaultWorkspaceURL
             let persistence = await Task.detached(priority: .userInitiated) {
-                try? RustWorkspacePersistence()
+                try? RustWorkspacePersistence(path: url)
             }.value
             if let persistence {
                 model.configurePersistence(persistence, gitCollaboration: persistence)
+                interface.workspaceURL = url
+                RecentWorkspaces.shared.note(url)
             }
-            await model.loadWorkspace()
+            await model.loadWorkspace(restoring: interface.savedSessionLayout())
             PerformanceProbe.endWorkspaceLoad()
             interface.synchronizeSelection(model: model)
             await Task.yield()
+            // Ready means the loaded sidebar and restored tabs are on screen, not the skeleton.
             PerformanceProbe.markReady()
+            await importPendingFiles()
+        }
+        .onChange(of: ExternalFileQueue.shared.pending) {
+            Task { await importPendingFiles() }
+        }
+    }
+
+    private func importPendingFiles() async {
+        guard loadsWorkspace, model.hasLoadedWorkspace else { return }
+        for url in ExternalFileQueue.shared.drain() {
+            await importExternalFile(url, model: model)
         }
     }
 
@@ -197,14 +257,6 @@ struct ContentView: View {
         .labelStyle(.iconOnly).buttonStyle(.borderless).frame(width: 26, height: 30)
     }
 
-    private var preferredColorScheme: ColorScheme? {
-        switch interfaceAppearance {
-        case "light": .light
-        case "dark": .dark
-        default: nil
-        }
-    }
-
     private func handleImport(_ result: Result<[URL], any Error>) {
         switch result {
         case let .success(urls):
@@ -234,6 +286,41 @@ private struct ResponsePlacementIcon: View {
                     .position(x: right ? 14 : 4 + CGFloat(index) * 4.5, y: right ? 3 + CGFloat(index) * 3.5 : 10)
             }
         }.foregroundStyle(.secondary).accessibilityHidden(true)
+    }
+}
+
+/// Names the window "<Workspace> — <Request>" for the Window menu, Mission Control and
+/// VoiceOver. Isolated so title changes do not re-render the workspace.
+private struct WorkspaceWindowTitle: View {
+    let model: WireboltModel
+
+    var body: some View {
+        let workspace = model.workspace.name
+        let request = model.sessions.activeSession?.title ?? ""
+        Color.clear
+            .navigationTitle(request.isEmpty ? workspace : "\(workspace) — \(request)")
+            .accessibilityHidden(true)
+    }
+}
+
+private struct SidebarLoadingSkeleton: View {
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            ForEach(Array([96.0, 150, 128, 162, 112, 140].enumerated()), id: \.offset) { _, width in
+                RoundedRectangle(cornerRadius: 4)
+                    .fill(Color.secondary.opacity(0.14))
+                    .frame(width: width, height: 11)
+            }
+        }
+        .padding(.leading, 28).padding(.top, 62)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .background {
+            if reduceTransparency { Color(nsColor: .windowBackgroundColor) } else { SidebarMaterialView() }
+        }
+        .accessibilityElement()
+        .accessibilityLabel("Loading workspace")
     }
 }
 
@@ -278,6 +365,9 @@ private struct WorkspaceSidebar: View {
         .focusable().focusEffectDisabled().focused($sidebarIsFocused)
         .onChange(of: interface.focusSidebarTrigger) {
             if interface.renamingRequestID == nil { sidebarIsFocused = true }
+        }
+        .onDeleteCommand {
+            if interface.renamingRequestID == nil { interface.requestDeleteOfSelection(model: model) }
         }
         .onMoveCommand { direction in
             guard interface.renamingRequestID == nil else { return }
@@ -1029,21 +1119,6 @@ func copyRequestAsCurl(_ request: RequestDraft, model: WireboltModel) {
         guard let command = await model.curlCommand(for: request) else { return }
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(command, forType: .string)
-    }
-}
-
-@MainActor
-private func saveExportedDocument(named name: String, content: String) {
-    let panel = NSSavePanel()
-    panel.nameFieldStringValue = "\(name).json"
-    panel.allowedContentTypes = [.json]
-    panel.canCreateDirectories = true
-    guard panel.runModal() == .OK, let destination = panel.url else { return }
-    do {
-        try Data(content.utf8).write(to: destination, options: .atomic)
-        NSWorkspace.shared.activateFileViewerSelecting([destination])
-    } catch {
-        NSSound.beep()
     }
 }
 
@@ -3262,14 +3337,22 @@ private struct ToolbarSpace: NSViewRepresentable {
 
 private struct WindowConfigurator: NSViewRepresentable {
     var sidebarWidth: Double
+    var isWorkspaceWindow = false
+    var requestClose: (NSWindow) -> Void = { _ in }
+
     func makeNSView(context _: Context) -> WindowConfigurationView {
-        WindowConfigurationView()
+        let view = WindowConfigurationView()
+        view.isWorkspaceWindow = isWorkspaceWindow
+        return view
     }
 
     func updateNSView(_ view: WindowConfigurationView, context _: Context) {
+        view.requestClose = requestClose
+        view.installCloseGuard()
+        // Root updates are frequent; only a width change needs the outline redrawn.
+        guard view.sidebarWidth != sidebarWidth else { return }
         view.sidebarWidth = sidebarWidth
         view.updateSidebarOutline()
-        view.scheduleMenuOrderMatch()
     }
 }
 
@@ -3380,6 +3463,8 @@ private struct ResponseSplit<RequestContent: View, ResponseContent: View>: View 
 @MainActor
 private final class WindowConfigurationView: NSView {
     var sidebarWidth = 250.0
+    var isWorkspaceWindow = false
+    var requestClose: (NSWindow) -> Void = { _ in }
     private let sidebarOutline = SidebarOutlineView()
 
     func updateSidebarOutline() {
@@ -3396,19 +3481,47 @@ private final class WindowConfigurationView: NSView {
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
         guard let window else { return }
+        if isWorkspaceWindow {
+            // One workspace window per app: a duplicate (for example from a system reopen
+            // event) closes and focuses the existing window instead.
+            if let primary = WorkspaceWindowRegistry.primary, primary !== window, primary.isVisible {
+                DispatchQueue.main.async {
+                    window.close()
+                    primary.makeKeyAndOrderFront(nil)
+                }
+                return
+            }
+            WorkspaceWindowRegistry.primary = window
+        }
+        // Keep the title for the Window menu, Mission Control and VoiceOver; only hide it visually.
         window.titleVisibility = .hidden
-        window.title = ""
         window.titlebarAppearsTransparent = true
         window.titlebarSeparatorStyle = .none
         window.toolbarStyle = .unified
+        window.tabbingMode = .disallowed
         window.styleMask.insert(.fullSizeContentView)
         window.backgroundColor = .windowBackgroundColor
         window.isOpaque = false
         window.setFrameAutosaveName("WireboltMainWindow")
+        installCloseGuard()
         updateSidebarOutline()
         observeMainMenuChanges()
-        synchronizeRequestMenuOrder()
-        scheduleMenuOrderMatch()
+        synchronizeEditingMenu()
+    }
+
+    /// The close button confirms unsaved edits before the window goes away. Reapplied on
+    /// updates because AppKit can rebuild the title bar buttons when the style changes.
+    func installCloseGuard() {
+        guard isWorkspaceWindow, let window, WorkspaceWindowRegistry.primary === window,
+              let close = window.standardWindowButton(.closeButton), close.target !== self
+        else { return }
+        close.target = self
+        close.action = #selector(closeButtonClicked)
+    }
+
+    @objc private func closeButtonClicked(_: Any?) {
+        guard let window else { return }
+        requestClose(window)
     }
 
     deinit {
@@ -3418,75 +3531,40 @@ private final class WindowConfigurationView: NSView {
     private func observeMainMenuChanges() {
         NotificationCenter.default.removeObserver(self)
         guard let menu = NSApp.mainMenu else { return }
-        for observed in [menu, menu.item(withTitle: "Edit")?.submenu].compactMap({ $0 }) {
-        NotificationCenter.default.addObserver(
-            self,
-            selector: #selector(mainMenuDidChange),
-            name: NSMenu.didAddItemNotification,
-            object: observed
-        )
-        NotificationCenter.default.addObserver(
-            self,
-            selector: #selector(mainMenuDidChange),
-            name: NSMenu.didRemoveItemNotification,
-            object: observed
-        )
+        // SwiftUI rebuilds menus; re-add the AppKit-only item when the Edit menu changes.
+        let editMenus = menu.items.compactMap(\.submenu).filter { Self.pasteItem(in: $0) != nil }
+        for observed in [menu] + editMenus {
+            NotificationCenter.default.addObserver(
+                self,
+                selector: #selector(mainMenuDidChange),
+                name: NSMenu.didAddItemNotification,
+                object: observed
+            )
         }
     }
 
     @objc private func mainMenuDidChange(_: Notification) {
-        scheduleMenuOrderMatch()
+        NSObject.cancelPreviousPerformRequests(withTarget: self, selector: #selector(synchronizeEditingMenu), object: nil)
+        perform(#selector(synchronizeEditingMenu), with: nil, afterDelay: 0)
     }
 
-    func scheduleMenuOrderMatch() {
-        NSObject.cancelPreviousPerformRequests(
-            withTarget: self,
-            selector: #selector(synchronizeRequestMenuOrder),
-            object: nil
-        )
-        perform(#selector(synchronizeRequestMenuOrder), with: nil, afterDelay: 0.5)
-    }
-
-    @objc private func synchronizeRequestMenuOrder() {
-        synchronizeEditingMenu()
-        guard let menu = NSApp.mainMenu,
-              let viewItem = menu.items.first(where: { $0.title == "View" })
-        else { return }
-
-        let requestIndex = menu.indexOfItem(withTitle: "Request")
-        let navigateIndex = menu.indexOfItem(withTitle: "Navigate")
-        let viewIndexBeforeMove = menu.indexOfItem(withTitle: "View")
-        if requestIndex >= 0,
-           navigateIndex == requestIndex + 1,
-           viewIndexBeforeMove == navigateIndex + 1
-        {
+    /// Adds Edit ▸ Paste and Match Style, which SwiftUI does not provide. Items are found by
+    /// action rather than title so localized menus work; AppKit validates availability.
+    @objc private func synchronizeEditingMenu() {
+        guard let menu = NSApp.mainMenu else { return }
+        for edit in menu.items.compactMap(\.submenu) {
+            guard let paste = Self.pasteItem(in: edit) else { continue }
+            let matchStyle = #selector(NSTextView.pasteAsPlainText(_:))
+            guard !edit.items.contains(where: { $0.action == matchStyle }) else { return }
+            let item = NSMenuItem(title: "Paste and Match Style", action: matchStyle, keyEquivalent: "v")
+            item.keyEquivalentModifierMask = [.command, .option, .shift]
+            edit.insertItem(item, at: edit.index(of: paste) + 1)
             return
         }
-
-        let movedItems = ["Request", "Navigate"].compactMap { title in
-            menu.items.first(where: { $0.title == title })
-        }
-        for item in movedItems {
-            menu.removeItem(item)
-        }
-        guard let viewIndex = menu.items.firstIndex(of: viewItem) else { return }
-        for (offset, item) in movedItems.enumerated() {
-            menu.insertItem(item, at: viewIndex + offset)
-        }
     }
 
-    private func synchronizeEditingMenu() {
-        guard let edit = NSApp.mainMenu?.item(withTitle: "Edit")?.submenu else { return }
-        let pasteIndex = edit.indexOfItem(withTitle: "Paste")
-        if pasteIndex >= 0, edit.item(withTitle: "Paste and Match Style") == nil {
-            let item = NSMenuItem(title: "Paste and Match Style", action: #selector(NSTextView.pasteAsPlainText(_:)), keyEquivalent: "v")
-            item.keyEquivalentModifierMask = [.command, .option, .shift]
-            edit.insertItem(item, at: pasteIndex + 1)
-        }
-        if let item = edit.item(withTitle: "Delete") {
-            item.keyEquivalent = "\u{8}"
-            item.keyEquivalentModifierMask = .command
-        }
+    private static func pasteItem(in menu: NSMenu) -> NSMenuItem? {
+        menu.items.first { $0.action == #selector(NSText.paste(_:)) }
     }
 }
 

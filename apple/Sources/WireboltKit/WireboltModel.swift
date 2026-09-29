@@ -103,6 +103,8 @@ public final class WireboltModel {
     public let proxyPreferences: ProxyPreferences
     public let sessions: DocumentSessionStore
     public private(set) var isLoadingWorkspace = false
+    /// False until the first workspace load finishes; the window shows a skeleton meanwhile.
+    public private(set) var hasLoadedWorkspace = false
     public private(set) var gitStatus: GitStatusSnapshot?
     public private(set) var gitOperation: GitOperationSnapshot?
     public private(set) var gitFailure: GitFailure?
@@ -116,7 +118,6 @@ public final class WireboltModel {
     public private(set) var oauthReceipts: [String: OAuth2TokenReceipt] = [:]
     public private(set) var oauthFailureMessage: String?
     public private(set) var isOAuthBusy = false
-    public var isShowingHelp = false
     public var isShowingGitCollaboration = false
     public var isShowingWorkspaceSettings = false
     public var settingsTab = "general"
@@ -204,6 +205,39 @@ public final class WireboltModel {
 
     public var hasUnsavedRequestChanges: Bool {
         sessions.sessions.values.contains(where: \.isDirty)
+    }
+
+    /// Dirty documents in tab order, for quit and window-close confirmation.
+    public var dirtySessions: [DocumentSession] {
+        var seen: Set<String> = []
+        return sessions.groups.flatMap(\.tabIDs).compactMap { id in
+            guard seen.insert(id).inserted, let session = sessions.session(id: id), session.isDirty else { return nil }
+            return session
+        }
+    }
+
+    /// Saves every dirty document. Stops at the first failure so the caller can keep
+    /// the app or window open; documents saved before the failure stay saved.
+    @discardableResult
+    public func saveAllDirtySessions() async -> Bool {
+        for session in dirtySessions {
+            guard await save(session, fallbackCollectionID: workspace.collections.first?.id) else { return false }
+        }
+        await flushWorkspaceTransport()
+        return true
+    }
+
+    /// Reverts every dirty document to its saved state; never-saved documents close.
+    public func discardUnsavedChanges() {
+        for session in dirtySessions {
+            if let saved = session.savedDraft {
+                session.markSaved(saved)
+                continue
+            }
+            for group in sessions.groups where group.tabIDs.contains(session.id) {
+                closeDocuments(.one(session.id), in: group.id, allowDirty: true)
+            }
+        }
     }
 
     public func normalizedSearchQuery(_ value: String) -> String {
@@ -364,11 +398,30 @@ public final class WireboltModel {
     }
 
     public func restoreHistory(_ entry: RunHistoryEntry, into session: DocumentSession) async {
-        let url = URL(fileURLWithPath: entry.bodyPath)
-        let data = (try? Data(contentsOf: url, options: [.mappedIfSafe]).prefix(
-            ResponseBodyStore.viewportByteCount
-        )) ?? Data()
-        session.restore(entry, viewport: Data(data))
+        session.restore(entry, viewport: await Self.historyViewport(entry))
+    }
+
+    private nonisolated static func historyViewport(_ entry: RunHistoryEntry) async -> Data {
+        await Task.detached(priority: .utility) {
+            let url = URL(fileURLWithPath: entry.bodyPath)
+            guard let reader = try? FileHandle(forReadingFrom: url) else { return Data() }
+            defer { try? reader.close() }
+            return (try? reader.read(upToCount: ResponseBodyStore.viewportByteCount)) ?? Data()
+        }.value
+    }
+
+    /// Shows the most recent recorded response in restored tabs that have not run yet.
+    private func restoreLatestResponses(for restored: [DocumentSession]) {
+        guard !restored.isEmpty else { return }
+        Task {
+            for session in restored {
+                guard let entry = await history.list(requestID: session.requestID).first else { continue }
+                let viewport = await Self.historyViewport(entry)
+                guard sessions.session(id: session.id) === session, !session.isRunning,
+                      session.responseHead == nil, session.failure == nil else { continue }
+                session.restore(entry, viewport: viewport)
+            }
+        }
     }
 
     public func clearHistory(for session: DocumentSession) async {
@@ -414,12 +467,18 @@ public final class WireboltModel {
         }
     }
 
-    public func loadWorkspace() async {
-        guard let persistence else { return }
+    public func loadWorkspace(restoring layout: SessionLayout? = nil) async {
+        guard let persistence else {
+            hasLoadedWorkspace = true
+            return
+        }
         isLoadingWorkspace = true
-        defer { isLoadingWorkspace = false }
+        defer {
+            isLoadingWorkspace = false
+            hasLoadedWorkspace = true
+        }
         do {
-            applyLoadedWorkspace(try await persistence.load())
+            applyLoadedWorkspace(try await persistence.load(), restoring: layout)
         } catch {
             operationFailure = RunFailure(kind: "workspace", issues: [])
         }
@@ -428,7 +487,8 @@ public final class WireboltModel {
     @discardableResult
     public func openWorkspace(
         using persistence: any WorkspacePersistence,
-        gitCollaboration: (any GitCollaboration)? = nil
+        gitCollaboration: (any GitCollaboration)? = nil,
+        restoring layout: SessionLayout? = nil
     ) async -> Bool {
         isLoadingWorkspace = true
         defer { isLoadingWorkspace = false }
@@ -446,7 +506,8 @@ public final class WireboltModel {
             gitStatus = nil
             gitOperation = nil
             gitFailure = nil
-            applyLoadedWorkspace(loaded)
+            applyLoadedWorkspace(loaded, restoring: layout)
+            hasLoadedWorkspace = true
             return true
         } catch {
             operationFailure = RunFailure(kind: "workspace", issues: [])
@@ -499,10 +560,18 @@ public final class WireboltModel {
     }
 
     public func saveCurrentRequest(collectionID: String) async {
-        guard let persistence,
-              let session = sessions.activeSession
-        else { return }
-        let collectionID = session.collectionID ?? collectionID
+        guard let session = sessions.activeSession else { return }
+        await save(session, fallbackCollectionID: collectionID)
+    }
+
+    /// Saves one document at its own location, or in `fallbackCollectionID` when it has none.
+    @discardableResult
+    public func save(_ session: DocumentSession, fallbackCollectionID: String?) async -> Bool {
+        guard let persistence else { return false }
+        guard let collectionID = session.collectionID ?? fallbackCollectionID else {
+            operationFailure = RunFailure(kind: "workspace", issues: [])
+            return false
+        }
         do {
             try await flushSecrets()
             let location = RequestLocation(
@@ -514,8 +583,10 @@ public final class WireboltModel {
             _ = try await persistence.apply(.saveRequest(collectionID: collectionID, location: location))
             session.recordSavedDraft(location.request)
             applySavedRequest(location)
+            return true
         } catch {
             operationFailure = RunFailure(kind: "workspace", issues: [])
+            return false
         }
     }
 
@@ -1046,14 +1117,22 @@ public final class WireboltModel {
         }
     }
 
-    private func applyLoadedWorkspace(_ loaded: WorkspaceDraft) {
+    private func applyLoadedWorkspace(_ loaded: WorkspaceDraft, restoring layout: SessionLayout? = nil) {
         workspace = loaded
         persistedTransport = loaded.transport
         rebuildRequestSearchIndex()
         selectedEnvironmentID = loaded.environments.first(where: { $0.id != WorkspaceDraft.globalEnvironmentID })?.id
-        guard sessions.activeSession == nil,
-              let first = loaded.collections.flatMap(\.requests).first
-        else { return }
+        guard sessions.activeSession == nil else { return }
+        if let layout, sessions.sessions.isEmpty {
+            let restored = sessions.restore(layout) { tab in
+                loaded.location(collectionID: tab.collectionID, requestID: tab.requestID)
+            }
+            if !restored.isEmpty {
+                restoreLatestResponses(for: restored)
+                return
+            }
+        }
+        guard let first = loaded.collections.flatMap(\.requests).first else { return }
         select(first)
     }
 
@@ -1160,5 +1239,74 @@ public final class WireboltModel {
                 reason: "Git updated the workspace, but Wirebolt could not reload it."
             )
         }
+    }
+}
+
+/// Menu availability derived from the model. Values are stored and only written when
+/// they change, so menus are not rebuilt on every keystroke in the URL or name field.
+@MainActor
+@Observable
+public final class WorkspaceCommandState {
+    public private(set) var hasActiveSession = false
+    public private(set) var activeKind: DocumentKind?
+    public private(set) var socketStatus = WebSocketStatus.disconnected
+    public private(set) var hasURL = false
+    public private(set) var hasName = false
+    public private(set) var isRunning = false
+    public private(set) var canGoBack = false
+    public private(set) var canGoForward = false
+    public private(set) var tabCount = 0
+    public private(set) var hasCollections = false
+
+    @ObservationIgnored private weak var model: WireboltModel?
+
+    public init(model: WireboltModel) {
+        self.model = model
+        track()
+    }
+
+    private func track() {
+        withObservationTracking {
+            update()
+        } onChange: { [weak self] in
+            Task { @MainActor in self?.track() }
+        }
+    }
+
+    private func update() {
+        guard let model else { return }
+        let session = model.sessions.activeSession
+        let group = model.sessions.activeGroup
+        assign(\.hasActiveSession, session != nil)
+        assign(\.activeKind, session?.kind)
+        assign(\.socketStatus, session?.socket.status ?? .disconnected)
+        assign(\.hasURL, session.map { !$0.draft.url.isEmpty } ?? false)
+        assign(\.hasName, session.map { !$0.draft.name.isEmpty } ?? false)
+        assign(\.isRunning, session?.isRunning ?? false)
+        assign(\.canGoBack, group.map { !$0.backwardTabIDs.isEmpty } ?? false)
+        assign(\.canGoForward, group.map { !$0.forwardTabIDs.isEmpty } ?? false)
+        assign(\.tabCount, group?.tabIDs.count ?? 0)
+        assign(\.hasCollections, !model.workspace.collections.isEmpty)
+    }
+
+    private func assign<Value: Equatable>(_ keyPath: ReferenceWritableKeyPath<WorkspaceCommandState, Value>, _ value: Value) {
+        if self[keyPath: keyPath] != value { self[keyPath: keyPath] = value }
+    }
+}
+
+public extension ImportFormat {
+    /// Infers the importer for a file opened from Finder or dropped on the window.
+    static func detect(fileExtension: String, contents: String) -> ImportFormat? {
+        let trimmed = contents.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.hasPrefix("curl ") || trimmed.hasPrefix("curl\t") { return .curl }
+        guard let data = trimmed.data(using: .utf8),
+              let root = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
+        else { return nil }
+        if let log = root["log"] as? [String: Any], log["entries"] is [Any] { return .har }
+        if let info = root["info"] as? [String: Any], info["schema"] != nil || info["_postman_id"] != nil {
+            return .postmanV2
+        }
+        if root["version"] as? Int == 1, root["nodes"] is [Any] { return .legacyWorkspaceV1 }
+        return fileExtension.lowercased() == "har" ? .har : nil
     }
 }

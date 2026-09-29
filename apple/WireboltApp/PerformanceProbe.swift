@@ -3,7 +3,7 @@ import os
 
 enum PerformanceProbe {
     private static let log = OSLog(
-        subsystem: "com.wirebolt.app",
+        subsystem: "io.github.christopher96u.wirebolt",
         category: .pointsOfInterest
     )
 

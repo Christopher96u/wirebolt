@@ -5,7 +5,10 @@ import WireboltStreamFFI
 final class RustRequestRunner: @unchecked Sendable, RequestRunner {
     private static let proxyMonitor = SystemProxyMonitor()
 
-    init() { _ = Self.proxyMonitor }
+    init() {
+        // SCDynamicStore setup is kept off the launch path; it only invalidates pooled engines.
+        DispatchQueue.global(qos: .utility).async { _ = Self.proxyMonitor }
+    }
 
     func proxySettingsChanged() { resetHttpEngines() }
 

@@ -199,7 +199,7 @@ public final class OAuth2Service: NSObject, OAuth2Authorizing, ASWebAuthenticati
         guard name.isEmpty == false else { return nil }
         let query: [CFString: Any] = [
             kSecClass: kSecClassGenericPassword,
-            kSecAttrService: "local.wirebolt.app",
+            kSecAttrService: "io.github.christopher96u.wirebolt",
             kSecAttrAccount: name,
             kSecReturnData: true,
             kSecMatchLimit: kSecMatchLimitOne,
