@@ -1730,6 +1730,9 @@ private struct RequestURLBar: View {
     @State private var customMethod = ""
     @State private var isEditingLongURL = false
     @State private var urlText = ""
+    /// Narrow groups (for example a split editor) collapse the proxy pill and status to
+    /// icons so the URL keeps most of the width.
+    @State private var isCompact = false
 
     var body: some View {
         HStack(spacing: 7) {
@@ -1741,7 +1744,7 @@ private struct RequestURLBar: View {
                     Button(method.rawValue) { session.draft.method = method }
                 }
                 Divider()
-                Button("CUSTOM…") {
+                Button("Custom…") {
                     customMethod = HTTPMethod.allCases.contains(session.draft.method)
                         ? ""
                         : session.draft.method.rawValue
@@ -1767,15 +1770,15 @@ private struct RequestURLBar: View {
             ), isEditing: $urlIsFocused, focusTrigger: interface.focusURLTrigger, active: model.sessions.activeGroupID == groupID, submit: send)
                 .onSubmit(send)
                 .accessibilityLabel("Request URL")
+                .frame(minWidth: 96)
+                .layoutPriority(1)
 
-            ProxyConnectionIndicator(model: model, session: session) {
+            ProxyConnectionIndicator(model: model, session: session, compact: isCompact) {
                 interface.presentation(for: session).requestSection = .settings
             }
-            InlineResponseStatus(session: session)
-            if session.kind == .webSocket && session.socket.status == .connected {
-                Label("101 Switching Protocols", systemImage: WireboltTheme.statusSymbol(101))
-                    .font(.system(size: 14)).foregroundStyle(WireboltTheme.statusColor(101)).fixedSize()
-            }
+            // A fixed slot: the URL field never resizes when a status appears or changes.
+            InlineResponseStatus(session: session, compact: isCompact)
+                .frame(width: isCompact ? 20 : 148, alignment: .leading)
 
             Button("Edit Long URL", systemImage: "rectangle.expand.vertical") {
                 isEditingLongURL = true
@@ -1790,29 +1793,13 @@ private struct RequestURLBar: View {
             RequestHistoryMenu(model: model, session: session)
                 .frame(width: 24, height: 30)
 
-            if session.kind == .webSocket {
-                Button(session.socket.status == .disconnected ? "CONNECT ⌘⌃⏎" : "DISCONNECT ⌘⌃⏎") {
-                    if session.socket.status == .disconnected { Task { await model.connectWebSocket(session) } }
-                    else { session.socket.disconnect() }
-                }.buttonStyle(WorkspaceActionButtonStyle(color: WireboltTheme.primaryAccent))
-                    .accessibilityLabel(session.socket.status == .disconnected ? "Connect" : "Disconnect")
-                    .disabled(session.draft.url.isEmpty)
-            } else if session.isRunning {
-                Button("CANCEL", systemImage: "stop.fill", action: cancel)
-                    .buttonStyle(WorkspaceActionButtonStyle(color: .red))
-                    .accessibilityLabel("Cancel request")
-            } else {
-                Button("SEND ⌘⏎", action: send)
-                .buttonStyle(WorkspaceActionButtonStyle(color: WireboltTheme.primaryAccent))
-                .accessibilityLabel("Send request")
-                .disabled(session.draft.url.isEmpty)
-                .help("Send Request (⌘↩)")
-            }
+            primaryAction
         }
         .padding(.leading, 10)
         .padding(.trailing, 11)
         .frame(height: 44)
         .background(WireboltTheme.barBackground)
+        .onGeometryChange(for: Bool.self) { $0.size.width < Self.compactWidth } action: { isCompact = $0 }
         .onAppear { urlText = session.draft.displayURL }
         .onChange(of: session.draft.query) {
             if !urlIsFocused { urlText = session.draft.displayURL }
@@ -1840,9 +1827,58 @@ private struct RequestURLBar: View {
         }
     }
 
+    /// Below this bar width the proxy pill and status collapse to icons.
+    private static let compactWidth: CGFloat = 760
+
+    /// Native bordered buttons provide the disabled, hover, pressed, and focus-ring states.
+    /// Send and Connect are prominent; Cancel and Disconnect are secondary. Shortcuts live in
+    /// the Request menu and in the help tag, not in the title.
+    @ViewBuilder private var primaryAction: some View {
+        let hasURL = !session.draft.url.isEmpty
+        Group {
+            if session.kind == .webSocket {
+                if session.socket.status == .disconnected {
+                    Button(action: toggleConnection) { actionTitle("Connect") }
+                        .buttonStyle(.borderedProminent)
+                        .help(hasURL ? "Connect (⌃⌘↩)" : "Enter a URL to connect")
+                        .disabled(!hasURL)
+                } else {
+                    Button(action: toggleConnection) { actionTitle("Disconnect") }
+                        .buttonStyle(.bordered)
+                        .help("Disconnect (⌃⌘↩)")
+                }
+            } else if session.isRunning {
+                Button(action: cancel) { actionTitle("Cancel") }
+                    .buttonStyle(.bordered)
+                    .accessibilityLabel("Cancel Request")
+                    .help("Cancel Request (⌘.)")
+            } else {
+                Button(action: send) { actionTitle("Send") }
+                    .buttonStyle(.borderedProminent)
+                    .accessibilityLabel("Send Request")
+                    .help(hasURL ? "Send Request (⌘↩)" : "Enter a URL to send the request")
+                    .disabled(!hasURL)
+            }
+        }
+        .controlSize(.large)
+        .buttonBorderShape(.capsule)
+        .tint(WireboltTheme.primaryAccent)
+        .fixedSize()
+    }
+
+    /// Equal minimum widths keep Send and Cancel from shifting the URL field when they swap.
+    private func actionTitle(_ title: String) -> some View {
+        Text(title).frame(minWidth: 52)
+    }
+
+    private func toggleConnection() {
+        if session.socket.status == .disconnected { Task { await model.connectWebSocket(session) } }
+        else { session.socket.disconnect() }
+    }
+
     private func send() {
         guard session.draft.url.isEmpty == false else { return }
-        NSApp.keyWindow?.makeFirstResponder(nil)
+        commitPendingEdits(in: NSApp.keyWindow)
         model.sessions.select(tabID: session.id, in: groupID)
         interface.synchronizeSelection(model: model)
         if session.kind == .webSocket {
@@ -2094,45 +2130,61 @@ private struct LongURLEditor: View {
     }
 }
 
+/// Status of the latest run in a fixed-size slot: a spinner while running, then the
+/// status symbol and line. Long reason phrases truncate; the full line is in the help tag.
 private struct InlineResponseStatus: View {
     @Bindable var session: DocumentSession
+    var compact = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
-        if session.isRunning {
-            ProgressView()
-                .controlSize(.small)
-        } else if let status {
-            HStack(spacing: 6) {
-                Image(systemName: status >= 400 ? "exclamationmark.circle.fill" : "checkmark.circle.fill")
-                    .foregroundStyle(WireboltTheme.statusColor(status))
-                Text(statusLabel(status))
-                    .font(.system(size: 15))
-                    .foregroundStyle(WireboltTheme.statusColor(status))
+        Group {
+            if session.isRunning || (session.kind == .webSocket && session.socket.status == .connecting) {
+                ProgressView()
+                    .controlSize(.small)
+                    .accessibilityLabel(session.kind == .webSocket ? "Connecting" : "Sending")
+            } else if let status {
+                HStack(spacing: WireboltTheme.Spacing.small) {
+                    Image(systemName: WireboltTheme.statusSymbol(status))
+                        .font(.system(size: compact ? 15 : 14))
+                    if !compact {
+                        Text(ResponseFormatting.statusLine(status))
+                            .font(.system(size: 14).monospacedDigit())
+                            .lineLimit(1)
+                            .truncationMode(.tail)
+                            .contentTransition(reduceMotion ? .identity : .numericText())
+                    }
+                }
+                .foregroundStyle(WireboltTheme.statusColor(status))
+                .help(ResponseFormatting.statusLine(status))
+                .accessibilityElement(children: .ignore)
+                .accessibilityLabel("Status \(ResponseFormatting.statusLine(status))")
             }
-            .fixedSize()
         }
+        .animation(reduceMotion ? nil : .snappy(duration: 0.2), value: status)
     }
 
     private var status: UInt16? {
-        session.responseHead?.status
-    }
-
-    private func statusLabel(_ status: UInt16) -> String {
-        ResponseFormatting.statusLine(status)
+        if session.kind == .webSocket {
+            return session.socket.status == .connected ? 101 : nil
+        }
+        return session.responseHead?.status
     }
 }
 
-private struct WorkspaceActionButtonStyle: ButtonStyle {
-    let color: Color
-
-    func makeBody(configuration: Configuration) -> some View {
-        configuration.label
-            .font(.system(size: 12, weight: .semibold))
-            .foregroundStyle(.white)
-            .padding(.horizontal, 13)
-            .frame(minWidth: 102, minHeight: 28)
-            .background(color.opacity(configuration.isPressed ? 0.78 : 1), in: .capsule)
-            .opacity(configuration.isPressed ? 0.9 : 1)
+/// Ends editing so pending text edits reach the draft, then puts focus back where it was
+/// (with the same selection) so sending from the keyboard does not lose the insertion point.
+@MainActor
+func commitPendingEdits(in window: NSWindow?) {
+    guard let window, let responder = window.firstResponder else { return }
+    if let editor = responder as? NSTextView, editor.isFieldEditor, let field = editor.delegate as? NSTextField {
+        let selection = editor.selectedRange()
+        guard window.makeFirstResponder(nil) else { return }
+        window.makeFirstResponder(field)
+        field.currentEditor()?.selectedRange = selection
+    } else if let view = responder as? NSView {
+        guard window.makeFirstResponder(nil) else { return }
+        window.makeFirstResponder(view)
     }
 }
 
@@ -2149,7 +2201,7 @@ private struct NativeRequestURLField: NSViewRepresentable {
         field.isBordered = false
         field.drawsBackground = false
         field.font = .monospacedSystemFont(ofSize: 13, weight: .regular)
-        field.placeholderString = "Enter URL (⌘L)"
+        field.placeholderString = "Enter URL"
         field.cell?.usesSingleLineMode = true
         field.cell?.lineBreakMode = .byTruncatingTail
         field.cell?.isScrollable = true
