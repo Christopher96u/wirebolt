@@ -980,8 +980,9 @@ private struct SidebarMoveMenu: View {
                 .filter { !isFolder || $0.id == sourceCollection }
                 .sorted { ($0.order, $0.name, $0.id) < ($1.order, $1.name, $1.id) }
             ForEach(collections) { collection in
-                if collections.count > 1 { Divider() }
-                destination(collection.id == WorkspaceDraft.rootCollectionID && collections.count == 1 ? "Top Level" : collection.name,
+                if collection.id != collections.first?.id { Divider() }
+                // The root collection has no sidebar header; its items sit at the top level.
+                destination(collection.id == WorkspaceDraft.rootCollectionID ? "Top Level" : collection.name,
                             collectionID: collection.id, parentID: nil)
                 ForEach(collection.folderOutline(), id: \.group.id) { entry in
                     destination(String(repeating: "    ", count: entry.depth + 1) + entry.group.name,

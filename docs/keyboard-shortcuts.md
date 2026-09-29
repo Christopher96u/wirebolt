@@ -16,6 +16,8 @@
 | Connect / disconnect WebSocket | ⌃⌘Return |
 | Focus URL | ⌘L |
 | Filter requests | ⇧⌘F |
+| Undo / redo sidebar changes | ⌘Z / ⇧⌘Z |
+| Move sidebar item up / down | ⌥⌘↑ / ⌥⌘↓ |
 | Add a field row | ⇧⌘K |
 | Copy cURL | ⇧⌘C |
 | Split right | ⇧⌘D |
@@ -26,3 +28,5 @@
 | Git collaboration | ⇧⌘G |
 
 Within the environment editor, **⌘K** adds a variable entry. The app's menu bar shows shortcuts in the context where they apply. **⌘N** retains native New Window behavior; use **⇧⌘N** for a new HTTP request.
+
+In the focused sidebar, arrow keys move through rows (**←** / **→** collapse and expand), typing a name jumps to it, **Return** renames and **Delete** deletes. See [Workspaces](workspaces.md#keyboard).
