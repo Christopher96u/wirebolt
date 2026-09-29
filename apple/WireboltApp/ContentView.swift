@@ -1177,7 +1177,7 @@ private struct WorkspaceDeck: View {
     @Bindable var interface: WorkspaceUIState
 
     var body: some View {
-        Group {
+        VariableCatalogScope(model: model) {
             if model.sessions.groups.count > 1 {
                 HSplitView {
                     ForEach(model.sessions.groups) { group in
@@ -1196,6 +1196,20 @@ private struct WorkspaceDeck: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .background(WireboltTheme.paneBackground)
         .background { WindowEditedIndicator(model: model) }
+    }
+}
+
+/// Provides the active environments' variables to URL and key/value fields. Isolated so
+/// only workspace or environment changes rebuild the catalog.
+private struct VariableCatalogScope<Content: View>: View {
+    let model: WireboltModel
+    @ViewBuilder let content: Content
+
+    var body: some View {
+        content.environment(\.variableCatalog, VariableCatalog(
+            environments: model.workspace.environments,
+            selectedEnvironmentID: model.selectedEnvironmentID
+        ))
     }
 }
 
@@ -1733,6 +1747,7 @@ private struct RequestURLBar: View {
     /// Narrow groups (for example a split editor) collapse the proxy pill and status to
     /// icons so the URL keeps most of the width.
     @State private var isCompact = false
+    @Environment(\.variableCatalog) private var variables
 
     var body: some View {
         HStack(spacing: 7) {
@@ -1767,7 +1782,8 @@ private struct RequestURLBar: View {
             NativeRequestURLField(text: Binding(
                 get: { urlText },
                 set: { urlText = $0; session.draft.editURL($0) }
-            ), isEditing: $urlIsFocused, focusTrigger: interface.focusURLTrigger, active: model.sessions.activeGroupID == groupID, submit: send)
+            ), isEditing: $urlIsFocused, focusTrigger: interface.focusURLTrigger, active: model.sessions.activeGroupID == groupID,
+                variables: variables, submit: send)
                 .onSubmit(send)
                 .accessibilityLabel("Request URL")
                 .frame(minWidth: 96)
@@ -1828,7 +1844,7 @@ private struct RequestURLBar: View {
     }
 
     /// Below this bar width the proxy pill and status collapse to icons.
-    private static let compactWidth: CGFloat = 760
+    nonisolated private static let compactWidth: CGFloat = 760
 
     /// Native bordered buttons provide the disabled, hover, pressed, and focus-ring states.
     /// Send and Connect are prominent; Cancel and Disconnect are secondary. Shortcuts live in
@@ -2189,19 +2205,25 @@ func commitPendingEdits(in window: NSWindow?) {
     }
 }
 
+/// The URL text field. `{{name}}` references are colored (accent when defined, red when
+/// not) while viewing and editing, the help tag lists their values, and typing `{{`
+/// offers the active variables (↑↓ to choose, Return or Tab to insert, Esc to dismiss).
 private struct NativeRequestURLField: NSViewRepresentable {
     @Binding var text: String
     @Binding var isEditing: Bool
     let focusTrigger: Int
     let active: Bool
+    var variables: VariableCatalog?
     let submit: () -> Void
+
+    private static let font = NSFont.monospacedSystemFont(ofSize: 13, weight: .regular)
 
     func makeCoordinator() -> Coordinator { Coordinator(self) }
     func makeNSView(context: Context) -> NSTextField {
         let field = NSTextField()
         field.isBordered = false
         field.drawsBackground = false
-        field.font = .monospacedSystemFont(ofSize: 13, weight: .regular)
+        field.font = Self.font
         field.placeholderString = "Enter URL"
         field.cell?.usesSingleLineMode = true
         field.cell?.lineBreakMode = .byTruncatingTail
@@ -2215,27 +2237,157 @@ private struct NativeRequestURLField: NSViewRepresentable {
         return field
     }
     func updateNSView(_ field: NSTextField, context: Context) {
-        context.coordinator.parent = self
+        let coordinator = context.coordinator
+        coordinator.parent = self
         field.cell?.isScrollable = isEditing
         field.cell?.lineBreakMode = isEditing ? .byClipping : .byTruncatingTail
-        if field.stringValue != text { field.stringValue = text }
+        if field.stringValue != text { field.stringValue = text; coordinator.highlightedState = nil }
+        coordinator.highlight(field)
         if context.coordinator.focusTrigger != focusTrigger {
             context.coordinator.focusTrigger = focusTrigger
             if active { field.window?.makeFirstResponder(field); field.selectText(nil) }
         }
     }
+    static func dismantleNSView(_: NSTextField, coordinator: Coordinator) { coordinator.closeCompletions() }
+
     @MainActor
     final class Coordinator: NSObject, NSTextFieldDelegate {
         var parent: NativeRequestURLField
         var focusTrigger: Int
+        /// What the field currently shows, so unchanged updates skip re-highlighting.
+        var highlightedState: (text: String, variables: VariableCatalog?, editing: Bool)?
+        private var popover: NSPopover?
+        private var completions: [VariableCatalog.Entry] = []
+        private var selectedIndex = 0
+        private var dismissedText: String?
+        private var isInserting = false
+
         init(_ parent: NativeRequestURLField) { self.parent = parent; focusTrigger = parent.focusTrigger }
-        func controlTextDidBeginEditing(_ notification: Notification) { parent.isEditing = true }
-        func controlTextDidEndEditing(_ notification: Notification) { parent.isEditing = false }
+
+        func controlTextDidBeginEditing(_ notification: Notification) {
+            parent.isEditing = true
+            if let field = notification.object as? NSTextField { highlight(field) }
+        }
+        func controlTextDidEndEditing(_ notification: Notification) {
+            closeCompletions()
+            dismissedText = nil
+            parent.isEditing = false
+        }
         func controlTextDidChange(_ notification: Notification) {
             guard let field = notification.object as? NSTextField else { return }
             parent.text = field.stringValue
+            highlight(field)
+            if !isInserting { updateCompletions(field) }
         }
         @objc func submit() { parent.submit() }
+
+        func control(_ control: NSControl, textView _: NSTextView, doCommandBy selector: Selector) -> Bool {
+            guard popover != nil, !completions.isEmpty, let field = control as? NSTextField else { return false }
+            switch selector {
+            case #selector(NSResponder.moveDown(_:)): selectedIndex = (selectedIndex + 1) % completions.count
+            case #selector(NSResponder.moveUp(_:)): selectedIndex = (selectedIndex + completions.count - 1) % completions.count
+            case #selector(NSResponder.insertNewline(_:)), #selector(NSResponder.insertTab(_:)):
+                insert(completions[selectedIndex], into: field)
+                return true
+            case #selector(NSResponder.cancelOperation(_:)):
+                dismissedText = field.stringValue
+                closeCompletions()
+                return true
+            default: return false
+            }
+            showCompletions(for: field)
+            return true
+        }
+
+        /// Colors references in the field editor while editing, or in the cell otherwise.
+        func highlight(_ field: NSTextField) {
+            let text = field.stringValue
+            let editor = field.currentEditor() as? NSTextView
+            let state = (text: text, variables: parent.variables, editing: editor != nil)
+            if let current = highlightedState, current.text == state.text, current.variables == state.variables,
+               current.editing == state.editing { return }
+            highlightedState = state
+            let summary = parent.variables.flatMap { text.contains("{{") ? $0.summary(for: text) : nil }
+            if field.toolTip != summary { field.toolTip = summary }
+            guard let variables = parent.variables, text.contains("{{") else {
+                if let storage = editor?.textStorage, storage.length > 0 {
+                    storage.addAttribute(.foregroundColor, value: NSColor.textColor, range: NSRange(location: 0, length: storage.length))
+                }
+                return
+            }
+            if let storage = editor?.textStorage {
+                VariableHighlighting.apply(to: storage, catalog: variables, baseColor: .textColor)
+            } else {
+                let highlighted = NSMutableAttributedString(attributedString: VariableHighlighting.attributedString(text, font: NativeRequestURLField.font, catalog: variables))
+                let paragraph = NSMutableParagraphStyle()
+                paragraph.lineBreakMode = .byTruncatingTail
+                highlighted.addAttribute(.paragraphStyle, value: paragraph, range: NSRange(location: 0, length: highlighted.length))
+                field.attributedStringValue = highlighted
+            }
+        }
+
+        private func updateCompletions(_ field: NSTextField) {
+            let text = field.stringValue
+            guard let variables = parent.variables, dismissedText != text, text.contains("{{"),
+                  let editor = field.currentEditor() as? NSTextView, editor.selectedRange().length == 0,
+                  let reference = VariableTemplate.openReference(in: text, caret: editor.selectedRange().location)
+            else { closeCompletions(); return }
+            completions = Array(variables.completions(matching: reference.prefix).prefix(VariableCompletionList.limit))
+            selectedIndex = 0
+            guard !completions.isEmpty else { closeCompletions(); return }
+            showCompletions(for: field)
+        }
+
+        private func showCompletions(for field: NSTextField) {
+            let list = VariableCompletionList(entries: completions, selectedIndex: selectedIndex) { [weak self, weak field] entry in
+                guard let self, let field else { return }
+                self.insert(entry, into: field)
+            }
+            if let popover, let host = popover.contentViewController as? NSHostingController<VariableCompletionList> {
+                host.rootView = list
+                return
+            }
+            let host = NSHostingController(rootView: list)
+            host.sizingOptions = .preferredContentSize
+            let popover = NSPopover()
+            popover.contentViewController = host
+            popover.behavior = .transient
+            popover.animates = false
+            self.popover = popover
+            popover.show(relativeTo: caretRect(in: field), of: field, preferredEdge: .maxY)
+        }
+
+        func closeCompletions() {
+            popover?.close()
+            popover = nil
+            completions = []
+        }
+
+        private func insert(_ entry: VariableCatalog.Entry, into field: NSTextField) {
+            guard let editor = field.currentEditor() as? NSTextView,
+                  let reference = VariableTemplate.openReference(in: editor.string, caret: editor.selectedRange().location)
+            else { closeCompletions(); return }
+            let replacement = reference.isClosed ? entry.name : entry.name + "}}"
+            // Through the text view so the insertion is one undoable edit.
+            isInserting = true
+            defer { isInserting = false }
+            if editor.shouldChangeText(in: reference.replacementRange, replacementString: replacement) {
+                editor.replaceCharacters(in: reference.replacementRange, with: replacement)
+                editor.didChangeText()
+            }
+            let caret = reference.replacementRange.location + (entry.name as NSString).length + 2
+            editor.setSelectedRange(NSRange(location: min(caret, (editor.string as NSString).length), length: 0))
+            closeCompletions()
+        }
+
+        /// The insertion point in field coordinates, falling back to the field bounds.
+        private func caretRect(in field: NSTextField) -> NSRect {
+            guard let editor = field.currentEditor() as? NSTextView, let window = field.window else { return field.bounds }
+            let screen = editor.firstRect(forCharacterRange: editor.selectedRange(), actualRange: nil)
+            guard screen != .zero else { return field.bounds }
+            let local = field.convert(window.convertFromScreen(screen), from: nil)
+            return NSRect(x: local.minX, y: field.bounds.minY, width: max(1, local.width), height: field.bounds.height)
+        }
     }
 }
 
@@ -2631,6 +2783,7 @@ private struct NewFieldTableRow: View {
         showingSuggestions = kind == .header
             && focusedField == .key
             && !name.isEmpty
+            && !name.contains("{{")
     }
 
     private func updateValueSuggestions() {
@@ -2638,6 +2791,7 @@ private struct NewFieldTableRow: View {
             && focusedField == .value
             && name.caseInsensitiveCompare("Content-Type") == .orderedSame
             && !value.isEmpty
+            && !value.contains("{{")
     }
 
     private func commit() {
