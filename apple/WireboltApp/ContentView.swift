@@ -960,8 +960,10 @@ private struct SidebarRequestButton: View, @MainActor Equatable {
     var body: some View {
             HStack(spacing: 3) {
                 Text(location.request.webSocket ? "WS" : location.request.method.rawValue)
-                    .font(.system(size: 10))
-                    .foregroundStyle(WireboltTheme.methodColor(location.request.method))
+                    .font(WireboltTheme.Typography.methodLabel)
+                    .lineLimit(1).minimumScaleFactor(0.8)
+                    // Method hues can't keep contrast on the accent selection fill.
+                    .foregroundStyle(isSelected ? Color.white : WireboltTheme.methodColor(location.request.method, webSocket: location.request.webSocket))
                     .frame(width: 40, alignment: .trailing)
                 InlineSidebarName(title: location.request.name, isEditing: Binding(
                     get: { isRenaming || interface.renamingRequestID == location.id },
@@ -1016,7 +1018,8 @@ private struct SidebarRequestButton: View, @MainActor Equatable {
 
     private var selectionBackground: Color {
         guard isSelected else { return .clear }
-        return WireboltTheme.primaryAccent.opacity(colorScheme == .dark ? 0.82 : 0.90)
+        // Opaque in light mode so white labels keep 4.5:1 over the sidebar.
+        return WireboltTheme.primaryAccent.opacity(colorScheme == .dark ? 0.82 : 1)
     }
 }
 
@@ -1581,7 +1584,7 @@ private struct RequestURLBar: View {
     var body: some View {
         HStack(spacing: 7) {
             if session.kind == .webSocket {
-                Text("WS").font(.system(size: 14, weight: .bold)).foregroundStyle(WireboltTheme.primaryAccent)
+                Text("WS").font(.system(size: 14, weight: .bold)).foregroundStyle(WireboltTheme.webSocketColor)
             } else {
             Menu {
                 ForEach(HTTPMethod.allCases, id: \.self) { method in
@@ -2109,14 +2112,18 @@ struct PanelTabButton: View {
 
     var body: some View {
         Button(action: action) {
-            HStack(spacing: title == "Headers" ? 4 : 5) {
+            HStack(spacing: WireboltTheme.Spacing.xSmall) {
                 Text(title)
+                // Neutral count capsule: counts are information, not success.
                 if let badge, badge > 0 {
-                    Text("(\(badge))")
-                        .font(.caption.monospacedDigit())
-                        .foregroundStyle(WireboltTheme.success)
+                    Text(badge, format: .number)
+                        .font(WireboltTheme.Typography.badge)
+                        .foregroundStyle(.primary.opacity(0.72))
+                        .padding(.horizontal, 5)
+                        .frame(minWidth: 16, minHeight: 14)
+                        .background(.quaternary, in: Capsule())
                 } else if indicator {
-                    Text("•︎").foregroundStyle(WireboltTheme.success)
+                    Circle().fill(.secondary).frame(width: 5, height: 5)
                 }
             }
             .font(.system(size: 13))

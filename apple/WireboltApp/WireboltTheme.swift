@@ -11,7 +11,8 @@ enum WireboltTheme {
     static let paneBackground = Color(nsColor: .textBackgroundColor)
     static let barBackground = AnyShapeStyle(.bar)
     static let separator = Color(nsColor: .separatorColor)
-    static let success = Color(red: 0.31, green: 0.80, blue: 0.34)
+    /// Adaptive success green (also the 2xx status color).
+    static let success = Color(nsColor: nsColor(SemanticPalette.green))
 
     static let nsJSONKey = adaptiveColor(
         light: NSColor(srgbRed: 0.56, green: 0.24, blue: 0.22, alpha: 1),
@@ -42,26 +43,109 @@ enum WireboltTheme {
     static let treeKey = Color(red: 0.25, green: 0.50, blue: 0.68)
     static let treeValue = Color(red: 0.64, green: 0.29, blue: 0.27)
 
-    static func methodColor(_ method: HTTPMethod) -> Color {
-        switch method {
-        case .get, .head, .options: Color(red: 0.31, green: 0.78, blue: 0.35)
-        case .post: Color(red: 0.20, green: 0.59, blue: 0.86)
-        case .put: Color(red: 0.82, green: 0.61, blue: 0.18)
-        case .patch: Color(red: 0.28, green: 0.63, blue: 0.82)
-        case .delete: Color(red: 0.86, green: 0.28, blue: 0.29)
-        default: primaryAccent
+    /// The single method color used by the sidebar, URL bar, and tabs. Each
+    /// standard method has its own hue; WebSocket requests use one fixed color.
+    /// Spacing scale in points. Prefer these over one-off values in new or touched views.
+    enum Spacing {
+        static let xxSmall: CGFloat = 2
+        static let xSmall: CGFloat = 4
+        static let small: CGFloat = 6
+        static let medium: CGFloat = 8
+        static let large: CGFloat = 12
+        static let xLarge: CGFloat = 16
+        static let xxLarge: CGFloat = 20
+    }
+
+    /// Corner radii for rows, controls, and grouped content.
+    enum Radius {
+        static let small: CGFloat = 3
+        static let row: CGFloat = 5
+        static let control: CGFloat = 6
+        static let group: CGFloat = 10
+    }
+
+    /// Fixed-size text styles for dense editor chrome.
+    enum Typography {
+        /// Primary text in panels, rows, and toolbars.
+        static let body = Font.system(size: 13)
+        /// Secondary rows, table cells, and hints.
+        static let detail = Font.system(size: 11)
+        /// Compact method labels in lists.
+        static let methodLabel = Font.system(size: 10, weight: .semibold)
+        /// Counts in tab badges.
+        static let badge = Font.system(size: 10, weight: .medium).monospacedDigit()
+    }
+
+    static func methodColor(_ method: HTTPMethod, webSocket: Bool = false) -> Color {
+        if webSocket { return webSocketColor }
+        return switch method {
+        case .get: methodGET
+        case .post: methodPOST
+        case .put: methodPUT
+        case .patch: methodPATCH
+        case .delete: methodDELETE
+        case .head: methodHEAD
+        case .options: methodOPTIONS
+        default: methodCustom
         }
     }
 
+    /// Kept for existing call sites; identical to `methodColor(_:)`.
     static func requestBarMethodColor(_ method: HTTPMethod) -> Color {
-        method == .patch ? success : methodColor(method)
+        methodColor(method)
     }
 
+    static let webSocketColor = Color(nsColor: nsColor(SemanticPalette.method(.get, webSocket: true)))
+
+    /// 1xx informational, 2xx green, 3xx orange, 4xx yellow warning, 5xx red.
     static func statusColor(_ status: UInt16) -> Color {
-        switch status {
-        case 200 ..< 300: success
-        case 300 ..< 400: .orange
-        default: .red
+        switch HTTPStatusClass(status: status) {
+        case .informational: statusInformational
+        case .success: success
+        case .redirection: statusRedirection
+        case .clientError: statusClientError
+        case .serverError: statusServerError
+        }
+    }
+
+    /// SF Symbol that pairs with `statusColor(_:)` so status is never conveyed by color alone.
+    static func statusSymbol(_ status: UInt16) -> String {
+        switch HTTPStatusClass(status: status) {
+        case .informational: "info.circle.fill"
+        case .success: "checkmark.circle.fill"
+        case .redirection: "arrow.uturn.right.circle.fill"
+        case .clientError: "exclamationmark.triangle.fill"
+        case .serverError: "xmark.octagon.fill"
+        }
+    }
+
+    private static let methodGET = Color(nsColor: nsColor(SemanticPalette.method(.get)))
+    private static let methodPOST = Color(nsColor: nsColor(SemanticPalette.method(.post)))
+    private static let methodPUT = Color(nsColor: nsColor(SemanticPalette.method(.put)))
+    private static let methodPATCH = Color(nsColor: nsColor(SemanticPalette.method(.patch)))
+    private static let methodDELETE = Color(nsColor: nsColor(SemanticPalette.method(.delete)))
+    private static let methodHEAD = Color(nsColor: nsColor(SemanticPalette.method(.head)))
+    private static let methodOPTIONS = Color(nsColor: nsColor(SemanticPalette.method(.options)))
+    private static let methodCustom = Color(nsColor: nsColor(SemanticPalette.neutral))
+    private static let statusInformational = Color(nsColor: nsColor(SemanticPalette.status(100)))
+    private static let statusRedirection = Color(nsColor: nsColor(SemanticPalette.status(300)))
+    private static let statusClientError = Color(nsColor: nsColor(SemanticPalette.status(400)))
+    private static let statusServerError = Color(nsColor: nsColor(SemanticPalette.status(500)))
+
+    /// Resolves light, dark, and Increase Contrast variants at draw time.
+    private static func nsColor(_ color: AdaptivePaletteColor) -> NSColor {
+        func make(_ value: PaletteColor) -> NSColor {
+            NSColor(srgbRed: CGFloat(value.red) / 255, green: CGFloat(value.green) / 255, blue: CGFloat(value.blue) / 255, alpha: 1)
+        }
+        let (light, dark) = (make(color.light), make(color.dark))
+        let (lightHigh, darkHigh) = (make(color.lightHighContrast), make(color.darkHighContrast))
+        return NSColor(name: nil) { appearance in
+            switch appearance.bestMatch(from: [.aqua, .darkAqua, .accessibilityHighContrastAqua, .accessibilityHighContrastDarkAqua]) {
+            case .darkAqua: dark
+            case .accessibilityHighContrastAqua: lightHigh
+            case .accessibilityHighContrastDarkAqua: darkHigh
+            default: light
+            }
         }
     }
 
