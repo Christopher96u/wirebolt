@@ -150,7 +150,13 @@ final class WorkspaceUIState {
         set { activePresentation.isBulkEditing = newValue }
     }
     var canEditFields: Bool { activeTabID != nil && (requestSection == .params || requestSection == .headers) }
-    func addKey() { activePresentation.isBulkEditing = false; activePresentation.focusNewKeyTrigger += 1 }
+    /// Focuses the new-key row of the visible key-value table, switching to Params when the
+    /// visible section has none.
+    func addKey() {
+        if !canEditFields { requestSection = .params }
+        activePresentation.isBulkEditing = false
+        activePresentation.focusNewKeyTrigger += 1
+    }
     func selectTab(index: Int? = nil, offset: Int = 0, model: WireboltModel) {
         guard let group = model.sessions.activeGroup, !group.tabIDs.isEmpty else { return }
         let current = group.tabIDs.firstIndex(of: group.selectedTabID ?? "") ?? 0
@@ -168,6 +174,8 @@ final class WorkspaceUIState {
     var importStatus: String?
     var focusURLTrigger = 0
     var focusSearchTrigger = 0
+    /// Moves keyboard focus into the active editor group's response content.
+    var focusResponseTrigger = 0
     var dirtyCloseRequest: DirtyCloseRequest?
     var workspaceNamePrompt: WorkspaceNamePrompt?
     var workspaceDeleteRequest: WorkspaceDeleteRequest?
@@ -289,6 +297,18 @@ final class WorkspaceUIState {
     }
 
     var focusSidebarTrigger = 0
+    /// Set when Focus Sidebar has to show the sidebar first; the sidebar takes focus on appear.
+    @ObservationIgnored var focusesSidebarOnAppear = false
+
+    /// Shows the sidebar if it is hidden and moves keyboard focus to it.
+    func focusSidebar() {
+        if columnVisibility == .detailOnly {
+            focusesSidebarOnAppear = true
+            columnVisibility = .all
+        } else {
+            focusSidebarTrigger += 1
+        }
+    }
     var collapsedSidebarCollections: Set<String> = []
     var expandedSidebarGroups: Set<String> = []
     var renamingRequestID: String?

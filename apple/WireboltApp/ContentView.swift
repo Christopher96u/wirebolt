@@ -384,6 +384,13 @@ private struct WorkspaceSidebar: View {
         .onChange(of: interface.focusSidebarTrigger) {
             if !interface.isRenamingInSidebar { sidebarIsFocused = true }
         }
+        .task {
+            // Focus Sidebar while the sidebar was hidden: take focus once it is on screen.
+            guard interface.focusesSidebarOnAppear else { return }
+            interface.focusesSidebarOnAppear = false
+            await Task.yield()
+            sidebarIsFocused = true
+        }
         .background { SidebarCursorReset(model: model, interface: interface) }
         .onDeleteCommand {
             if !interface.isRenamingInSidebar { interface.requestDeleteOfSelection(model: model) }
@@ -624,15 +631,14 @@ private struct CollectionActionMenu: View {
 
     var body: some View {
         Menu {
+            // Shortcuts are declared once, on the File menu commands.
             Menu("New Request") {
                 Button("HTTP") { interface.makeNewRequest(model: model) }
-                    .keyboardShortcut("n", modifiers: [.command, .shift])
                 Button("WebSocket") { interface.makeNewRequest(model: model, kind: .webSocket) }
             }
             Button("New Folder") {
                 interface.makeNewFolder(model: model)
             }
-                .keyboardShortcut("n", modifiers: [.command, .option])
             Divider()
             Button("New Collection…") { interface.promptForNewCollection() }
             Button("Open Workspace…") { chooseWorkspace(model: model, interface: interface, create: false) }
@@ -1364,6 +1370,7 @@ private struct EditorGroupDeck: View {
                         groupID: groupID
                     )
                 } response: {
+                    Group {
                     if session.kind == .http {
                         ResponseViewer(
                             interface: presentation,
@@ -1378,6 +1385,8 @@ private struct EditorGroupDeck: View {
                     } else {
                         WebSocketResponseView(session: session)
                     }
+                    }
+                    .background { ResponseFocusAnchor(model: model, interface: interface, groupID: groupID) }
                 }
                 .environment(\.editorStorage, presentation.editorStorage)
                 .simultaneousGesture(TapGesture().onEnded {
@@ -1675,6 +1684,68 @@ private struct DocumentTabLabel: NSViewRepresentable {
     private static func font(italic: Bool) -> NSFont { italic ? italicFont : regularFont }
 }
 
+/// Navigate ▸ Focus Response: moves keyboard focus to the largest focusable view inside the
+/// active group's response pane (the body editor, hex view, JSON tree or message table).
+/// Isolated so only this view observes the trigger and the active group.
+private struct ResponseFocusAnchor: View {
+    let model: WireboltModel
+    let interface: WorkspaceUIState
+    let groupID: String
+
+    var body: some View {
+        ResponseFocusBridge(
+            trigger: interface.focusResponseTrigger,
+            isActive: model.sessions.activeGroupID == groupID
+        )
+        .accessibilityHidden(true)
+    }
+}
+
+private struct ResponseFocusBridge: NSViewRepresentable {
+    let trigger: Int
+    let isActive: Bool
+
+    func makeNSView(context: Context) -> AnchorView {
+        let view = AnchorView()
+        // A pane that appears later must not steal focus for an earlier request.
+        view.handledTrigger = trigger
+        return view
+    }
+
+    func updateNSView(_ view: AnchorView, context _: Context) {
+        guard trigger != view.handledTrigger else { return }
+        view.handledTrigger = trigger
+        guard isActive else { return }
+        DispatchQueue.main.async { view.focusLargestResponder() }
+    }
+
+    final class AnchorView: NSView {
+        var handledTrigger = 0
+
+        override func hitTest(_: NSPoint) -> NSView? { nil }
+
+        func focusLargestResponder() {
+            guard let window, let root = window.contentView else { return }
+            let pane = convert(bounds, to: nil).insetBy(dx: -1, dy: -1)
+            var best: (view: NSView, area: CGFloat)?
+            func visit(_ view: NSView) {
+                for subview in view.subviews where !subview.isHidden {
+                    // The visible part: a text view inside a scroll view is taller than the pane.
+                    let frame = subview.convert(subview.visibleRect, to: nil)
+                    guard !frame.isEmpty, frame.intersects(pane) else { continue }
+                    if subview !== self, subview.acceptsFirstResponder, pane.contains(frame) {
+                        let area = frame.width * frame.height
+                        if area > (best?.area ?? 0) { best = (subview, area) }
+                    }
+                    visit(subview)
+                }
+            }
+            visit(root)
+            if let target = best?.view { window.makeFirstResponder(target) } else { NSSound.beep() }
+        }
+    }
+}
+
 /// Mirrors unsaved edits in any tab to the window's close button (NSWindow.isDocumentEdited).
 private struct WindowEditedIndicator: View {
     let model: WireboltModel
@@ -1806,9 +1877,9 @@ private struct WebSocketRequestWorkspace: View {
                 FileBodyEditor(path: path, contentType: contentType) { session.draft.body = .file(path: $0, contentType: $1) }
             } else { BodyTextEditor(text: messageText, language: messageKind.wrappedValue == .json ? .json : .plain) }
         case .params:
-            FieldEditor(title: "Query Params", fields: $session.draft.query, kind: .query)
+            FieldEditor(title: "Query Params", fields: $session.draft.query, kind: .query, focusTrigger: interface.focusNewKeyTrigger)
         case .headers:
-            FieldEditor(title: "Header List", fields: $session.draft.headers, kind: .header)
+            FieldEditor(title: "Header List", fields: $session.draft.headers, kind: .header, focusTrigger: interface.focusNewKeyTrigger)
         case .auth:
             AuthenticationEditor(model: model, session: session, authentication: $session.draft.authentication)
         case .settings:
