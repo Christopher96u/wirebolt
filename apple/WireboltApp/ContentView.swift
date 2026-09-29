@@ -2557,13 +2557,21 @@ struct PanelTabButton: View {
         }
         .accessibilityAddTraits(isSelected ? .isSelected : [])
         .accessibilityLabel(title)
-        .accessibilityValue(badge.map { $0 > 0 ? "\($0) entries" : "" } ?? "")
+        .accessibilityValue(badge.map { $0 > 0 ? "\($0) entries" : "" } ?? (indicator ? "configured" : ""))
     }
 }
 
 private enum FieldEditorKind {
     case query
     case header
+
+    /// Row noun for VoiceOver labels.
+    var noun: String {
+        switch self {
+        case .query: "parameter"
+        case .header: "header"
+        }
+    }
 }
 
 private struct FieldEditor: View {
@@ -2588,6 +2596,7 @@ private struct FieldEditor: View {
                     ForEach($fields) { $field in
                         if field.id != pendingID { FieldTableRow(
                             field: $field,
+                            kind: kind,
                             valueWidth: valueWidth,
                             onRemove: { fields.removeAll { $0.id == field.id } }
                         )
@@ -2635,6 +2644,7 @@ private struct FieldTableHeader: View {
 
 private struct FieldTableRow: View {
     @Binding var field: RequestField
+    let kind: FieldEditorKind
     let valueWidth: Double
     let onRemove: () -> Void
 
@@ -2643,13 +2653,15 @@ private struct FieldTableRow: View {
 
     var body: some View {
         HStack(alignment: .top, spacing: 0) {
-            FieldCheckbox(isOn: $field.enabled)
-            FieldTextInput("Key", text: $field.name, height: fieldHeight)
+            FieldCheckbox(isOn: $field.enabled, label: "Enable \(kind.noun) \(field.name)")
+            FieldTextInput("Key", text: $field.name, height: fieldHeight,
+                accessibilityLabel: field.name.isEmpty ? "\(kind.noun.capitalized) name" : "\(kind.noun.capitalized) name, \(field.name)")
                 .frame(width: 175)
                 .padding(.horizontal, 4)
 
             Color.clear.frame(width: 1)
-            FieldTextInput("Value", text: literalBinding($field.value), height: fieldHeight)
+            FieldTextInput("Value", text: literalBinding($field.value), height: fieldHeight,
+                accessibilityLabel: field.name.isEmpty ? "\(kind.noun.capitalized) value" : "Value of \(field.name)")
                 .frame(width: valueWidth)
                 .padding(.horizontal, 4)
                 .padding(.trailing, 5)
@@ -2699,9 +2711,9 @@ private struct NewFieldTableRow: View {
                 if name.isEmpty {
                     Color.clear.frame(width: 28)
                 } else {
-                    FieldCheckbox(isOn: $isEnabled)
+                    FieldCheckbox(isOn: $isEnabled, label: "Enable new \(kind.noun)")
                 }
-                FieldTextInput("New Key", text: $name, height: fieldHeight)
+                FieldTextInput("New Key", text: $name, height: fieldHeight, accessibilityLabel: "New \(kind.noun) name")
                     .focused($focusedField, equals: .key)
                     .frame(width: 175)
                     .padding(.horizontal, 4)
@@ -2715,7 +2727,7 @@ private struct NewFieldTableRow: View {
                         }
                     }
                 Color.clear.frame(width: 1)
-                FieldTextInput("New Value", text: $value, height: fieldHeight)
+                FieldTextInput("New Value", text: $value, height: fieldHeight, accessibilityLabel: "New \(kind.noun) value")
                     .focused($focusedField, equals: .value)
                     .frame(width: valueWidth)
                     .padding(.horizontal, 4)
