@@ -84,4 +84,21 @@ struct RunFailureMessageTests {
         #expect(message.message == "The variable “base” isn’t defined in the active environment. (url)")
         #expect(RunFailureMessage(RunFailure(kind: "workspace_reload", issues: [])).message == "Workspace reload.")
     }
+
+    @Test("The URL bar shows failures and cancellations instead of an empty status slot")
+    func runOutcomeBadges() {
+        #expect(RunOutcomeBadge(status: nil, failure: nil) == nil)
+        #expect(RunOutcomeBadge(status: 404, failure: nil) == .status(404))
+        #expect(RunOutcomeBadge(status: 404, failure: nil)?.label == "404 Not Found")
+
+        let refused = RunOutcomeBadge(status: nil, failure: RunFailure(kind: "connection", issues: []), host: "127.0.0.1:18880")
+        #expect(refused == .failed(title: "Couldn’t Connect to 127.0.0.1:18880"))
+        #expect(refused?.label == "Failed")
+        #expect(refused?.detail == "Couldn’t Connect to 127.0.0.1:18880")
+
+        // Cancelling after the head arrived reports the cancellation, not the partial status.
+        let cancelled = RunOutcomeBadge(status: 200, failure: RunFailure(kind: "cancelled", issues: []))
+        #expect(cancelled == .cancelled)
+        #expect(cancelled?.label == "Cancelled")
+    }
 }

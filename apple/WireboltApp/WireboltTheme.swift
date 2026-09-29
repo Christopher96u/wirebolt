@@ -9,6 +9,13 @@ enum WireboltTheme {
         blue: 229.0 / 255.0
     )
     static let paneBackground = Color(nsColor: .textBackgroundColor)
+    /// Selected sidebar row while the sidebar is not focused. The system's unemphasized
+    /// selection gray nearly disappears over the dark vibrant sidebar, so Dark Mode uses a
+    /// translucent white that stays visible over any wallpaper tint.
+    static let unemphasizedSidebarSelection = Color(nsColor: adaptiveColor(
+        light: .unemphasizedSelectedContentBackgroundColor,
+        dark: NSColor(white: 1, alpha: 0.16)
+    ))
     static let barBackground = AnyShapeStyle(.bar)
     static let separator = Color(nsColor: .separatorColor)
     /// Adaptive success green (also the 2xx status color).

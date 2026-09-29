@@ -64,6 +64,7 @@ final class WireboltAppDelegate: NSObject, NSApplicationDelegate {
     let interface = WorkspaceUIState()
     lazy var commandState = WorkspaceCommandState(model: model)
     private var appearanceObservation: NSKeyValueObservation?
+    private var tabSwitchMonitor: Any?
 
     func applicationWillFinishLaunching(_: Notification) {
         // In-app tabs own ⌘T; native window tabs would stack a second tab bar on top.
@@ -72,6 +73,20 @@ final class WireboltAppDelegate: NSObject, NSApplicationDelegate {
         appearanceObservation = UserDefaults.standard.observe(\.interfaceAppearance) { _, _ in
             Task { @MainActor in WireboltAppDelegate.applyInterfaceAppearance() }
         }
+        tabSwitchMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+            MainActor.assumeIsolated { self?.handleTabSwitchKey(event) == true } ? nil : event
+        }
+    }
+
+    /// ⌃⇥ / ⌃⇧⇥ switch tabs in the workspace window, alongside the menu's ⌘} / ⌘{. A menu
+    /// item holds only one shortcut, so the second pair is handled here.
+    private func handleTabSwitchKey(_ event: NSEvent) -> Bool {
+        let modifiers = event.modifierFlags.intersection([.command, .control, .option, .shift])
+        guard event.keyCode == 48, modifiers == .control || modifiers == [.control, .shift],
+              let window = event.window, window === WorkspaceWindowRegistry.primary, window.attachedSheet == nil
+        else { return false }
+        interface.selectTab(offset: modifiers.contains(.shift) ? -1 : 1, model: model)
+        return true
     }
 
     func application(_: NSApplication, open urls: [URL]) {
@@ -142,12 +157,22 @@ struct WireboltCommands: Commands {
             Button("Wirebolt Help") { openWindow(id: Self.helpWindowID) }
                 .keyboardShortcut("?", modifiers: .command)
         }
+        // Creation commands live here once; toolbar and context menus reuse them without
+        // declaring their own shortcuts.
         CommandGroup(replacing: .newItem) {
             Button("New Request") { interface.makeNewRequest(model: model) }
                 .keyboardShortcut("n", modifiers: .command)
                 .disabled(noWorkspace)
+            Button("New WebSocket Request") { interface.makeNewRequest(model: model, kind: .webSocket) }
+                .disabled(noWorkspace)
             Button("New Tab") { interface.makeNewRequest(model: model, rename: false) }
                 .keyboardShortcut("t", modifiers: .command)
+                .disabled(noWorkspace)
+            Button("New Folder") { interface.makeNewFolder(model: model) }
+                .keyboardShortcut("n", modifiers: [.command, .option])
+                .disabled(noWorkspace)
+            Button("New Collection…") { interface.promptForNewCollection() }
+                .keyboardShortcut("n", modifiers: [.command, .shift])
                 .disabled(noWorkspace)
             Divider()
             Button("New Workspace…") { chooseWorkspace(model: model, interface: interface, create: true) }
@@ -165,9 +190,6 @@ struct WireboltCommands: Commands {
                     .disabled(recents.urls.isEmpty)
             }
             .disabled(workspaceActionsBusy)
-            Divider()
-            Button("New Collection…") { interface.promptForNewCollection() }
-                .disabled(noWorkspace)
         }
         CommandGroup(replacing: .saveItem) {
             Button("Close Tab") {
@@ -187,12 +209,9 @@ struct WireboltCommands: Commands {
             .keyboardShortcut("s", modifiers: .command)
             .disabled(noWorkspace || !state.hasActiveSession || !state.hasName || !state.hasCollections)
         }
-        CommandGroup(replacing: .toolbar) {
-            Button(NSApp.keyWindow?.toolbar?.isVisible == false ? "Show Toolbar" : "Hide Toolbar") {
-                NSApp.keyWindow?.toggleToolbarShown(nil)
-            }.keyboardShortcut("t", modifiers: [.command, .option]).disabled(noWorkspace)
-            Button("Customize Toolbar…") { NSApp.keyWindow?.runToolbarCustomizationPalette(nil) }
-                .disabled(noWorkspace)
+        // The system toolbar items keep "Show/Hide Toolbar" in sync with the window.
+        ToolbarCommands()
+        CommandGroup(after: .toolbar) {
             Divider()
             Button("Filter Requests") { interface.focusSearchTrigger += 1 }
                 .keyboardShortcut("f", modifiers: [.command, .shift]).disabled(noWorkspace)
@@ -220,14 +239,6 @@ struct WireboltCommands: Commands {
             }.keyboardShortcut(.return, modifiers: [.command, .control])
                 .disabled(noWorkspace || state.activeKind != .webSocket || !state.hasURL)
             Divider()
-            Menu("New Request") {
-                Button("HTTP") { interface.makeNewRequest(model: model) }
-                    .keyboardShortcut("n", modifiers: [.command, .shift])
-                Button("WebSocket") { interface.makeNewRequest(model: model, kind: .webSocket) }
-            }.disabled(noWorkspace)
-            Button("New Folder") { interface.makeNewFolder(model: model) }
-                .keyboardShortcut("n", modifiers: [.command, .option]).disabled(noWorkspace)
-            Divider()
             // Reorders the request or folder selected in the focused sidebar.
             Button("Move Up") {
                 if let sidebarMove { interface.moveSidebarItem(sidebarMove.identifier, by: -1, model: model) }
@@ -245,9 +256,10 @@ struct WireboltCommands: Commands {
             Button("Edit URL") { interface.focusURLTrigger += 1 }
                 .keyboardShortcut("l", modifiers: .command)
                 .disabled(noWorkspace || !state.hasActiveSession)
+            // Switches to Params first when the visible section has no key-value table.
             Button("Add Key") { interface.addKey() }
                 .keyboardShortcut("k", modifiers: [.command, .shift])
-                .disabled(noWorkspace || !interface.canEditFields)
+                .disabled(noWorkspace || !state.hasActiveSession)
             Divider()
             Toggle("Bulk Edit", isOn: $interface.isBulkEditing)
                 .keyboardShortcut("b", modifiers: .command)
@@ -266,10 +278,34 @@ struct WireboltCommands: Commands {
             }.keyboardShortcut("d", modifiers: [.command, .shift])
                 .disabled(noWorkspace || !state.hasActiveSession)
             Divider()
-            Button("Select Next Tab") { interface.selectTab(offset: 1, model: model) }
-                .keyboardShortcut(.tab, modifiers: .control).disabled(noWorkspace)
-            Button("Select Previous Tab") { interface.selectTab(offset: -1, model: model) }
-                .keyboardShortcut(.tab, modifiers: [.control, .shift]).disabled(noWorkspace)
+            Button("Focus Sidebar") { interface.focusSidebar() }
+                .keyboardShortcut("0", modifiers: .command)
+                .disabled(noWorkspace)
+            Button("Focus Response") { interface.focusResponseTrigger += 1 }
+                .keyboardShortcut("0", modifiers: [.command, .option])
+                .disabled(noWorkspace || !state.hasActiveSession)
+            Menu("Request Section") {
+                ForEach(Array(RequestPanelSection.allCases.enumerated()), id: \.element) { index, section in
+                    Button(section == .body && state.activeKind == .webSocket ? "Message" : section.rawValue) {
+                        interface.requestSection = section
+                    }
+                    .keyboardShortcut(KeyEquivalent(Character(String(index + 1))), modifiers: [.command, .option])
+                }
+            }.disabled(noWorkspace || !state.hasActiveSession)
+            // Shift is avoided with digits: ⇧1 types "!" and would not match on every layout.
+            Menu("Response Section") {
+                ForEach(Array(ResponsePanelSection.allCases.enumerated()), id: \.element) { index, section in
+                    Button(section.rawValue) { interface.responseSection = section }
+                        .keyboardShortcut(KeyEquivalent(Character(String(index + 1))), modifiers: [.command, .control])
+                }
+            }.disabled(noWorkspace || state.activeKind != .http)
+            Divider()
+            // ⌘} and ⌘{ (typed as ⇧⌘] and ⇧⌘[ on U.S. keyboards). ⌃⇥ and ⌃⇧⇥ also switch
+            // tabs; see `WireboltAppDelegate.handleTabSwitchKey(_:)`.
+            Button("Show Next Tab") { interface.selectTab(offset: 1, model: model) }
+                .keyboardShortcut("}", modifiers: .command).disabled(noWorkspace || state.tabCount < 2)
+            Button("Show Previous Tab") { interface.selectTab(offset: -1, model: model) }
+                .keyboardShortcut("{", modifiers: .command).disabled(noWorkspace || state.tabCount < 2)
             Menu("Select Tab at Index") {
                 ForEach(1...9, id: \.self) { index in
                     Button("Tab \(index)") { interface.selectTab(index: index - 1, model: model) }

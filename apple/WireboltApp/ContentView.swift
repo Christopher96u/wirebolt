@@ -237,6 +237,11 @@ struct ContentView: View {
 
         }
 
+        if #available(macOS 26.0, *) {
+            // Pins the window actions to the trailing edge. Without it they follow the
+            // environment picker whenever the window has no visible title to push them over.
+            ToolbarSpacer(.flexible, placement: .primaryAction)
+        }
         ToolbarItem(id: "workspace-settings", placement: .primaryAction) {
             Button("Workspace Settings", systemImage: "gearshape") { model.isShowingWorkspaceSettings = true }
                 .labelStyle(.iconOnly).buttonStyle(.borderless).help("Workspace Settings")
@@ -245,12 +250,14 @@ struct ContentView: View {
             Button {
                 interface.responseOrientation = interface.responseOrientation == .bottom ? .right : .bottom
             } label: {
-                ResponsePlacementIcon(right: interface.responseOrientation == .right).frame(width: 17, height: 13)
+                // Shows the current layout, like Xcode's area toggles.
+                Image(systemName: interface.responseOrientation == .right
+                    ? "rectangle.righthalf.inset.filled" : "rectangle.bottomthird.inset.filled")
             }
             .accessibilityLabel(interface.responseOrientation == .bottom ? "Place Response on Right" : "Place Response on Bottom")
             .buttonStyle(.borderless)
             .frame(width: 30, height: 30)
-            .help(interface.responseOrientation == .bottom ? "Response on Right" : "Response on Bottom")
+            .help(interface.responseOrientation == .bottom ? "Place Response on Right" : "Place Response on Bottom")
         }
     }
 
@@ -260,6 +267,7 @@ struct ContentView: View {
             interface.columnVisibility = interface.columnVisibility == .detailOnly ? .all : .detailOnly
         }
         .labelStyle(.iconOnly).buttonStyle(.borderless).frame(width: 26, height: 30)
+        .help(interface.columnVisibility == .detailOnly ? "Show Sidebar (⌃⌘S)" : "Hide Sidebar (⌃⌘S)")
     }
 
     private func handleImport(_ result: Result<[URL], any Error>) {
@@ -277,30 +285,14 @@ struct ContentView: View {
     }
 }
 
-private struct ResponsePlacementIcon: View {
-    let right: Bool
-    var body: some View {
-        ZStack {
-            RoundedRectangle(cornerRadius: 2).stroke(lineWidth: 1)
-            Path { path in
-                path.move(to: right ? CGPoint(x: 11, y: 0) : CGPoint(x: 0, y: 7))
-                path.addLine(to: right ? CGPoint(x: 11, y: 13) : CGPoint(x: 17, y: 7))
-            }.stroke(lineWidth: 1)
-            ForEach(0..<3) { index in
-                Circle().frame(width: 1.5, height: 1.5)
-                    .position(x: right ? 14 : 4 + CGFloat(index) * 4.5, y: right ? 3 + CGFloat(index) * 3.5 : 10)
-            }
-        }.foregroundStyle(.secondary).accessibilityHidden(true)
-    }
-}
-
 /// Names the window "<Workspace> — <Request>" for the Window menu, Mission Control and
 /// VoiceOver. Isolated so title changes do not re-render the workspace.
 private struct WorkspaceWindowTitle: View {
     let model: WireboltModel
 
     var body: some View {
-        let workspace = model.workspace.name
+        // Never empty: an untitled window has no name in the Window menu or Mission Control.
+        let workspace = model.workspace.name.isEmpty ? "Wirebolt" : model.workspace.name
         let request = model.sessions.activeSession?.title ?? ""
         Color.clear
             .navigationTitle(request.isEmpty ? workspace : "\(workspace) — \(request)")
@@ -393,6 +385,13 @@ private struct WorkspaceSidebar: View {
         .onChange(of: interface.focusSidebarTrigger) {
             if !interface.isRenamingInSidebar { sidebarIsFocused = true }
         }
+        .task {
+            // Focus Sidebar while the sidebar was hidden: take focus once it is on screen.
+            guard interface.focusesSidebarOnAppear else { return }
+            interface.focusesSidebarOnAppear = false
+            await Task.yield()
+            sidebarIsFocused = true
+        }
         .background { SidebarCursorReset(model: model, interface: interface) }
         .onDeleteCommand {
             if !interface.isRenamingInSidebar { interface.requestDeleteOfSelection(model: model) }
@@ -473,7 +472,7 @@ private extension EnvironmentValues {
     @Entry var sidebarSelectionIsEmphasized = false
 }
 
-/// Accent fill while the sidebar has focus, the system's unemphasized gray otherwise.
+/// Accent fill while the sidebar has focus, a neutral gray otherwise.
 private struct SidebarSelectionBackground: View {
     let isSelected: Bool
     var leadingInset: CGFloat = 0
@@ -491,7 +490,7 @@ private struct SidebarSelectionBackground: View {
 
     private var fill: Color {
         guard isSelected else { return .clear }
-        guard emphasized else { return Color(nsColor: .unemphasizedSelectedContentBackgroundColor) }
+        guard emphasized else { return WireboltTheme.unemphasizedSidebarSelection }
         // Opaque in light mode so white labels keep 4.5:1 over the sidebar.
         return WireboltTheme.primaryAccent.opacity(colorScheme == .dark ? 0.82 : 1)
     }
@@ -633,15 +632,14 @@ private struct CollectionActionMenu: View {
 
     var body: some View {
         Menu {
+            // Shortcuts are declared once, on the File menu commands.
             Menu("New Request") {
                 Button("HTTP") { interface.makeNewRequest(model: model) }
-                    .keyboardShortcut("n", modifiers: [.command, .shift])
                 Button("WebSocket") { interface.makeNewRequest(model: model, kind: .webSocket) }
             }
             Button("New Folder") {
                 interface.makeNewFolder(model: model)
             }
-                .keyboardShortcut("n", modifiers: [.command, .option])
             Divider()
             Button("New Collection…") { interface.promptForNewCollection() }
             Button("Open Workspace…") { chooseWorkspace(model: model, interface: interface, create: false) }
@@ -1298,6 +1296,7 @@ private struct ImportStatusBanner: View {
             Button("Dismiss", systemImage: "xmark", action: dismiss)
                 .labelStyle(.iconOnly)
                 .buttonStyle(.borderless)
+                .help("Dismiss")
         }
         .font(.caption)
         .padding(.horizontal, 10)
@@ -1373,6 +1372,7 @@ private struct EditorGroupDeck: View {
                         groupID: groupID
                     )
                 } response: {
+                    Group {
                     if session.kind == .http {
                         ResponseViewer(
                             interface: presentation,
@@ -1387,6 +1387,8 @@ private struct EditorGroupDeck: View {
                     } else {
                         WebSocketResponseView(session: session)
                     }
+                    }
+                    .background { ResponseFocusAnchor(model: model, interface: interface, groupID: groupID) }
                 }
                 .environment(\.editorStorage, presentation.editorStorage)
                 .simultaneousGesture(TapGesture().onEnded {
@@ -1397,7 +1399,9 @@ private struct EditorGroupDeck: View {
                 .id(session.id)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
+                // Fill the detail area so the empty state is centered below the tab bar.
                 NoOpenRequestPlaceholder(model: model, interface: interface)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         }
     }
@@ -1410,32 +1414,51 @@ private struct EditorGroupDeck: View {
     }
 }
 
+/// Which edges of the tab strip have tabs scrolled out of view.
+private struct TabStripOverflow: Equatable {
+    var leading = false
+    var trailing = false
+}
+
 private struct DocumentTabBar: View {
     @Bindable var model: WireboltModel
     @Bindable var interface: WorkspaceUIState
     let groupID: String
+    @State private var overflow = TabStripOverflow()
+
+    /// Tabs shrink to this width before the strip starts scrolling.
+    private static let minimumTabWidth = 96.0
+
+    private var overflowDivider: some View {
+        Rectangle().fill(WireboltTheme.separator).frame(width: 1, height: 16)
+            .allowsHitTesting(false)
+            .accessibilityHidden(true)
+    }
 
     var body: some View {
         HStack(spacing: 0) {
             if model.sessions.groups.count > 1 {
-                Button("Close Group", systemImage: "xmark") {
+                Button("Close Split", systemImage: "xmark") {
                     interface.close(.all, model: model, in: groupID)
                 }
                 .labelStyle(.iconOnly).buttonStyle(.borderless)
                 .foregroundStyle(.secondary).frame(width: 30)
+                .help("Close Split")
             }
-            Button("Back", systemImage: "chevron.left", action: goBack)
+            Button("Back", systemImage: "chevron.backward", action: goBack)
                 .labelStyle(.iconOnly)
                 .buttonStyle(.borderless)
                 .foregroundStyle(.tertiary)
                 .frame(width: 30)
                 .disabled(group?.backwardTabIDs.isEmpty != false)
-            Button("Forward", systemImage: "chevron.right", action: goForward)
+                .help("Back (⌃⌘←)")
+            Button("Forward", systemImage: "chevron.forward", action: goForward)
                 .labelStyle(.iconOnly)
                 .buttonStyle(.borderless)
                 .foregroundStyle(.tertiary)
                 .frame(width: 30)
                 .disabled(group?.forwardTabIDs.isEmpty != false)
+                .help("Forward (⌃⌘→)")
 
             GeometryReader { geometry in
             ScrollViewReader { scroll in
@@ -1466,21 +1489,35 @@ private struct DocumentTabBar: View {
                             interface.close(.all, model: model, in: groupID)
                         }
                     )
-                        .frame(width: max(110, geometry.size.width / Double(max(1, tabs.count))))
+                        .frame(width: max(Self.minimumTabWidth, geometry.size.width / Double(max(1, tabs.count))))
                         .id(tab.id)
                 }
             }
             .padding(.top, 2)
             }
             .scrollIndicators(.never)
+            .onScrollGeometryChange(for: TabStripOverflow.self) { geometry in
+                TabStripOverflow(
+                    leading: geometry.contentOffset.x > 0.5,
+                    trailing: geometry.contentOffset.x + geometry.containerSize.width < geometry.contentSize.width - 0.5
+                )
+            } action: { _, overflow in
+                self.overflow = overflow
+            }
             .onChange(of: group?.selectedTabID) { _, selected in
                 if let selected { scroll.scrollTo(selected, anchor: .center) }
             }
             }
             }
+            .clipped()
+            // Tabs cut off at an edge end at a divider, so they never look like they run
+            // underneath the navigation or split buttons.
+            .overlay(alignment: .leading) { if overflow.leading { overflowDivider } }
+            .overlay(alignment: .trailing) { if overflow.trailing { overflowDivider } }
+            .padding(.trailing, WireboltTheme.Spacing.xSmall)
             .frame(maxWidth: .infinity)
 
-            Button("Open in New Split", systemImage: "sidebar.right") {
+            Button("Open in New Split", systemImage: "rectangle.split.2x1") {
                 if let selected = group?.selectedTabID {
                     interface.openInNewSplit(tabID: selected, model: model)
                 }
@@ -1490,6 +1527,7 @@ private struct DocumentTabBar: View {
                 .foregroundStyle(.secondary)
                 .frame(width: 30)
                 .disabled(group?.selectedTabID == nil)
+                .help("Open in New Split (⇧⌘D)")
         }
         .frame(height: 32)
         .background(WireboltTheme.barBackground)
@@ -1652,6 +1690,68 @@ private struct DocumentTabLabel: NSViewRepresentable {
     private static func font(italic: Bool) -> NSFont { italic ? italicFont : regularFont }
 }
 
+/// Navigate ▸ Focus Response: moves keyboard focus to the largest focusable view inside the
+/// active group's response pane (the body editor, hex view, JSON tree or message table).
+/// Isolated so only this view observes the trigger and the active group.
+private struct ResponseFocusAnchor: View {
+    let model: WireboltModel
+    let interface: WorkspaceUIState
+    let groupID: String
+
+    var body: some View {
+        ResponseFocusBridge(
+            trigger: interface.focusResponseTrigger,
+            isActive: model.sessions.activeGroupID == groupID
+        )
+        .accessibilityHidden(true)
+    }
+}
+
+private struct ResponseFocusBridge: NSViewRepresentable {
+    let trigger: Int
+    let isActive: Bool
+
+    func makeNSView(context: Context) -> AnchorView {
+        let view = AnchorView()
+        // A pane that appears later must not steal focus for an earlier request.
+        view.handledTrigger = trigger
+        return view
+    }
+
+    func updateNSView(_ view: AnchorView, context _: Context) {
+        guard trigger != view.handledTrigger else { return }
+        view.handledTrigger = trigger
+        guard isActive else { return }
+        DispatchQueue.main.async { view.focusLargestResponder() }
+    }
+
+    final class AnchorView: NSView {
+        var handledTrigger = 0
+
+        override func hitTest(_: NSPoint) -> NSView? { nil }
+
+        func focusLargestResponder() {
+            guard let window, let root = window.contentView else { return }
+            let pane = convert(bounds, to: nil).insetBy(dx: -1, dy: -1)
+            var best: (view: NSView, area: CGFloat)?
+            func visit(_ view: NSView) {
+                for subview in view.subviews where !subview.isHidden {
+                    // The visible part: a text view inside a scroll view is taller than the pane.
+                    let frame = subview.convert(subview.visibleRect, to: nil)
+                    guard !frame.isEmpty, frame.intersects(pane) else { continue }
+                    if subview !== self, subview.acceptsFirstResponder, pane.contains(frame) {
+                        let area = frame.width * frame.height
+                        if area > (best?.area ?? 0) { best = (subview, area) }
+                    }
+                    visit(subview)
+                }
+            }
+            visit(root)
+            if let target = best?.view { window.makeFirstResponder(target) } else { NSSound.beep() }
+        }
+    }
+}
+
 /// Mirrors unsaved edits in any tab to the window's close button (NSWindow.isDocumentEdited).
 private struct WindowEditedIndicator: View {
     let model: WireboltModel
@@ -1764,6 +1864,7 @@ private struct WebSocketRequestWorkspace: View {
                 }
                 Menu("Message Actions", systemImage: "ellipsis.circle") { EditorPreferencesMenu() }
                     .menuStyle(.borderlessButton).menuIndicator(.hidden).labelStyle(.iconOnly).fixedSize()
+                    .help("Message Actions")
             }
             .padding(.horizontal, 11)
             .frame(height: 32)
@@ -1783,9 +1884,9 @@ private struct WebSocketRequestWorkspace: View {
                 FileBodyEditor(path: path, contentType: contentType) { session.draft.body = .file(path: $0, contentType: $1) }
             } else { BodyTextEditor(text: messageText, language: messageKind.wrappedValue == .json ? .json : .plain) }
         case .params:
-            FieldEditor(title: "Query Params", fields: $session.draft.query, kind: .query)
+            FieldEditor(title: "Query Params", fields: $session.draft.query, kind: .query, focusTrigger: interface.focusNewKeyTrigger)
         case .headers:
-            FieldEditor(title: "Header List", fields: $session.draft.headers, kind: .header)
+            FieldEditor(title: "Header List", fields: $session.draft.headers, kind: .header, focusTrigger: interface.focusNewKeyTrigger)
         case .auth:
             AuthenticationEditor(model: model, session: session, authentication: $session.draft.authentication)
         case .settings:
@@ -1989,10 +2090,8 @@ private struct RequestURLBar: View {
         Group {
             if session.kind == .webSocket {
                 if session.socket.status == .disconnected {
-                    Button(action: toggleConnection) { actionTitle("Connect") }
-                        .buttonStyle(.borderedProminent)
+                    prominentAction("Connect", enabled: hasURL, action: toggleConnection)
                         .help(hasURL ? "Connect (⌃⌘↩)" : "Enter a URL to connect")
-                        .disabled(!hasURL)
                 } else {
                     Button(action: toggleConnection) { actionTitle("Disconnect") }
                         .buttonStyle(.bordered)
@@ -2004,11 +2103,9 @@ private struct RequestURLBar: View {
                     .accessibilityLabel("Cancel Request")
                     .help("Cancel Request (⌘.)")
             } else {
-                Button(action: send) { actionTitle("Send") }
-                    .buttonStyle(.borderedProminent)
+                prominentAction("Send", enabled: hasURL, action: send)
                     .accessibilityLabel("Send Request")
                     .help(hasURL ? "Send Request (⌘↩)" : "Enter a URL to send the request")
-                    .disabled(!hasURL)
             }
         }
         .controlSize(.large)
@@ -2020,6 +2117,21 @@ private struct RequestURLBar: View {
     /// Equal minimum widths keep Send and Cancel from shifting the URL field when they swap.
     private func actionTitle(_ title: String) -> some View {
         Text(title).frame(minWidth: 52)
+    }
+
+    /// A disabled prominent button keeps a tinted fill that reads as enabled, especially in
+    /// Dark Mode, so an unavailable Send or Connect falls back to the neutral bordered style
+    /// with the system's dimmed label.
+    @ViewBuilder
+    private func prominentAction(_ title: String, enabled: Bool, action: @escaping () -> Void) -> some View {
+        if enabled {
+            Button(action: action) { actionTitle(title) }
+                .buttonStyle(.borderedProminent)
+        } else {
+            Button(action: action) { actionTitle(title) }
+                .buttonStyle(.bordered)
+                .disabled(true)
+        }
     }
 
     private func toggleConnection() {
@@ -2295,32 +2407,63 @@ private struct InlineResponseStatus: View {
                 ProgressView()
                     .controlSize(.small)
                     .accessibilityLabel(session.kind == .webSocket ? "Connecting" : "Sending")
-            } else if let status {
+            } else if let outcome {
                 HStack(spacing: WireboltTheme.Spacing.small) {
-                    Image(systemName: WireboltTheme.statusSymbol(status))
+                    Image(systemName: symbol(for: outcome))
                         .font(.system(size: compact ? 15 : 14))
                     if !compact {
-                        Text(ResponseFormatting.statusLine(status))
+                        Text(outcome.label)
                             .font(.system(size: 14).monospacedDigit())
                             .lineLimit(1)
                             .truncationMode(.tail)
                             .contentTransition(reduceMotion ? .identity : .numericText())
                     }
                 }
-                .foregroundStyle(WireboltTheme.statusColor(status))
-                .help(ResponseFormatting.statusLine(status))
+                .foregroundStyle(color(for: outcome))
+                .help(outcome.detail)
                 .accessibilityElement(children: .ignore)
-                .accessibilityLabel("Status \(ResponseFormatting.statusLine(status))")
+                .accessibilityLabel(accessibilityLabel(for: outcome))
             }
         }
-        .animation(reduceMotion ? nil : .snappy(duration: 0.2), value: status)
+        .animation(reduceMotion ? nil : .snappy(duration: 0.2), value: outcome)
     }
 
-    private var status: UInt16? {
+    private var outcome: RunOutcomeBadge? {
         if session.kind == .webSocket {
-            return session.socket.status == .connected ? 101 : nil
+            return session.socket.status == .connected ? .status(101) : nil
         }
-        return session.responseHead?.status
+        let failure = session.failure
+        // The URL is read only after a failure so typing does not re-render the status.
+        return RunOutcomeBadge(
+            status: session.responseHead?.status,
+            failure: failure,
+            host: failure == nil ? nil : RunFailureMessage.host(from: session.preparedRun?.url ?? session.draft.url)
+        )
+    }
+
+    private func symbol(for outcome: RunOutcomeBadge) -> String {
+        switch outcome {
+        case let .status(status): WireboltTheme.statusSymbol(status)
+        case .failed: "exclamationmark.octagon.fill"
+        case .cancelled: "xmark.circle.fill"
+        }
+    }
+
+    /// A user-initiated cancel is not an error, so it stays neutral.
+    private func color(for outcome: RunOutcomeBadge) -> Color {
+        switch outcome {
+        case let .status(status): WireboltTheme.statusColor(status)
+        case .failed: WireboltTheme.danger
+        case .cancelled: .secondary
+        }
+    }
+
+    private func accessibilityLabel(for outcome: RunOutcomeBadge) -> String {
+        switch outcome {
+        case .status: "Status \(outcome.detail)"
+        case .failed: "Request failed. \(outcome.detail)"
+        case .cancelled: "Request cancelled"
+        }
     }
 }
 
@@ -2604,6 +2747,7 @@ private struct RequestSectionBar: View {
                 .menuStyle(.borderlessButton).menuIndicator(.hidden)
                 .labelStyle(.iconOnly).foregroundStyle(.secondary).fixedSize()
                 .frame(width: 30, height: 32)
+                .help("Section Actions")
             }
         }.fixedSize().frame(height: 32)
     }
@@ -2816,6 +2960,7 @@ private struct FieldTableRow: View {
                 .buttonStyle(.borderless)
                 .foregroundStyle(.secondary)
                 .frame(width: 42, height: 20)
+                .help("Remove")
                 .opacity(isHovered ? 1 : 0)
                 .allowsHitTesting(isHovered)
         }
@@ -2893,6 +3038,7 @@ private struct NewFieldTableRow: View {
                         .buttonStyle(.borderless)
                         .foregroundStyle(.secondary)
                         .frame(width: 42, height: 20)
+                        .help("Discard New Field")
                 }
             }
             .frame(height: fieldHeight)
@@ -3400,9 +3546,11 @@ private struct BodyTools: View {
             if case let .multipart(parts) = requestBody {
                 Button("Add Part", systemImage: "plus") { requestBody = .multipart(parts: parts + [MultipartPart()]) }
                     .labelStyle(.iconOnly).buttonStyle(.borderless)
+                    .help("Add Part")
             } else {
                 Button("Format Body", systemImage: "wand.and.stars", action: formatBody)
                     .labelStyle(.iconOnly).buttonStyle(.borderless).disabled(!requestBody.canFormat)
+                    .help("Format Body")
             }
             Menu("Body Actions", systemImage: "ellipsis.circle") {
                 if case .multipart = requestBody {
@@ -3413,6 +3561,7 @@ private struct BodyTools: View {
                 }
                 EditorPreferencesMenu()
             }.menuStyle(.borderlessButton).menuIndicator(.hidden).labelStyle(.iconOnly).fixedSize()
+            .help("Body Actions")
         }.fixedSize()
     }
 

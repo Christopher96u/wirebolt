@@ -17,24 +17,24 @@ Leave that terminal open. It listens only on `127.0.0.1:18990`. Stop it with **C
 ## Create and send a request
 
 1. Open Wirebolt and choose **File → New Workspace…**. Choose a new folder.
-2. Choose **File → New Collection…** and name it **Catalog API**.
-3. Create an HTTP request from the toolbar **+** menu.
+2. Choose **File → New Collection…** (**⇧⌘N**) and name it **Catalog API**.
+3. Click **New Request** under the empty collection in the sidebar. Type the name **List products** and press **Return**.
 4. Choose **GET** and enter `http://127.0.0.1:18990/products`.
 5. Click **Send** or press **⌘Return**.
-6. Expect **200** and a JSON object containing `products` and `total`.
-7. Press **⌘S**, choose the collection if prompted, and name the request **List products**.
+6. Expect **200 OK** beside the URL and a JSON object containing `products` and `total`.
+7. Press **⌘S** to save the request.
 
 If your system proxy interferes with loopback requests, select **Direct — No proxy** in the request's **Settings** tab, apply it and retry. This changes only that request.
 
 ## Send JSON
 
-Create another request with method **POST** and URL `http://127.0.0.1:18990/echo`. In **Body**, select JSON and enter:
+Create another request (right-click **Catalog API** → **New Request** → **HTTP**) with method **POST** and URL `http://127.0.0.1:18990/echo`. In **Body**, select JSON and enter:
 
 ```json
 {"name":"Desk lamp","quantity":2}
 ```
 
-Send the request. The response includes your JSON under `body`. Save it as **Create order**.
+Send the request. The response includes your JSON under `body`. Rename it **Create order** (double-click its tab or press **Return** on its sidebar row) and save it.
 
 ![A JSON request and its successful response](assets/screenshots/overview.png)
 

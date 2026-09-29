@@ -104,6 +104,7 @@ struct EnvironmentEditor: View {
                             Button("New Entry", action: addRow)
                             Button("Clear All") { selected.variables.wrappedValue = [] }
                         }.menuStyle(.borderlessButton).menuIndicator(.hidden).labelStyle(.iconOnly)
+                        .help("Variable Actions")
                     }.padding(.leading, 12).frame(height: 31)
                     Divider()
                     HStack(spacing: 0) {

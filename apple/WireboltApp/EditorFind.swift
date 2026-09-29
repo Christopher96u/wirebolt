@@ -68,13 +68,17 @@ private struct EditorFindBar: View {
             .help(state.error ?? "Find")
             Text(state.countLabel).font(.system(size: 12)).lineLimit(1).frame(width: 69, alignment: .leading)
             Button("Previous Match", systemImage: "arrow.up") { state.move(-1) }.disabled(state.matchCount == 0)
+                .help("Previous Match (⇧↩)")
             Button("Next Match", systemImage: "arrow.down") { state.move(1) }.disabled(state.matchCount == 0)
+                .help("Next Match (↩)")
             Button("Find in Selection", systemImage: "line.3.horizontal.decrease") { state.selectionOnly.toggle() }
                 .disabled(!state.hasSelection)
+                .help("Find in Selection (⌥⌘L)")
                 .background(state.selectionOnly ? WireboltTheme.primaryAccent.opacity(0.25) : .clear)
                 .keyboardShortcut("l", modifiers: [.command, .option])
                 .accessibilityRepresentation { Toggle("Find in Selection", isOn: $state.selectionOnly).disabled(!state.hasSelection) }
-            Button("Close (Escape)", systemImage: "xmark") { state.isVisible = false }
+            Button("Close Find", systemImage: "xmark") { state.isVisible = false }
+                .help("Close (Esc)")
         }
         .font(.system(size: 13))
         .buttonStyle(FindIconButtonStyle())
