@@ -3115,20 +3115,31 @@ private struct MultipartRow: View {
             .onAppear { if part.name.isEmpty { isEditing = true } }
     }
     private func export() {
-        let panel = NSSavePanel()
-        panel.nameFieldStringValue = part.fileName ?? (part.name.isEmpty ? "part" : part.name)
-        guard panel.runModal() == .OK, let url = panel.url else { return }
-        do {
-            let data: Data
-            switch part.kind {
-            case .file: data = try Data(contentsOf: URL(fileURLWithPath: part.filePath ?? ""), options: .mappedIfSafe)
-            case .binary:
-                guard let decoded = Data(base64Encoded: part.value.editableValue) else { NSSound.beep(); return }
-                data = decoded
-            case .text: data = Data(part.value.editableValue.utf8)
+        let part = part
+        let window = NSApp.keyWindow
+        Task {
+            let panel = NSSavePanel()
+            panel.nameFieldStringValue = part.fileName ?? (part.name.isEmpty ? "part" : part.name)
+            guard await present(panel, in: window) == .OK, let url = panel.url else { return }
+            do {
+                let data: Data
+                switch part.kind {
+                case .file: data = try Data(contentsOf: URL(fileURLWithPath: part.filePath ?? ""), options: .mappedIfSafe)
+                case .binary:
+                    guard let decoded = Data(base64Encoded: part.value.editableValue) else {
+                        throw CocoaError(.fileWriteUnknown, userInfo: [NSLocalizedDescriptionKey: "The part’s Base64 value is not valid."])
+                    }
+                    data = decoded
+                case .text: data = Data(part.value.editableValue.utf8)
+                }
+                try data.write(to: url, options: .atomic)
+            } catch {
+                let alert = NSAlert()
+                alert.messageText = "The part could not be exported."
+                alert.informativeText = error.localizedDescription
+                _ = await present(alert, in: window)
             }
-            try data.write(to: url, options: .atomic)
-        } catch { NSSound.beep() }
+        }
     }
 }
 
