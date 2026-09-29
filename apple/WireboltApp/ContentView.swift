@@ -2924,6 +2924,7 @@ private struct AuthenticationEditor: View {
     @Bindable var session: DocumentSession
     @Binding var authentication: RequestAuthentication
     @State private var clientSecretMaterial = ""
+    @State private var revealsPassword = false
 
     var body: some View {
         Group {
@@ -2936,11 +2937,25 @@ private struct AuthenticationEditor: View {
                 Grid(alignment: .leading, horizontalSpacing: 8, verticalSpacing: 5) {
                     GridRow {
                         Text("Username").gridColumnAlignment(.trailing)
-                        TextField("", text: credential(username, role: "username"))
+                        TextField("Username", text: credential(username, role: "username"))
+                            .labelsHidden()
                     }
                     GridRow {
                         Text("Password")
-                        TextField("", text: credential(password, role: "password"))
+                        HStack(spacing: WireboltTheme.Spacing.xSmall) {
+                            Group {
+                                if revealsPassword {
+                                    TextField("Password", text: credential(password, role: "password"))
+                                } else {
+                                    SecureField("Password", text: credential(password, role: "password"))
+                                }
+                            }
+                            .labelsHidden()
+                            Button(revealsPassword ? "Hide Password" : "Show Password",
+                                   systemImage: revealsPassword ? "eye.slash" : "eye") { revealsPassword.toggle() }
+                                .labelStyle(.iconOnly).buttonStyle(.borderless)
+                                .help(revealsPassword ? "Hide Password" : "Show Password")
+                        }
                     }
                     GridRow(alignment: .top) {
                         Text("Generated Header").padding(.top, 3)
@@ -2957,6 +2972,7 @@ private struct AuthenticationEditor: View {
                 HStack(alignment: .top, spacing: 10) {
                     Text("Bearer Token").frame(width: 80, alignment: .trailing).padding(.top, 5)
                     TextEditor(text: credential(token, role: "token"))
+                        .accessibilityLabel("Bearer Token")
                         .font(.system(size: 13)).scrollContentBackground(.hidden)
                         .padding(4).frame(height: 162)
                         .background(Color(nsColor: .textBackgroundColor), in: .rect(cornerRadius: 5))
@@ -3438,12 +3454,12 @@ private struct MultipartPartEditor: View {
             Grid(alignment: .leading, horizontalSpacing: 8, verticalSpacing: 2) {
                 GridRow {
                     Text("Part:").gridColumnAlignment(.trailing)
-                    TextField("", text: $part.name).frame(height: 26)
+                    TextField("Part Name", text: $part.name).labelsHidden().frame(height: 26)
                 }
                 GridRow {
                     Text("Content Type:")
                     HStack(spacing: 0) {
-                        TextField("", text: optional(\.contentType))
+                        TextField("Content Type", text: optional(\.contentType)).labelsHidden()
                         Menu("Content Type") {
                             ForEach(["text/plain", "application/json", "application/xml", "application/octet-stream", "image/png"], id: \.self) { type in
                                 Button(type) { part.contentType = type }
@@ -3453,7 +3469,7 @@ private struct MultipartPartEditor: View {
                 }
                 GridRow {
                     Text("File Name:")
-                    TextField("", text: optional(\.fileName)).frame(height: 26)
+                    TextField("File Name", text: optional(\.fileName)).labelsHidden().frame(height: 26)
                 }
                 GridRow(alignment: .top) {
                     Text("Value:").padding(.top, 4)
