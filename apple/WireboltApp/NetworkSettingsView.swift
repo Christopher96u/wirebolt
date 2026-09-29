@@ -438,14 +438,14 @@ struct WireboltSettingsView: View {
             Tab("General", systemImage: "gearshape", value: "general") {
                 Grid(alignment: .leading, horizontalSpacing: 10, verticalSpacing: 13) {
                     GridRow(alignment: .top) {
-                        Text("Font Size:")
+                        Text("Font Size:").gridColumnAlignment(.trailing)
                         VStack(alignment: .leading, spacing: 6) {
                             Picker("Font Size", selection: $fontSize) {
                                 ForEach(Array(10...20) + [24, 28], id: \.self) { size in
                                     Text(String(size)).tag(Double(size))
                                 }
                             }.labelsHidden().frame(width: 60)
-                            Text("Only Apply to the Body Tab.").font(.system(size: 11)).foregroundStyle(.secondary)
+                            Text("Applies only to the Body tab.").font(WireboltTheme.Typography.detail).foregroundStyle(.secondary)
                         }
                     }
                     GridRow {
@@ -457,14 +457,17 @@ struct WireboltSettingsView: View {
                         }.labelsHidden().frame(width: 80)
                     }
                 }
-                .font(.system(size: 13)).controlSize(.regular)
-                .padding(.leading, 44).padding(.trailing, 20).padding(.vertical, 20)
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+                .font(WireboltTheme.Typography.body).controlSize(.regular)
+                .padding(WireboltTheme.Spacing.xxLarge)
+                // The Settings window sizes itself to each tab's content.
+                .frame(width: 440, alignment: .top)
+                .fixedSize(horizontal: false, vertical: true)
             }
             Tab("Network", systemImage: "network", value: "network") {
                 NetworkSettingsPage(model: model, scope: .app)
+                    .frame(width: 600, height: 540)
             }
-            Tab("Privacy", systemImage: "person.fill", value: "privacy") {
+            Tab("Privacy", systemImage: "hand.raised", value: "privacy") {
                 Grid(alignment: .leading, horizontalSpacing: 10, verticalSpacing: 18) {
                     GridRow(alignment: .top) {
                         Text("Analytics:").frame(width: 104, alignment: .trailing)
@@ -493,9 +496,10 @@ struct WireboltSettingsView: View {
                         }
                     }
                 }
-                .font(.system(size: 13)).controlSize(.regular)
-                .padding(.leading, 44).padding(.trailing, 18).padding(.top, 20)
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+                .font(WireboltTheme.Typography.body).controlSize(.regular)
+                .padding(WireboltTheme.Spacing.xxLarge).padding(.trailing, WireboltTheme.Spacing.xSmall)
+                .frame(width: 580, alignment: .top)
+                .fixedSize(horizontal: false, vertical: true)
                 .sheet(isPresented: $showingPrivacyPolicy) {
                     VStack(alignment: .leading, spacing: 16) {
                         Text("Privacy Policy").font(.title2.weight(.semibold))
@@ -507,8 +511,6 @@ struct WireboltSettingsView: View {
                 }
             }
         }
-        .frame(width: 620, height: 570)
-
     }
 
 }
