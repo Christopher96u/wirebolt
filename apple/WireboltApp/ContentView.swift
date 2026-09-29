@@ -97,6 +97,15 @@ struct ContentView: View {
             }
             return !providers.isEmpty
         }
+        .overlay {
+            if isDropTargeted {
+                RoundedRectangle(cornerRadius: 10)
+                    .strokeBorder(Color.accentColor, lineWidth: 3)
+                    .padding(4)
+                    .allowsHitTesting(false)
+                    .accessibilityHidden(true)
+            }
+        }
         .fileImporter(
             isPresented: $interface.isShowingImporter,
             allowedContentTypes: [.json, .data],
