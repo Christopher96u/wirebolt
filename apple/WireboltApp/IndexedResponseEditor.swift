@@ -28,8 +28,8 @@ struct IndexedResponseEditor: View {
                     IndexedCodeScrollView(index: index, fontSize: fontSize, language: language, search: search, wraps: wraps,
                         storageKey: prefix.isEmpty ? "Response body \(language)" : "Raw response", find: find ?? localFind)
                 } else if failure {
-                    Text("The response could not be opened.").foregroundStyle(.secondary)
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    ContentUnavailableView("Can’t Open Response", systemImage: "exclamationmark.triangle",
+                        description: Text("The response file couldn’t be read. Send the request again to reload it."))
                 } else {
                     ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
                 }
