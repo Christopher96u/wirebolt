@@ -17,10 +17,9 @@ struct RustWorkspacePersistence: WorkspacePersistence, GitCollaboration {
         case .open, .create, .openOrCreate:
             break
         }
+        // A new workspace starts empty; the first request creates the top-level list, so the
+        // sidebar never opens on an empty placeholder collection.
         bridge = try WorkspaceBridge.openOrCreate(path: path.path, name: "Wirebolt")
-        if !workspaceExisted {
-            try bridge.saveCollection(id: "requests", name: "Requests")
-        }
     }
 
     func load() async throws -> WorkspaceDraft {
