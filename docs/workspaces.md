@@ -8,7 +8,7 @@ A workspace is a folder containing request definitions, collections and environm
 
 - **File → New Workspace…** creates a new workspace folder.
 - **File → Open Workspace…** (**⌘O**) opens a folder containing `wirebolt.toml`.
-- **File → New Collection…** creates a top-level collection.
+- **File → New Collection…** (**⇧⌘N**) creates a top-level collection; **File → New Folder** (**⌥⌘N**) creates a folder.
 - The **+** menu also exposes workspace and collection actions.
 
 Switching workspaces closes the old tabs and cancels active requests. If there are unsaved request edits, save them first or explicitly discard them in the prompt. A failed open preserves the current workspace.

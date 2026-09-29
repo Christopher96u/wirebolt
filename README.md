@@ -43,7 +43,7 @@ Or download the ZIP from [beta releases](https://github.com/Christopher96u/homeb
 ## Your first request
 
 1. Open Wirebolt and choose **File → New Workspace…**.
-2. Choose **File → New Collection…**, then create an HTTP request from the **+** menu.
+2. Press **⌘N** (**File → New Request**) or click **New Request** in the empty window.
 3. Enter your API URL, choose a method, and press **⌘Return** to send.
 4. Inspect the response and press **⌘S** to save the request.
 
@@ -55,7 +55,7 @@ The [quick start](docs/quick-start.md) includes a local demo server and copyable
 | --- | --- |
 | [HTTP requests](docs/requests.md) | Methods, query parameters, headers, JSON, forms, multipart and file uploads |
 | [Response inspection](docs/requests.md#inspect-the-response) | JSON, tree, raw, XML, HTML, image and hex views; headers, cookies and the executed request |
-| [Workspaces](docs/workspaces.md) | Collections, folders, drag ordering, tabs and split editors, saved as readable TOML |
+| [Workspaces](docs/workspaces.md) | Collections, folders, drag or keyboard ordering with undo, preview tabs and split editors, saved as readable TOML |
 | [Environments](docs/environments-and-secrets.md) | Global variables, environment overrides and Keychain secret references |
 | [Authentication](docs/authentication.md) | Basic, Bearer, API key and OAuth 2.0 configuration |
 | [Proxy and network](docs/proxy-and-network.md) | App, workspace and request proxy policies; timeouts, redirects and TLS validation |

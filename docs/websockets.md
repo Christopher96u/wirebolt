@@ -2,10 +2,10 @@
 
 [Documentation](README.md)
 
-1. Create a **WebSocket** request from the **+** menu or **Request → New Request → WebSocket**.
+1. Create a **WebSocket** request with **File → New WebSocket Request** or the **+** menu.
 2. Enter a `ws://` or `wss://` endpoint.
 3. Configure headers, auth, variables and proxy policy as required by that endpoint.
-4. Click **Connect** or press **Control-⌘Return**.
+4. Click **Connect** or press **⌃⌘Return**.
 5. Select a message representation, enter content and click **Send**.
 6. Inspect sent and received messages, then **Disconnect** when finished.
 
