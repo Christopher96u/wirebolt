@@ -7,6 +7,14 @@ struct WireboltApp: App {
 
     init() {
         PerformanceProbe.beginLaunch()
+        UserDefaults.standard.register(defaults: [
+            // `--workspace <folder>` must not become an open-document event: it would be
+            // treated as an import and suppress the workspace window.
+            "NSTreatUnknownArgumentsAsOpen": "NO",
+            // Wirebolt restores its own tabs and layout. Stale AppKit window-restoration state
+            // could otherwise relaunch the app without its workspace window.
+            "ApplePersistenceIgnoreState": "YES",
+        ])
     }
 
     var body: some Scene {
@@ -67,7 +75,13 @@ final class WireboltAppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func application(_: NSApplication, open urls: [URL]) {
-        ExternalFileQueue.shared.enqueue(urls)
+        // Only regular files are imports; folders (such as a workspace dropped on the Dock
+        // icon) are ignored.
+        let files = urls.filter { url in
+            var isDirectory: ObjCBool = false
+            return FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory) && isDirectory.boolValue == false
+        }
+        ExternalFileQueue.shared.enqueue(files)
     }
 
     func applicationDidResignActive(_: Notification) {
