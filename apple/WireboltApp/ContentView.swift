@@ -2243,18 +2243,23 @@ private struct RequestSectionBar: View {
     @Bindable var session: DocumentSession
     @Binding var isBulkEditing: Bool
 
+    /// One row of constant height: section actions stay pinned at the trailing edge and
+    /// the section tabs scroll when the pane is too narrow, so the editor never jumps.
     var body: some View {
-        ViewThatFits(in: .horizontal) {
-            HStack(spacing: 12) {
-                tabs
-                Spacer(minLength: 0)
-                tools
+        HStack(spacing: WireboltTheme.Spacing.medium) {
+            ScrollViewReader { scroll in
+                ScrollView(.horizontal) {
+                    tabs
+                }
+                .scrollIndicators(.never)
+                .scrollBounceBehavior(.basedOnSize, axes: .horizontal)
+                .onChange(of: interface.requestSection) { _, section in
+                    scroll.scrollTo(section, anchor: .center)
+                }
             }
-            VStack(spacing: 0) {
-                tabs.frame(maxWidth: .infinity, alignment: .leading)
-                tools.frame(maxWidth: .infinity, alignment: .trailing)
-            }
+            tools
         }
+        .frame(height: 32)
         .padding(.horizontal, 11)
         .background(WireboltTheme.barBackground)
         .accessibilityElement(children: .contain)
@@ -2273,6 +2278,7 @@ private struct RequestSectionBar: View {
                     height: 32,
                     action: { interface.requestSection = section }
                 )
+                .id(section)
             }
         }.fixedSize(horizontal: true, vertical: false)
     }
