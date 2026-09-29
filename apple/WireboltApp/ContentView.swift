@@ -1397,7 +1397,9 @@ private struct EditorGroupDeck: View {
                 .id(session.id)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
+                // Fill the detail area so the empty state is centered below the tab bar.
                 NoOpenRequestPlaceholder(model: model, interface: interface)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         }
     }
