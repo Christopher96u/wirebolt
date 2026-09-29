@@ -49,6 +49,32 @@ import Testing
         #expect(try index.rows(start: 0, count: 2).map(\.text) == ["hello", "world"])
     }
 
+    @Test func wrappedLayoutsAreKeyedByColumnCountNotPixelWidth() async throws {
+        let url = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: url) }
+        try Data(String(repeating: "{\"message\":\"café 東京 🚀 wraps across several visual rows\"}\n", count: 400).utf8).write(to: url)
+        let font = "Menlo-Regular"
+        let advance = CodeTextWrapping.advance(fontName: font, fontSize: 12)
+        func columns(forWidth width: Double) -> Int { max(1, Int(width / advance)) }
+        // Two widths inside the same column, as produced by a pixel-by-pixel live resize.
+        let narrow = columns(forWidth: 40 * advance + 1), slightlyWider = columns(forWidth: 40 * advance + advance * 0.9)
+        #expect(narrow == slightlyWider)
+        let first = CodeTextWrapping(fontName: font, fontSize: 12, columns: narrow)
+        #expect(first == CodeTextWrapping(fontName: font, fontSize: 12, columns: slightlyWider))
+        #expect(first.width > Double(narrow) * advance && first.width < Double(narrow + 1) * advance)
+        let cache = ResponseIndexCache()
+        let full = try await cache.index(url: url, columns: narrow, wrapping: first)
+        #expect(full.isComplete && full.rowCount > 400)
+        // A cache hit returns the complete layout instead of a bounded first viewport.
+        #expect(try await cache.firstViewport(url: url, columns: slightlyWider,
+            wrapping: CodeTextWrapping(fontName: font, fontSize: 12, columns: slightlyWider)).isComplete)
+        let other = try await cache.firstViewport(url: url, columns: narrow + 1,
+            wrapping: CodeTextWrapping(fontName: font, fontSize: 12, columns: narrow + 1))
+        #expect(!other.isComplete)
+        // ASCII rows wrap at exactly the column count.
+        #expect(try full.rows(start: 0, count: 8).allSatisfy { $0.columns <= narrow })
+    }
+
     @Test func longLinesUseIndexedPresentationBelowByteThreshold() {
         #expect(ResponseTextPresentation.usesIndex(byteCount: 6000, preview: String(repeating: "東京", count: 1500)))
         #expect(ResponseTextPresentation.usesIndex(byteCount: 65_537, preview: "small preview"))

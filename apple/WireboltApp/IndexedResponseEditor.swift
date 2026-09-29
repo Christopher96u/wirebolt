@@ -22,7 +22,7 @@ struct IndexedResponseEditor: View {
             let width = max(1, geometry.size.width - gutter - 22)
             let advance = (" " as NSString).size(withAttributes: [.font: font]).width
             let columns = wraps ? max(1, Int(width / advance)) : Int.max / 4
-            let wrapping = wraps ? CodeTextWrapping(fontName: font.fontName, fontSize: fontSize, width: width) : nil
+            let wrapping = wraps ? CodeTextWrapping(fontName: font.fontName, fontSize: fontSize, columns: columns) : nil
             Group {
                 if let index {
                     IndexedCodeScrollView(index: index, fontSize: fontSize, language: language, search: search, wraps: wraps,
@@ -41,10 +41,15 @@ struct IndexedResponseEditor: View {
                     ProgressView().controlSize(.small).padding(8).help("Loading response…")
                 }
             }
-            .task(id: "\(url.path):\(columns):\(fontSize):\(width):\(prefix):\(isActive)") {
+            // Keyed by column count, not pixels: a live resize only re-wraps when a column is gained or lost.
+            .task(id: "\(url.path):\(columns):\(fontSize):\(prefix):\(isActive)") {
                 guard isActive else { return }
                 failure = false
                 do {
+                    if let index, index.url == url, index.columns != columns || index.wrapping != wrapping {
+                        // Debounce re-wrapping while the width keeps changing; cancellation restarts the wait.
+                        try await Task.sleep(for: .milliseconds(120))
+                    }
                     if index == nil || index?.url != url {
                         let first = try await ResponseIndexCache.shared.firstViewport(url: url, columns: columns, prefix: prefix, wrapping: wrapping)
                         try Task.checkCancellation()
