@@ -194,9 +194,12 @@ final class WorkspaceUIState {
         activatePresentation(for: session.id, defaultBody: session.draft.body)
     }
 
-    func activateSavedRequest(_ location: RequestLocation, model: WireboltModel) {
+    /// Opens a saved request from the sidebar. A plain click or arrow key reuses the preview
+    /// tab; ⌘-click (or `preview: false`) opens a regular tab that stays open.
+    func activateSavedRequest(_ location: RequestLocation, model: WireboltModel, preview: Bool? = nil) {
         persistActivePresentation()
-        model.select(location)
+        let commandClick = NSApp.currentEvent.map { $0.type == .leftMouseUp || $0.type == .leftMouseDown ? $0.modifierFlags.contains(.command) : false } ?? false
+        model.select(location, preview: preview ?? !commandClick)
         synchronizeSelection(model: model)
         PerformanceProbe.tabSwitched()
     }
@@ -341,6 +344,11 @@ final class WorkspaceUIState {
                 await model.deleteRequest(collectionID: collectionID, requestID: id)
             }
         }
+    }
+
+    /// Keeps a preview tab open (double-click on the tab or Keep Open).
+    func pinTab(id: String, model: WireboltModel) {
+        model.sessions.pin(tabID: id)
     }
 
     func openInNewSplit(tabID: String, model: WireboltModel) {

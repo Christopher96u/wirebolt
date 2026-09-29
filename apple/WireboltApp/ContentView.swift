@@ -1195,6 +1195,7 @@ private struct WorkspaceDeck: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .background(WireboltTheme.paneBackground)
+        .background { WindowEditedIndicator(model: model) }
     }
 }
 
@@ -1295,7 +1296,9 @@ private struct DocumentTabBar: View {
                     DocumentTabButton(
                         tab: tab,
                         isSelected: group?.selectedTabID == tab.id,
+                        isPreview: model.sessions.isPreview(tabID: tab.id),
                         onSelect: { interface.activateTab(id: tab.id, groupID: groupID, model: model) },
+                        onPin: { interface.pinTab(id: tab.id, model: model) },
                         onRename: { name in
                             if let collectionID = tab.collectionID {
                                 Task { await model.renameRequest(collectionID: collectionID, requestID: tab.requestID, name: name) }
@@ -1314,7 +1317,7 @@ private struct DocumentTabBar: View {
                             interface.close(.all, model: model, in: groupID)
                         }
                     )
-                        .frame(width: max(80, geometry.size.width / Double(max(1, tabs.count))))
+                        .frame(width: max(110, geometry.size.width / Double(max(1, tabs.count))))
                         .id(tab.id)
                 }
             }
@@ -1373,7 +1376,10 @@ private struct DocumentTabBar: View {
 private struct DocumentTabButton: View {
     let tab: DocumentSession
     let isSelected: Bool
+    /// Preview tabs are reused by the next sidebar click; their title is italic.
+    let isPreview: Bool
     let onSelect: () -> Void
+    let onPin: () -> Void
     let onRename: (String) -> Void
     let onClose: () -> Void
     let onCloseOthers: () -> Void
@@ -1382,41 +1388,66 @@ private struct DocumentTabButton: View {
 
     @State private var isHovered = false
     @State private var isRenaming = false
+    @FocusState private var closeIsFocused: Bool
 
     var body: some View {
-        ZStack(alignment: .trailing) {
+        let isDirty = tab.isDirty
+        // The close button shows on hover, keyboard focus, and the clean active tab; an
+        // edited tab shows a dot in the same slot instead, so the title never moves.
+        let showsClose = !isRenaming && (isHovered || closeIsFocused || (isSelected && !isDirty))
+        HStack(spacing: WireboltTheme.Spacing.xxSmall) {
+            ZStack {
+                if isDirty && !showsClose {
+                    Circle().fill(.secondary).frame(width: 7, height: 7)
+                        .accessibilityHidden(true)
+                }
+                Button(action: onClose) {
+                    Image(systemName: "xmark")
+                        .font(.system(size: 9, weight: .semibold))
+                        .frame(width: 20, height: 20)
+                        .contentShape(.rect)
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(.secondary)
+                .focused($closeIsFocused)
+                .opacity(showsClose ? 1 : 0)
+                .allowsHitTesting(showsClose)
+                .accessibilityLabel("Close \(tab.title)")
+                .accessibilityHidden(isRenaming)
+                .help("Close Tab (⌘W)")
+            }
+            .frame(width: 20, height: 20)
+
             if isRenaming {
                 InlineSidebarName(title: tab.title, isEditing: $isRenaming, save: onRename)
                     .font(.system(size: 12))
                     .frame(height: 19)
                     .accessibilityLabel("Request Name")
             } else {
-            Button(action: onSelect) {
-                DocumentTabLabel(title: tab.title)
-                    .frame(height: 19)
-                    .frame(maxWidth: .infinity)
-                    .offset(y: -1)
-                    .allowsHitTesting(false)
-                    .accessibilityHidden(true)
-                    .contentShape(.rect)
+                Button(action: onSelect) {
+                    DocumentTabLabel(title: tab.title, italic: isPreview)
+                        .frame(height: 19)
+                        .frame(maxWidth: .infinity)
+                        .offset(y: -1)
+                        .allowsHitTesting(false)
+                        .accessibilityHidden(true)
+                        .contentShape(.rect)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(tab.title)
+                .accessibilityValue([isDirty ? "Edited" : nil, isPreview ? "Preview" : nil].compactMap(\.self).joined(separator: ", "))
+                .accessibilityAction(named: "Close Tab", onClose)
+                .help(isPreview ? "\(tab.title) — Preview. Double-click to keep open." : tab.title)
+                // Select immediately while still recognizing a double-click, which keeps a
+                // preview tab open (Xcode, Finder) or renames a tab that is already kept.
+                .simultaneousGesture(TapGesture(count: 2).onEnded {
+                    if isPreview { onPin() } else { beginRenaming() }
+                })
             }
-            .buttonStyle(.plain)
-            .accessibilityLabel(tab.title)
-            // Select immediately while still recognizing a double-click to rename.
-            .simultaneousGesture(TapGesture(count: 2).onEnded { beginRenaming() })
-            }
-
-            Button("Close \(tab.title)", systemImage: "xmark", action: onClose)
-                .labelStyle(.iconOnly)
-                .buttonStyle(.borderless)
-                .font(.system(size: 9, weight: .semibold))
-                .foregroundStyle(.secondary)
-                .opacity(isHovered && !isRenaming ? 1 : 0)
-                .allowsHitTesting(!isRenaming)
-                .accessibilityHidden(isRenaming)
+            // Balances the close slot so the title stays centered.
+            Color.clear.frame(width: 20, height: 20)
         }
-        .padding(.leading, 19)
-        .padding(.trailing, 12)
+        .padding(.horizontal, WireboltTheme.Spacing.small)
         .frame(minWidth: 28, minHeight: 28)
         .background(isSelected ? Color.primary.opacity(0.055) : .clear, in: .rect(cornerRadius: 14))
         .overlay {
@@ -1425,6 +1456,10 @@ private struct DocumentTabButton: View {
         }
         .onHover { isHovered = $0 }
         .contextMenu {
+            if isPreview {
+                Button("Keep Open", action: onPin)
+                Divider()
+            }
             Button("Rename", action: beginRenaming)
             Divider()
             Button("Close Tab", action: onClose)
@@ -1445,10 +1480,11 @@ private struct DocumentTabButton: View {
 
 private struct DocumentTabLabel: NSViewRepresentable {
     let title: String
+    var italic = false
 
     func makeNSView(context: Context) -> NSTextField {
         let field = NSTextField(labelWithString: title)
-        field.font = .systemFont(ofSize: 12)
+        field.font = Self.font(italic: italic)
         field.alignment = .center
         field.lineBreakMode = .byTruncatingTail
         field.maximumNumberOfLines = 1
@@ -1456,7 +1492,40 @@ private struct DocumentTabLabel: NSViewRepresentable {
         return field
     }
 
-    func updateNSView(_ field: NSTextField, context: Context) { field.stringValue = title }
+    func updateNSView(_ field: NSTextField, context: Context) {
+        if field.stringValue != title { field.stringValue = title }
+        let font = Self.font(italic: italic)
+        if field.font != font { field.font = font }
+    }
+
+    private static let regularFont = NSFont.systemFont(ofSize: 12)
+    private static let italicFont = NSFontManager.shared.convert(regularFont, toHaveTrait: .italicFontMask)
+    private static func font(italic: Bool) -> NSFont { italic ? italicFont : regularFont }
+}
+
+/// Mirrors unsaved edits in any tab to the window's close button (NSWindow.isDocumentEdited).
+private struct WindowEditedIndicator: View {
+    let model: WireboltModel
+
+    var body: some View {
+        WindowEditedBridge(isEdited: model.hasUnsavedRequestChanges)
+            .frame(width: 0, height: 0)
+            .accessibilityHidden(true)
+    }
+}
+
+private struct WindowEditedBridge: NSViewRepresentable {
+    let isEdited: Bool
+
+    func makeNSView(context _: Context) -> NSView { NSView() }
+
+    func updateNSView(_ view: NSView, context _: Context) {
+        let isEdited = isEdited
+        // The view may not be in a window during its first update.
+        DispatchQueue.main.async {
+            if let window = view.window, window.isDocumentEdited != isEdited { window.isDocumentEdited = isEdited }
+        }
+    }
 }
 
 private struct RequestWorkspace: View {

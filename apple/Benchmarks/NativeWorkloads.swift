@@ -493,7 +493,7 @@ final class ProbeWindow: NSWindow { override var canBecomeKey: Bool { true } }
         let requests = (0..<(tabs ? max(2, tabCount) : 20)).map { RequestLocation(collectionID: "clicks", request: RequestDraft(id: "r\($0)", name: "Click Request \($0)", url: "https://example.invalid/\($0)", note: note)) }
         model.workspace.collections = [CollectionDraft(id: "clicks", name: "Click Audit", requests: requests)]
         if tabs {
-            for request in requests { interface.activateSavedRequest(request, model: model) }
+            for request in requests { interface.activateSavedRequest(request, model: model, preview: false) }
         }
         interface.activateSavedRequest(requests[0], model: model)
         let (window, host, _) = mount(ContentView(model: model, interface: interface, loadsWorkspace: false), height: 720)
