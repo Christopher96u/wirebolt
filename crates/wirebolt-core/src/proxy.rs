@@ -654,7 +654,7 @@ impl KeychainSecretResolver {
 #[cfg(target_vendor = "apple")]
 impl Default for KeychainSecretResolver {
     fn default() -> Self {
-        Self::new("local.wirebolt.app")
+        Self::new("io.github.christopher96u.wirebolt")
     }
 }
 
@@ -736,6 +736,6 @@ impl KeychainSecretStore {
 #[cfg(target_vendor = "apple")]
 impl Default for KeychainSecretStore {
     fn default() -> Self {
-        Self::new("local.wirebolt.app")
+        Self::new("io.github.christopher96u.wirebolt")
     }
 }

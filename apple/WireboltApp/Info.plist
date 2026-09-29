@@ -7,7 +7,7 @@
     <key>CFBundleExecutable</key>
     <string>Wirebolt</string>
     <key>CFBundleIdentifier</key>
-    <string>local.wirebolt.app</string>
+    <string>io.github.christopher96u.wirebolt</string>
     <key>CFBundleInfoDictionaryVersion</key>
     <string>6.0</string>
     <key>CFBundleName</key>
@@ -31,9 +31,13 @@
     <string>0.1.0</string>
     <key>CFBundleVersion</key>
     <string>1</string>
+    <key>LSApplicationCategoryType</key>
+    <string>public.app-category.developer-tools</string>
     <key>LSMinimumSystemVersion</key>
     <string>15.0</string>
     <key>NSHighResolutionCapable</key>
     <true/>
+    <key>NSHumanReadableCopyright</key>
+    <string>Copyright © 2026 Christopher M. Released under the MIT License.</string>
 </dict>
 </plist>

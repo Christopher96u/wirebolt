@@ -11,6 +11,10 @@ Changes under **Unreleased** describe the source branch and may not be included 
 - Reachable Git Collaboration commands and local in-app help.
 - User documentation, native screenshots and a local quick-start API example.
 
+### Changed
+
+- The bundle identifier is now `io.github.christopher96u.wirebolt`. Preferences, the remembered workspace and Keychain items stored under `local.wirebolt.app` are not migrated: reopen the workspace and re-enter stored credentials.
+
 ### Fixed
 
 - Saving an open request after moving it across collections targets the new location.

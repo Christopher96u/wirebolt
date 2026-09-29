@@ -32,7 +32,7 @@ The environment editor currently edits literal values and existing secret-refere
 
 For a manually provisioned reference, use **Keychain Access → File → New Password Item** in the login keychain:
 
-- **Keychain Item Name:** `local.wirebolt.app` (the service).
+- **Keychain Item Name:** `io.github.christopher96u.wirebolt` (the service).
 - **Account Name:** the exact reference, for example `demo.api-key`.
 - **Password:** the credential value.
 
