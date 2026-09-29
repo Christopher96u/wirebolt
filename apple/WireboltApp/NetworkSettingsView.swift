@@ -124,7 +124,7 @@ struct NetworkSettingsPage: View {
                     .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(.quaternary))
 
                 if let validation {
-                    Label(validation, systemImage: "exclamationmark.circle").font(.callout).foregroundStyle(.red)
+                    Label(validation, systemImage: "exclamationmark.circle").font(.callout).foregroundStyle(WireboltTheme.danger)
                         .fixedSize(horizontal: false, vertical: true)
                 } else {
                     VStack(alignment: .leading, spacing: 9) {
@@ -145,7 +145,7 @@ struct NetworkSettingsPage: View {
                     }.padding(16).frame(maxWidth: .infinity, alignment: .leading)
                         .background(Color.accentColor.opacity(0.055), in: RoundedRectangle(cornerRadius: 10))
                 }
-                if let saveError { Label(saveError, systemImage: "exclamationmark.circle").font(.caption).foregroundStyle(.red) }
+                if let saveError { Label(saveError, systemImage: "exclamationmark.circle").font(.caption).foregroundStyle(WireboltTheme.danger) }
                 if let session, session.kind == .webSocket, session.socket.status != .disconnected {
                     Label("Reconnect to apply changes to this WebSocket.", systemImage: "arrow.triangle.2.circlepath")
                         .font(.caption).foregroundStyle(.secondary)
@@ -176,7 +176,7 @@ struct NetworkSettingsPage: View {
                         }
                         if let message = test.message {
                             Label(message, systemImage: test.succeeded ? "checkmark.circle" : "info.circle")
-                                .font(.caption).foregroundStyle(test.succeeded ? Color.green : Color.secondary)
+                                .font(.caption).foregroundStyle(test.succeeded ? WireboltTheme.success : Color.secondary)
                                 .fixedSize(horizontal: false, vertical: true)
                         }
                     }.padding(.top, 10)

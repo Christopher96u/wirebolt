@@ -59,17 +59,17 @@ struct GitCollaborationView: View {
 
             if let failure = model.gitFailure {
                 Label(failure.reason, systemImage: "exclamationmark.triangle.fill")
-                    .foregroundStyle(WireboltTheme.statusColor(500))
+                    .foregroundStyle(WireboltTheme.danger)
                     .textSelection(.enabled)
                     .accessibilityLabel("Git error: \(failure.reason)")
             } else if let operation = model.gitOperation {
                 Label(operationLabel(operation.outcome), systemImage: operationIcon(operation.outcome))
-                    .foregroundStyle(operation.outcome == .conflicted ? WireboltTheme.statusColor(500) : .secondary)
+                    .foregroundStyle(operation.outcome == .conflicted ? WireboltTheme.danger : .secondary)
             }
 
             if model.hasUnsavedRequestChanges {
                 Label("Save or discard request edits before pulling.", systemImage: "pencil.circle")
-                    .foregroundStyle(.orange)
+                    .foregroundStyle(WireboltTheme.warning)
             }
         }
         .padding(18)
@@ -196,7 +196,7 @@ struct GitCollaborationView: View {
     private func color(for kind: GitChangeKind) -> Color {
         switch kind {
         case .new: WireboltTheme.success
-        case .deleted, .conflicted: WireboltTheme.statusColor(500)
+        case .deleted, .conflicted: WireboltTheme.danger
         case .modified, .renamed, .copied, .typeChanged: .secondary
         }
     }

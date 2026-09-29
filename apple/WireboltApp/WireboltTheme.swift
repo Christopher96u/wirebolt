@@ -13,6 +13,10 @@ enum WireboltTheme {
     static let separator = Color(nsColor: .separatorColor)
     /// Adaptive success green (also the 2xx status color).
     static let success = Color(nsColor: nsColor(SemanticPalette.green))
+    /// Adaptive error red for inline error text (also the 5xx status color).
+    static let danger = Color(nsColor: nsColor(SemanticPalette.red))
+    /// Adaptive warning text color (also the 4xx status color).
+    static let warning = Color(nsColor: nsColor(SemanticPalette.yellow))
 
     static let nsJSONKey = adaptiveColor(
         light: NSColor(srgbRed: 0.56, green: 0.24, blue: 0.22, alpha: 1),
@@ -103,8 +107,8 @@ enum WireboltTheme {
         case .informational: statusInformational
         case .success: success
         case .redirection: statusRedirection
-        case .clientError: statusClientError
-        case .serverError: statusServerError
+        case .clientError: warning
+        case .serverError: danger
         }
     }
 
@@ -129,8 +133,6 @@ enum WireboltTheme {
     private static let methodCustom = Color(nsColor: nsColor(SemanticPalette.neutral))
     private static let statusInformational = Color(nsColor: nsColor(SemanticPalette.status(100)))
     private static let statusRedirection = Color(nsColor: nsColor(SemanticPalette.status(300)))
-    private static let statusClientError = Color(nsColor: nsColor(SemanticPalette.status(400)))
-    private static let statusServerError = Color(nsColor: nsColor(SemanticPalette.status(500)))
 
     /// Resolves light, dark, and Increase Contrast variants at draw time.
     private static func nsColor(_ color: AdaptivePaletteColor) -> NSColor {
