@@ -118,7 +118,6 @@ public final class WireboltModel {
     public private(set) var oauthReceipts: [String: OAuth2TokenReceipt] = [:]
     public private(set) var oauthFailureMessage: String?
     public private(set) var isOAuthBusy = false
-    public var isShowingHelp = false
     public var isShowingGitCollaboration = false
     public var isShowingWorkspaceSettings = false
     public var settingsTab = "general"

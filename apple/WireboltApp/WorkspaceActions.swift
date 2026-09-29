@@ -4,53 +4,223 @@ import SwiftUI
 @MainActor
 func chooseWorkspace(model: WireboltModel, interface: WorkspaceUIState, create: Bool) {
     guard !model.isLoadingWorkspace, !model.isGitBusy, !model.isOAuthBusy else { return }
-    if model.hasUnsavedRequestChanges {
-        let alert = NSAlert()
-        alert.messageText = "Discard unsaved request changes?"
-        alert.informativeText = "Opening another workspace closes its tabs and cancels active requests. Save your edits first to keep them."
-        alert.addButton(withTitle: "Cancel")
-        alert.addButton(withTitle: "Discard and Open")
-        guard alert.runModal() == .alertSecondButtonReturn else { return }
-    }
-    let url: URL?
-    if create {
-        let panel = NSSavePanel()
-        panel.title = "New Workspace"
-        panel.prompt = "Create"
-        panel.nameFieldStringValue = "New Workspace"
-        panel.message = "Create a folder for your requests, collections and environments."
-        url = panel.runModal() == .OK ? panel.url : nil
-    } else {
-        let panel = NSOpenPanel()
-        panel.title = "Open Workspace"
-        panel.prompt = "Open"
-        panel.canChooseDirectories = true
-        panel.canChooseFiles = false
-        panel.allowsMultipleSelection = false
-        panel.message = "Choose the folder containing wirebolt.toml."
-        url = panel.runModal() == .OK ? panel.url : nil
-    }
-    guard let url else { return }
+    let window = NSApp.keyWindow
     Task {
+        guard await confirmDiscardingForWorkspaceSwitch(model: model, in: window) else { return }
+        let panel: NSSavePanel
+        if create {
+            panel = NSSavePanel()
+            panel.title = "New Workspace"
+            panel.prompt = "Create"
+            panel.nameFieldStringValue = "New Workspace"
+            panel.message = "Create a folder for your requests, collections and environments."
+        } else {
+            let open = NSOpenPanel()
+            open.title = "Open Workspace"
+            open.prompt = "Open"
+            open.canChooseDirectories = true
+            open.canChooseFiles = false
+            open.allowsMultipleSelection = false
+            open.message = "Choose the folder containing wirebolt.toml."
+            panel = open
+        }
+        guard await present(panel, in: window) == .OK, let url = panel.url else { return }
+        await openWorkspace(at: url, create: create, model: model, interface: interface, window: window)
+    }
+}
+
+/// Opens a workspace from File ▸ Open Recent.
+@MainActor
+func openRecentWorkspace(_ url: URL, model: WireboltModel, interface: WorkspaceUIState) {
+    guard !model.isLoadingWorkspace, !model.isGitBusy, !model.isOAuthBusy else { return }
+    let window = NSApp.keyWindow
+    Task {
+        guard await confirmDiscardingForWorkspaceSwitch(model: model, in: window) else { return }
+        await openWorkspace(at: url, create: false, model: model, interface: interface, window: window)
+    }
+}
+
+@MainActor
+private func confirmDiscardingForWorkspaceSwitch(model: WireboltModel, in window: NSWindow?) async -> Bool {
+    guard model.hasUnsavedRequestChanges else { return true }
+    let alert = NSAlert()
+    alert.messageText = "Discard unsaved request changes?"
+    alert.informativeText = "Opening another workspace closes its tabs and cancels active requests. Save your edits first to keep them."
+    alert.addButton(withTitle: "Cancel")
+    alert.addButton(withTitle: "Discard and Open")
+    return await present(alert, in: window) == .alertSecondButtonReturn
+}
+
+@MainActor
+private func openWorkspace(at url: URL, create: Bool, model: WireboltModel, interface: WorkspaceUIState, window: NSWindow?) async {
+    do {
+        let persistence = try await Task.detached(priority: .userInitiated) {
+            try RustWorkspacePersistence(path: url, mode: create ? .create : .open)
+        }.value
+        interface.persistSessionLayout(model: model)
+        if await model.openWorkspace(using: persistence, gitCollaboration: persistence,
+                                     restoring: interface.savedSessionLayout(for: url)) {
+            UserDefaults.standard.set(url.path, forKey: "workspace.lastOpenedPath")
+            RecentWorkspaces.shared.note(url)
+            interface.workspaceURL = url
+            interface.resetForWorkspace(model: model)
+        }
+    } catch {
+        if !create, (error as? WorkspaceSelectionError) == .workspaceNotFound { RecentWorkspaces.shared.remove(url) }
+        let alert = NSAlert()
+        alert.messageText = create ? "Workspace could not be created" : "Workspace could not be opened"
+        alert.informativeText = error.localizedDescription
+        _ = await present(alert, in: window)
+    }
+}
+
+/// Asks before unsaved request edits are lost. Returns true when the caller may
+/// continue: edits were saved, or the person chose Don't Save (edits are reverted).
+@MainActor
+func confirmUnsavedChanges(model: WireboltModel, in window: NSWindow?, quitting: Bool) async -> Bool {
+    let dirty = model.dirtySessions
+    guard !dirty.isEmpty else { return true }
+    let alert = NSAlert()
+    alert.messageText = dirty.count == 1
+        ? "Do you want to save the changes you made to “\(dirty[0].title)”?"
+        : "You have unsaved changes in \(dirty.count) requests. Do you want to save them?"
+    alert.informativeText = quitting
+        ? "Your changes will be lost if you quit without saving."
+        : "Your changes will be lost if you don’t save them."
+    alert.addButton(withTitle: "Save")
+    alert.addButton(withTitle: "Cancel")
+    let discard = alert.addButton(withTitle: "Don’t Save")
+    discard.keyEquivalent = "d"
+    discard.keyEquivalentModifierMask = .command
+    switch await present(alert, in: window) {
+    case .alertFirstButtonReturn:
+        return await model.saveAllDirtySessions()
+    case .alertThirdButtonReturn:
+        model.discardUnsavedChanges()
+        return true
+    default:
+        return false
+    }
+}
+
+/// The window close button and File ▸ Close Window route here so unsaved edits are confirmed.
+@MainActor
+func requestWorkspaceWindowClose(_ window: NSWindow, model: WireboltModel, interface: WorkspaceUIState) {
+    Task {
+        guard await confirmUnsavedChanges(model: model, in: window, quitting: false) else { return }
+        interface.persistSessionLayout(model: model)
+        window.close()
+    }
+}
+
+/// The single workspace window, used to enforce one instance and to anchor quit alerts.
+@MainActor
+enum WorkspaceWindowRegistry {
+    static weak var primary: NSWindow?
+}
+
+/// Presents as a sheet on a visible window so the rest of the app stays usable.
+@MainActor
+func present(_ alert: NSAlert, in window: NSWindow?) async -> NSApplication.ModalResponse {
+    guard let window, window.isVisible, window.attachedSheet == nil else { return alert.runModal() }
+    return await withCheckedContinuation { continuation in
+        alert.beginSheetModal(for: window) { continuation.resume(returning: $0) }
+    }
+}
+
+@MainActor
+func present(_ panel: NSSavePanel, in window: NSWindow?) async -> NSApplication.ModalResponse {
+    guard let window, window.isVisible, window.attachedSheet == nil else { return panel.runModal() }
+    return await withCheckedContinuation { continuation in
+        panel.beginSheetModal(for: window) { continuation.resume(returning: $0) }
+    }
+}
+
+/// Writes an export chosen in a save sheet; failures explain why instead of beeping.
+@MainActor
+func saveExportedDocument(named name: String, content: String) {
+    let window = NSApp.keyWindow
+    Task {
+        let panel = NSSavePanel()
+        panel.nameFieldStringValue = "\(name).json"
+        panel.allowedContentTypes = [.json]
+        panel.canCreateDirectories = true
+        guard await present(panel, in: window) == .OK, let destination = panel.url else { return }
         do {
-            let persistence = try await Task.detached(priority: .userInitiated) {
-                try RustWorkspacePersistence(path: url, mode: create ? .create : .open)
-            }.value
-            if await model.openWorkspace(using: persistence, gitCollaboration: persistence) {
-                UserDefaults.standard.set(url.path, forKey: "workspace.lastOpenedPath")
-                interface.resetForWorkspace(model: model)
-            }
+            try Data(content.utf8).write(to: destination, options: .atomic)
         } catch {
-            let alert = NSAlert()
-            alert.messageText = create ? "Workspace could not be created" : "Workspace could not be opened"
+            let alert = NSAlert(error: error)
+            alert.messageText = "The export could not be saved."
             alert.informativeText = error.localizedDescription
-            alert.runModal()
+            _ = await present(alert, in: window)
         }
     }
 }
 
+/// Workspace folders for File ▸ Open Recent, most recent first.
+@MainActor
+@Observable
+final class RecentWorkspaces {
+    static let shared = RecentWorkspaces()
+    private static let key = "workspace.recentPaths"
+    private static let limit = 10
+    private(set) var urls: [URL]
+
+    private init() {
+        urls = (UserDefaults.standard.stringArray(forKey: Self.key) ?? []).map { URL(fileURLWithPath: $0, isDirectory: true) }
+    }
+
+    func note(_ url: URL) {
+        let url = url.standardizedFileURL
+        let updated = [url] + urls.filter { $0.path != url.path && FileManager.default.fileExists(atPath: $0.path) }
+        store(Array(updated.prefix(Self.limit)))
+    }
+
+    func remove(_ url: URL) { store(urls.filter { $0.path != url.standardizedFileURL.path }) }
+
+    func clear() { store([]) }
+
+    private func store(_ updated: [URL]) {
+        guard updated != urls else { return }
+        urls = updated
+        UserDefaults.standard.set(updated.map(\.path), forKey: Self.key)
+    }
+}
+
+/// Files opened from Finder or dropped on the window, waiting for the workspace to load.
+@MainActor
+@Observable
+final class ExternalFileQueue {
+    static let shared = ExternalFileQueue()
+    private(set) var pending: [URL] = []
+
+    func enqueue(_ urls: [URL]) { pending.append(contentsOf: urls.filter(\.isFileURL)) }
+
+    func drain() -> [URL] {
+        defer { pending = [] }
+        return pending
+    }
+}
+
+/// Imports a file with the importer that matches its contents.
+@MainActor
+func importExternalFile(_ url: URL, model: WireboltModel) async {
+    let source = await Task.detached(priority: .userInitiated) {
+        try? String(contentsOf: url, encoding: .utf8)
+    }.value
+    guard let source, let format = ImportFormat.detect(fileExtension: url.pathExtension, contents: source) else {
+        model.importFailureMessage = "“\(url.lastPathComponent)” isn’t a cURL command, HAR file, Postman Collection v2 or Wirebolt collection."
+        return
+    }
+    if format == .curl {
+        await model.importDocument(source: source, format: .curl)
+    } else {
+        await model.importDocument(url: url, format: format)
+    }
+}
+
+/// Shown in its own window so help can stay open beside the workspace.
 struct WireboltHelpView: View {
-    @Environment(\.dismiss) private var dismiss
     private let topics: [(String, String)] = [
         ("Workspaces & collections", "Use File → New Workspace or Open Workspace to choose where requests and environments are stored. New Collection creates a top-level container. The + menu creates requests and folders. Drag items to reorder siblings or move requests between folders and collections. Save edits with ⌘S."),
         ("Requests & tabs", "Choose an HTTP method and URL, then Send (⌘Return). Params, Headers, Body and Auth configure the request. Cancel stops an active send. Use Navigate → Split Right to compare requests. Closing a dirty tab asks before discarding changes."),
@@ -60,22 +230,19 @@ struct WireboltHelpView: View {
         ("WebSocket", "Create a WebSocket request, enter ws:// or wss:// and Connect. Choose Text, JSON, Binary (Hex/Base64) or File for messages. Send transmits the selected representation. Disconnect ends the connection; reconnect applies updated settings."),
         ("Notes", "Write Markdown in Note → Edit. Preview renders headings, lists, emphasis, links and code locally when opened. Save with ⌘S. Images show alternative text; previews do not fetch remote content."),
         ("Git collaboration", "Workspace → Git Collaboration opens status, commit, pull and push. The workspace must already be in a Git repository. Configure its remote/upstream and authentication with Git first. Only saved workspace documents are committed. Save or discard edits before pulling; conflicts require explicit resolution. Wirebolt does not sync in the background."),
-        ("Keyboard shortcuts", "⌘T new tab · ⌘S save · ⌘W close tab · ⌘Return send · ⌃⌘Return connect/disconnect · ⌘L edit URL · ⌘⇧F filter requests · ⌘⇧D split right · ⌃Tab next tab · ⌘1–9 select tab."),
+        ("Keyboard shortcuts", "⌘N new request · ⌘T new tab · ⌘S save · ⌘W close tab · ⇧⌘W close window · ⌘Return send · ⌘. cancel request · ⌃⌘Return connect/disconnect · ⌘L edit URL · ⌘⇧F filter requests · ⌘⇧D split right · ⌃Tab next tab · ⌘1–9 select tab."),
     ]
     var body: some View {
-        VStack(spacing: 0) {
-            HStack { Text("Wirebolt Help").font(.title2.bold()); Spacer(); Button("Done") { dismiss() }.keyboardShortcut(.cancelAction) }.padding(20)
-            Divider()
-            ScrollView {
-                VStack(alignment: .leading, spacing: 24) {
-                    ForEach(topics, id: \.0) { title, text in
-                        VStack(alignment: .leading, spacing: 8) {
-                            Text(title).font(.headline)
-                            Text(text).textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
-                        }
+        ScrollView {
+            VStack(alignment: .leading, spacing: 24) {
+                ForEach(topics, id: \.0) { title, text in
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text(title).font(.headline)
+                        Text(text).textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
                     }
-                }.padding(24).frame(maxWidth: .infinity, alignment: .leading)
-            }
-        }.frame(width: 650, height: 590)
+                }
+            }.padding(24).frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .frame(minWidth: 420, idealWidth: 650, minHeight: 320, idealHeight: 590)
     }
 }

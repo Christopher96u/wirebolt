@@ -150,6 +150,8 @@ final class WorkspaceUIState {
         model.sessions.select(tabID: group.tabIDs[target]); synchronizeSelection(model: model)
     }
     var activeTabID: String?
+    /// The folder of the open workspace; editor layouts are remembered per folder.
+    @ObservationIgnored var workspaceURL: URL?
     var sidebarFilter = ""
     var isShowingImporter = false
     var isShowingCurlImporter = false
@@ -316,6 +318,14 @@ final class WorkspaceUIState {
         workspaceDeleteRequest = WorkspaceDeleteRequest(target: target, title: title)
     }
 
+    /// Delete key in the focused sidebar asks to delete the selected saved request.
+    func requestDeleteOfSelection(model: WireboltModel) {
+        guard let session = model.sessions.activeSession, let collectionID = session.collectionID,
+              let location = model.workspace.location(collectionID: collectionID, requestID: session.requestID)
+        else { return }
+        requestDelete(.request(collectionID: collectionID, id: location.request.id), title: location.request.name)
+    }
+
     func confirmWorkspaceDelete(model: WireboltModel) {
         guard let request = workspaceDeleteRequest else { return }
         workspaceDeleteRequest = nil
@@ -344,8 +354,23 @@ final class WorkspaceUIState {
     }
 
     func closeActiveTab(model: WireboltModel) {
-        guard let id = model.sessions.activeSession?.id else { return }
+        guard let id = model.sessions.activeSession?.id else {
+            // With no tab left, ⌘W closes the window like other Mac apps.
+            NSApp.keyWindow?.performClose(nil)
+            return
+        }
         close(.one(id), model: model)
+    }
+
+    func savedSessionLayout(for url: URL? = nil) -> SessionLayout? {
+        guard let path = (url ?? workspaceURL)?.standardizedFileURL.path else { return nil }
+        return SessionLayoutStore(defaults: defaults).layout(forWorkspace: path)
+    }
+
+    /// Remembers open tabs so relaunch or reopening the workspace restores them.
+    func persistSessionLayout(model: WireboltModel) {
+        guard model.hasLoadedWorkspace, let path = workspaceURL?.standardizedFileURL.path else { return }
+        SessionLayoutStore(defaults: defaults).save(model.sessions.layout, forWorkspace: path)
     }
 
     func close(_ scope: TabCloseScope, model: WireboltModel, in targetGroupID: String? = nil) {
@@ -410,7 +435,6 @@ final class WorkspaceUIState {
             presentationByTabID[tabID] = state
         }
         activeTabID = tabID
-        defaults.set(tabID, forKey: Self.activeTabKey)
     }
 
     private func persistActivePresentation() {
@@ -439,7 +463,6 @@ final class WorkspaceUIState {
     private static let responseSectionKey = "workspace.responseSection"
     private static let responseRendererKey = "workspace.responseRenderer"
     private static let responseOrientationKey = "workspace.responseOrientation"
-    private static let activeTabKey = "workspace.activeTab"
 }
 
 extension FocusedValues {
