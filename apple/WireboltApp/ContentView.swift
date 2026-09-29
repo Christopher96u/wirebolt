@@ -1403,10 +1403,26 @@ private struct EditorGroupDeck: View {
     }
 }
 
+/// Which edges of the tab strip have tabs scrolled out of view.
+private struct TabStripOverflow: Equatable {
+    var leading = false
+    var trailing = false
+}
+
 private struct DocumentTabBar: View {
     @Bindable var model: WireboltModel
     @Bindable var interface: WorkspaceUIState
     let groupID: String
+    @State private var overflow = TabStripOverflow()
+
+    /// Tabs shrink to this width before the strip starts scrolling.
+    private static let minimumTabWidth = 96.0
+
+    private var overflowDivider: some View {
+        Rectangle().fill(WireboltTheme.separator).frame(width: 1, height: 16)
+            .allowsHitTesting(false)
+            .accessibilityHidden(true)
+    }
 
     var body: some View {
         HStack(spacing: 0) {
@@ -1459,18 +1475,32 @@ private struct DocumentTabBar: View {
                             interface.close(.all, model: model, in: groupID)
                         }
                     )
-                        .frame(width: max(110, geometry.size.width / Double(max(1, tabs.count))))
+                        .frame(width: max(Self.minimumTabWidth, geometry.size.width / Double(max(1, tabs.count))))
                         .id(tab.id)
                 }
             }
             .padding(.top, 2)
             }
             .scrollIndicators(.never)
+            .onScrollGeometryChange(for: TabStripOverflow.self) { geometry in
+                TabStripOverflow(
+                    leading: geometry.contentOffset.x > 0.5,
+                    trailing: geometry.contentOffset.x + geometry.containerSize.width < geometry.contentSize.width - 0.5
+                )
+            } action: { _, overflow in
+                self.overflow = overflow
+            }
             .onChange(of: group?.selectedTabID) { _, selected in
                 if let selected { scroll.scrollTo(selected, anchor: .center) }
             }
             }
             }
+            .clipped()
+            // Tabs cut off at an edge end at a divider, so they never look like they run
+            // underneath the navigation or split buttons.
+            .overlay(alignment: .leading) { if overflow.leading { overflowDivider } }
+            .overlay(alignment: .trailing) { if overflow.trailing { overflowDivider } }
+            .padding(.trailing, WireboltTheme.Spacing.xSmall)
             .frame(maxWidth: .infinity)
 
             Button("Open in New Split", systemImage: "sidebar.right") {
