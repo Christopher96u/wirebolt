@@ -97,7 +97,9 @@ struct EnvironmentEditor: View {
                         Spacer()
                         Button("New Entry", systemImage: "plus", action: addRow)
                             .labelStyle(.iconOnly).buttonStyle(.borderless)
-                            .keyboardShortcut("k", modifiers: .command)
+                            // Same shortcut as Request ▸ Add Key.
+                            .keyboardShortcut("k", modifiers: [.command, .shift])
+                            .help("New Entry (⇧⌘K)")
                         Menu("Variable Actions", systemImage: "ellipsis.circle") {
                             Button("New Entry", action: addRow)
                             Button("Clear All") { selected.variables.wrappedValue = [] }
@@ -135,7 +137,7 @@ struct EnvironmentEditor: View {
                             }
                             HStack(spacing: 0) {
                                 Color.clear.frame(width: 28)
-                                FieldTextInput("New Key (⌘K)", text: $newKey, height: newFieldHeight).frame(width: 175).padding(.horizontal, 4)
+                                FieldTextInput("New Key", text: $newKey, height: newFieldHeight).frame(width: 175).padding(.horizontal, 4)
                                     .focused($newKeyFocused).onSubmit { commitNewRow(); newKeyFocused = true }
                                 Color.clear.frame(width: 1)
                                 FieldTextInput("New Value", text: $newValue, height: newFieldHeight).padding(.horizontal, 4).padding(.trailing, 5).onSubmit { commitNewRow(); newKeyFocused = true }

@@ -1177,7 +1177,7 @@ private struct WorkspaceDeck: View {
     @Bindable var interface: WorkspaceUIState
 
     var body: some View {
-        Group {
+        VariableCatalogScope(model: model) {
             if model.sessions.groups.count > 1 {
                 HSplitView {
                     ForEach(model.sessions.groups) { group in
@@ -1195,6 +1195,21 @@ private struct WorkspaceDeck: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .background(WireboltTheme.paneBackground)
+        .background { WindowEditedIndicator(model: model) }
+    }
+}
+
+/// Provides the active environments' variables to URL and key/value fields. Isolated so
+/// only workspace or environment changes rebuild the catalog.
+private struct VariableCatalogScope<Content: View>: View {
+    let model: WireboltModel
+    @ViewBuilder let content: Content
+
+    var body: some View {
+        content.environment(\.variableCatalog, VariableCatalog(
+            environments: model.workspace.environments,
+            selectedEnvironmentID: model.selectedEnvironmentID
+        ))
     }
 }
 
@@ -1295,7 +1310,9 @@ private struct DocumentTabBar: View {
                     DocumentTabButton(
                         tab: tab,
                         isSelected: group?.selectedTabID == tab.id,
+                        isPreview: model.sessions.isPreview(tabID: tab.id),
                         onSelect: { interface.activateTab(id: tab.id, groupID: groupID, model: model) },
+                        onPin: { interface.pinTab(id: tab.id, model: model) },
                         onRename: { name in
                             if let collectionID = tab.collectionID {
                                 Task { await model.renameRequest(collectionID: collectionID, requestID: tab.requestID, name: name) }
@@ -1314,7 +1331,7 @@ private struct DocumentTabBar: View {
                             interface.close(.all, model: model, in: groupID)
                         }
                     )
-                        .frame(width: max(80, geometry.size.width / Double(max(1, tabs.count))))
+                        .frame(width: max(110, geometry.size.width / Double(max(1, tabs.count))))
                         .id(tab.id)
                 }
             }
@@ -1373,7 +1390,10 @@ private struct DocumentTabBar: View {
 private struct DocumentTabButton: View {
     let tab: DocumentSession
     let isSelected: Bool
+    /// Preview tabs are reused by the next sidebar click; their title is italic.
+    let isPreview: Bool
     let onSelect: () -> Void
+    let onPin: () -> Void
     let onRename: (String) -> Void
     let onClose: () -> Void
     let onCloseOthers: () -> Void
@@ -1382,41 +1402,66 @@ private struct DocumentTabButton: View {
 
     @State private var isHovered = false
     @State private var isRenaming = false
+    @FocusState private var closeIsFocused: Bool
 
     var body: some View {
-        ZStack(alignment: .trailing) {
+        let isDirty = tab.isDirty
+        // The close button shows on hover, keyboard focus, and the clean active tab; an
+        // edited tab shows a dot in the same slot instead, so the title never moves.
+        let showsClose = !isRenaming && (isHovered || closeIsFocused || (isSelected && !isDirty))
+        HStack(spacing: WireboltTheme.Spacing.xxSmall) {
+            ZStack {
+                if isDirty && !showsClose {
+                    Circle().fill(.secondary).frame(width: 7, height: 7)
+                        .accessibilityHidden(true)
+                }
+                Button(action: onClose) {
+                    Image(systemName: "xmark")
+                        .font(.system(size: 9, weight: .semibold))
+                        .frame(width: 20, height: 20)
+                        .contentShape(.rect)
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(.secondary)
+                .focused($closeIsFocused)
+                .opacity(showsClose ? 1 : 0)
+                .allowsHitTesting(showsClose)
+                .accessibilityLabel("Close \(tab.title)")
+                .accessibilityHidden(isRenaming)
+                .help("Close Tab (⌘W)")
+            }
+            .frame(width: 20, height: 20)
+
             if isRenaming {
                 InlineSidebarName(title: tab.title, isEditing: $isRenaming, save: onRename)
                     .font(.system(size: 12))
                     .frame(height: 19)
                     .accessibilityLabel("Request Name")
             } else {
-            Button(action: onSelect) {
-                DocumentTabLabel(title: tab.title)
-                    .frame(height: 19)
-                    .frame(maxWidth: .infinity)
-                    .offset(y: -1)
-                    .allowsHitTesting(false)
-                    .accessibilityHidden(true)
-                    .contentShape(.rect)
+                Button(action: onSelect) {
+                    DocumentTabLabel(title: tab.title, italic: isPreview)
+                        .frame(height: 19)
+                        .frame(maxWidth: .infinity)
+                        .offset(y: -1)
+                        .allowsHitTesting(false)
+                        .accessibilityHidden(true)
+                        .contentShape(.rect)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(tab.title)
+                .accessibilityValue([isDirty ? "Edited" : nil, isPreview ? "Preview" : nil].compactMap(\.self).joined(separator: ", "))
+                .accessibilityAction(named: "Close Tab", onClose)
+                .help(isPreview ? "\(tab.title) — Preview. Double-click to keep open." : tab.title)
+                // Select immediately while still recognizing a double-click, which keeps a
+                // preview tab open (Xcode, Finder) or renames a tab that is already kept.
+                .simultaneousGesture(TapGesture(count: 2).onEnded {
+                    if isPreview { onPin() } else { beginRenaming() }
+                })
             }
-            .buttonStyle(.plain)
-            .accessibilityLabel(tab.title)
-            // Select immediately while still recognizing a double-click to rename.
-            .simultaneousGesture(TapGesture(count: 2).onEnded { beginRenaming() })
-            }
-
-            Button("Close \(tab.title)", systemImage: "xmark", action: onClose)
-                .labelStyle(.iconOnly)
-                .buttonStyle(.borderless)
-                .font(.system(size: 9, weight: .semibold))
-                .foregroundStyle(.secondary)
-                .opacity(isHovered && !isRenaming ? 1 : 0)
-                .allowsHitTesting(!isRenaming)
-                .accessibilityHidden(isRenaming)
+            // Balances the close slot so the title stays centered.
+            Color.clear.frame(width: 20, height: 20)
         }
-        .padding(.leading, 19)
-        .padding(.trailing, 12)
+        .padding(.horizontal, WireboltTheme.Spacing.small)
         .frame(minWidth: 28, minHeight: 28)
         .background(isSelected ? Color.primary.opacity(0.055) : .clear, in: .rect(cornerRadius: 14))
         .overlay {
@@ -1425,6 +1470,10 @@ private struct DocumentTabButton: View {
         }
         .onHover { isHovered = $0 }
         .contextMenu {
+            if isPreview {
+                Button("Keep Open", action: onPin)
+                Divider()
+            }
             Button("Rename", action: beginRenaming)
             Divider()
             Button("Close Tab", action: onClose)
@@ -1445,10 +1494,11 @@ private struct DocumentTabButton: View {
 
 private struct DocumentTabLabel: NSViewRepresentable {
     let title: String
+    var italic = false
 
     func makeNSView(context: Context) -> NSTextField {
         let field = NSTextField(labelWithString: title)
-        field.font = .systemFont(ofSize: 12)
+        field.font = Self.font(italic: italic)
         field.alignment = .center
         field.lineBreakMode = .byTruncatingTail
         field.maximumNumberOfLines = 1
@@ -1456,7 +1506,40 @@ private struct DocumentTabLabel: NSViewRepresentable {
         return field
     }
 
-    func updateNSView(_ field: NSTextField, context: Context) { field.stringValue = title }
+    func updateNSView(_ field: NSTextField, context: Context) {
+        if field.stringValue != title { field.stringValue = title }
+        let font = Self.font(italic: italic)
+        if field.font != font { field.font = font }
+    }
+
+    private static let regularFont = NSFont.systemFont(ofSize: 12)
+    private static let italicFont = NSFontManager.shared.convert(regularFont, toHaveTrait: .italicFontMask)
+    private static func font(italic: Bool) -> NSFont { italic ? italicFont : regularFont }
+}
+
+/// Mirrors unsaved edits in any tab to the window's close button (NSWindow.isDocumentEdited).
+private struct WindowEditedIndicator: View {
+    let model: WireboltModel
+
+    var body: some View {
+        WindowEditedBridge(isEdited: model.hasUnsavedRequestChanges)
+            .frame(width: 0, height: 0)
+            .accessibilityHidden(true)
+    }
+}
+
+private struct WindowEditedBridge: NSViewRepresentable {
+    let isEdited: Bool
+
+    func makeNSView(context _: Context) -> NSView { NSView() }
+
+    func updateNSView(_ view: NSView, context _: Context) {
+        let isEdited = isEdited
+        // The view may not be in a window during its first update.
+        DispatchQueue.main.async {
+            if let window = view.window, window.isDocumentEdited != isEdited { window.isDocumentEdited = isEdited }
+        }
+    }
 }
 
 private struct RequestWorkspace: View {
@@ -1661,6 +1744,10 @@ private struct RequestURLBar: View {
     @State private var customMethod = ""
     @State private var isEditingLongURL = false
     @State private var urlText = ""
+    /// Narrow groups (for example a split editor) collapse the proxy pill and status to
+    /// icons so the URL keeps most of the width.
+    @State private var isCompact = false
+    @Environment(\.variableCatalog) private var variables
 
     var body: some View {
         HStack(spacing: 7) {
@@ -1672,7 +1759,7 @@ private struct RequestURLBar: View {
                     Button(method.rawValue) { session.draft.method = method }
                 }
                 Divider()
-                Button("CUSTOM…") {
+                Button("Custom…") {
                     customMethod = HTTPMethod.allCases.contains(session.draft.method)
                         ? ""
                         : session.draft.method.rawValue
@@ -1695,18 +1782,19 @@ private struct RequestURLBar: View {
             NativeRequestURLField(text: Binding(
                 get: { urlText },
                 set: { urlText = $0; session.draft.editURL($0) }
-            ), isEditing: $urlIsFocused, focusTrigger: interface.focusURLTrigger, active: model.sessions.activeGroupID == groupID, submit: send)
+            ), isEditing: $urlIsFocused, focusTrigger: interface.focusURLTrigger, active: model.sessions.activeGroupID == groupID,
+                variables: variables, submit: send)
                 .onSubmit(send)
                 .accessibilityLabel("Request URL")
+                .frame(minWidth: 96)
+                .layoutPriority(1)
 
-            ProxyConnectionIndicator(model: model, session: session) {
+            ProxyConnectionIndicator(model: model, session: session, compact: isCompact) {
                 interface.presentation(for: session).requestSection = .settings
             }
-            InlineResponseStatus(session: session)
-            if session.kind == .webSocket && session.socket.status == .connected {
-                Label("101 Switching Protocols", systemImage: WireboltTheme.statusSymbol(101))
-                    .font(.system(size: 14)).foregroundStyle(WireboltTheme.statusColor(101)).fixedSize()
-            }
+            // A fixed slot: the URL field never resizes when a status appears or changes.
+            InlineResponseStatus(session: session, compact: isCompact)
+                .frame(width: isCompact ? 20 : 148, alignment: .leading)
 
             Button("Edit Long URL", systemImage: "rectangle.expand.vertical") {
                 isEditingLongURL = true
@@ -1721,29 +1809,13 @@ private struct RequestURLBar: View {
             RequestHistoryMenu(model: model, session: session)
                 .frame(width: 24, height: 30)
 
-            if session.kind == .webSocket {
-                Button(session.socket.status == .disconnected ? "CONNECT ⌘⌃⏎" : "DISCONNECT ⌘⌃⏎") {
-                    if session.socket.status == .disconnected { Task { await model.connectWebSocket(session) } }
-                    else { session.socket.disconnect() }
-                }.buttonStyle(WorkspaceActionButtonStyle(color: WireboltTheme.primaryAccent))
-                    .accessibilityLabel(session.socket.status == .disconnected ? "Connect" : "Disconnect")
-                    .disabled(session.draft.url.isEmpty)
-            } else if session.isRunning {
-                Button("CANCEL", systemImage: "stop.fill", action: cancel)
-                    .buttonStyle(WorkspaceActionButtonStyle(color: .red))
-                    .accessibilityLabel("Cancel request")
-            } else {
-                Button("SEND ⌘⏎", action: send)
-                .buttonStyle(WorkspaceActionButtonStyle(color: WireboltTheme.primaryAccent))
-                .accessibilityLabel("Send request")
-                .disabled(session.draft.url.isEmpty)
-                .help("Send Request (⌘↩)")
-            }
+            primaryAction
         }
         .padding(.leading, 10)
         .padding(.trailing, 11)
         .frame(height: 44)
         .background(WireboltTheme.barBackground)
+        .onGeometryChange(for: Bool.self) { $0.size.width < Self.compactWidth } action: { isCompact = $0 }
         .onAppear { urlText = session.draft.displayURL }
         .onChange(of: session.draft.query) {
             if !urlIsFocused { urlText = session.draft.displayURL }
@@ -1771,9 +1843,58 @@ private struct RequestURLBar: View {
         }
     }
 
+    /// Below this bar width the proxy pill and status collapse to icons.
+    nonisolated private static let compactWidth: CGFloat = 760
+
+    /// Native bordered buttons provide the disabled, hover, pressed, and focus-ring states.
+    /// Send and Connect are prominent; Cancel and Disconnect are secondary. Shortcuts live in
+    /// the Request menu and in the help tag, not in the title.
+    @ViewBuilder private var primaryAction: some View {
+        let hasURL = !session.draft.url.isEmpty
+        Group {
+            if session.kind == .webSocket {
+                if session.socket.status == .disconnected {
+                    Button(action: toggleConnection) { actionTitle("Connect") }
+                        .buttonStyle(.borderedProminent)
+                        .help(hasURL ? "Connect (⌃⌘↩)" : "Enter a URL to connect")
+                        .disabled(!hasURL)
+                } else {
+                    Button(action: toggleConnection) { actionTitle("Disconnect") }
+                        .buttonStyle(.bordered)
+                        .help("Disconnect (⌃⌘↩)")
+                }
+            } else if session.isRunning {
+                Button(action: cancel) { actionTitle("Cancel") }
+                    .buttonStyle(.bordered)
+                    .accessibilityLabel("Cancel Request")
+                    .help("Cancel Request (⌘.)")
+            } else {
+                Button(action: send) { actionTitle("Send") }
+                    .buttonStyle(.borderedProminent)
+                    .accessibilityLabel("Send Request")
+                    .help(hasURL ? "Send Request (⌘↩)" : "Enter a URL to send the request")
+                    .disabled(!hasURL)
+            }
+        }
+        .controlSize(.large)
+        .buttonBorderShape(.capsule)
+        .tint(WireboltTheme.primaryAccent)
+        .fixedSize()
+    }
+
+    /// Equal minimum widths keep Send and Cancel from shifting the URL field when they swap.
+    private func actionTitle(_ title: String) -> some View {
+        Text(title).frame(minWidth: 52)
+    }
+
+    private func toggleConnection() {
+        if session.socket.status == .disconnected { Task { await model.connectWebSocket(session) } }
+        else { session.socket.disconnect() }
+    }
+
     private func send() {
         guard session.draft.url.isEmpty == false else { return }
-        NSApp.keyWindow?.makeFirstResponder(nil)
+        commitPendingEdits(in: NSApp.keyWindow)
         model.sessions.select(tabID: session.id, in: groupID)
         interface.synchronizeSelection(model: model)
         if session.kind == .webSocket {
@@ -2018,69 +2139,92 @@ private struct LongURLEditor: View {
             HStack {
                 Button("Cancel", role: .cancel) { dismiss() }.keyboardShortcut(.cancelAction)
                 Spacer()
-                Button("Done (⌘↩)") { url = editedURL; dismiss() }
+                Button("Done") { url = editedURL; dismiss() }
                     .keyboardShortcut(.return, modifiers: .command)
+                    .help("Done (⌘↩)")
             }.controlSize(.small)
         }.padding(16).frame(width: 566, height: 362)
     }
 }
 
+/// Status of the latest run in a fixed-size slot: a spinner while running, then the
+/// status symbol and line. Long reason phrases truncate; the full line is in the help tag.
 private struct InlineResponseStatus: View {
     @Bindable var session: DocumentSession
+    var compact = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
-        if session.isRunning {
-            ProgressView()
-                .controlSize(.small)
-        } else if let status {
-            HStack(spacing: 6) {
-                Image(systemName: status >= 400 ? "exclamationmark.circle.fill" : "checkmark.circle.fill")
-                    .foregroundStyle(WireboltTheme.statusColor(status))
-                Text(statusLabel(status))
-                    .font(.system(size: 15))
-                    .foregroundStyle(WireboltTheme.statusColor(status))
+        Group {
+            if session.isRunning || (session.kind == .webSocket && session.socket.status == .connecting) {
+                ProgressView()
+                    .controlSize(.small)
+                    .accessibilityLabel(session.kind == .webSocket ? "Connecting" : "Sending")
+            } else if let status {
+                HStack(spacing: WireboltTheme.Spacing.small) {
+                    Image(systemName: WireboltTheme.statusSymbol(status))
+                        .font(.system(size: compact ? 15 : 14))
+                    if !compact {
+                        Text(ResponseFormatting.statusLine(status))
+                            .font(.system(size: 14).monospacedDigit())
+                            .lineLimit(1)
+                            .truncationMode(.tail)
+                            .contentTransition(reduceMotion ? .identity : .numericText())
+                    }
+                }
+                .foregroundStyle(WireboltTheme.statusColor(status))
+                .help(ResponseFormatting.statusLine(status))
+                .accessibilityElement(children: .ignore)
+                .accessibilityLabel("Status \(ResponseFormatting.statusLine(status))")
             }
-            .fixedSize()
         }
+        .animation(reduceMotion ? nil : .snappy(duration: 0.2), value: status)
     }
 
     private var status: UInt16? {
-        session.responseHead?.status
-    }
-
-    private func statusLabel(_ status: UInt16) -> String {
-        ResponseFormatting.statusLine(status)
-    }
-}
-
-private struct WorkspaceActionButtonStyle: ButtonStyle {
-    let color: Color
-
-    func makeBody(configuration: Configuration) -> some View {
-        configuration.label
-            .font(.system(size: 12, weight: .semibold))
-            .foregroundStyle(.white)
-            .padding(.horizontal, 13)
-            .frame(minWidth: 102, minHeight: 28)
-            .background(color.opacity(configuration.isPressed ? 0.78 : 1), in: .capsule)
-            .opacity(configuration.isPressed ? 0.9 : 1)
+        if session.kind == .webSocket {
+            return session.socket.status == .connected ? 101 : nil
+        }
+        return session.responseHead?.status
     }
 }
 
+/// Ends editing so pending text edits reach the draft, then puts focus back where it was
+/// (with the same selection) so sending from the keyboard does not lose the insertion point.
+@MainActor
+func commitPendingEdits(in window: NSWindow?) {
+    guard let window, let responder = window.firstResponder else { return }
+    if let editor = responder as? NSTextView, editor.isFieldEditor, let field = editor.delegate as? NSTextField {
+        let selection = editor.selectedRange()
+        guard window.makeFirstResponder(nil) else { return }
+        window.makeFirstResponder(field)
+        field.currentEditor()?.selectedRange = selection
+    } else if let view = responder as? NSView {
+        guard window.makeFirstResponder(nil) else { return }
+        window.makeFirstResponder(view)
+    }
+}
+
+/// The URL text field. `{{name}}` references are colored (accent when defined, red when
+/// not) while viewing and editing, the help tag lists their values, and typing `{{`
+/// offers the active variables (↑↓ to choose, Return or Tab to insert, Esc to dismiss).
 private struct NativeRequestURLField: NSViewRepresentable {
     @Binding var text: String
     @Binding var isEditing: Bool
     let focusTrigger: Int
     let active: Bool
+    var variables: VariableCatalog?
     let submit: () -> Void
+
+    private static let font = NSFont.monospacedSystemFont(ofSize: 13, weight: .regular)
 
     func makeCoordinator() -> Coordinator { Coordinator(self) }
     func makeNSView(context: Context) -> NSTextField {
         let field = NSTextField()
         field.isBordered = false
         field.drawsBackground = false
-        field.font = .monospacedSystemFont(ofSize: 13, weight: .regular)
-        field.placeholderString = "Enter URL (⌘L)"
+        field.font = Self.font
+        field.placeholderString = "Enter URL"
         field.cell?.usesSingleLineMode = true
         field.cell?.lineBreakMode = .byTruncatingTail
         field.cell?.isScrollable = true
@@ -2093,27 +2237,166 @@ private struct NativeRequestURLField: NSViewRepresentable {
         return field
     }
     func updateNSView(_ field: NSTextField, context: Context) {
-        context.coordinator.parent = self
+        let coordinator = context.coordinator
+        coordinator.parent = self
         field.cell?.isScrollable = isEditing
         field.cell?.lineBreakMode = isEditing ? .byClipping : .byTruncatingTail
-        if field.stringValue != text { field.stringValue = text }
+        if field.stringValue != text { field.stringValue = text; coordinator.highlightedState = nil }
+        coordinator.highlight(field)
         if context.coordinator.focusTrigger != focusTrigger {
             context.coordinator.focusTrigger = focusTrigger
             if active { field.window?.makeFirstResponder(field); field.selectText(nil) }
         }
     }
+    static func dismantleNSView(_: NSTextField, coordinator: Coordinator) { coordinator.closeCompletions() }
+
     @MainActor
     final class Coordinator: NSObject, NSTextFieldDelegate {
         var parent: NativeRequestURLField
         var focusTrigger: Int
+        /// What the field currently shows, so unchanged updates skip re-highlighting.
+        var highlightedState: (text: String, variables: VariableCatalog?, editing: Bool)?
+        private var popover: NSPopover?
+        private var completions: [VariableCatalog.Entry] = []
+        private var selectedIndex = 0
+        private var dismissedText: String?
+        private var isInserting = false
+
         init(_ parent: NativeRequestURLField) { self.parent = parent; focusTrigger = parent.focusTrigger }
-        func controlTextDidBeginEditing(_ notification: Notification) { parent.isEditing = true }
-        func controlTextDidEndEditing(_ notification: Notification) { parent.isEditing = false }
+
+        func controlTextDidBeginEditing(_ notification: Notification) {
+            parent.isEditing = true
+            if let field = notification.object as? NSTextField { highlight(field) }
+        }
+        func controlTextDidEndEditing(_ notification: Notification) {
+            closeCompletions()
+            dismissedText = nil
+            parent.isEditing = false
+            // The field editor detaches after this notification; color the cell then.
+            guard let field = notification.object as? NSTextField else { return }
+            DispatchQueue.main.async { [weak self, weak field] in
+                guard let self, let field, field.currentEditor() == nil else { return }
+                self.highlightedState = nil
+                self.highlight(field)
+            }
+        }
         func controlTextDidChange(_ notification: Notification) {
             guard let field = notification.object as? NSTextField else { return }
             parent.text = field.stringValue
+            highlight(field)
+            if !isInserting { updateCompletions(field) }
         }
         @objc func submit() { parent.submit() }
+
+        func control(_ control: NSControl, textView _: NSTextView, doCommandBy selector: Selector) -> Bool {
+            guard popover?.isShown == true, !completions.isEmpty, let field = control as? NSTextField else { return false }
+            switch selector {
+            case #selector(NSResponder.moveDown(_:)): selectedIndex = (selectedIndex + 1) % completions.count
+            case #selector(NSResponder.moveUp(_:)): selectedIndex = (selectedIndex + completions.count - 1) % completions.count
+            case #selector(NSResponder.insertNewline(_:)), #selector(NSResponder.insertTab(_:)):
+                insert(completions[selectedIndex], into: field)
+                return true
+            case #selector(NSResponder.cancelOperation(_:)):
+                dismissedText = field.stringValue
+                closeCompletions()
+                return true
+            default: return false
+            }
+            showCompletions(for: field)
+            return true
+        }
+
+        /// Colors references in the field editor while editing, or in the cell otherwise.
+        func highlight(_ field: NSTextField) {
+            let text = field.stringValue
+            let editor = field.currentEditor() as? NSTextView
+            let state = (text: text, variables: parent.variables, editing: editor != nil)
+            if let current = highlightedState, current.text == state.text, current.variables == state.variables,
+               current.editing == state.editing { return }
+            highlightedState = state
+            let summary = parent.variables.flatMap { text.contains("{{") ? $0.summary(for: text) : nil }
+            if field.toolTip != summary { field.toolTip = summary }
+            guard let variables = parent.variables, text.contains("{{") else {
+                if let storage = editor?.textStorage, storage.length > 0 {
+                    storage.addAttribute(.foregroundColor, value: NSColor.textColor, range: NSRange(location: 0, length: storage.length))
+                }
+                return
+            }
+            if let storage = editor?.textStorage {
+                VariableHighlighting.apply(to: storage, catalog: variables, baseColor: .textColor)
+            } else {
+                let highlighted = NSMutableAttributedString(attributedString: VariableHighlighting.attributedString(text, font: NativeRequestURLField.font, catalog: variables))
+                let paragraph = NSMutableParagraphStyle()
+                paragraph.lineBreakMode = .byTruncatingTail
+                highlighted.addAttribute(.paragraphStyle, value: paragraph, range: NSRange(location: 0, length: highlighted.length))
+                field.attributedStringValue = highlighted
+            }
+        }
+
+        private func updateCompletions(_ field: NSTextField) {
+            let text = field.stringValue
+            guard let variables = parent.variables, dismissedText != text, text.contains("{{"),
+                  let editor = field.currentEditor() as? NSTextView, editor.selectedRange().length == 0,
+                  let reference = VariableTemplate.openReference(in: text, caret: editor.selectedRange().location)
+            else { closeCompletions(); return }
+            completions = Array(variables.completions(matching: reference.prefix).prefix(VariableCompletionList.limit))
+            selectedIndex = 0
+            guard !completions.isEmpty else { closeCompletions(); return }
+            showCompletions(for: field)
+        }
+
+        private func showCompletions(for field: NSTextField) {
+            let list = VariableCompletionList(entries: completions, selectedIndex: selectedIndex) { [weak self, weak field] entry in
+                guard let self, let field else { return }
+                self.insert(entry, into: field)
+            }
+            // A transient popover closes itself on outside clicks; show a fresh one then.
+            if let popover, popover.isShown, let host = popover.contentViewController as? NSHostingController<VariableCompletionList> {
+                host.rootView = list
+                return
+            }
+            popover?.close()
+            let host = NSHostingController(rootView: list)
+            host.sizingOptions = .preferredContentSize
+            let popover = NSPopover()
+            popover.contentViewController = host
+            popover.behavior = .transient
+            popover.animates = false
+            self.popover = popover
+            popover.show(relativeTo: caretRect(in: field), of: field, preferredEdge: .maxY)
+        }
+
+        func closeCompletions() {
+            popover?.close()
+            popover = nil
+            completions = []
+        }
+
+        private func insert(_ entry: VariableCatalog.Entry, into field: NSTextField) {
+            guard let editor = field.currentEditor() as? NSTextView,
+                  let reference = VariableTemplate.openReference(in: editor.string, caret: editor.selectedRange().location)
+            else { closeCompletions(); return }
+            let replacement = reference.isClosed ? entry.name : entry.name + "}}"
+            // Through the text view so the insertion is one undoable edit.
+            isInserting = true
+            defer { isInserting = false }
+            if editor.shouldChangeText(in: reference.replacementRange, replacementString: replacement) {
+                editor.replaceCharacters(in: reference.replacementRange, with: replacement)
+                editor.didChangeText()
+            }
+            let caret = reference.replacementRange.location + (entry.name as NSString).length + 2
+            editor.setSelectedRange(NSRange(location: min(caret, (editor.string as NSString).length), length: 0))
+            closeCompletions()
+        }
+
+        /// The insertion point in field coordinates, falling back to the field bounds.
+        private func caretRect(in field: NSTextField) -> NSRect {
+            guard let editor = field.currentEditor() as? NSTextView, let window = field.window else { return field.bounds }
+            let screen = editor.firstRect(forCharacterRange: editor.selectedRange(), actualRange: nil)
+            guard screen != .zero else { return field.bounds }
+            let local = field.convert(window.convertFromScreen(screen), from: nil)
+            return NSRect(x: local.minX, y: field.bounds.minY, width: max(1, local.width), height: field.bounds.height)
+        }
     }
 }
 
@@ -2122,18 +2405,23 @@ private struct RequestSectionBar: View {
     @Bindable var session: DocumentSession
     @Binding var isBulkEditing: Bool
 
+    /// One row of constant height: section actions stay pinned at the trailing edge and
+    /// the section tabs scroll when the pane is too narrow, so the editor never jumps.
     var body: some View {
-        ViewThatFits(in: .horizontal) {
-            HStack(spacing: 12) {
-                tabs
-                Spacer(minLength: 0)
-                tools
+        HStack(spacing: WireboltTheme.Spacing.medium) {
+            ScrollViewReader { scroll in
+                ScrollView(.horizontal) {
+                    tabs
+                }
+                .scrollIndicators(.never)
+                .scrollBounceBehavior(.basedOnSize, axes: .horizontal)
+                .onChange(of: interface.requestSection) { _, section in
+                    scroll.scrollTo(section, anchor: .center)
+                }
             }
-            VStack(spacing: 0) {
-                tabs.frame(maxWidth: .infinity, alignment: .leading)
-                tools.frame(maxWidth: .infinity, alignment: .trailing)
-            }
+            tools
         }
+        .frame(height: 32)
         .padding(.horizontal, 11)
         .background(WireboltTheme.barBackground)
         .accessibilityElement(children: .contain)
@@ -2152,6 +2440,7 @@ private struct RequestSectionBar: View {
                     height: 32,
                     action: { interface.requestSection = section }
                 )
+                .id(section)
             }
         }.fixedSize(horizontal: true, vertical: false)
     }
@@ -2167,6 +2456,7 @@ private struct RequestSectionBar: View {
                     interface.isBulkEditing = false; interface.focusNewKeyTrigger += 1
                 }
                 .labelStyle(.iconOnly).buttonStyle(.borderless).foregroundStyle(.secondary)
+                .help("Add Key (⇧⌘K)")
                 .frame(width: 30, height: 32)
                 Menu("Section Actions", systemImage: "ellipsis.circle") {
                     Button("New Entry") { interface.isBulkEditing = false; interface.focusNewKeyTrigger += 1 }
@@ -2276,13 +2566,21 @@ struct PanelTabButton: View {
         }
         .accessibilityAddTraits(isSelected ? .isSelected : [])
         .accessibilityLabel(title)
-        .accessibilityValue(badge.map { $0 > 0 ? "\($0) entries" : "" } ?? "")
+        .accessibilityValue(badge.map { $0 > 0 ? "\($0) entries" : "" } ?? (indicator ? "configured" : ""))
     }
 }
 
 private enum FieldEditorKind {
     case query
     case header
+
+    /// Row noun for VoiceOver labels.
+    var noun: String {
+        switch self {
+        case .query: "parameter"
+        case .header: "header"
+        }
+    }
 }
 
 private struct FieldEditor: View {
@@ -2307,6 +2605,7 @@ private struct FieldEditor: View {
                     ForEach($fields) { $field in
                         if field.id != pendingID { FieldTableRow(
                             field: $field,
+                            kind: kind,
                             valueWidth: valueWidth,
                             onRemove: { fields.removeAll { $0.id == field.id } }
                         )
@@ -2354,6 +2653,7 @@ private struct FieldTableHeader: View {
 
 private struct FieldTableRow: View {
     @Binding var field: RequestField
+    let kind: FieldEditorKind
     let valueWidth: Double
     let onRemove: () -> Void
 
@@ -2362,13 +2662,15 @@ private struct FieldTableRow: View {
 
     var body: some View {
         HStack(alignment: .top, spacing: 0) {
-            FieldCheckbox(isOn: $field.enabled)
-            FieldTextInput("Key", text: $field.name, height: fieldHeight)
+            FieldCheckbox(isOn: $field.enabled, label: "Enable \(kind.noun) \(field.name)")
+            FieldTextInput("Key", text: $field.name, height: fieldHeight,
+                accessibilityLabel: field.name.isEmpty ? "\(kind.noun.capitalized) name" : "\(kind.noun.capitalized) name, \(field.name)")
                 .frame(width: 175)
                 .padding(.horizontal, 4)
 
             Color.clear.frame(width: 1)
-            FieldTextInput("Value", text: literalBinding($field.value), height: fieldHeight)
+            FieldTextInput("Value", text: literalBinding($field.value), height: fieldHeight,
+                accessibilityLabel: field.name.isEmpty ? "\(kind.noun.capitalized) value" : "Value of \(field.name)")
                 .frame(width: valueWidth)
                 .padding(.horizontal, 4)
                 .padding(.trailing, 5)
@@ -2418,9 +2720,9 @@ private struct NewFieldTableRow: View {
                 if name.isEmpty {
                     Color.clear.frame(width: 28)
                 } else {
-                    FieldCheckbox(isOn: $isEnabled)
+                    FieldCheckbox(isOn: $isEnabled, label: "Enable new \(kind.noun)")
                 }
-                FieldTextInput("New Key (⌘K)", text: $name, height: fieldHeight)
+                FieldTextInput("New Key", text: $name, height: fieldHeight, accessibilityLabel: "New \(kind.noun) name")
                     .focused($focusedField, equals: .key)
                     .frame(width: 175)
                     .padding(.horizontal, 4)
@@ -2434,7 +2736,7 @@ private struct NewFieldTableRow: View {
                         }
                     }
                 Color.clear.frame(width: 1)
-                FieldTextInput("New Value", text: $value, height: fieldHeight)
+                FieldTextInput("New Value", text: $value, height: fieldHeight, accessibilityLabel: "New \(kind.noun) value")
                     .focused($focusedField, equals: .value)
                     .frame(width: valueWidth)
                     .padding(.horizontal, 4)
@@ -2502,6 +2804,7 @@ private struct NewFieldTableRow: View {
         showingSuggestions = kind == .header
             && focusedField == .key
             && !name.isEmpty
+            && !name.contains("{{")
     }
 
     private func updateValueSuggestions() {
@@ -2509,6 +2812,7 @@ private struct NewFieldTableRow: View {
             && focusedField == .value
             && name.caseInsensitiveCompare("Content-Type") == .orderedSame
             && !value.isEmpty
+            && !value.contains("{{")
     }
 
     private func commit() {
@@ -2535,7 +2839,7 @@ private struct EmptyNewFieldRow: View {
         HStack(spacing: 0) {
             Color.clear.frame(width: 27)
             Color.clear.frame(width: 1)
-            Text("New Key (⌘K)")
+            Text("New Key")
                 .frame(width: 175, alignment: .leading)
                 .padding(.horizontal, 4)
             Color.clear.frame(width: 1)
@@ -2629,6 +2933,7 @@ private struct AuthenticationEditor: View {
     @Bindable var session: DocumentSession
     @Binding var authentication: RequestAuthentication
     @State private var clientSecretMaterial = ""
+    @State private var revealsPassword = false
 
     var body: some View {
         Group {
@@ -2641,11 +2946,25 @@ private struct AuthenticationEditor: View {
                 Grid(alignment: .leading, horizontalSpacing: 8, verticalSpacing: 5) {
                     GridRow {
                         Text("Username").gridColumnAlignment(.trailing)
-                        TextField("", text: credential(username, role: "username"))
+                        TextField("Username", text: credential(username, role: "username"))
+                            .labelsHidden()
                     }
                     GridRow {
                         Text("Password")
-                        TextField("", text: credential(password, role: "password"))
+                        HStack(spacing: WireboltTheme.Spacing.xSmall) {
+                            Group {
+                                if revealsPassword {
+                                    TextField("Password", text: credential(password, role: "password"))
+                                } else {
+                                    SecureField("Password", text: credential(password, role: "password"))
+                                }
+                            }
+                            .labelsHidden()
+                            Button(revealsPassword ? "Hide Password" : "Show Password",
+                                   systemImage: revealsPassword ? "eye.slash" : "eye") { revealsPassword.toggle() }
+                                .labelStyle(.iconOnly).buttonStyle(.borderless)
+                                .help(revealsPassword ? "Hide Password" : "Show Password")
+                        }
                     }
                     GridRow(alignment: .top) {
                         Text("Generated Header").padding(.top, 3)
@@ -2662,6 +2981,7 @@ private struct AuthenticationEditor: View {
                 HStack(alignment: .top, spacing: 10) {
                     Text("Bearer Token").frame(width: 80, alignment: .trailing).padding(.top, 5)
                     TextEditor(text: credential(token, role: "token"))
+                        .accessibilityLabel("Bearer Token")
                         .font(.system(size: 13)).scrollContentBackground(.hidden)
                         .padding(4).frame(height: 162)
                         .background(Color(nsColor: .textBackgroundColor), in: .rect(cornerRadius: 5))
@@ -3115,20 +3435,34 @@ private struct MultipartRow: View {
             .onAppear { if part.name.isEmpty { isEditing = true } }
     }
     private func export() {
+        let part = part
+        let window = NSApp.keyWindow
         let panel = NSSavePanel()
         panel.nameFieldStringValue = part.fileName ?? (part.name.isEmpty ? "part" : part.name)
-        guard panel.runModal() == .OK, let url = panel.url else { return }
-        do {
-            let data: Data
-            switch part.kind {
-            case .file: data = try Data(contentsOf: URL(fileURLWithPath: part.filePath ?? ""), options: .mappedIfSafe)
-            case .binary:
-                guard let decoded = Data(base64Encoded: part.value.editableValue) else { NSSound.beep(); return }
-                data = decoded
-            case .text: data = Data(part.value.editableValue.utf8)
+        panel.canCreateDirectories = true
+        Task {
+            guard await present(panel, in: window) == .OK, let url = panel.url else { return }
+            do {
+                let data: Data
+                switch part.kind {
+                case .file: data = try Data(contentsOf: URL(fileURLWithPath: part.filePath ?? ""), options: .mappedIfSafe)
+                case .binary:
+                    guard let decoded = Data(base64Encoded: part.value.editableValue) else {
+                        throw CocoaError(.fileWriteInapplicableStringEncoding, userInfo: [
+                            NSLocalizedDescriptionKey: "The part’s binary value isn’t valid Base64.",
+                        ])
+                    }
+                    data = decoded
+                case .text: data = Data(part.value.editableValue.utf8)
+                }
+                try data.write(to: url, options: .atomic)
+            } catch {
+                let alert = NSAlert()
+                alert.messageText = "The part could not be exported."
+                alert.informativeText = error.localizedDescription
+                _ = await present(alert, in: window)
             }
-            try data.write(to: url, options: .atomic)
-        } catch { NSSound.beep() }
+        }
     }
 }
 
@@ -3143,12 +3477,12 @@ private struct MultipartPartEditor: View {
             Grid(alignment: .leading, horizontalSpacing: 8, verticalSpacing: 2) {
                 GridRow {
                     Text("Part:").gridColumnAlignment(.trailing)
-                    TextField("", text: $part.name).frame(height: 26)
+                    TextField("Part Name", text: $part.name).labelsHidden().frame(height: 26)
                 }
                 GridRow {
                     Text("Content Type:")
                     HStack(spacing: 0) {
-                        TextField("", text: optional(\.contentType))
+                        TextField("Content Type", text: optional(\.contentType)).labelsHidden()
                         Menu("Content Type") {
                             ForEach(["text/plain", "application/json", "application/xml", "application/octet-stream", "image/png"], id: \.self) { type in
                                 Button(type) { part.contentType = type }
@@ -3158,7 +3492,7 @@ private struct MultipartPartEditor: View {
                 }
                 GridRow {
                     Text("File Name:")
-                    TextField("", text: optional(\.fileName)).frame(height: 26)
+                    TextField("File Name", text: optional(\.fileName)).labelsHidden().frame(height: 26)
                 }
                 GridRow(alignment: .top) {
                     Text("Value:").padding(.top, 4)
@@ -3207,14 +3541,19 @@ private struct MultipartPartEditor: View {
         isEditingValue = true
     }
     private func selectFile() {
+        let part = $part
         let panel = NSOpenPanel()
         panel.canChooseDirectories = false
         panel.allowsMultipleSelection = false
-        guard panel.runModal() == .OK, let url = panel.url else { return }
-        part.kind = .file
-        part.filePath = url.path
-        part.fileName = url.lastPathComponent
-        part.contentType = UTType(filenameExtension: url.pathExtension)?.preferredMIMEType ?? "application/octet-stream"
+        // This editor is a popover; attach the sheet to the workspace window instead.
+        let window = WorkspaceWindowRegistry.primary ?? NSApp.mainWindow
+        Task {
+            guard await present(panel, in: window) == .OK, let url = panel.url else { return }
+            part.wrappedValue.kind = .file
+            part.wrappedValue.filePath = url.path
+            part.wrappedValue.fileName = url.lastPathComponent
+            part.wrappedValue.contentType = UTType(filenameExtension: url.pathExtension)?.preferredMIMEType ?? "application/octet-stream"
+        }
     }
 }
 
@@ -3257,7 +3596,9 @@ private struct FileBodyEditor: View {
         panel.canChooseFiles = true
         panel.canChooseDirectories = false
         panel.allowsMultipleSelection = false
-        if panel.runModal() == .OK, let selected = panel.url {
+        let update = update
+        Task {
+            guard await present(panel, in: NSApp.keyWindow) == .OK, let selected = panel.url else { return }
             update(selected.path, UTType(filenameExtension: selected.pathExtension)?.preferredMIMEType ?? "application/octet-stream")
         }
     }

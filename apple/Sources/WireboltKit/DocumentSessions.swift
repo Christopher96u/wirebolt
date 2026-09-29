@@ -26,7 +26,13 @@ public final class DocumentSession: Identifiable {
     public let kind: DocumentKind
     public private(set) var collectionID: String?
     public let requestID: String
-    public var draft: RequestDraft
+    public var draft: RequestDraft {
+        // Compares with the saved state (not `oldValue`) so edits don't copy the draft.
+        didSet { if !isTouched, draft != savedDraft { isTouched = true } }
+    }
+    /// Set once the draft is edited or a run starts. A touched preview tab behaves like
+    /// a regular tab: opening another request no longer replaces it.
+    public private(set) var isTouched = false
     public var note: String {
         get { draft.note }
         set { draft.note = newValue }
@@ -72,6 +78,8 @@ public final class DocumentSession: Identifiable {
         self.draft.webSocket = self.kind == .webSocket
         if !note.isEmpty { self.draft.note = note }
         self.savedDraft = savedDraft == draft ? self.draft : savedDraft?.separatingURLQuery
+        // Normalizing the draft above is not an edit.
+        isTouched = false
     }
 
     public var title: String { draft.name }
@@ -86,6 +94,7 @@ public final class DocumentSession: Identifiable {
     }
 
     public func beginRun(_ runID: RunID) {
+        isTouched = true
         failure = nil
         pendingBodyStore = try? ResponseBodyStore(runID: runID)
         pendingPreparedRun = nil
@@ -231,19 +240,23 @@ public struct EditorGroup: Identifiable, Codable, Equatable, Sendable {
     public var selectedTabID: String?
     public var backwardTabIDs: [String]
     public var forwardTabIDs: [String]
+    /// The tab a single click in the sidebar reuses (shown in italics) until it is kept open.
+    public var previewTabID: String?
 
     public init(
         id: String = UUID().uuidString.lowercased(),
         tabIDs: [String] = [],
         selectedTabID: String? = nil,
         backwardTabIDs: [String] = [],
-        forwardTabIDs: [String] = []
+        forwardTabIDs: [String] = [],
+        previewTabID: String? = nil
     ) {
         self.id = id
         self.tabIDs = tabIDs
         self.selectedTabID = selectedTabID
         self.backwardTabIDs = backwardTabIDs
         self.forwardTabIDs = forwardTabIDs
+        self.previewTabID = previewTabID
     }
 }
 
@@ -262,10 +275,13 @@ public struct SessionLayout: Codable, Equatable, Sendable {
     public struct Group: Codable, Equatable, Sendable {
         public let tabs: [Tab]
         public let selectedIndex: Int?
+        /// Index of the preview tab, if the group has one. Absent in older layouts.
+        public let previewIndex: Int?
 
-        public init(tabs: [Tab], selectedIndex: Int?) {
+        public init(tabs: [Tab], selectedIndex: Int?, previewIndex: Int? = nil) {
             self.tabs = tabs
             self.selectedIndex = selectedIndex
+            self.previewIndex = previewIndex
         }
     }
 
@@ -340,7 +356,8 @@ public final class DocumentSessionStore {
             guard !tabs.isEmpty else { continue }
             restorable.append((group.id, SessionLayout.Group(
                 tabs: tabs.map(\.1),
-                selectedIndex: tabs.firstIndex { $0.0 == group.selectedTabID }
+                selectedIndex: tabs.firstIndex { $0.0 == group.selectedTabID },
+                previewIndex: tabs.firstIndex { isPreview(tabID: $0.0) }
             )))
         }
         return SessionLayout(
@@ -375,6 +392,7 @@ public final class DocumentSessionStore {
                 group.tabIDs.append(session.id)
                 restored.append(session)
                 if tabIndex == saved.selectedIndex { selectedID = session.id }
+                if tabIndex == saved.previewIndex { group.previewTabID = session.id }
             }
             guard !group.tabIDs.isEmpty else { continue }
             group.selectedTabID = selectedID ?? group.tabIDs.last
@@ -443,6 +461,62 @@ public final class DocumentSessionStore {
         }
         activeGroupID = targetGroupID
         return session
+    }
+
+    /// Opens a saved request in the group's preview tab: an untouched preview tab is
+    /// replaced in place, otherwise a new preview tab is added. A request that is already
+    /// open in the group is selected and keeps its pinned or preview state.
+    @discardableResult
+    public func openPreview(
+        draft: RequestDraft,
+        collectionID: String?,
+        in groupID: String? = nil
+    ) -> DocumentSession {
+        let targetGroupID = groupID ?? activeGroupID
+        let kind: DocumentKind = draft.webSocket || draft.url.hasPrefix("ws://") || draft.url.hasPrefix("wss://") ? .webSocket : .http
+        guard let group = groups.first(where: { $0.id == targetGroupID }) else {
+            return open(draft: draft, collectionID: collectionID, in: groupID)
+        }
+        if let existing = group.tabIDs.lazy.compactMap({ self.sessions[$0] }).first(where: {
+            $0.requestID == draft.id && $0.collectionID == collectionID && $0.kind == kind
+        }) {
+            select(tabID: existing.id, in: targetGroupID)
+            return existing
+        }
+        guard let replaced = group.previewTabID, isPreview(tabID: replaced), sessions[replaced] != nil else {
+            let session = open(draft: draft, collectionID: collectionID, kind: kind, in: targetGroupID, forceNewSession: true)
+            mutateGroup(id: targetGroupID) { $0.previewTabID = session.id }
+            return session
+        }
+        let session = DocumentSession(kind: kind, collectionID: collectionID, requestID: draft.id, draft: draft, savedDraft: draft)
+        sessions[session.id] = session
+        mutateGroup(id: targetGroupID) { group in
+            guard let index = group.tabIDs.firstIndex(of: replaced) else { return }
+            group.tabIDs[index] = session.id
+            group.backwardTabIDs.removeAll { $0 == replaced }
+            group.forwardTabIDs.removeAll { $0 == replaced }
+            if group.selectedTabID == replaced {
+                group.selectedTabID = session.id
+            } else {
+                select(session.id, in: &group)
+            }
+            group.previewTabID = session.id
+        }
+        activeGroupID = targetGroupID
+        removeUnreferencedSessions([replaced])
+        return session
+    }
+
+    /// True while the tab is its group's preview tab and has not been edited or sent.
+    public func isPreview(tabID: String) -> Bool {
+        guard let session = sessions[tabID], !session.isTouched else { return false }
+        return groups.contains { $0.previewTabID == tabID }
+    }
+
+    /// Keeps a preview tab open, so the next single click opens another tab.
+    public func pin(tabID: String) {
+        guard let index = groups.firstIndex(where: { $0.previewTabID == tabID }) else { return }
+        groups[index].previewTabID = nil
     }
 
     @discardableResult
@@ -537,6 +611,7 @@ public final class DocumentSessionStore {
             mutable.tabIDs.removeAll { targetIDs.contains($0) }
             mutable.backwardTabIDs.removeAll { targetIDs.contains($0) }
             mutable.forwardTabIDs.removeAll { targetIDs.contains($0) }
+            if let preview = mutable.previewTabID, targetIDs.contains(preview) { mutable.previewTabID = nil }
             if let priorSelection, targetIDs.contains(priorSelection) {
                 mutable.selectedTabID = mutable.tabIDs.last
             }

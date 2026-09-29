@@ -333,6 +333,8 @@ private struct ProxyRouteFields: View {
 struct ProxyConnectionIndicator: View {
     @Bindable var model: WireboltModel
     let session: DocumentSession
+    /// Icon only, for narrow URL bars; the mode stays in the help tag and accessibility label.
+    var compact = false
     let openRequestSettings: () -> Void
     @State private var showsDetails = false
     @Environment(\.openSettings) private var openSettings
@@ -347,11 +349,14 @@ struct ProxyConnectionIndicator: View {
     }
     var body: some View {
         Button { showsDetails.toggle() } label: {
-            Label(label, systemImage: "network").font(.system(size: 10, weight: .medium)).lineLimit(1)
-                .frame(width: 68, height: 24)
+            Group {
+                if compact { Image(systemName: "network") } else { Label(label, systemImage: "network") }
+            }
+                .font(.system(size: 10, weight: .medium)).lineLimit(1)
+                .frame(width: compact ? 26 : 68, height: 24)
                 .background(.quaternary.opacity(0.4), in: Capsule())
         }.buttonStyle(.plain).accessibilityLabel("Proxy connection: \(label)")
-            .help(effective.summary(for: session.draft.url) + " · " + effective.source.title)
+            .help("\(label): " + effective.summary(for: session.draft.url) + " · " + effective.source.title)
             .popover(isPresented: $showsDetails) {
                 VStack(alignment: .leading, spacing: 12) {
                     Text("Effective connection").font(.headline)

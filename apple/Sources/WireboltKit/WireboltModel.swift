@@ -552,11 +552,16 @@ public final class WireboltModel {
         }
     }
 
-    public func select(_ location: RequestLocation) {
-        _ = sessions.open(
-            draft: location.request,
-            collectionID: location.collectionID
-        )
+    /// Opens a saved request. `preview` reuses the group's preview tab instead of adding a tab.
+    public func select(_ location: RequestLocation, preview: Bool = false) {
+        if preview {
+            _ = sessions.openPreview(draft: location.request, collectionID: location.collectionID)
+        } else {
+            _ = sessions.open(
+                draft: location.request,
+                collectionID: location.collectionID
+            )
+        }
     }
 
     public func saveCurrentRequest(collectionID: String) async {

@@ -203,7 +203,7 @@ struct WireboltCommands: Commands {
         CommandMenu("Request") {
             Button("Send") {
                 guard let session = model.sessions.activeSession else { return }
-                NSApp.keyWindow?.makeFirstResponder(nil)
+                commitPendingEdits(in: NSApp.keyWindow)
                 if session.kind == .webSocket { Task { await session.socket.send(body: session.draft.body) } }
                 else { Task { await model.send(session) } }
             }.keyboardShortcut(.return, modifiers: .command)
