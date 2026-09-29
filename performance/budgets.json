@@ -18,6 +18,8 @@
   "syntheticLargeResponseColdFirstViewportMilliseconds": 50,
   "syntheticLargeResponseSearchP95Milliseconds": 250,
   "syntheticLargeResponseRendererSwitchP95Milliseconds": 4,
+  "nativeResponseRendererColdSwitchMilliseconds": 50,
+  "nativeResponseRendererSwitchP95Milliseconds": 16,
   "syntheticLargeResponseResidentDeltaMebibytes": 16,
   "syntheticHistoryInsertP95Milliseconds": 4,
   "syntheticHistoryRestoreP95Milliseconds": 4,
