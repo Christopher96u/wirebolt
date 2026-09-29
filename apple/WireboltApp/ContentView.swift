@@ -1144,7 +1144,13 @@ private struct EditorGroupDeck: View {
                     if session.kind == .http {
                         ResponseViewer(
                             interface: presentation,
-                            session: session
+                            session: session,
+                            send: {
+                                model.sessions.select(tabID: session.id, in: groupID)
+                                interface.synchronizeSelection(model: model)
+                                Task { await model.send(session) }
+                            },
+                            cancel: { model.cancel(session) }
                         )
                     } else {
                         WebSocketResponseView(session: session)
@@ -1899,20 +1905,7 @@ private struct InlineResponseStatus: View {
     }
 
     private func statusLabel(_ status: UInt16) -> String {
-        let reason = switch status {
-        case 200: "OK"
-        case 201: "Created"
-        case 202: "Accepted"
-        case 204: "No Content"
-        case 400: "Bad Request"
-        case 401: "Unauthorized"
-        case 403: "Forbidden"
-        case 404: "Not Found"
-        case 422: "Unprocessable Entity"
-        case 500: "Internal Server Error"
-        default: "Response"
-        }
-        return "\(status) \(reason)"
+        ResponseFormatting.statusLine(status)
     }
 }
 
