@@ -237,6 +237,11 @@ struct ContentView: View {
 
         }
 
+        if #available(macOS 26.0, *) {
+            // Pins the window actions to the trailing edge. Without it they follow the
+            // environment picker whenever the window has no visible title to push them over.
+            ToolbarSpacer(.flexible, placement: .primaryAction)
+        }
         ToolbarItem(id: "workspace-settings", placement: .primaryAction) {
             Button("Workspace Settings", systemImage: "gearshape") { model.isShowingWorkspaceSettings = true }
                 .labelStyle(.iconOnly).buttonStyle(.borderless).help("Workspace Settings")
@@ -245,12 +250,14 @@ struct ContentView: View {
             Button {
                 interface.responseOrientation = interface.responseOrientation == .bottom ? .right : .bottom
             } label: {
-                ResponsePlacementIcon(right: interface.responseOrientation == .right).frame(width: 17, height: 13)
+                // Shows the current layout, like Xcode's area toggles.
+                Image(systemName: interface.responseOrientation == .right
+                    ? "rectangle.righthalf.inset.filled" : "rectangle.bottomthird.inset.filled")
             }
             .accessibilityLabel(interface.responseOrientation == .bottom ? "Place Response on Right" : "Place Response on Bottom")
             .buttonStyle(.borderless)
             .frame(width: 30, height: 30)
-            .help(interface.responseOrientation == .bottom ? "Response on Right" : "Response on Bottom")
+            .help(interface.responseOrientation == .bottom ? "Place Response on Right" : "Place Response on Bottom")
         }
     }
 
@@ -277,30 +284,14 @@ struct ContentView: View {
     }
 }
 
-private struct ResponsePlacementIcon: View {
-    let right: Bool
-    var body: some View {
-        ZStack {
-            RoundedRectangle(cornerRadius: 2).stroke(lineWidth: 1)
-            Path { path in
-                path.move(to: right ? CGPoint(x: 11, y: 0) : CGPoint(x: 0, y: 7))
-                path.addLine(to: right ? CGPoint(x: 11, y: 13) : CGPoint(x: 17, y: 7))
-            }.stroke(lineWidth: 1)
-            ForEach(0..<3) { index in
-                Circle().frame(width: 1.5, height: 1.5)
-                    .position(x: right ? 14 : 4 + CGFloat(index) * 4.5, y: right ? 3 + CGFloat(index) * 3.5 : 10)
-            }
-        }.foregroundStyle(.secondary).accessibilityHidden(true)
-    }
-}
-
 /// Names the window "<Workspace> — <Request>" for the Window menu, Mission Control and
 /// VoiceOver. Isolated so title changes do not re-render the workspace.
 private struct WorkspaceWindowTitle: View {
     let model: WireboltModel
 
     var body: some View {
-        let workspace = model.workspace.name
+        // Never empty: an untitled window has no name in the Window menu or Mission Control.
+        let workspace = model.workspace.name.isEmpty ? "Wirebolt" : model.workspace.name
         let request = model.sessions.activeSession?.title ?? ""
         Color.clear
             .navigationTitle(request.isEmpty ? workspace : "\(workspace) — \(request)")
