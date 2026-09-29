@@ -113,7 +113,7 @@ struct NetworkSettingsPage: View {
                             if route.id != form.routes.last?.id { Divider().padding(.vertical, 4) }
                         }
                         if form.routes.count < 2 {
-                            Button("Add separate route", systemImage: "plus") {
+                            Button("Add Separate Route", systemImage: "plus") {
                                 if form.routes.first?.destination == "all" { form.routes[0].destination = "http" }
                                 var route = ProxyRouteDraft(); route.destination = "https"
                                 form.routes.append(route)
@@ -293,7 +293,7 @@ private struct ProxyRouteFields: View {
                     Text("HTTP only").tag("http")
                     Text("HTTPS only").tag("https")
                 }
-                if canRemove { Button("Remove route", systemImage: "minus.circle", action: remove).labelStyle(.iconOnly) }
+                if canRemove { Button("Remove Route", systemImage: "minus.circle", action: remove).labelStyle(.iconOnly).help("Remove Route") }
             }
             HStack(alignment: .top, spacing: 10) {
                 VStack(alignment: .leading, spacing: 5) {

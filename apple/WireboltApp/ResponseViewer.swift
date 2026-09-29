@@ -255,6 +255,7 @@ private struct ResponseSourceView: View {
                 Spacer(minLength: 4)
                 Button("Find", systemImage: "magnifyingglass") { find.isVisible = true }
                     .labelStyle(.iconOnly).buttonStyle(.borderless)
+                    .help("Find (⌘F)")
                 Menu("Actions", systemImage: "ellipsis.circle") {
                     Button("Copy") {
                         Task {
@@ -270,6 +271,7 @@ private struct ResponseSourceView: View {
                     Divider()
                     EditorPreferencesMenu()
                 }.menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize().labelStyle(.iconOnly)
+                .help("Actions")
             }.font(.system(size: 13)).padding(.horizontal, 12).frame(height: 27)
                 .background(WireboltTheme.barBackground)
             Divider()
@@ -488,6 +490,7 @@ private struct ResponseBodyViewer: View {
                 .foregroundStyle(.secondary)
                 .fixedSize()
                 .frame(width: 20)
+                .help("Response Actions")
                 }
                 .offset(y: -1)
             }
@@ -792,10 +795,12 @@ private struct ResponseKeyValueTable: View {
                 if isSearching { TextField("Find", text: $search).frame(width: 140) }
                 Button("Find", systemImage: "magnifyingglass") { isSearching.toggle() }
                     .labelStyle(.iconOnly).buttonStyle(.borderless)
-                Button("Copy", systemImage: "doc.on.doc") {
+                    .help(isSearching ? "Hide Find" : "Find")
+                Button("Copy All", systemImage: "doc.on.doc") {
                     NSPasteboard.general.clearContents()
                     NSPasteboard.general.setString(rows.map { "\($0.0): \($0.1)" }.joined(separator: "\n"), forType: .string)
                 }.labelStyle(.iconOnly).buttonStyle(.borderless)
+                .help("Copy All")
             }.font(.system(size: 13)).padding(.horizontal, 12).frame(height: 27)
                 .background(WireboltTheme.barBackground)
             Divider()

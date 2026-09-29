@@ -267,6 +267,7 @@ struct ContentView: View {
             interface.columnVisibility = interface.columnVisibility == .detailOnly ? .all : .detailOnly
         }
         .labelStyle(.iconOnly).buttonStyle(.borderless).frame(width: 26, height: 30)
+        .help(interface.columnVisibility == .detailOnly ? "Show Sidebar (⌃⌘S)" : "Hide Sidebar (⌃⌘S)")
     }
 
     private func handleImport(_ result: Result<[URL], any Error>) {
@@ -1295,6 +1296,7 @@ private struct ImportStatusBanner: View {
             Button("Dismiss", systemImage: "xmark", action: dismiss)
                 .labelStyle(.iconOnly)
                 .buttonStyle(.borderless)
+                .help("Dismiss")
         }
         .font(.caption)
         .padding(.horizontal, 10)
@@ -1436,24 +1438,27 @@ private struct DocumentTabBar: View {
     var body: some View {
         HStack(spacing: 0) {
             if model.sessions.groups.count > 1 {
-                Button("Close Group", systemImage: "xmark") {
+                Button("Close Split", systemImage: "xmark") {
                     interface.close(.all, model: model, in: groupID)
                 }
                 .labelStyle(.iconOnly).buttonStyle(.borderless)
                 .foregroundStyle(.secondary).frame(width: 30)
+                .help("Close Split")
             }
-            Button("Back", systemImage: "chevron.left", action: goBack)
+            Button("Back", systemImage: "chevron.backward", action: goBack)
                 .labelStyle(.iconOnly)
                 .buttonStyle(.borderless)
                 .foregroundStyle(.tertiary)
                 .frame(width: 30)
                 .disabled(group?.backwardTabIDs.isEmpty != false)
-            Button("Forward", systemImage: "chevron.right", action: goForward)
+                .help("Back (⌃⌘←)")
+            Button("Forward", systemImage: "chevron.forward", action: goForward)
                 .labelStyle(.iconOnly)
                 .buttonStyle(.borderless)
                 .foregroundStyle(.tertiary)
                 .frame(width: 30)
                 .disabled(group?.forwardTabIDs.isEmpty != false)
+                .help("Forward (⌃⌘→)")
 
             GeometryReader { geometry in
             ScrollViewReader { scroll in
@@ -1512,7 +1517,7 @@ private struct DocumentTabBar: View {
             .padding(.trailing, WireboltTheme.Spacing.xSmall)
             .frame(maxWidth: .infinity)
 
-            Button("Open in New Split", systemImage: "sidebar.right") {
+            Button("Open in New Split", systemImage: "rectangle.split.2x1") {
                 if let selected = group?.selectedTabID {
                     interface.openInNewSplit(tabID: selected, model: model)
                 }
@@ -1522,6 +1527,7 @@ private struct DocumentTabBar: View {
                 .foregroundStyle(.secondary)
                 .frame(width: 30)
                 .disabled(group?.selectedTabID == nil)
+                .help("Open in New Split (⇧⌘D)")
         }
         .frame(height: 32)
         .background(WireboltTheme.barBackground)
@@ -1858,6 +1864,7 @@ private struct WebSocketRequestWorkspace: View {
                 }
                 Menu("Message Actions", systemImage: "ellipsis.circle") { EditorPreferencesMenu() }
                     .menuStyle(.borderlessButton).menuIndicator(.hidden).labelStyle(.iconOnly).fixedSize()
+                    .help("Message Actions")
             }
             .padding(.horizontal, 11)
             .frame(height: 32)
@@ -2740,6 +2747,7 @@ private struct RequestSectionBar: View {
                 .menuStyle(.borderlessButton).menuIndicator(.hidden)
                 .labelStyle(.iconOnly).foregroundStyle(.secondary).fixedSize()
                 .frame(width: 30, height: 32)
+                .help("Section Actions")
             }
         }.fixedSize().frame(height: 32)
     }
@@ -2952,6 +2960,7 @@ private struct FieldTableRow: View {
                 .buttonStyle(.borderless)
                 .foregroundStyle(.secondary)
                 .frame(width: 42, height: 20)
+                .help("Remove")
                 .opacity(isHovered ? 1 : 0)
                 .allowsHitTesting(isHovered)
         }
@@ -3029,6 +3038,7 @@ private struct NewFieldTableRow: View {
                         .buttonStyle(.borderless)
                         .foregroundStyle(.secondary)
                         .frame(width: 42, height: 20)
+                        .help("Discard New Field")
                 }
             }
             .frame(height: fieldHeight)
@@ -3536,9 +3546,11 @@ private struct BodyTools: View {
             if case let .multipart(parts) = requestBody {
                 Button("Add Part", systemImage: "plus") { requestBody = .multipart(parts: parts + [MultipartPart()]) }
                     .labelStyle(.iconOnly).buttonStyle(.borderless)
+                    .help("Add Part")
             } else {
                 Button("Format Body", systemImage: "wand.and.stars", action: formatBody)
                     .labelStyle(.iconOnly).buttonStyle(.borderless).disabled(!requestBody.canFormat)
+                    .help("Format Body")
             }
             Menu("Body Actions", systemImage: "ellipsis.circle") {
                 if case .multipart = requestBody {
@@ -3549,6 +3561,7 @@ private struct BodyTools: View {
                 }
                 EditorPreferencesMenu()
             }.menuStyle(.borderlessButton).menuIndicator(.hidden).labelStyle(.iconOnly).fixedSize()
+            .help("Body Actions")
         }.fixedSize()
     }
 
