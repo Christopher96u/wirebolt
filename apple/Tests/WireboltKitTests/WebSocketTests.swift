@@ -105,6 +105,35 @@ struct WebSocketTests {
         state.disconnect()
     }
 
+    @Test("Lifecycle notices are typed and message text is decoded once for search")
+    @MainActor
+    func noticesAndSearchText() async {
+        let state = WebSocketDocumentState()
+        let socket = SocketFixture()
+        state.connect(input: input, connector: SocketConnector(socket: socket))
+        socket.yield(.connected([]))
+        socket.yield(.message(Data("Café 東京".utf8), binary: false, outgoing: true))
+        socket.yield(.message(Data([7]), binary: true, outgoing: false, control: "Ping"))
+        await eventually { state.messages.count == 3 }
+        #expect(state.messages.map(\.notice) == [.connected, nil, nil])
+        #expect(state.messages[0].system && !state.messages[1].system)
+        #expect(state.messages[1].text == "Café 東京")
+        #expect(state.messages[1].matches("café") && state.messages[1].matches(""))
+        #expect(!state.messages[1].matches("paris"))
+        #expect(state.messages[2].matches("ping"))
+        state.disconnect()
+        #expect(state.messages.last?.notice == .disconnected)
+
+        let failing = SocketFixture()
+        state.connect(input: input, connector: SocketConnector(socket: failing))
+        failing.yield(.connected([]))
+        await eventually { state.status == .connected }
+        failing.fail(WebSocketUIError("Connection reset"))
+        await eventually { state.status == .disconnected }
+        #expect(state.messages.last?.notice == .failed)
+        #expect(state.messages.last?.text == "Connection reset")
+    }
+
     private var input: RunInput { RunInput(draft: RequestDraft(url: "ws://127.0.0.1/echo"), variables: [:]) }
 
     @MainActor
@@ -136,6 +165,7 @@ private final class SocketFixture: WebSocketTransport {
     func events() -> AsyncThrowingStream<WebSocketEvent, any Error> { channel.stream }
     func yield(_ event: WebSocketEvent) { channel.continuation.yield(event) }
     func finish() { channel.continuation.finish() }
+    func fail(_ error: any Error) { channel.continuation.finish(throwing: error) }
     func send(_ data: Data, binary: Bool) -> Bool {
         state.withLock {
             guard $0.accepts else { return false }

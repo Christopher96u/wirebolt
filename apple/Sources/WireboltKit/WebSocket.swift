@@ -17,14 +17,35 @@ public protocol WebSocketConnecting: Sendable {
     func connection(for input: RunInput) -> any WebSocketTransport
 }
 
+/// A connection lifecycle entry shown in the message list.
+public enum WebSocketNotice: Equatable, Sendable {
+    case connected, disconnected, failed
+}
+
 public struct WebSocketMessage: Identifiable, Sendable {
     public let id = UUID()
     public let timestamp = Date()
     public let data: Data
     public let binary: Bool
     public let outgoing: Bool
-    public let system: Bool
+    public let notice: WebSocketNotice?
     public let control: String?
+    /// UTF-8 text decoded once on append so filtering and rows never decode per render.
+    public let text: String
+    public var system: Bool { notice != nil }
+
+    init(data: Data, binary: Bool, outgoing: Bool, notice: WebSocketNotice?, control: String?) {
+        self.data = data
+        self.binary = binary
+        self.outgoing = outgoing
+        self.notice = notice
+        self.control = control
+        text = String(decoding: data, as: UTF8.self)
+    }
+
+    public func matches(_ query: String) -> Bool {
+        query.isEmpty || text.localizedCaseInsensitiveContains(query) || control?.localizedCaseInsensitiveContains(query) == true
+    }
 }
 
 public enum WebSocketStatus: Equatable, Sendable {
@@ -101,7 +122,7 @@ public final class WebSocketDocumentState {
                     case let .connected(headers):
                         self.headers = headers
                         self.status = .connected
-                        self.append(data: Data("Connected to \(input.url)".utf8), binary: false, outgoing: false, system: true)
+                        self.append(data: Data("Connected to \(input.url)".utf8), binary: false, outgoing: false, notice: .connected)
                     case let .message(data, binary, outgoing, control):
                         self.append(data: data, binary: binary, outgoing: outgoing, control: control)
                     case .closed: self.status = .disconnected
@@ -112,7 +133,7 @@ public final class WebSocketDocumentState {
             }
             connection.disconnect()
             if self?.generation == generation {
-                self?.append(data: Data((self?.errorMessage ?? "Disconnected").utf8), binary: false, outgoing: false, system: true)
+                self?.append(data: Data((self?.errorMessage ?? "Disconnected").utf8), binary: false, outgoing: false, notice: self?.errorMessage == nil ? .disconnected : .failed)
                 self?.status = .disconnected
                 self?.connection = nil
             }
@@ -120,7 +141,7 @@ public final class WebSocketDocumentState {
     }
 
     public func disconnect() {
-        if status == .connected { append(data: Data("Disconnected".utf8), binary: false, outgoing: false, system: true) }
+        if status == .connected { append(data: Data("Disconnected".utf8), binary: false, outgoing: false, notice: .disconnected) }
         generation = UUID()
         receiver?.cancel()
         connection?.disconnect()
@@ -163,11 +184,11 @@ public final class WebSocketDocumentState {
         } catch { errorMessage = error.localizedDescription }
     }
 
-    private func append(data: Data, binary: Bool, outgoing: Bool, system: Bool = false, control: String? = nil) {
+    private func append(data: Data, binary: Bool, outgoing: Bool, notice: WebSocketNotice? = nil, control: String? = nil) {
         while !messages.isEmpty && (messages.count >= 1_000 || retainedBytes + data.count > 16 * 1024 * 1024) {
             retainedBytes -= messages.removeFirst().data.count
         }
-        messages.append(WebSocketMessage(data: data, binary: binary, outgoing: outgoing, system: system, control: control))
+        messages.append(WebSocketMessage(data: data, binary: binary, outgoing: outgoing, notice: notice, control: control))
         retainedBytes += data.count
     }
 
