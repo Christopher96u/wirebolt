@@ -11,8 +11,41 @@ public struct SidebarSnapshot: Sendable {
         public let id: String
         public let depth: Int
         public let content: Content
+        /// The enclosing folder or collection row; nil at the top level.
+        public let parentID: String?
         let ancestors: [Int]
         let search: String
+
+        public var title: String {
+            switch content {
+            case .collection(let collection): collection.name
+            case .group(_, let group): group.name
+            case .request(let location): location.request.name
+            }
+        }
+
+        public var isContainer: Bool {
+            if case .request = content { false } else { true }
+        }
+
+        /// Collections are expanded unless collapsed, folders collapsed unless expanded;
+        /// a filter shows every match with its ancestors expanded.
+        public func isExpanded(collapsed: Set<String>, expanded: Set<String>, filtering: Bool) -> Bool {
+            switch content {
+            case .collection(let collection): filtering || !collapsed.contains(collection.id)
+            case .group(let collection, let group): filtering || expanded.contains(collection.id + ":" + group.id)
+            case .request: false
+            }
+        }
+
+        /// The drag and move identifier ("kind|collection|id"); collections cannot move.
+        public var moveIdentifier: String? {
+            switch content {
+            case .collection: nil
+            case .group(let collection, let group): "group|\(collection.id)|\(group.id)"
+            case .request(let location): "request|\(location.collectionID)|\(location.request.id)"
+            }
+        }
     }
     public let rows: [Row]
 
@@ -22,7 +55,7 @@ public struct SidebarSnapshot: Sendable {
             var ancestors: [Int] = []
             if collection.id != WorkspaceDraft.rootCollectionID {
                 ancestors = [rows.count]
-                rows.append(Row(id: "collection:" + collection.id, depth: 0, content: .collection(collection), ancestors: [], search: Self.normalize(collection.name)))
+                rows.append(Row(id: "collection:" + collection.id, depth: 0, content: .collection(collection), parentID: nil, ancestors: [], search: Self.normalize(collection.name)))
             }
             let groups = Dictionary(grouping: collection.groups, by: { $0.parentID ?? "" })
             let requests = Dictionary(grouping: collection.requests, by: { $0.groupID ?? "" })
@@ -44,7 +77,8 @@ public struct SidebarSnapshot: Sendable {
                     case .collection: continue
                     }
                     let position = rows.count
-                    rows.append(Row(id: rowID, depth: ancestors.count, content: content, ancestors: ancestors, search: Self.normalize(search)))
+                    rows.append(Row(id: rowID, depth: ancestors.count, content: content, parentID: ancestors.last.map { rows[$0].id },
+                                    ancestors: ancestors, search: Self.normalize(search)))
                     if case .group(_, let group) = content { append(parent: group.id, ancestors: ancestors + [position]) }
                 }
             }
@@ -81,8 +115,60 @@ public struct SidebarSnapshot: Sendable {
         return result
     }
 
-    private static func normalize(_ text: String) -> String {
+    static func normalize(_ text: String) -> String {
         text.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: Locale(identifier: "en_US_POSIX"))
+    }
+}
+
+/// Keyboard movement over the visible sidebar rows, following NSOutlineView conventions.
+public enum SidebarNavigation {
+    public enum Outcome: Equatable, Sendable {
+        case select(String)
+        case expand(String)
+        case collapse(String)
+        case none
+    }
+
+    /// Up/Down move over every visible row; without a current row they start at an end.
+    public static func step(from current: String?, by delta: Int, in rows: [SidebarSnapshot.Row]) -> String? {
+        guard !rows.isEmpty else { return nil }
+        guard let index = current.flatMap({ id in rows.firstIndex { $0.id == id } }) else {
+            return delta > 0 ? rows.first?.id : rows.last?.id
+        }
+        return rows[min(max(0, index + delta), rows.count - 1)].id
+    }
+
+    /// Left collapses an expanded container, otherwise selects the parent.
+    public static func left(from current: String?, in rows: [SidebarSnapshot.Row],
+                            isExpanded: (SidebarSnapshot.Row) -> Bool) -> Outcome {
+        guard let row = current.flatMap({ id in rows.first { $0.id == id } }) else { return .none }
+        if row.isContainer, isExpanded(row) { return .collapse(row.id) }
+        if let parent = row.parentID, rows.contains(where: { $0.id == parent }) { return .select(parent) }
+        return .none
+    }
+
+    /// Right expands a collapsed container, otherwise selects its first child.
+    public static func right(from current: String?, in rows: [SidebarSnapshot.Row],
+                             isExpanded: (SidebarSnapshot.Row) -> Bool) -> Outcome {
+        guard let index = current.flatMap({ id in rows.firstIndex { $0.id == id } }), rows[index].isContainer
+        else { return .none }
+        if !isExpanded(rows[index]) { return .expand(rows[index].id) }
+        let next = index + 1
+        return rows.indices.contains(next) && rows[next].parentID == rows[index].id ? .select(rows[next].id) : .none
+    }
+
+    /// Type-select: the next row, from the current one, whose title starts with `prefix`.
+    /// A single character moves past the current row so repeating it cycles through matches.
+    public static func typeSelect(_ prefix: String, from current: String?, in rows: [SidebarSnapshot.Row]) -> String? {
+        let prefix = SidebarSnapshot.normalize(prefix)
+        guard !prefix.isEmpty, !rows.isEmpty else { return nil }
+        let index = current.flatMap { id in rows.firstIndex { $0.id == id } }
+        let start = index.map { prefix.count == 1 ? $0 + 1 : $0 } ?? 0
+        for offset in 0..<rows.count {
+            let row = rows[(start + offset) % rows.count]
+            if SidebarSnapshot.normalize(row.title).hasPrefix(prefix) { return row.id }
+        }
+        return nil
     }
 }
 
@@ -98,5 +184,37 @@ public extension CollectionDraft {
         return (groups + requests).sorted {
             ($0.0, $0.1, $0.2, $0.3) < ($1.0, $1.1, $1.2, $1.3)
         }.map { $0.4 }
+    }
+
+    /// Folders under `rootID` (or every folder for nil), parents before children, so they
+    /// can be recreated in order.
+    func subtreeGroups(of rootID: String?) -> [GroupDraft] {
+        var result = rootID.flatMap { id in groups.first { $0.id == id } }.map { [$0] } ?? []
+        var frontier = rootID.map { [$0] } ?? [nil]
+        var visited = Set(result.map(\.id))
+        while !frontier.isEmpty {
+            let parent = frontier.removeFirst()
+            for group in groups where group.parentID == parent && visited.insert(group.id).inserted {
+                result.append(group)
+                frontier.append(group.id)
+            }
+        }
+        return result
+    }
+
+    /// Folders in sidebar order with their nesting depth, for "Move To" menus.
+    func folderOutline() -> [(group: GroupDraft, depth: Int)] {
+        var result: [(GroupDraft, Int)] = []
+        var visited = Set<String>()
+        func append(parent: String?, depth: Int) {
+            let children = groups.filter { $0.parentID == parent }
+                .sorted { ($0.order, $0.name, $0.id) < ($1.order, $1.name, $1.id) }
+            for group in children where visited.insert(group.id).inserted {
+                result.append((group, depth))
+                append(parent: group.id, depth: depth + 1)
+            }
+        }
+        append(parent: nil, depth: 0)
+        return result
     }
 }
