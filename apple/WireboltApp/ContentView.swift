@@ -2272,6 +2272,13 @@ private struct NativeRequestURLField: NSViewRepresentable {
             closeCompletions()
             dismissedText = nil
             parent.isEditing = false
+            // The field editor detaches after this notification; color the cell then.
+            guard let field = notification.object as? NSTextField else { return }
+            DispatchQueue.main.async { [weak self, weak field] in
+                guard let self, let field, field.currentEditor() == nil else { return }
+                self.highlightedState = nil
+                self.highlight(field)
+            }
         }
         func controlTextDidChange(_ notification: Notification) {
             guard let field = notification.object as? NSTextField else { return }
@@ -2282,7 +2289,7 @@ private struct NativeRequestURLField: NSViewRepresentable {
         @objc func submit() { parent.submit() }
 
         func control(_ control: NSControl, textView _: NSTextView, doCommandBy selector: Selector) -> Bool {
-            guard popover != nil, !completions.isEmpty, let field = control as? NSTextField else { return false }
+            guard popover?.isShown == true, !completions.isEmpty, let field = control as? NSTextField else { return false }
             switch selector {
             case #selector(NSResponder.moveDown(_:)): selectedIndex = (selectedIndex + 1) % completions.count
             case #selector(NSResponder.moveUp(_:)): selectedIndex = (selectedIndex + completions.count - 1) % completions.count
@@ -2343,10 +2350,12 @@ private struct NativeRequestURLField: NSViewRepresentable {
                 guard let self, let field else { return }
                 self.insert(entry, into: field)
             }
-            if let popover, let host = popover.contentViewController as? NSHostingController<VariableCompletionList> {
+            // A transient popover closes itself on outside clicks; show a fresh one then.
+            if let popover, popover.isShown, let host = popover.contentViewController as? NSHostingController<VariableCompletionList> {
                 host.rootView = list
                 return
             }
+            popover?.close()
             let host = NSHostingController(rootView: list)
             host.sizingOptions = .preferredContentSize
             let popover = NSPopover()
