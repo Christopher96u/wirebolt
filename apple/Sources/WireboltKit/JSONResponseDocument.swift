@@ -5,8 +5,12 @@ public final class JSONResponseDocument: Sendable {
     public let url: URL
     public let byteCount: UInt64
     public let preview: String
+    /// Whether the source spells any character as `\uXXXX`; if not, both presentations are identical.
+    public let containsUnicodeEscapes: Bool
 
-    public init(sourceURL: URL) throws {
+    /// - Parameter decodesUnicodeEscapes: Display printable `\uXXXX` escapes as their characters.
+    ///   Escapes that would change the JSON or hide text (quotes, controls, bidi marks) stay escaped.
+    public init(sourceURL: URL, decodesUnicodeEscapes: Bool = false) throws {
         let destination = FileManager.default.temporaryDirectory
             .appending(path: "wirebolt-json-\(UUID().uuidString).body")
         guard FileManager.default.createFile(atPath: destination.path, contents: nil) else {
@@ -19,8 +23,9 @@ public final class JSONResponseDocument: Sendable {
             let writer = try FileHandle(forWritingTo: destination)
             defer { try? writer.close() }
             var parser = JSONPresentationParser(reader: reader, writer: writer,
-                outputLimit: max(1024 * 1024, UInt64(size) * 16))
+                outputLimit: max(1024 * 1024, UInt64(size) * 16), decodesUnicodeEscapes: decodesUnicodeEscapes)
             try parser.run()
+            containsUnicodeEscapes = parser.sawUnicodeEscape
             url = destination
             byteCount = parser.written
             let limit = byteCount <= 1024 * 1024 ? 1024 * 1024 : ResponseBodyStore.viewportByteCount
@@ -44,14 +49,17 @@ private struct JSONPresentationParser {
     let reader: FileHandle
     let writer: FileHandle
     let outputLimit: UInt64
+    let decodesUnicodeEscapes: Bool
+    private(set) var sawUnicodeEscape = false
     private var input: [UInt8] = []
     private var offset = 0
     private var output: [UInt8] = []
     private(set) var preview = Data()
     private(set) var written: UInt64 = 0
 
-    init(reader: FileHandle, writer: FileHandle, outputLimit: UInt64) {
+    init(reader: FileHandle, writer: FileHandle, outputLimit: UInt64, decodesUnicodeEscapes: Bool) {
         self.reader = reader; self.writer = writer; self.outputLimit = outputLimit
+        self.decodesUnicodeEscapes = decodesUnicodeEscapes
         output.reserveCapacity(64 * 1024)
     }
 
@@ -152,22 +160,10 @@ private struct JSONPresentationParser {
         while true {
             let byte = try take()
             guard byte >= 32 else { throw JSONPresentationError.invalidJSON }
+            if byte == 92 { try escapeSequence(); continue }
             try emit(byte)
             if byte == 34 { return }
-            if byte == 92 {
-                let escape = try take()
-                try emit(escape)
-                if escape == 117 {
-                    for _ in 0..<4 {
-                        let hex = try take()
-                        guard (48...57).contains(hex) || (65...70).contains(hex) || (97...102).contains(hex)
-                        else { throw JSONPresentationError.invalidJSON }
-                        try emit(hex)
-                    }
-                } else if ![34, 47, 92, 98, 102, 110, 114, 116].contains(escape) {
-                    throw JSONPresentationError.invalidJSON
-                }
-            } else if byte >= 128 {
+            if byte >= 128 {
                 let continuationCount: Int
                 switch byte {
                 case 194...223: continuationCount = 1
@@ -186,6 +182,80 @@ private struct JSONPresentationParser {
                     try emit(next)
                 }
             }
+        }
+    }
+
+    /// Called after a backslash has been consumed but not emitted.
+    private mutating func escapeSequence() throws {
+        let escape = try take()
+        guard escape == 117 else { try simpleEscape(escape); return }
+        sawUnicodeEscape = true
+        let (unit, digits) = try hex4()
+        guard decodesUnicodeEscapes else { try emitEscape(digits); return }
+        if (0xD800..<0xDC00).contains(unit), try peek() == 92 {
+            _ = try take()
+            let next = try take()
+            guard next == 117 else {
+                try emitEscape(digits)
+                try simpleEscape(next)
+                return
+            }
+            let (low, lowDigits) = try hex4()
+            if (0xDC00..<0xE000).contains(low) {
+                try emitScalar(0x10000 + ((unit - 0xD800) << 10) + (low - 0xDC00))
+            } else {
+                try emitEscape(digits)
+                try emitDecodedOrEscape(low, lowDigits)
+            }
+            return
+        }
+        try emitDecodedOrEscape(unit, digits)
+    }
+
+    private mutating func simpleEscape(_ escape: UInt8) throws {
+        guard [34, 47, 92, 98, 102, 110, 114, 116].contains(escape) else { throw JSONPresentationError.invalidJSON }
+        try emit(92)
+        try emit(escape)
+    }
+
+    private mutating func hex4() throws -> (UInt32, [UInt8]) {
+        var value: UInt32 = 0
+        var digits: [UInt8] = []
+        for _ in 0..<4 {
+            let hex = try take()
+            let digit: UInt8 = switch hex {
+            case 48...57: hex - 48
+            case 65...70: hex - 55
+            case 97...102: hex - 87
+            default: throw JSONPresentationError.invalidJSON
+            }
+            value = value << 4 | UInt32(digit)
+            digits.append(hex)
+        }
+        return (value, digits)
+    }
+
+    private mutating func emitEscape(_ digits: [UInt8]) throws {
+        try emit(92)
+        try emit(117)
+        for digit in digits { try emit(digit) }
+    }
+
+    private mutating func emitDecodedOrEscape(_ unit: UInt32, _ digits: [UInt8]) throws {
+        if Self.isDisplayable(unit) { try emitScalar(unit) } else { try emitEscape(digits) }
+    }
+
+    private mutating func emitScalar(_ value: UInt32) throws {
+        guard let scalar = Unicode.Scalar(value), let encoded = UTF8.encode(scalar) else { return }
+        for byte in encoded { try emit(byte) }
+    }
+
+    /// Keeps JSON valid and invisible or direction-changing characters visible as escapes.
+    private static func isDisplayable(_ unit: UInt32) -> Bool {
+        switch unit {
+        case 0..<0x20, 0x22, 0x5C, 0x7F...0x9F, 0xAD, 0x200B...0x200F, 0x2028...0x202E, 0x2060...0x206F,
+             0xD800...0xDFFF, 0xFEFF, 0xFFF9...0xFFFB: false
+        default: true
         }
     }
 

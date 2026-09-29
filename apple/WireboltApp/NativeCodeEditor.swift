@@ -105,7 +105,7 @@ struct NativeCodeEditor: NSViewRepresentable {
     var storageKey: String?
     @AppStorage("editor.fontSize") private var fontSize = 12.0
     @AppStorage("editor.wordWrap") private var wrapsLines = true
-    @AppStorage("editor.showInvisibles") private var showInvisibles = true
+    @AppStorage("editor.showInvisibles") private var showInvisibles = false
     @AppStorage("editor.scrollBeyondLastLine") private var scrollBeyond = true
 
     func makeCoordinator() -> Coordinator { Coordinator(text: $text) }
@@ -701,42 +701,81 @@ final class CodeTextStorage: NSTextStorage {
 }
 
 private final class CodeLayoutManager: NSLayoutManager {
-    var drawInvisibles = false
+    var drawInvisibles = false {
+        didSet { if drawInvisibles != oldValue { invisibleMarkers.removeAll() } }
+    }
+    /// Space markers per drawn glyph range in text-container coordinates. Layout
+    /// changes clear the cache, so steady redraws skip per-space glyph lookups.
+    private var invisibleMarkers: [NSRange: (bounds: [NSRect], positions: [CGPoint])] = [:]
+    private struct MarkerFont {
+        let pointSize: CGFloat
+        let font: CTFont
+        let glyph: CGGlyph
+        let offset: CGFloat
+        let baseline: CGFloat
+    }
+    private var markerFont: MarkerFont?
+
     override func processEditing(for textStorage: NSTextStorage, edited editMask: NSTextStorageEditActions,
         range newCharRange: NSRange, changeInLength delta: Int, invalidatedRange invalidatedCharRange: NSRange) {
         for container in textContainers { (container as? CodeTextContainer)?.invalidateParagraph() }
+        invisibleMarkers.removeAll()
         super.processEditing(for: textStorage, edited: editMask, range: newCharRange,
             changeInLength: delta, invalidatedRange: invalidatedCharRange)
     }
+    override func invalidateLayout(forCharacterRange charRange: NSRange, actualCharacterRange actualCharRange: NSRangePointer?) {
+        invisibleMarkers.removeAll()
+        super.invalidateLayout(forCharacterRange: charRange, actualCharacterRange: actualCharRange)
+    }
+    override func textContainerChangedGeometry(_ container: NSTextContainer) {
+        invisibleMarkers.removeAll()
+        super.textContainerChangedGeometry(container)
+    }
+    private func markerFont(size: CGFloat) -> MarkerFont? {
+        if let markerFont, markerFont.pointSize == size { return markerFont }
+        let font = NSFont.monospacedSystemFont(ofSize: size, weight: .regular)
+        let ctFont = CTFontCreateWithName(font.fontName as CFString, font.pointSize, nil)
+        var character: UniChar = 0x00B7, glyph: CGGlyph = 0
+        guard CTFontGetGlyphsForCharacters(ctFont, &character, &glyph, 1) else { return nil }
+        var advance = CGSize.zero
+        CTFontGetAdvancesForGlyphs(ctFont, .horizontal, &glyph, &advance, 1)
+        let spaceWidth = (" " as NSString).size(withAttributes: [.font: font]).width
+        markerFont = MarkerFont(pointSize: size, font: ctFont, glyph: glyph,
+            offset: (spaceWidth - advance.width) / 2, baseline: defaultBaselineOffset(for: font))
+        invisibleMarkers.removeAll()
+        return markerFont
+    }
     override func drawGlyphs(forGlyphRange glyphsToShow: NSRange, at origin: NSPoint) {
         super.drawGlyphs(forGlyphRange: glyphsToShow, at: origin)
-        guard drawInvisibles, let storage = textStorage else { return }
-        let string = storage.mutableString
-        let chars = characterRange(forGlyphRange: glyphsToShow, actualGlyphRange: nil)
-        guard let context = NSGraphicsContext.current?.cgContext else { return }
-        let font = NSFont.monospacedSystemFont(ofSize: textContainers.first?.textView?.font?.pointSize ?? 12, weight: .regular)
-        let ctFont = CTFontCreateWithName(font.fontName as CFString, font.pointSize, nil)
-        var character: UniChar = 0x00B7, markerGlyph: CGGlyph = 0
-        guard CTFontGetGlyphsForCharacters(ctFont, &character, &markerGlyph, 1) else { return }
-        var advance = CGSize.zero
-        CTFontGetAdvancesForGlyphs(ctFont, .horizontal, &markerGlyph, &advance, 1)
-        let spaceWidth = (" " as NSString).size(withAttributes: [.font: font]).width
-        let baseline = defaultBaselineOffset(for: font)
-        var positions: [CGPoint] = []
-        for index in chars.location ..< NSMaxRange(chars) where string.character(at: index) == 32 {
-            let glyph = glyphIndexForCharacter(at: index)
-            let line = lineFragmentRect(forGlyphAt: glyph, effectiveRange: nil)
-            let position = location(forGlyphAt: glyph)
-            positions.append(CGPoint(x: origin.x + line.minX + position.x + (spaceWidth - advance.width) / 2,
-                y: -(origin.y + line.minY + baseline)))
+        guard drawInvisibles, let storage = textStorage, let context = NSGraphicsContext.current?.cgContext,
+              let marker = markerFont(size: textContainers.first?.textView?.font?.pointSize ?? 12) else { return }
+        // Non-contiguous layout can move fragments without an invalidation callback;
+        // the first and last fragments of the range validate a cached entry.
+        let bounds = glyphsToShow.length == 0 ? [] : [glyphsToShow.location, NSMaxRange(glyphsToShow) - 1]
+            .map { lineFragmentRect(forGlyphAt: $0, effectiveRange: nil) }
+        let markers: [CGPoint]
+        if let cached = invisibleMarkers[glyphsToShow], cached.bounds == bounds { markers = cached.positions } else {
+            let string = storage.mutableString
+            let chars = characterRange(forGlyphRange: glyphsToShow, actualGlyphRange: nil)
+            var positions: [CGPoint] = []
+            for index in chars.location ..< NSMaxRange(chars) where string.character(at: index) == 32 {
+                let glyph = glyphIndexForCharacter(at: index)
+                let line = lineFragmentRect(forGlyphAt: glyph, effectiveRange: nil)
+                let position = location(forGlyphAt: glyph)
+                positions.append(CGPoint(x: line.minX + position.x + marker.offset, y: line.minY + marker.baseline))
+            }
+            if invisibleMarkers.count >= 64 { invisibleMarkers.removeAll() }
+            invisibleMarkers[glyphsToShow] = (bounds, positions)
+            markers = positions
         }
-        guard !positions.isEmpty else { return }
-        let glyphs = [CGGlyph](repeating: markerGlyph, count: positions.count)
+        guard !markers.isEmpty else { return }
+        let positions = markers.map { CGPoint(x: origin.x + $0.x, y: -(origin.y + $0.y)) }
+        let glyphs = [CGGlyph](repeating: marker.glyph, count: positions.count)
         context.saveGState()
         context.setFillColor(NSColor.tertiaryLabelColor.cgColor)
         context.textMatrix = .identity
         context.scaleBy(x: 1, y: -1)
-        CTFontDrawGlyphs(ctFont, glyphs, positions, positions.count, context)
+        CTFontDrawGlyphs(marker.font, glyphs, positions, positions.count, context)
         context.restoreGState()
     }
 }

@@ -43,8 +43,17 @@ public final class DocumentSession: Identifiable {
     public private(set) var activeRunID: RunID?
     public private(set) var bodyStore: ResponseBodyStore?
     public private(set) var responseCookies: [CookieSnapshot] = []
+    /// When the active run started; drives the in-pane elapsed timer.
+    public private(set) var runStartedAt: Date?
+    /// True while a run is active and its response head has not arrived yet.
+    /// The previous response (if any) stays presented until then.
+    public private(set) var isAwaitingResponseHead = false
 
     @ObservationIgnored private var presentedBodyBytes = 0
+    /// Output of the active run staged until its head (or terminal event) replaces the previous response.
+    @ObservationIgnored private var pendingBodyStore: ResponseBodyStore?
+    @ObservationIgnored private var pendingPreparedRun: PreparedRunSnapshot?
+    @ObservationIgnored private var pendingCookies: [CookieSnapshot] = []
 
     public init(
         id: String = UUID().uuidString.lowercased(),
@@ -77,9 +86,32 @@ public final class DocumentSession: Identifiable {
     }
 
     public func beginRun(_ runID: RunID) {
-        resetResponse()
-        bodyStore = try? ResponseBodyStore(runID: runID)
+        failure = nil
+        pendingBodyStore = try? ResponseBodyStore(runID: runID)
+        pendingPreparedRun = nil
+        pendingCookies = []
+        isAwaitingResponseHead = true
+        runStartedAt = Date()
         activeRunID = runID
+    }
+
+    /// Replaces the previous response with the active run's staged output.
+    private func presentPendingRun() {
+        guard isAwaitingResponseHead else { return }
+        let store = pendingBodyStore, prepared = pendingPreparedRun, cookies = pendingCookies
+        resetResponse()
+        bodyStore = store
+        preparedRun = prepared
+        responseCookies = cookies
+        pendingBodyStore = nil
+        pendingPreparedRun = nil
+        pendingCookies = []
+        isAwaitingResponseHead = false
+    }
+
+    private func endRun() {
+        activeRunID = nil
+        runStartedAt = nil
     }
 
     public func consume(_ event: RunEvent, runID: RunID) async {
@@ -87,10 +119,12 @@ public final class DocumentSession: Identifiable {
         switch event {
         case .cookies: break
         case let .prepared(snapshot):
-            preparedRun = snapshot
+            if isAwaitingResponseHead { pendingPreparedRun = snapshot } else { preparedRun = snapshot }
         case let .head(head):
+            presentPendingRun()
             responseHead = head
         case let .chunk(data):
+            presentPendingRun()
             try? await bodyStore?.append(data)
             responseBytes += UInt64(data.count)
             let remaining = max(Self.previewByteLimit - presentedBodyBytes, 0)
@@ -104,24 +138,27 @@ public final class DocumentSession: Identifiable {
             presentedBodyBytes += prefix.count
             responseWasTruncated = prefix.count < data.count
         case let .complete(value):
+            presentPendingRun()
             try? await bodyStore?.finish()
             completion = value
             responseBytes = value.bytesReceived
-            activeRunID = nil
+            endRun()
         }
     }
 
     public func finish(runID: RunID, failure: RunFailure?) async {
         guard activeRunID == runID else { return }
+        presentPendingRun()
         try? await bodyStore?.finish()
         self.failure = failure
-        activeRunID = nil
+        endRun()
     }
 
     public func cancel(runID: RunID) {
         guard activeRunID == runID else { return }
+        presentPendingRun()
         failure = RunFailure(kind: "cancelled", issues: [])
-        activeRunID = nil
+        endRun()
     }
 
     public func markSaved(_ draft: RequestDraft) {
@@ -165,6 +202,11 @@ public final class DocumentSession: Identifiable {
         responseCookies = cookies
     }
 
+    /// Cookies can arrive (for example across redirects) before the head that presents the run.
+    public func appendResponseCookies(_ cookies: [CookieSnapshot]) {
+        if isAwaitingResponseHead { pendingCookies += cookies } else { responseCookies += cookies }
+    }
+
     public func restore(_ entry: RunHistoryEntry, viewport: Data) {
         preparedRun = entry.prepared
         responseHead = entry.responseHead
@@ -173,7 +215,11 @@ public final class DocumentSession: Identifiable {
         responsePreviewData = viewport
         responseBytes = entry.completion?.bytesReceived ?? UInt64(viewport.count)
         responseWasTruncated = responseBytes > UInt64(viewport.count)
-        activeRunID = nil
+        pendingBodyStore = nil
+        pendingPreparedRun = nil
+        pendingCookies = []
+        isAwaitingResponseHead = false
+        endRun()
         failure = entry.failure
         bodyStore = try? ResponseBodyStore(existingURL: URL(fileURLWithPath: entry.bodyPath))
     }

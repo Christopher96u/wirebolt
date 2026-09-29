@@ -28,8 +28,15 @@ final class ProbeWindow: NSWindow { override var canBecomeKey: Bool { true } }
     static var measurements: [[String: Any]] = []
     private struct Budgets: Decodable {
         let nativeColdWindowFirstContentMilliseconds: Double
+        let nativeResponseRendererColdSwitchMilliseconds: Double
+        let nativeResponseRendererSwitchP95Milliseconds: Double
     }
     static var windowFirstContentBudget = 0.0
+    /// Each of the first JSON→Raw and Raw→JSON switches mounts or reactivates a renderer.
+    static var rendererColdSwitchBudget = 0.0
+    /// Warm switches between mounted renderers: one 60 Hz frame for the complete native
+    /// SwiftUI/AppKit path. The engine-only synthetic budget (4 ms) is gated by PerformanceContract.
+    static var rendererSwitchBudget = 0.0
     static var samples = 100
     static let defaultsName = "wirebolt-native-workloads-\(UUID().uuidString)"
     static let fixtureDefaults = UserDefaults(suiteName: defaultsName)!
@@ -240,8 +247,9 @@ final class ProbeWindow: NSWindow { override var canBecomeKey: Bool { true } }
             os_signpost(.end,log:log,name:"ResponseRendererSwitch")
             spin(0.02)
         }
-        record("response_renderer_first_switch",[switches[0]],budget:50,details:["rows":rows,"raw_bytes":raw.utf8.count])
-        record("response_renderer_switch",Array(switches.dropFirst(2)),budget:50,details:["rows":rows,"raw_bytes":raw.utf8.count,"alternating":"Raw,JSON","readiness":"expected text or indexed first viewport drawn; not GPU presentation", "cold_switches_ms":Array(switches.prefix(2))])
+        record("response_renderer_first_switch",[switches[0]],budget:rendererColdSwitchBudget,details:["rows":rows,"raw_bytes":raw.utf8.count,"from":"JSON","to":"Raw","budget_key":"nativeResponseRendererColdSwitchMilliseconds"])
+        record("response_renderer_second_switch",[switches[1]],budget:rendererColdSwitchBudget,details:["rows":rows,"raw_bytes":raw.utf8.count,"from":"Raw","to":"JSON","budget_key":"nativeResponseRendererColdSwitchMilliseconds"])
+        record("response_renderer_switch",Array(switches.dropFirst(2)),budget:rendererSwitchBudget,details:["rows":rows,"raw_bytes":raw.utf8.count,"alternating":"Raw,JSON","readiness":"expected text or indexed first viewport drawn; not GPU presentation","budget_key":"nativeResponseRendererSwitchP95Milliseconds"])
         if let editor = textViews(host).first(where: { $0.string.hasPrefix("[\n  {") }),
            let coordinator = editor.delegate as? NativeCodeEditor.Coordinator, let scroll = editor.enclosingScrollView {
             let pretty = editor.string
@@ -600,8 +608,10 @@ final class ProbeWindow: NSWindow { override var canBecomeKey: Bool { true } }
     }
 
     static func main() async throws {
-        windowFirstContentBudget = try JSONDecoder().decode(Budgets.self,
-            from: Data(contentsOf: URL(fileURLWithPath: "performance/budgets.json"))).nativeColdWindowFirstContentMilliseconds
+        let budgets = try JSONDecoder().decode(Budgets.self, from: Data(contentsOf: URL(fileURLWithPath: "performance/budgets.json")))
+        windowFirstContentBudget = budgets.nativeColdWindowFirstContentMilliseconds
+        rendererColdSwitchBudget = budgets.nativeResponseRendererColdSwitchMilliseconds
+        rendererSwitchBudget = budgets.nativeResponseRendererSwitchP95Milliseconds
         _ = NSApplication.shared
         NSApp.setActivationPolicy(.prohibited)
         defer { fixtureDefaults.removePersistentDomain(forName: defaultsName) }

@@ -300,7 +300,7 @@ public final class WireboltModel {
                 if case let .cookies(update) = event, let url = URL(string: update.url) {
                     let received = await cookieJar.store(headers: update.headers, requestURL: url)
                     guard session.activeRunID == runID else { return }
-                    session.setResponseCookies(session.responseCookies + received)
+                    session.appendResponseCookies(received)
                 }
                 await session.consume(event, runID: runID)
             }

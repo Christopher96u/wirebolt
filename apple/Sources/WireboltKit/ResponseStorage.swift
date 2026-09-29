@@ -8,8 +8,8 @@ public actor ResponseBodyStore {
     private let ownsFile: Bool
     private var handle: FileHandle?
     private var byteCount: UInt64 = 0
-    private var jsonDocument: JSONResponseDocument?
-    private var attemptedJSON = false
+    /// Formatted presentations keyed by whether `\uXXXX` escapes are decoded; `.some(nil)` means not JSON.
+    private var jsonDocuments: [Bool: JSONResponseDocument?] = [:]
 
     public init(runID: RunID, directory: URL = FileManager.default.temporaryDirectory) throws {
         url = directory.appending(path: "wirebolt-response-\(runID.description).body")
@@ -34,8 +34,7 @@ public actor ResponseBodyStore {
     }
 
     public func append(_ data: Data) throws {
-        jsonDocument = nil
-        attemptedJSON = false
+        jsonDocuments = [:]
         try handle?.write(contentsOf: data)
         byteCount += UInt64(data.count)
     }
@@ -48,13 +47,16 @@ public actor ResponseBodyStore {
 
     public func size() -> UInt64 { byteCount }
 
-    public func formattedJSON() throws -> JSONResponseDocument? {
+    public func formattedJSON(decodingUnicodeEscapes decodes: Bool = false) throws -> JSONResponseDocument? {
         guard handle == nil else { return nil }
-        if attemptedJSON { return jsonDocument }
-        do { jsonDocument = try JSONResponseDocument(sourceURL: url) }
-        catch is JSONPresentationError { jsonDocument = nil }
-        attemptedJSON = true
-        return jsonDocument
+        if let cached = jsonDocuments[decodes] { return cached }
+        let document: JSONResponseDocument?
+        do { document = try JSONResponseDocument(sourceURL: url, decodesUnicodeEscapes: decodes) }
+        catch is JSONPresentationError { document = nil }
+        jsonDocuments[decodes] = .some(document)
+        // Without escapes both presentations are byte-identical; format once.
+        if document == nil || document?.containsUnicodeEscapes == false { jsonDocuments[!decodes] = .some(document) }
+        return document
     }
 
     public func viewport(offset: UInt64 = 0, length: Int = viewportByteCount) throws -> Data {

@@ -12,6 +12,18 @@ public struct CodeTextWrapping: Hashable, Sendable {
         self.width = max(1, width)
     }
 
+    /// A layout keyed by whole columns, so pixel-level resizes inside one column
+    /// reuse the same wrap index. A quarter-column of slack keeps the column count
+    /// stable against floating-point rounding; it stays inside the editor's margin.
+    public init(fontName: String, fontSize: Double, columns: Int) {
+        let advance = Self.advance(fontName: fontName, fontSize: fontSize)
+        self.init(fontName: fontName, fontSize: fontSize, width: (Double(max(1, columns)) + 0.25) * advance)
+    }
+
+    public static func advance(fontName: String, fontSize: Double) -> Double {
+        Metrics(CodeTextWrapping(fontName: fontName, fontSize: fontSize, width: 1)).advance
+    }
+
     private static let breakAfter = Set(" \t})]?|/&.,;¢°′″‰℃、。｡､￠，．：；？！％・･ゝゞヽヾーァィゥェォッャュョヮヵヶぁぃぅぇぉっゃゅょゎゕゖㇰㇱㇲㇳㇴㇵㇶㇷㇸㇹㇺㇻㇼㇽㇾㇿ々〻ｧｨｩｪｫｬｭｮｯｰ”〉》」』】〕）］｝｣".utf16)
     private static let breakBefore = Set("([{‘“〈《「『【〔（［｛｢£¥＄￡￥+＋".utf16)
 

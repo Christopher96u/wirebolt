@@ -3,6 +3,7 @@
 # shellcheck disable=SC2034
 wirebolt_app_inputs=(
   apple/Generated/wirebolt_ffi.swift
+  apple/Sources/WireboltKit/ResponseFormatting.swift
   apple/Sources/WireboltKit/ProxyConnectionTest.swift
   apple/Sources/WireboltKit/ProxySettings.swift
   apple/Sources/WireboltKit/MarkdownPreview.swift
