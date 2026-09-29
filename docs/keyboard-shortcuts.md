@@ -2,7 +2,7 @@
 
 [Documentation](README.md)
 
-`⌘` = Command, `⇧` = Shift, `⌥` = Option, `⌃` = Control. Shortcuts apply to the workspace window and are disabled while an action is unavailable. Every shortcut below is also listed next to its command in the menu bar.
+`⌘` = Command, `⇧` = Shift, `⌥` = Option, `⌃` = Control. Shortcuts apply to the workspace window and are disabled while an action is unavailable. The menu bar shows each menu shortcut next to its command; ⌃Tab / ⌃⇧Tab and the shortcuts under [In context](#in-context) work without a menu item.
 
 ## File
 
