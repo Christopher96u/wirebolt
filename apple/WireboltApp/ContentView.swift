@@ -464,7 +464,7 @@ private extension EnvironmentValues {
     @Entry var sidebarSelectionIsEmphasized = false
 }
 
-/// Accent fill while the sidebar has focus, the system's unemphasized gray otherwise.
+/// Accent fill while the sidebar has focus, a neutral gray otherwise.
 private struct SidebarSelectionBackground: View {
     let isSelected: Bool
     var leadingInset: CGFloat = 0
@@ -482,7 +482,7 @@ private struct SidebarSelectionBackground: View {
 
     private var fill: Color {
         guard isSelected else { return .clear }
-        guard emphasized else { return Color(nsColor: .unemphasizedSelectedContentBackgroundColor) }
+        guard emphasized else { return WireboltTheme.unemphasizedSidebarSelection }
         // Opaque in light mode so white labels keep 4.5:1 over the sidebar.
         return WireboltTheme.primaryAccent.opacity(colorScheme == .dark ? 0.82 : 1)
     }
