@@ -2329,32 +2329,63 @@ private struct InlineResponseStatus: View {
                 ProgressView()
                     .controlSize(.small)
                     .accessibilityLabel(session.kind == .webSocket ? "Connecting" : "Sending")
-            } else if let status {
+            } else if let outcome {
                 HStack(spacing: WireboltTheme.Spacing.small) {
-                    Image(systemName: WireboltTheme.statusSymbol(status))
+                    Image(systemName: symbol(for: outcome))
                         .font(.system(size: compact ? 15 : 14))
                     if !compact {
-                        Text(ResponseFormatting.statusLine(status))
+                        Text(outcome.label)
                             .font(.system(size: 14).monospacedDigit())
                             .lineLimit(1)
                             .truncationMode(.tail)
                             .contentTransition(reduceMotion ? .identity : .numericText())
                     }
                 }
-                .foregroundStyle(WireboltTheme.statusColor(status))
-                .help(ResponseFormatting.statusLine(status))
+                .foregroundStyle(color(for: outcome))
+                .help(outcome.detail)
                 .accessibilityElement(children: .ignore)
-                .accessibilityLabel("Status \(ResponseFormatting.statusLine(status))")
+                .accessibilityLabel(accessibilityLabel(for: outcome))
             }
         }
-        .animation(reduceMotion ? nil : .snappy(duration: 0.2), value: status)
+        .animation(reduceMotion ? nil : .snappy(duration: 0.2), value: outcome)
     }
 
-    private var status: UInt16? {
+    private var outcome: RunOutcomeBadge? {
         if session.kind == .webSocket {
-            return session.socket.status == .connected ? 101 : nil
+            return session.socket.status == .connected ? .status(101) : nil
         }
-        return session.responseHead?.status
+        let failure = session.failure
+        // The URL is read only after a failure so typing does not re-render the status.
+        return RunOutcomeBadge(
+            status: session.responseHead?.status,
+            failure: failure,
+            host: failure == nil ? nil : RunFailureMessage.host(from: session.preparedRun?.url ?? session.draft.url)
+        )
+    }
+
+    private func symbol(for outcome: RunOutcomeBadge) -> String {
+        switch outcome {
+        case let .status(status): WireboltTheme.statusSymbol(status)
+        case .failed: "exclamationmark.octagon.fill"
+        case .cancelled: "xmark.circle.fill"
+        }
+    }
+
+    /// A user-initiated cancel is not an error, so it stays neutral.
+    private func color(for outcome: RunOutcomeBadge) -> Color {
+        switch outcome {
+        case let .status(status): WireboltTheme.statusColor(status)
+        case .failed: WireboltTheme.danger
+        case .cancelled: .secondary
+        }
+    }
+
+    private func accessibilityLabel(for outcome: RunOutcomeBadge) -> String {
+        switch outcome {
+        case .status: "Status \(outcome.detail)"
+        case .failed: "Request failed. \(outcome.detail)"
+        case .cancelled: "Request cancelled"
+        }
     }
 }
 

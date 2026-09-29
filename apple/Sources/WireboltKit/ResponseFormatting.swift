@@ -75,6 +75,45 @@ public enum ResponseFormatting {
     ]
 }
 
+/// What the URL bar's status slot shows for a document's latest run.
+public enum RunOutcomeBadge: Equatable, Sendable {
+    /// The response status, such as "200 OK".
+    case status(UInt16)
+    /// The run failed; `title` is the failure's headline, used as the help tag.
+    case failed(title: String)
+    case cancelled
+
+    /// A failure wins over a status: it is the latest outcome, and the response pane shows
+    /// the failure too. Nil when nothing has run yet.
+    public init?(status: UInt16?, failure: RunFailure?, host: String? = nil) {
+        if let failure {
+            self = failure.kind == "cancelled" ? .cancelled : .failed(title: RunFailureMessage(failure, host: host).title)
+        } else if let status {
+            self = .status(status)
+        } else {
+            return nil
+        }
+    }
+
+    /// Short text for the wide layout: "200 OK", "Failed" or "Cancelled".
+    public var label: String {
+        switch self {
+        case let .status(status): ResponseFormatting.statusLine(status)
+        case .failed: "Failed"
+        case .cancelled: "Cancelled"
+        }
+    }
+
+    /// The full description for the help tag and VoiceOver.
+    public var detail: String {
+        switch self {
+        case let .status(status): ResponseFormatting.statusLine(status)
+        case let .failed(title): title
+        case .cancelled: "Request Cancelled"
+        }
+    }
+}
+
 /// User-facing copy for every run failure kind the Rust bridge and Swift runners produce.
 public struct RunFailureMessage: Equatable, Sendable {
     public enum Category: Equatable, Sendable {
