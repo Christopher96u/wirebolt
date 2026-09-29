@@ -391,19 +391,21 @@ final class ProbeWindow: NSWindow { override var canBecomeKey: Bool { true } }
                 window.setContentSize(NSSize(width: width, height: 580))
                 spin(); flush(host)
                 let tree = elements(host)
-                for name in ["Send request", "Edit Long URL", "Params", "Headers", "Body", "Auth", "Note", "Format Body"] {
+                for name in ["Send Request", "Edit Long URL", "Params", "Headers", "Body", "Auth", "Note", "Format Body"] {
                     precondition(tree.contains { $0.role == "AXButton" && $0.name == name }, "Missing accessible button: \(name)")
                 }
-                guard let note = tree.first(where: { $0.name == "Note" }),
-                      let type = tree.first(where: { $0.name == "Content Type" }) else {
-                    preconditionFailure("Section labels must be accessible")
+                let context = "\(orientation) at \(Int(width)) pt"
+                checkSectionBar(tree, selected: .body, context: context, clipped: "Clipped request control")
+                // Every section stays reachable: selecting it scrolls its tab fully into view,
+                // clear of the pinned section actions.
+                for section in RequestPanelSection.allCases {
+                    interface.presentation(for: session).requestSection = section
+                    spin(0.3); flush(host)
+                    checkSectionBar(elements(host), selected: section, context: "\(context), \(section.rawValue) selected",
+                        clipped: "Clipped request control")
                 }
-                precondition(!note.frame.isEmpty && !type.frame.isEmpty)
-                precondition(!note.frame.intersects(type.frame), "Note and Content Type must not overlap")
-                let panes = textViews(host).compactMap { $0.enclosingScrollView }.map { window.convertToScreen($0.convert($0.bounds, to: nil)) }
-                for control in tree where ["Params", "Headers", "Body", "Auth", "Note", "Content Type", "Format Body"].contains(control.name) {
-                    precondition(panes.contains { $0.minX <= control.frame.minX && $0.maxX >= control.frame.maxX }, "Clipped request control: \(control.name)")
-                }
+                interface.presentation(for: session).requestSection = .body
+                spin(0.3); flush(host)
             }
         }
         interface.responseOrientation = .right
@@ -424,12 +426,64 @@ final class ProbeWindow: NSWindow { override var canBecomeKey: Bool { true } }
         _ = model.sessions.split(tabID: session.id)
         interface.synchronizeSelection(model: model)
         if let copy = model.sessions.activeSession { interface.presentation(for: copy).requestSection = .body }
-        spin(); flush(host)
-        let panes = textViews(host).compactMap { $0.enclosingScrollView }.map { window.convertToScreen($0.convert($0.bounds, to: nil)) }
-        for control in elements(host) where ["Params", "Auth", "Note", "Content Type", "Format Body"].contains(control.name) {
-            precondition(panes.contains { $0.minX <= control.frame.minX && $0.maxX >= control.frame.maxX }, "Clipped split control: \(control.name)")
-        }
+        spin(0.3); flush(host)
+        // Both groups' section bars: their visible parts stay inside their own pane.
+        checkSectionBar(elements(host), selected: .body, context: "split", clipped: "Clipped split control")
         print("interface_regressions=passed")
+
+        /// The section tabs scroll inside a strip and the current section's actions are
+        /// pinned after it. Only the visible (strip-clipped) part of a tab may be on
+        /// screen; it must never overlap a pinned action, the selected tab must be fully
+        /// visible, and the strip and actions must fit inside the request pane.
+        func checkSectionBar(_ tree: [Element], selected: RequestPanelSection, context: String, clipped: String) {
+            // Report the failing layout, since optimized builds drop precondition messages.
+            func require(_ condition: Bool, _ message: @autoclosure () -> String) {
+                if !condition { fail(message()) }
+            }
+            func fail(_ message: String) -> Never {
+                FileHandle.standardError.write(Data("interface check failed: \(message)\n".utf8))
+                exit(1)
+            }
+            let panes = textViews(host).compactMap { $0.enclosingScrollView }.map { window.convertToScreen($0.convert($0.bounds, to: nil)) }
+            let sectionNames = Set(RequestPanelSection.allCases.map(\.rawValue))
+            let tabs = tree.filter { $0.role == "AXButton" && sectionNames.contains($0.name) && !$0.frame.isEmpty }
+            // Response tabs share some names; only request strips hold Params, Auth, Note or Settings.
+            let strips = tree.filter { $0.role == "AXScrollArea" && $0.frame.height < 60 && !$0.frame.isEmpty }.map(\.frame).filter { strip in
+                tabs.contains { ["Params", "Auth", "Note", "Settings"].contains($0.name) && $0.frame.intersects(strip) }
+            }
+            require(!strips.isEmpty, "Section tabs must scroll in their own strip (\(context))")
+            for strip in strips {
+                // The body editor spans the visible request pane; other sections are checked
+                // against their bar, whose width is the pane's when nothing is clipped.
+                let bar = tree.first { $0.name == "Request sections" && $0.frame.minY <= strip.midY && $0.frame.maxY >= strip.midY
+                    && $0.frame.minX <= strip.minX + 1 && $0.frame.maxX >= strip.maxX - 1 }?.frame
+                guard let pane = selected == .body
+                    ? panes.first(where: { $0.minX <= strip.minX + 1 && $0.maxX >= strip.maxX - 1 })
+                    : bar else {
+                    fail("\(clipped): section strip (\(context))")
+                }
+                if let bar { require(bar.minX >= pane.minX - 1 && bar.maxX <= pane.maxX + 1, "\(clipped): section bar (\(context))") }
+                let row = tree.filter { $0.frame.midY >= strip.minY && $0.frame.midY <= strip.maxY
+                    && $0.frame.maxX > pane.minX && $0.frame.minX < pane.maxX }
+                let rowTabs = row.filter { $0.role == "AXButton" && sectionNames.contains($0.name) }
+                guard let tab = rowTabs.first(where: { $0.name == selected.rawValue }) else {
+                    fail("Missing section tab \(selected.rawValue) (\(context))")
+                }
+                require(strip.insetBy(dx: -1, dy: -1).contains(tab.frame), "Selected section \(selected.rawValue) must be fully visible (\(context))")
+                let actions = row.filter { ["Content Type", "Auth Type", "Format Body", "Add Part", "Body Actions", "New Entry",
+                    "Section Actions", "More Sections"].contains($0.name) && $0.role != "AXScrollArea" && !$0.frame.isEmpty }
+                for action in actions {
+                    require(pane.minX <= action.frame.minX + 1 && pane.maxX >= action.frame.maxX - 1, "\(clipped): \(action.name) (\(context))")
+                    require(!strip.insetBy(dx: 0.5, dy: 0).intersects(action.frame), "\(action.name) must not overlap the section tabs (\(context))")
+                    for other in rowTabs {
+                        let visible = other.frame.intersection(strip)
+                        guard !visible.isNull, visible.width > 0.5 else { continue }
+                        require(!visible.insetBy(dx: 0.5, dy: 0).intersects(action.frame),
+                            "Visible part of \(other.name) overlaps \(action.name) (\(context))")
+                    }
+                }
+            }
+        }
     }
 
     static func proxyScreenshots(root: URL) throws {
