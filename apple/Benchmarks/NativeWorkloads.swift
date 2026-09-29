@@ -308,6 +308,43 @@ final class ProbeWindow: NSWindow { override var canBecomeKey: Bool { true } }
         }
         let received = try Data(contentsOf: session.bodyStore!.url)
         precondition(received == Data(raw.utf8), "presentation must not change received bytes")
+        try streamedResponsePresentation()
+    }
+
+    /// A pane mounted when the head arrives (before the body file is complete)
+    /// must still present the completed body, in both JSON and Raw renderers.
+    static func streamedResponsePresentation() throws {
+        let body = #"{"zeta":1,"alpha":"caf\u00e9"}"#
+        let session = DocumentSession(draft: RequestDraft())
+        let run = RunID()
+        session.beginRun(run)
+        var step = 0
+        Task { @MainActor in
+            await session.consume(.head(ResponseHead(status: 200, version: "HTTP/1.1",
+                headers: [ResponseHeader(name: "Content-Type", value: "application/json")], timeToHeadersNS: 1)), runID: run)
+            step = 1
+        }
+        for _ in 0..<1000 where step < 1 { spin(0.002) }
+        let state = DocumentPresentationState()
+        let (window, host, _) = mount(ResponseViewer(interface: state, session: session))
+        defer { window.close() }
+        spin(0.05); flush(host)
+        Task { @MainActor in
+            await session.consume(.chunk(Data(body.utf8)), runID: run)
+            await session.consume(.complete(RunCompletion(bytesReceived: UInt64(body.utf8.count), totalTimeNS: 1)), runID: run)
+            step = 2
+        }
+        func shows(_ prefix: String) -> Bool {
+            let started = ContinuousClock.now
+            while !textViews(host).contains(where: { $0.string.hasPrefix(prefix) && !$0.isHiddenOrHasHiddenAncestor }) && ms(started) < 5000 {
+                spin(0.002); flush(host)
+            }
+            return textViews(host).contains { $0.string.hasPrefix(prefix) && !$0.isHiddenOrHasHiddenAncestor }
+        }
+        precondition(shows("{\n  \"zeta\": 1,\n  \"alpha\": \"café\""), "a pane mounted while streaming must show the formatted body")
+        state.responseRenderer = .raw
+        precondition(shows(body), "Raw must show the completed body")
+        print("streamed_response_presentation=passed")
     }
     struct Element {
         let role: String

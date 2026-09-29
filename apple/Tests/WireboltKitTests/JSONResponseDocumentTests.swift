@@ -105,6 +105,17 @@ struct JSONResponseDocumentTests {
         #expect(try await store.formattedJSON() === decoded)
     }
 
+    @Test("A streaming body is only formatted once complete, then in both escape modes")
+    func formatsOnlyCompleteBodies() async throws {
+        let store = try ResponseBodyStore(runID: RunID())
+        try await store.append(Data(#"{"a":"caf"#.utf8))
+        #expect(try await store.formattedJSON(decodingUnicodeEscapes: true) == nil)
+        try await store.append(Data(#"\u00e9"}"#.utf8))
+        try await store.finish()
+        #expect(try await store.formattedJSON(decodingUnicodeEscapes: true)?.preview == "{\n  \"a\": \"café\"\n}")
+        #expect(try await store.formattedJSON()?.preview == "{\n  \"a\": \"caf\\u00e9\"\n}")
+    }
+
     private func makeStore(_ data: Data) async throws -> ResponseBodyStore {
         let store = try ResponseBodyStore(runID: RunID())
         try await store.append(data)

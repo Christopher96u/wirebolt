@@ -90,6 +90,12 @@ struct ResponseViewer: View {
         session.isRunning && session.isAwaitingResponseHead
     }
 
+    /// The presented body file is still being written. Renderers read the file,
+    /// so they mount (and load) only once it is complete.
+    private var isReceivingBody: Bool {
+        session.isRunning && !session.isAwaitingResponseHead
+    }
+
     @ViewBuilder
     private var sectionContent: some View {
         if let failure = session.failure, interface.responseSection != .request {
@@ -114,7 +120,7 @@ struct ResponseViewer: View {
                 previewData: session.responsePreviewData,
                 receivedBytes: session.responseBytes,
                 wasTruncated: session.responseWasTruncated,
-                isReceiving: session.isRunning,
+                isReceiving: isReceivingBody,
                 store: session.bodyStore,
                 snapshot: session.preparedRun
             )
@@ -124,7 +130,7 @@ struct ResponseViewer: View {
             ResponseCookiesTable(cookies: session.responseCookies)
         case .raw:
             ResponseSourceView(title: "Raw Response", text: rawResponseText, bodyStore: session.bodyStore,
-                byteCount: session.responseBytes, prefix: rawResponseHeaders)
+                byteCount: session.responseBytes, prefix: rawResponseHeaders, isReceiving: isReceivingBody)
         case .request:
             SentRequestViewer(snapshot: session.preparedRun)
         }
@@ -188,6 +194,20 @@ private struct ElapsedTimeText: View {
     }
 }
 
+private struct ReceivingBodyView: View {
+    let byteCount: UInt64
+
+    var body: some View {
+        VStack(spacing: 8) {
+            ProgressView().controlSize(.small)
+            Text("Receiving Body…").font(.system(size: 13)).foregroundStyle(.secondary)
+            Text(ResponseFormatting.byteCount(byteCount)).font(.system(size: 12).monospacedDigit()).foregroundStyle(.tertiary)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .accessibilityElement(children: .combine)
+    }
+}
+
 private struct ResponseFailureView: View {
     let message: RunFailureMessage
     let retry: (() -> Void)?
@@ -225,6 +245,7 @@ private struct ResponseSourceView: View {
     var bodyStore: ResponseBodyStore?
     var byteCount: UInt64 = 0
     var prefix = ""
+    var isReceiving = false
     @State private var find = EditorFindState()
     @State private var loadedText: String?
     var body: some View {
@@ -252,7 +273,9 @@ private struct ResponseSourceView: View {
             }.font(.system(size: 13)).padding(.horizontal, 12).frame(height: 27)
                 .background(WireboltTheme.barBackground)
             Divider()
-            if let bodyStore, ResponseTextPresentation.usesIndex(byteCount: byteCount, preview: loadedText ?? text) {
+            if isReceiving {
+                ReceivingBodyView(byteCount: byteCount)
+            } else if let bodyStore, ResponseTextPresentation.usesIndex(byteCount: byteCount, preview: loadedText ?? text) {
                 IndexedResponseEditor(url: bodyStore.url, preview: text, language: .http, search: "", prefix: prefix, find: find)
             } else {
                 NativeCodeEditor(text: .constant(loadedText ?? text), editable: false, language: .http, label: title, find: find)
@@ -260,8 +283,9 @@ private struct ResponseSourceView: View {
                     .editorFindOverlay(find)
             }
         }
-        .task(id: bodyStore?.url) {
-            guard let bodyStore, byteCount <= 1024 * 1024 else { return }
+        .task(id: "\(bodyStore?.url.path ?? ""):\(isReceiving)") {
+            loadedText = nil
+            guard let bodyStore, !isReceiving, byteCount <= 1024 * 1024 else { return }
             let data = try? await bodyStore.viewport(length: Int(byteCount))
             guard !Task.isCancelled else { return }
             loadedText = prefix + String(decoding: data ?? Data(), as: UTF8.self)
@@ -474,9 +498,8 @@ private struct ResponseBodyViewer: View {
             .background(WireboltTheme.barBackground)
             Divider()
 
-            if receivedBytes == 0, isReceiving {
-                ProgressView("Receiving Body…").controlSize(.small)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            if isReceiving {
+                ReceivingBodyView(byteCount: receivedBytes)
             } else if receivedBytes == 0 {
                 ContentUnavailableView {
                     Label("No Body", systemImage: "doc")
@@ -488,11 +511,13 @@ private struct ResponseBodyViewer: View {
             } else { rendererContent }
 
         }
-        .task(id: store?.url) {
+        // Keyed on completion too: a viewport read while the body streams would be stale.
+        .task(id: "\(store?.url.path ?? ""):\(isReceiving)") {
+            loadedViewportData = nil
+            guard !isReceiving else { return }
             let size = await store?.size() ?? UInt64(previewData.count)
             guard !Task.isCancelled else { return }
             storeSize = size
-            loadedViewportData = nil
             if let store, size <= 64 * 1024 {
                 let data = try? await store.viewport(offset: 0, length: Int(size))
                 guard !Task.isCancelled else { return }
@@ -508,8 +533,9 @@ private struct ResponseBodyViewer: View {
             }
         }
         .onChange(of: receivedBytes) { _, value in storeSize = max(storeSize, value) }
-        .task(id: interface.responseRenderer == .json ? formattingKey : nil) {
-            guard interface.responseRenderer == .json, let store, let key = formattingKey else {
+        // An open body store cannot be formatted yet (it reports nil), so wait for completion.
+        .task(id: interface.responseRenderer == .json && !isReceiving ? formattingKey : nil) {
+            guard interface.responseRenderer == .json, !isReceiving, let store, let key = formattingKey else {
                 return
             }
             guard formattedSource != key else { return }
