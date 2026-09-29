@@ -112,6 +112,7 @@ struct WireboltCommands: Commands {
     static let helpWindowID = "help"
 
     @FocusedValue(\.workspaceCommands) private var focusedWorkspace
+    @FocusedValue(\.sidebarMove) private var sidebarMove
     @Environment(\.openWindow) private var openWindow
     let model: WireboltModel
     @Bindable var interface: WorkspaceUIState
@@ -212,6 +213,16 @@ struct WireboltCommands: Commands {
             }.disabled(noWorkspace)
             Button("New Folder") { interface.makeNewFolder(model: model) }
                 .keyboardShortcut("n", modifiers: [.command, .option]).disabled(noWorkspace)
+            Divider()
+            // Reorders the request or folder selected in the focused sidebar.
+            Button("Move Up") {
+                if let sidebarMove { interface.moveSidebarItem(sidebarMove.identifier, by: -1, model: model) }
+            }.keyboardShortcut(.upArrow, modifiers: [.command, .option])
+                .disabled(sidebarMove?.canMoveUp != true)
+            Button("Move Down") {
+                if let sidebarMove { interface.moveSidebarItem(sidebarMove.identifier, by: 1, model: model) }
+            }.keyboardShortcut(.downArrow, modifiers: [.command, .option])
+                .disabled(sidebarMove?.canMoveDown != true)
             Divider()
             Button("Copy cURL") { copyRequestAsCurl(model.draft, model: model) }
                 .keyboardShortcut("c", modifiers: [.command, .shift])
