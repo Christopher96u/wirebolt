@@ -1243,11 +1243,7 @@ private struct EditorGroupDeck: View {
                 .id(session.id)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
-                LightweightPlaceholder(
-                    title: "No Open Request",
-                    systemImage: "doc",
-                    description: "Create or open a request from the sidebar."
-                )
+                NoOpenRequestPlaceholder(model: model, interface: interface)
             }
         }
     }
@@ -3314,22 +3310,53 @@ private struct WorkspaceStatusBar: View {
     }
 }
 
+/// A system empty state for panels that have nothing to show yet.
 struct LightweightPlaceholder: View {
     let title: String
     let systemImage: String
     var description: String?
 
     var body: some View {
-        VStack(spacing: 10) {
-            Image(systemName: systemImage).font(.system(size: 32, weight: .light))
-            if !title.isEmpty { Text(title).font(.system(size: 13)) }
-            if let description {
-                Text(description).font(.system(size: 12)).multilineTextAlignment(.center).frame(maxWidth: 250)
+        ContentUnavailableView {
+            Label(title, systemImage: systemImage)
+        } description: {
+            if let description { Text(description) }
+        }
+    }
+}
+
+/// The editor area without an open tab: a first-run welcome while the workspace has no
+/// requests, otherwise a pointer to the sidebar. Both offer the next step directly.
+private struct NoOpenRequestPlaceholder: View {
+    let model: WireboltModel
+    let interface: WorkspaceUIState
+
+    var body: some View {
+        if model.workspace.collections.allSatisfy({ $0.requests.isEmpty }) {
+            ContentUnavailableView {
+                Label("Start Your Workspace", systemImage: "paperplane")
+            } description: {
+                Text("Create a request, or import a cURL command, HAR file, Postman collection or Wirebolt JSON. You can also drop one of those files on this window.")
+            } actions: {
+                Button("New Request") { interface.makeNewRequest(model: model) }
+                    .buttonStyle(.borderedProminent)
+                    .help("New Request (⌘N)")
+                WorkspaceImportMenu(interface: interface)
+                    .fixedSize()
+                Button("Open Workspace…") { chooseWorkspace(model: model, interface: interface, create: false) }
+                    .disabled(model.isLoadingWorkspace || model.isGitBusy || model.isOAuthBusy)
+                    .help("Open Workspace (⌘O)")
+            }
+        } else {
+            ContentUnavailableView {
+                Label("No Open Request", systemImage: "doc")
+            } description: {
+                Text("Select a request in the sidebar, or create one with ⌘N.")
+            } actions: {
+                Button("New Request") { interface.makeNewRequest(model: model) }
+                    .help("New Request (⌘N)")
             }
         }
-        .foregroundStyle(.secondary)
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .accessibilityElement(children: .combine)
     }
 }
 
