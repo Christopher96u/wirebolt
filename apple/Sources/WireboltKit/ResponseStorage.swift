@@ -120,8 +120,9 @@ public actor HistoryRepository {
 
     private let root: URL
     private let indexURL: URL
-    private var entries: [RunHistoryEntry]
+    private var loadedEntries: [RunHistoryEntry]?
 
+    /// The index is read on first use inside the actor, never while the app launches.
     public init(root: URL? = nil) {
         let applicationSupport = FileManager.default.urls(
             for: .applicationSupportDirectory,
@@ -131,13 +132,17 @@ public actor HistoryRepository {
             .appending(path: "Wirebolt", directoryHint: .isDirectory)
             .appending(path: "History", directoryHint: .isDirectory)
         indexURL = self.root.appending(path: "index.json")
-        if let data = try? Data(contentsOf: indexURL),
-           let decoded = try? JSONDecoder().decode([RunHistoryEntry].self, from: data)
-        {
-            entries = decoded
-        } else {
-            entries = []
+    }
+
+    private var entries: [RunHistoryEntry] {
+        get {
+            if let loadedEntries { return loadedEntries }
+            let decoded = (try? Data(contentsOf: indexURL))
+                .flatMap { try? JSONDecoder().decode([RunHistoryEntry].self, from: $0) } ?? []
+            loadedEntries = decoded
+            return decoded
         }
+        set { loadedEntries = newValue }
     }
 
     public func record(
@@ -218,17 +223,24 @@ public struct CookieSnapshot: Codable, Equatable, Identifiable, Sendable {
 }
 
 public actor CookieJar {
-    private var cookies: [CookieSnapshot] = []
+    private var loadedCookies: [CookieSnapshot]?
     private let storageURL: URL?
 
+    /// Stored cookies are read on first use inside the actor, never while the app launches.
     public init(storageURL: URL? = nil) {
         self.storageURL = storageURL
-        if let storageURL,
-           let data = try? Data(contentsOf: storageURL),
-           let saved = try? JSONDecoder().decode([CookieSnapshot].self, from: data)
-        {
-            cookies = saved
+    }
+
+    private var cookies: [CookieSnapshot] {
+        get {
+            if let loadedCookies { return loadedCookies }
+            let saved = storageURL
+                .flatMap { try? Data(contentsOf: $0) }
+                .flatMap { try? JSONDecoder().decode([CookieSnapshot].self, from: $0) } ?? []
+            loadedCookies = saved
+            return saved
         }
+        set { loadedCookies = newValue }
     }
 
     @discardableResult
