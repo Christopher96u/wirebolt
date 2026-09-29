@@ -42,7 +42,10 @@ struct GitCollaborationView: View {
                     Label(status.branch ?? "Detached HEAD", systemImage: "arrow.triangle.branch")
                     if let upstream = status.upstream {
                         Text(upstream).foregroundStyle(.secondary)
-                    } else { Text("No upstream configured").foregroundStyle(.secondary) }
+                    } else {
+                        Text("No upstream configured").foregroundStyle(.secondary)
+                            .help("Publish pushes this branch to origin and tracks it as the upstream.")
+                    }
                     if status.ahead > 0 {
                         Text("↑ \(status.ahead)").help("Commits ahead of upstream")
                     }
@@ -56,17 +59,17 @@ struct GitCollaborationView: View {
 
             if let failure = model.gitFailure {
                 Label(failure.reason, systemImage: "exclamationmark.triangle.fill")
-                    .foregroundStyle(.red)
+                    .foregroundStyle(WireboltTheme.danger)
                     .textSelection(.enabled)
                     .accessibilityLabel("Git error: \(failure.reason)")
             } else if let operation = model.gitOperation {
                 Label(operationLabel(operation.outcome), systemImage: operationIcon(operation.outcome))
-                    .foregroundStyle(operation.outcome == .conflicted ? .red : .secondary)
+                    .foregroundStyle(operation.outcome == .conflicted ? WireboltTheme.danger : .secondary)
             }
 
             if model.hasUnsavedRequestChanges {
                 Label("Save or discard request edits before pulling.", systemImage: "pencil.circle")
-                    .foregroundStyle(.orange)
+                    .foregroundStyle(WireboltTheme.warning)
             }
         }
         .padding(18)
@@ -76,12 +79,13 @@ struct GitCollaborationView: View {
     private var changes: some View {
         if let status = model.gitStatus, !status.changes.isEmpty {
             List(status.changes) { change in
-                HStack(spacing: 10) {
-                    Text(changeLabel(change))
-                        .font(.caption.monospaced().bold())
-                        .foregroundStyle(change.conflicted ? .red : .secondary)
-                        .frame(width: 28, alignment: .leading)
-                    VStack(alignment: .leading, spacing: 2) {
+                HStack(spacing: WireboltTheme.Spacing.medium) {
+                    Label(change.kind.rawValue, systemImage: symbol(for: change.kind))
+                        .font(.caption.weight(.medium))
+                        .foregroundStyle(color(for: change.kind))
+                        .frame(width: 104, alignment: .leading)
+                        .help(porcelainHelp(change))
+                    VStack(alignment: .leading, spacing: WireboltTheme.Spacing.xxSmall) {
                         Text(change.path).lineLimit(1)
                         if let previousPath = change.previousPath {
                             Text("from \(previousPath)")
@@ -91,11 +95,6 @@ struct GitCollaborationView: View {
                         }
                     }
                     Spacer()
-                    if change.conflicted {
-                        Text("Conflict")
-                            .font(.caption.bold())
-                            .foregroundStyle(.red)
-                    }
                 }
                 .accessibilityElement(children: .combine)
             }
@@ -135,10 +134,7 @@ struct GitCollaborationView: View {
                 .disabled(model.isGitBusy || model.gitStatus?.upstream == nil || model.hasUnsavedRequestChanges)
                 .help("Pull the configured upstream. Conflicts are never resolved automatically.")
 
-                Button("Push") {
-                    Task { await model.pushGit() }
-                }
-                .disabled(model.isGitBusy || model.gitStatus == nil)
+                pushButton
 
                 Button("Refresh", systemImage: "arrow.clockwise") {
                     Task { await model.refreshGitStatus() }
@@ -149,6 +145,25 @@ struct GitCollaborationView: View {
             }
         }
         .padding(18)
+    }
+
+    @ViewBuilder
+    private var pushButton: some View {
+        let availability = model.gitStatus?.pushAvailability ?? .unavailable(reason: "Refresh Git status first.")
+        let title = if case .publish = availability { "Publish" } else { "Push" }
+        Button(title) {
+            Task { await model.pushGit() }
+        }
+        .disabled(model.isGitBusy || { if case .unavailable = availability { true } else { false } }())
+        .help(pushHelp(availability))
+    }
+
+    private func pushHelp(_ availability: GitPushAvailability) -> String {
+        switch availability {
+        case .push: "Push committed workspace documents to the upstream."
+        case let .publish(branch): "No upstream configured. Push \(branch) to origin and track it as the upstream."
+        case let .unavailable(reason): reason
+        }
     }
 
     private var trimmedCommitMessage: String {
@@ -166,9 +181,30 @@ struct GitCollaborationView: View {
         }
     }
 
-    private func changeLabel(_ change: GitChangeSnapshot) -> String {
-        if change.conflicted { return "UU" }
-        return shortLabel(change.staged) + shortLabel(change.unstaged)
+    private func symbol(for kind: GitChangeKind) -> String {
+        switch kind {
+        case .new: "plus.circle.fill"
+        case .modified: "pencil.circle.fill"
+        case .deleted: "minus.circle.fill"
+        case .renamed: "arrow.right.circle.fill"
+        case .copied: "doc.on.doc.fill"
+        case .typeChanged: "arrow.triangle.2.circlepath.circle.fill"
+        case .conflicted: "exclamationmark.triangle.fill"
+        }
+    }
+
+    private func color(for kind: GitChangeKind) -> Color {
+        switch kind {
+        case .new: WireboltTheme.success
+        case .deleted, .conflicted: WireboltTheme.danger
+        case .modified, .renamed, .copied, .typeChanged: .secondary
+        }
+    }
+
+    /// The Git porcelain code stays available for people who know it.
+    private func porcelainHelp(_ change: GitChangeSnapshot) -> String {
+        let code = change.conflicted ? "UU" : shortLabel(change.staged) + shortLabel(change.unstaged)
+        return "Git status: \(code.replacingOccurrences(of: " ", with: "·"))"
     }
 
     private func shortLabel(_ delta: GitDeltaSnapshot) -> String {

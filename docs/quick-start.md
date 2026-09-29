@@ -40,7 +40,7 @@ Send the request. The response includes your JSON under `body`. Save it as **Cre
 
 ## Reuse a base URL
 
-Open the environment menu → **Configure Environments**. Add an enabled Global variable named `base_url` with value `http://127.0.0.1:18990`, then click **Close** to save. Change the request URL to `{{base_url}}/products` and send again.
+Open the environment menu → **Configure Environments**. Add an enabled Global variable named `base_url` with value `http://127.0.0.1:18990`, then click **Save**. Change the request URL to `{{base_url}}/products` and send again.
 
 Add your endpoint's usage notes under **Note → Edit**, then open **Preview** and save with **⌘S**.
 

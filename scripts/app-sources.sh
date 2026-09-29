@@ -6,6 +6,7 @@ wirebolt_app_inputs=(
   apple/Sources/WireboltKit/ProxyConnectionTest.swift
   apple/Sources/WireboltKit/ProxySettings.swift
   apple/Sources/WireboltKit/MarkdownPreview.swift
+  apple/Sources/WireboltKit/SemanticPalette.swift
   apple/Sources/WireboltKit/Models.swift
   apple/Sources/WireboltKit/CurlExport.swift
   apple/Sources/WireboltKit/WebSocket.swift

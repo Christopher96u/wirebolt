@@ -781,6 +781,51 @@ public struct GitChangeSnapshot: Codable, Equatable, Identifiable, Sendable {
     }
 }
 
+/// A readable summary of one changed file, combining its staged and unstaged deltas.
+public enum GitChangeKind: String, Equatable, Sendable {
+    case new = "New"
+    case modified = "Modified"
+    case deleted = "Deleted"
+    case renamed = "Renamed"
+    case copied = "Copied"
+    case typeChanged = "Type Changed"
+    case conflicted = "Conflict"
+}
+
+/// What the Push button can do for the current status.
+public enum GitPushAvailability: Equatable, Sendable {
+    /// Push commits to the configured upstream.
+    case push
+    /// No upstream yet: pushing publishes the branch to `origin` and tracks it.
+    case publish(branch: String)
+    /// The button stays visible but disabled, with this reason as help.
+    case unavailable(reason: String)
+}
+
+extension GitStatusSnapshot {
+    public var pushAvailability: GitPushAvailability {
+        guard let branch else { return .unavailable(reason: "Check out a branch to push. HEAD is detached.") }
+        guard upstream != nil else { return .publish(branch: branch) }
+        guard ahead > 0 else { return .unavailable(reason: "No local commits to push.") }
+        return .push
+    }
+}
+
+extension GitChangeSnapshot {
+    public var kind: GitChangeKind {
+        if conflicted { return .conflicted }
+        let deltas = [staged, unstaged]
+        if deltas.contains(where: { $0 == .unmerged }) { return .conflicted }
+        // A file added in the index stays "new" even with further unstaged edits.
+        if deltas.contains(where: { $0 == .added || $0 == .untracked }) { return .new }
+        if deltas.contains(.deleted) { return .deleted }
+        if deltas.contains(.renamed) { return .renamed }
+        if deltas.contains(.copied) { return .copied }
+        if deltas.contains(.typeChanged) { return .typeChanged }
+        return .modified
+    }
+}
+
 public struct GitStatusSnapshot: Codable, Equatable, Sendable {
     public let branch: String?
     public let upstream: String?

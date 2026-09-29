@@ -960,8 +960,10 @@ private struct SidebarRequestButton: View, @MainActor Equatable {
     var body: some View {
             HStack(spacing: 3) {
                 Text(location.request.webSocket ? "WS" : location.request.method.rawValue)
-                    .font(.system(size: 10))
-                    .foregroundStyle(WireboltTheme.methodColor(location.request.method))
+                    .font(WireboltTheme.Typography.methodLabel)
+                    .lineLimit(1).minimumScaleFactor(0.8)
+                    // Method hues can't keep contrast on the accent selection fill.
+                    .foregroundStyle(isSelected ? Color.white : WireboltTheme.methodColor(location.request.method, webSocket: location.request.webSocket))
                     .frame(width: 40, alignment: .trailing)
                 InlineSidebarName(title: location.request.name, isEditing: Binding(
                     get: { isRenaming || interface.renamingRequestID == location.id },
@@ -1016,7 +1018,8 @@ private struct SidebarRequestButton: View, @MainActor Equatable {
 
     private var selectionBackground: Color {
         guard isSelected else { return .clear }
-        return WireboltTheme.primaryAccent.opacity(colorScheme == .dark ? 0.82 : 0.90)
+        // Opaque in light mode so white labels keep 4.5:1 over the sidebar.
+        return WireboltTheme.primaryAccent.opacity(colorScheme == .dark ? 0.82 : 1)
     }
 }
 
@@ -1581,7 +1584,7 @@ private struct RequestURLBar: View {
     var body: some View {
         HStack(spacing: 7) {
             if session.kind == .webSocket {
-                Text("WS").font(.system(size: 14, weight: .bold)).foregroundStyle(WireboltTheme.primaryAccent)
+                Text("WS").font(.system(size: 14, weight: .bold)).foregroundStyle(WireboltTheme.webSocketColor)
             } else {
             Menu {
                 ForEach(HTTPMethod.allCases, id: \.self) { method in
@@ -1620,8 +1623,8 @@ private struct RequestURLBar: View {
             }
             InlineResponseStatus(session: session)
             if session.kind == .webSocket && session.socket.status == .connected {
-                Label("101 Switching Protocols", systemImage: "info.circle.fill")
-                    .font(.system(size: 14)).foregroundStyle(WireboltTheme.primaryAccent).fixedSize()
+                Label("101 Switching Protocols", systemImage: WireboltTheme.statusSymbol(101))
+                    .font(.system(size: 14)).foregroundStyle(WireboltTheme.statusColor(101)).fixedSize()
             }
 
             Button("Edit Long URL", systemImage: "rectangle.expand.vertical") {
@@ -1706,44 +1709,64 @@ private struct RequestURLBar: View {
 
 }
 
+private enum WebSocketMessageFilter: String, CaseIterable, Identifiable {
+    case all = "All"
+    case sent = "Sent"
+    case received = "Received"
+
+    var id: Self { self }
+
+    func includes(_ message: WebSocketMessage) -> Bool {
+        switch self {
+        case .all: true
+        case .sent: message.outgoing
+        case .received: !message.outgoing && !message.system
+        }
+    }
+}
+
 private struct WebSocketResponseView: View {
     @Bindable var session: DocumentSession
     @State private var selectedMessage: UUID?
     @State private var showsHeaders = false
-    @State private var filter = "All"
+    @State private var filter = WebSocketMessageFilter.all
     @State private var hex = false
     @State private var hideControl = false
     @State private var isSearching = false
     @State private var query = ""
+    /// The debounced query that actually filters the list.
+    @State private var appliedQuery = ""
     @State private var split = ResponseLayoutState()
     private var socket: WebSocketDocumentState { session.socket }
     private var selected: WebSocketMessage? { socket.messages.first { $0.id == selectedMessage } }
     private var messages: [WebSocketMessage] {
         socket.messages.filter {
-            (!hideControl || $0.control == nil)
-                && (filter == "All" || (filter == "Sent" ? $0.outgoing : !$0.outgoing && !$0.system))
-                && (query.isEmpty || String(decoding: $0.data, as: UTF8.self).localizedCaseInsensitiveContains(query))
+            (!hideControl || $0.control == nil) && filter.includes($0) && $0.matches(appliedQuery)
         }
     }
     var body: some View {
         Group {
             if socket.status == .connecting {
-                VStack(spacing: 10) { ProgressView().controlSize(.small); Text("Connecting…") }
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                VStack(spacing: WireboltTheme.Spacing.medium) {
+                    ProgressView().controlSize(.small)
+                    Text("Connecting…").foregroundStyle(.secondary)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else if socket.messages.isEmpty && socket.status == .disconnected {
                 if let error = socket.errorMessage {
-                    LightweightPlaceholder(title: "", systemImage: "exclamationmark.circle", description: error)
+                    ContentUnavailableView("Connection Failed", systemImage: "exclamationmark.triangle", description: Text(error))
                 } else {
-                    VStack(spacing: 10) {
-                        Image(systemName: "paperplane").font(.system(size: 49, weight: .light))
-                        Text("No Connection").font(.system(size: 16, weight: .semibold))
-                    }.foregroundStyle(.secondary).frame(maxWidth: .infinity, maxHeight: .infinity)
+                    ContentUnavailableView(
+                        "Not Connected",
+                        systemImage: "bolt.horizontal",
+                        description: Text("Choose Connect (⌃⌘↩) to start exchanging messages.")
+                    )
                 }
             } else {
                 VStack(spacing: 0) {
-                    HStack(spacing: 10) {
-                        PanelTabButton(title: "WebSocket", isSelected: !showsHeaders) { showsHeaders = false }
-                        PanelTabButton(title: "Headers", isSelected: showsHeaders) { showsHeaders = true }
+                    HStack(spacing: WireboltTheme.Spacing.medium) {
+                        PanelTabButton(title: "Messages", isSelected: !showsHeaders) { showsHeaders = false }
+                        PanelTabButton(title: "Headers", badge: socket.headers.count, isSelected: showsHeaders) { showsHeaders = true }
                         Spacer()
                     }.padding(.horizontal, 11).frame(height: 34).background(WireboltTheme.barBackground)
                     Divider()
@@ -1756,55 +1779,101 @@ private struct WebSocketResponseView: View {
                                 messageTable
                             }
                         } response: {
-                            SyntaxTextView(text: preview, language: .plain)
+                            if selected == nil {
+                                ContentUnavailableView(
+                                    "No Message Selected",
+                                    systemImage: "text.bubble",
+                                    description: Text("Select a message to see its contents.")
+                                )
+                            } else {
+                                SyntaxTextView(text: preview, language: .plain)
+                            }
                         }
                     }
                 }
             }
-        }.onAppear { split.requestHeight = 148 }
+        }
+        .onAppear { split.requestHeight = 148 }
+        .task(id: query) {
+            // Filtering runs over up to 1,000 messages; wait for a typing pause.
+            if !query.isEmpty { try? await Task.sleep(for: .milliseconds(150)) }
+            guard !Task.isCancelled else { return }
+            appliedQuery = query
+        }
     }
     private var messageTable: some View {
         Table(messages, selection: $selectedMessage) {
-                                    TableColumn("Data") { message in
-                                        HStack(spacing: 8) {
-                                            Image(systemName: message.system ? "exclamationmark.circle.fill" : message.outgoing ? "arrow.up" : "arrow.down")
-                                                .foregroundStyle(message.system ? .orange : WireboltTheme.primaryAccent)
-                                            Text(message.control ?? String(decoding: message.data.prefix(300), as: UTF8.self)).lineLimit(1)
-                                        }
-                                    }.width(200)
-                                    TableColumn("Time") { message in Text(Self.time.string(from: message.timestamp)) }
-                                }.font(.system(size: 11)).tableStyle(.bordered(alternatesRowBackgrounds: false))
+            TableColumn("Data") { message in
+                HStack(spacing: WireboltTheme.Spacing.medium) {
+                    let icon = Self.icon(for: message)
+                    Image(systemName: icon.symbol)
+                        .foregroundStyle(icon.color)
+                        .accessibilityLabel(icon.label)
+                    Text(message.control ?? String(message.text.prefix(300))).lineLimit(1)
+                }
+            }.width(200)
+            TableColumn("Time") { message in Text(Self.time.string(from: message.timestamp)) }
+        }
+        .font(WireboltTheme.Typography.detail)
+        .tableStyle(.bordered(alternatesRowBackgrounds: false))
     }
     private var messageToolbar: some View {
-        HStack(spacing: 6) {
-            Text("Messages").foregroundStyle(.secondary)
-            Spacer(minLength: 4)
-            if isSearching { TextField("Find", text: $query).frame(width: 120) }
-            Button("Search", systemImage: "magnifyingglass") { isSearching.toggle() }
-                .labelStyle(.iconOnly).buttonStyle(.borderless)
-            Menu {
-                ForEach(["All", "Sent", "Receive"], id: \.self) { option in
-                    Button { filter = option } label: { Label(option, systemImage: filter == option ? "checkmark" : "") }
-                }
+        HStack(spacing: WireboltTheme.Spacing.small) {
+            Picker("Show", selection: $filter) {
+                ForEach(WebSocketMessageFilter.allCases) { Text($0.rawValue).tag($0) }
+            }
+            .pickerStyle(.segmented).labelsHidden().controlSize(.small).fixedSize()
+            .help("Show all, sent, or received messages")
+            Spacer(minLength: WireboltTheme.Spacing.xSmall)
+            if isSearching {
+                TextField("Find", text: $query)
+                    .textFieldStyle(.roundedBorder).controlSize(.small).frame(width: 120)
+                    .accessibilityLabel("Find messages")
+            }
+            Button("Find Messages", systemImage: "magnifyingglass") {
+                isSearching.toggle()
+                if !isSearching { query = "" }
+            }
+            .labelStyle(.iconOnly).buttonStyle(.borderless).help("Find Messages")
+            Menu("View Options", systemImage: "line.3.horizontal.decrease.circle") {
+                Toggle("Hide Ping/Pong", isOn: $hideControl)
                 Divider()
-                Menu("Option") { Toggle("Hide Ping/Pong", isOn: $hideControl) }
-            } label: { Text(filter) }.menuStyle(.borderlessButton).fixedSize()
-            Picker("Preview", selection: $hex) { Text("Previewer").tag(false); Text("Hex").tag(true) }
-                .labelsHidden().pickerStyle(.menu).controlSize(.small).frame(width: 82)
-            Button("Copy", systemImage: "doc.on.doc") {
+                Picker("Show Selected Message As", selection: $hex) {
+                    Text("Text").tag(false)
+                    Text("Hex").tag(true)
+                }.pickerStyle(.inline)
+            }
+            .menuStyle(.borderlessButton).menuIndicator(.hidden).labelStyle(.iconOnly).fixedSize()
+            .help("View Options")
+            Button("Copy Message", systemImage: "doc.on.doc") {
                 NSPasteboard.general.clearContents()
                 NSPasteboard.general.setString(preview, forType: .string)
-            }.labelStyle(.iconOnly).buttonStyle(.borderless)
-            Button { Task { await socket.send(body: session.draft.body) } } label: {
-                Text("SEND ⌘↩").font(.system(size: 12, weight: .semibold)).frame(width: 80, height: 18)
-            }.buttonStyle(.borderedProminent).controlSize(.regular)
+            }
+            .labelStyle(.iconOnly).buttonStyle(.borderless)
+            .disabled(selected == nil).help("Copy Selected Message")
+            Button("Send", systemImage: "paperplane") { Task { await socket.send(body: session.draft.body) } }
+                .buttonStyle(.bordered).controlSize(.small)
                 .disabled(socket.status != .connected)
-        }.font(.system(size: 13)).padding(.horizontal, 12).frame(height: 32).background(WireboltTheme.barBackground)
+                .help("Send Message (⌘↩)")
+        }
+        .font(WireboltTheme.Typography.body)
+        .padding(.horizontal, WireboltTheme.Spacing.large).frame(height: 32).background(WireboltTheme.barBackground)
     }
     private var preview: String {
         guard let selected else { return "" }
+        if !hex && selected.data.count <= DocumentSession.previewByteLimit { return selected.text }
         let data = selected.data.prefix(DocumentSession.previewByteLimit)
         return hex ? data.map { String(format: "%02X", $0) }.joined(separator: " ") : String(decoding: data, as: UTF8.self)
+    }
+    private static func icon(for message: WebSocketMessage) -> (symbol: String, color: Color, label: String) {
+        switch message.notice {
+        case .connected: ("link", WireboltTheme.success, "Connected")
+        case .disconnected: ("minus.circle", Color.secondary, "Disconnected")
+        case .failed: ("exclamationmark.triangle.fill", WireboltTheme.statusColor(500), "Connection error")
+        case nil: message.outgoing
+            ? ("arrow.up", WireboltTheme.webSocketColor, "Sent")
+            : ("arrow.down", WireboltTheme.success, "Received")
+        }
     }
     private static let time: DateFormatter = {
         let formatter = DateFormatter(); formatter.dateFormat = "HH:mm:ss.SSS"; return formatter
@@ -2109,14 +2178,18 @@ struct PanelTabButton: View {
 
     var body: some View {
         Button(action: action) {
-            HStack(spacing: title == "Headers" ? 4 : 5) {
+            HStack(spacing: WireboltTheme.Spacing.xSmall) {
                 Text(title)
+                // Neutral count capsule: counts are information, not success.
                 if let badge, badge > 0 {
-                    Text("(\(badge))")
-                        .font(.caption.monospacedDigit())
-                        .foregroundStyle(WireboltTheme.success)
+                    Text(badge, format: .number)
+                        .font(WireboltTheme.Typography.badge)
+                        .foregroundStyle(.primary.opacity(0.72))
+                        .padding(.horizontal, 5)
+                        .frame(minWidth: 16, minHeight: 14)
+                        .background(.quaternary, in: Capsule())
                 } else if indicator {
-                    Text("•︎").foregroundStyle(WireboltTheme.success)
+                    Circle().fill(.secondary).frame(width: 5, height: 5)
                 }
             }
             .font(.system(size: 13))
