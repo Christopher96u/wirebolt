@@ -1989,10 +1989,8 @@ private struct RequestURLBar: View {
         Group {
             if session.kind == .webSocket {
                 if session.socket.status == .disconnected {
-                    Button(action: toggleConnection) { actionTitle("Connect") }
-                        .buttonStyle(.borderedProminent)
+                    prominentAction("Connect", enabled: hasURL, action: toggleConnection)
                         .help(hasURL ? "Connect (⌃⌘↩)" : "Enter a URL to connect")
-                        .disabled(!hasURL)
                 } else {
                     Button(action: toggleConnection) { actionTitle("Disconnect") }
                         .buttonStyle(.bordered)
@@ -2004,11 +2002,9 @@ private struct RequestURLBar: View {
                     .accessibilityLabel("Cancel Request")
                     .help("Cancel Request (⌘.)")
             } else {
-                Button(action: send) { actionTitle("Send") }
-                    .buttonStyle(.borderedProminent)
+                prominentAction("Send", enabled: hasURL, action: send)
                     .accessibilityLabel("Send Request")
                     .help(hasURL ? "Send Request (⌘↩)" : "Enter a URL to send the request")
-                    .disabled(!hasURL)
             }
         }
         .controlSize(.large)
@@ -2020,6 +2016,21 @@ private struct RequestURLBar: View {
     /// Equal minimum widths keep Send and Cancel from shifting the URL field when they swap.
     private func actionTitle(_ title: String) -> some View {
         Text(title).frame(minWidth: 52)
+    }
+
+    /// A disabled prominent button keeps a tinted fill that reads as enabled, especially in
+    /// Dark Mode, so an unavailable Send or Connect falls back to the neutral bordered style
+    /// with the system's dimmed label.
+    @ViewBuilder
+    private func prominentAction(_ title: String, enabled: Bool, action: @escaping () -> Void) -> some View {
+        if enabled {
+            Button(action: action) { actionTitle(title) }
+                .buttonStyle(.borderedProminent)
+        } else {
+            Button(action: action) { actionTitle(title) }
+                .buttonStyle(.bordered)
+                .disabled(true)
+        }
     }
 
     private func toggleConnection() {
