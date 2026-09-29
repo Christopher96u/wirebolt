@@ -98,7 +98,10 @@ private struct IndexedCodeScrollView: NSViewRepresentable {
         guard isActive else { return }
         let restore = view.presentation == nil
         if restore { view.presentation = editorStorage?.state(for: storageKey) }
-        (scroll.contentView as? EditorClipView)?.changed = { [weak view] point in view?.presentation?.origin = point }
+        (scroll.contentView as? EditorClipView)?.changed = { [weak view] point in
+            view?.presentation?.origin = point
+            view?.visibleAreaChanged()
+        }
         let changed = view.index?.rowCount != index.rowCount || view.index?.url != index.url || view.index?.columns != index.columns || view.index?.wrapping != index.wrapping || view.fontSize != fontSize || view.language != language
         let oldIndex = view.index
         let oldOrigin = scroll.contentView.bounds.origin
@@ -348,7 +351,7 @@ final class IndexedCodeView: NSView, NSUserInterfaceValidations {
             let rows = try? await withTaskCancellationHandler { try await reader.value } onCancel: { reader.cancel() }
             guard !Task.isCancelled, let self, let rows else { return }
             self.cachedRows = rows
-            self.setAccessibilityValue(rows.map(\.text).joined(separator: "\n"))
+            self.updateAccessibilityWindow()
             self.needsDisplay = true
         }
     }
@@ -398,9 +401,7 @@ final class IndexedCodeView: NSView, NSUserInterfaceValidations {
         needsDisplay = true
     }
     override func mouseUp(with event: NSEvent) {
-        if let (start, end) = orderedSelection, start != end {
-            findState?.indexedSelection = (.init(row: start.row, column: start.column), .init(row: end.row, column: end.column))
-        } else { findState?.indexedSelection = nil }
+        selectionChanged()
     }
     @objc func performFindPanelAction(_ sender: Any?) { performTextFinderAction(sender) }
     func validateUserInterfaceItem(_ item: NSValidatedUserInterfaceItem) -> Bool {
@@ -424,6 +425,7 @@ final class IndexedCodeView: NSView, NSUserInterfaceValidations {
         }
     }
     override func keyDown(with event: NSEvent) {
+        if event.modifierFlags.contains(.shift), extendSelection(for: event) { return }
         if event.modifierFlags.contains(.command), event.charactersIgnoringModifiers == "f" { findState?.isVisible = true }
         else if event.modifierFlags.contains(.command), event.charactersIgnoringModifiers == "a" { selectAll(nil) }
         else if event.modifierFlags.contains(.command), event.charactersIgnoringModifiers == "c" { copy(nil) }
@@ -445,8 +447,150 @@ final class IndexedCodeView: NSView, NSUserInterfaceValidations {
     override func selectAll(_ sender: Any?) {
         selectionStart = (0, 0)
         selectionEnd = (max(0, (index?.rowCount ?? 1) - 1), Int.max)
+        selectionChanged()
+    }
+
+    private func selectionChanged() {
         saveSelection()
+        if let (start, end) = orderedSelection, start != end {
+            findState?.indexedSelection = (.init(row: start.row, column: start.column), .init(row: end.row, column: end.column))
+        } else { findState?.indexedSelection = nil }
         needsDisplay = true
+        NSAccessibility.post(element: self, notification: .selectedTextChanged)
+    }
+
+    private func rowLength(_ row: Int) -> Int? {
+        cachedRows.first(where: { $0.number == row }).map { ($0.text as NSString).length }
+    }
+
+    /// Shift + arrow, Page Up/Down, Home/End extend the selection from its anchor,
+    /// matching NSTextView so the response is selectable without a mouse.
+    private func extendSelection(for event: NSEvent) -> Bool {
+        guard let index, index.rowCount > 0 else { return false }
+        let lastRow = index.rowCount - 1
+        let page = max(1, Int(visibleRect.height / lineHeight) - 1)
+        let command = event.modifierFlags.contains(.command)
+        let anchor = selectionStart ?? (min(lastRow, max(0, Int(visibleRect.minY / lineHeight))), 0)
+        var end = selectionEnd ?? anchor
+        end.column = min(end.column, rowLength(end.row) ?? end.column)
+        switch event.keyCode {
+        case 126: end = command ? (0, 0) : (max(0, end.row - 1), end.column)
+        case 125: end = command ? (lastRow, Int.max) : (min(lastRow, end.row + 1), end.column)
+        case 123:
+            if end.column > 0 { end.column -= 1 }
+            else if end.row > 0 { end = (end.row - 1, rowLength(end.row - 1) ?? 0) }
+        case 124:
+            if let length = rowLength(end.row), end.column >= length, end.row < lastRow { end = (end.row + 1, 0) }
+            else { end.column += 1 }
+        case 116: end.row = max(0, end.row - page)
+        case 121: end.row = min(lastRow, end.row + page)
+        case 115: end = (0, 0)
+        case 119: end = (lastRow, Int.max)
+        default: return false
+        }
+        selectionStart = anchor
+        selectionEnd = end
+        let y = Double(end.row) * lineHeight
+        if y < visibleRect.minY || y + lineHeight > visibleRect.maxY {
+            scroll(NSPoint(x: visibleRect.minX, y: max(0, y - (end.row > anchor.row ? visibleRect.height - 2 * lineHeight : lineHeight))))
+        }
+        selectionChanged()
+        return true
+    }
+
+    // MARK: Focus ring
+
+    override var focusRingMaskBounds: NSRect { visibleRect.insetBy(dx: 3, dy: 3) }
+    override func drawFocusRingMask() { visibleRect.insetBy(dx: 3, dy: 3).fill() }
+    override func becomeFirstResponder() -> Bool {
+        noteFocusRingMaskChanged()
+        return super.becomeFirstResponder()
+    }
+    override func resignFirstResponder() -> Bool {
+        noteFocusRingMaskChanged()
+        return super.resignFirstResponder()
+    }
+    func visibleAreaChanged() {
+        if window?.firstResponder === self { noteFocusRingMaskChanged() }
+    }
+
+    // MARK: Accessibility
+
+    /// Assistive technologies see the loaded viewport (the visible rows plus a
+    /// small margin) as a text area with lines, selection and insertion point.
+    /// Moving the selection past either edge scrolls and loads the next rows.
+    private var accessibilityRows: [ResponseTextIndex.Row] = []
+    private var accessibilityLineStarts: [Int] = []
+    private var accessibilityText: NSString = ""
+
+    private func updateAccessibilityWindow() {
+        accessibilityRows = cachedRows
+        var starts: [Int] = []
+        var location = 0
+        for row in cachedRows {
+            starts.append(location)
+            location += (row.text as NSString).length + 1
+        }
+        accessibilityLineStarts = starts
+        accessibilityText = cachedRows.map(\.text).joined(separator: "\n") as NSString
+        setAccessibilityValue(accessibilityText as String)
+        NSAccessibility.post(element: self, notification: .valueChanged)
+    }
+
+    private func accessibilityOffset(row: Int, column: Int) -> Int? {
+        guard let line = accessibilityRows.firstIndex(where: { $0.number == row }) else { return nil }
+        return accessibilityLineStarts[line] + min(column, (accessibilityRows[line].text as NSString).length)
+    }
+
+    private func accessibilityPosition(_ offset: Int) -> (row: Int, column: Int)? {
+        guard !accessibilityRows.isEmpty else { return nil }
+        let line = accessibilityLine(for: offset)
+        return (accessibilityRows[line].number, offset - accessibilityLineStarts[line])
+    }
+
+    override func accessibilityNumberOfCharacters() -> Int { accessibilityText.length }
+    override func accessibilityVisibleCharacterRange() -> NSRange { NSRange(location: 0, length: accessibilityText.length) }
+    override func accessibilityString(for range: NSRange) -> String? {
+        let clamped = NSIntersectionRange(range, NSRange(location: 0, length: accessibilityText.length))
+        return accessibilityText.substring(with: clamped)
+    }
+    override func accessibilityLine(for index: Int) -> Int {
+        var lower = 0, upper = accessibilityLineStarts.count
+        while lower + 1 < upper {
+            let middle = (lower + upper) / 2
+            if accessibilityLineStarts[middle] <= index { lower = middle } else { upper = middle }
+        }
+        return lower
+    }
+    override func accessibilityRange(forLine line: Int) -> NSRange {
+        guard accessibilityRows.indices.contains(line) else { return NSRange(location: NSNotFound, length: 0) }
+        return NSRange(location: accessibilityLineStarts[line], length: (accessibilityRows[line].text as NSString).length)
+    }
+    override func accessibilitySelectedTextRange() -> NSRange {
+        guard let (start, end) = orderedSelection,
+              let lower = accessibilityOffset(row: start.row, column: start.column) else {
+            return NSRange(location: accessibilityLineStarts.first ?? 0, length: 0)
+        }
+        let upper = accessibilityOffset(row: end.row, column: end.column) ?? accessibilityText.length
+        return NSRange(location: lower, length: max(0, upper - lower))
+    }
+    override func setAccessibilitySelectedTextRange(_ range: NSRange) {
+        guard let start = accessibilityPosition(range.location),
+              let end = accessibilityPosition(NSMaxRange(range)) else { return }
+        selectionStart = start
+        selectionEnd = end
+        // Keep the assistive window moving with the reading position.
+        let y = Double(end.row) * lineHeight
+        if y < visibleRect.minY || y + lineHeight > visibleRect.maxY {
+            scroll(NSPoint(x: visibleRect.minX, y: max(0, y - visibleRect.height / 2)))
+        }
+        selectionChanged()
+    }
+    override func accessibilitySelectedText() -> String? {
+        accessibilityString(for: accessibilitySelectedTextRange())
+    }
+    override func accessibilityInsertionPointLineNumber() -> Int {
+        accessibilityLine(for: accessibilitySelectedTextRange().location)
     }
     private var orderedSelection: ((row: Int, column: Int), (row: Int, column: Int))? {
         guard let start = selectionStart, let end = selectionEnd else { return nil }
