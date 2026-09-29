@@ -543,8 +543,8 @@ private struct ResponseBodyViewer: View {
         let panel = NSSavePanel()
         panel.nameFieldStringValue = "response.body"
         panel.canCreateDirectories = true
-        guard panel.runModal() == .OK, let destination = panel.url else { return }
         Task {
+            guard await present(panel, in: NSApp.keyWindow) == .OK, let destination = panel.url else { return }
             do { try await store.export(to: destination) }
             catch { actionError = error.localizedDescription }
         }

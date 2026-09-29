@@ -3426,20 +3426,34 @@ private struct MultipartRow: View {
             .onAppear { if part.name.isEmpty { isEditing = true } }
     }
     private func export() {
+        let part = part
+        let window = NSApp.keyWindow
         let panel = NSSavePanel()
         panel.nameFieldStringValue = part.fileName ?? (part.name.isEmpty ? "part" : part.name)
-        guard panel.runModal() == .OK, let url = panel.url else { return }
-        do {
-            let data: Data
-            switch part.kind {
-            case .file: data = try Data(contentsOf: URL(fileURLWithPath: part.filePath ?? ""), options: .mappedIfSafe)
-            case .binary:
-                guard let decoded = Data(base64Encoded: part.value.editableValue) else { NSSound.beep(); return }
-                data = decoded
-            case .text: data = Data(part.value.editableValue.utf8)
+        panel.canCreateDirectories = true
+        Task {
+            guard await present(panel, in: window) == .OK, let url = panel.url else { return }
+            do {
+                let data: Data
+                switch part.kind {
+                case .file: data = try Data(contentsOf: URL(fileURLWithPath: part.filePath ?? ""), options: .mappedIfSafe)
+                case .binary:
+                    guard let decoded = Data(base64Encoded: part.value.editableValue) else {
+                        throw CocoaError(.fileWriteInapplicableStringEncoding, userInfo: [
+                            NSLocalizedDescriptionKey: "The part’s binary value isn’t valid Base64.",
+                        ])
+                    }
+                    data = decoded
+                case .text: data = Data(part.value.editableValue.utf8)
+                }
+                try data.write(to: url, options: .atomic)
+            } catch {
+                let alert = NSAlert()
+                alert.messageText = "The part could not be exported."
+                alert.informativeText = error.localizedDescription
+                _ = await present(alert, in: window)
             }
-            try data.write(to: url, options: .atomic)
-        } catch { NSSound.beep() }
+        }
     }
 }
 
@@ -3518,14 +3532,19 @@ private struct MultipartPartEditor: View {
         isEditingValue = true
     }
     private func selectFile() {
+        let part = $part
         let panel = NSOpenPanel()
         panel.canChooseDirectories = false
         panel.allowsMultipleSelection = false
-        guard panel.runModal() == .OK, let url = panel.url else { return }
-        part.kind = .file
-        part.filePath = url.path
-        part.fileName = url.lastPathComponent
-        part.contentType = UTType(filenameExtension: url.pathExtension)?.preferredMIMEType ?? "application/octet-stream"
+        // This editor is a popover; attach the sheet to the workspace window instead.
+        let window = WorkspaceWindowRegistry.primary ?? NSApp.mainWindow
+        Task {
+            guard await present(panel, in: window) == .OK, let url = panel.url else { return }
+            part.wrappedValue.kind = .file
+            part.wrappedValue.filePath = url.path
+            part.wrappedValue.fileName = url.lastPathComponent
+            part.wrappedValue.contentType = UTType(filenameExtension: url.pathExtension)?.preferredMIMEType ?? "application/octet-stream"
+        }
     }
 }
 
@@ -3568,7 +3587,9 @@ private struct FileBodyEditor: View {
         panel.canChooseFiles = true
         panel.canChooseDirectories = false
         panel.allowsMultipleSelection = false
-        if panel.runModal() == .OK, let selected = panel.url {
+        let update = update
+        Task {
+            guard await present(panel, in: NSApp.keyWindow) == .OK, let selected = panel.url else { return }
             update(selected.path, UTType(filenameExtension: selected.pathExtension)?.preferredMIMEType ?? "application/octet-stream")
         }
     }
