@@ -12,6 +12,8 @@ struct ContentView: View {
     @State private var liveSidebarWidth: Double?
     @State private var sidebarDragOrigin: Double?
     @State private var isDropTargeted = false
+    /// The window's undo manager; workspace mutations register their inverses on it.
+    @Environment(\.undoManager) private var undoManager
     private var sidebarWidth: Double { liveSidebarWidth ?? storedSidebarWidth }
     private var toolbarGap: Double { max(0, sidebarWidth - 184) }
     /// Until the first workspace load finishes, show placeholders instead of an empty sidebar
@@ -157,25 +159,28 @@ struct ContentView: View {
             Text(interface.dirtyCloseRequest?.documentTitles.joined(separator: ", ") ?? "Unsaved request")
         }
         .alert(
-            "Are you sure you want to delete the selected item?",
+            "Delete “\(interface.workspaceDeleteRequest?.title ?? "")”?",
             isPresented: Binding(
                 get: { interface.workspaceDeleteRequest != nil },
                 set: { if $0 == false { interface.workspaceDeleteRequest = nil } }
-            )
-        ) {
+            ),
+            presenting: interface.workspaceDeleteRequest
+        ) { _ in
             Button("Cancel", role: .cancel) {
                 interface.workspaceDeleteRequest = nil
             }
-            Button("Yes", role: .destructive) {
+            Button("Delete", role: .destructive) {
                 interface.confirmWorkspaceDelete(model: model)
             }
-        } message: {
-            Text("This deletes the item and its descendants, closes their tabs and discards any unsaved edits. This action cannot be reverted.")
+        } message: { request in
+            Text(request.detail)
         }
         .onAppear {
+            model.undoManager = undoManager
             interface.reopenLastDocument(model: model)
             interface.synchronizeSelection(model: model)
         }
+        .onChange(of: undoManager) { model.undoManager = undoManager }
         .task {
             // The model outlives the window; reopening it must not reload the workspace.
             guard loadsWorkspace, !model.hasLoadedWorkspace else { return }
@@ -339,6 +344,7 @@ private struct InitialDetailPane: View {
 
 private struct WorkspaceSidebar: View {
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+    @Environment(\.controlActiveState) private var controlActiveState
 
     @Bindable var model: WireboltModel
     @Bindable var interface: WorkspaceUIState
@@ -349,39 +355,79 @@ private struct WorkspaceSidebar: View {
 
     var body: some View {
         VStack(spacing: 0) {
-        ScrollView {
-            LazyVStack(alignment: .leading, spacing: 0) {
-                if showsMaterial { WorkspaceSidebarOutline(model: model, interface: interface) }
+        ScrollViewReader { proxy in
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 0) {
+                    if showsMaterial { WorkspaceSidebarOutline(model: model, interface: interface) }
+                }
+                .padding(.leading, 18).padding(.trailing, 9)
+                .font(.system(size: 13))
             }
-            .padding(.leading, 18).padding(.trailing, 9)
-            .font(.system(size: 13))
-            .disclosureGroupStyle(SidebarDisclosureStyle())
+            .onChange(of: interface.sidebarScrollTarget) { _, target in
+                guard let target else { return }
+                proxy.scrollTo(target)
+                interface.sidebarScrollTarget = nil
+            }
         }
         .scrollIndicators(.never)
         .overlay {
-            if showsMaterial { SidebarSearchEmptyState(model: model, interface: interface) }
+            if showsMaterial {
+                SidebarSearchEmptyState(model: model, interface: interface)
+                SidebarEmptyWorkspaceState(model: model, interface: interface)
+            }
         }
         .clipped()
-        .focusable().focusEffectDisabled().focused($sidebarIsFocused)
-        .onChange(of: interface.focusSidebarTrigger) {
-            if interface.renamingRequestID == nil { sidebarIsFocused = true }
+        // Selection is drawn emphasized (accent) only while the sidebar has keyboard focus,
+        // like a native source list, so focus stays visible without a ring around the list.
+        .environment(\.sidebarSelectionIsEmphasized, sidebarIsFocused && controlActiveState != .inactive)
+        .overlay {
+            if sidebarIsFocused && interface.sidebarSelectionRowID(model: model) == nil {
+                RoundedRectangle(cornerRadius: WireboltTheme.Radius.control)
+                    .strokeBorder(Color(nsColor: .keyboardFocusIndicatorColor), lineWidth: 3)
+                    .allowsHitTesting(false)
+                    .accessibilityHidden(true)
+            }
         }
+        .focusable().focusEffectDisabled().focused($sidebarIsFocused)
+        .focusedValue(\.sidebarMove, sidebarIsFocused ? interface.sidebarMoveCommands(model: model) : nil)
+        .onChange(of: interface.focusSidebarTrigger) {
+            if !interface.isRenamingInSidebar { sidebarIsFocused = true }
+        }
+        .background { SidebarCursorReset(model: model, interface: interface) }
         .onDeleteCommand {
-            if interface.renamingRequestID == nil { interface.requestDeleteOfSelection(model: model) }
+            if !interface.isRenamingInSidebar { interface.requestDeleteOfSelection(model: model) }
         }
         .onMoveCommand { direction in
-            guard interface.renamingRequestID == nil else { return }
+            guard !interface.isRenamingInSidebar else { return }
             switch direction {
             case .up: interface.moveSidebarSelection(-1, model: model)
             case .down: interface.moveSidebarSelection(1, model: model)
-            default: break
+            case .left: interface.moveSidebarSelectionHorizontally(right: false, model: model)
+            case .right: interface.moveSidebarSelectionHorizontally(right: true, model: model)
+            @unknown default: break
             }
         }
         .onKeyPress(.return) {
-            guard interface.renamingRequestID == nil else { return .ignored }
-            interface.renamingRequestID = model.selectedRequestID
+            guard !interface.isRenamingInSidebar else { return .ignored }
+            interface.renameSidebarSelection(model: model)
             return .handled
         }
+        .onKeyPress(.downArrow, phases: .down) { press in
+            guard press.modifiers == .command, !interface.isRenamingInSidebar else { return .ignored }
+            interface.openSidebarSelection(model: model)
+            return .handled
+        }
+        .onKeyPress(phases: .down) { press in
+            guard !interface.isRenamingInSidebar, press.modifiers.isDisjoint(with: [.command, .control]),
+                  !press.characters.isEmpty,
+                  press.characters.unicodeScalars.allSatisfy({ scalar in
+                      !CharacterSet.controlCharacters.contains(scalar) && !(0xF700...0xF8FF).contains(scalar.value)
+                  })
+            else { return .ignored }
+            return interface.typeSelectInSidebar(press.characters, model: model) ? .handled : .ignored
+        }
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Requests")
         .contentMargins(.top, 0, for: .scrollContent)
         .controlSize(.small)
         .scrollContentBackground(.hidden)
@@ -409,28 +455,79 @@ private struct WorkspaceSidebar: View {
 
 }
 
+/// Opening a request elsewhere (tabs, history) moves the highlight back to it. Isolated so
+/// tab switches don't re-render the whole sidebar.
+private struct SidebarCursorReset: View {
+    let model: WireboltModel
+    let interface: WorkspaceUIState
+
+    var body: some View {
+        Color.clear
+            .onChange(of: model.selectedRequestID) { interface.sidebarCursor = nil }
+            .accessibilityHidden(true)
+    }
+}
+
+private extension EnvironmentValues {
+    /// True while the sidebar has keyboard focus in the key window.
+    @Entry var sidebarSelectionIsEmphasized = false
+}
+
+/// Accent fill while the sidebar has focus, the system's unemphasized gray otherwise.
+private struct SidebarSelectionBackground: View {
+    let isSelected: Bool
+    var leadingInset: CGFloat = 0
+    @Environment(\.sidebarSelectionIsEmphasized) private var emphasized
+    @Environment(\.colorScheme) private var colorScheme
+
+    var body: some View {
+        GeometryReader { geometry in
+            RoundedRectangle(cornerRadius: WireboltTheme.Radius.row)
+                .fill(fill)
+                .frame(width: geometry.size.width + leadingInset, height: 24)
+                .offset(x: -leadingInset)
+        }
+    }
+
+    private var fill: Color {
+        guard isSelected else { return .clear }
+        guard emphasized else { return Color(nsColor: .unemphasizedSelectedContentBackgroundColor) }
+        // Opaque in light mode so white labels keep 4.5:1 over the sidebar.
+        return WireboltTheme.primaryAccent.opacity(colorScheme == .dark ? 0.82 : 1)
+    }
+}
+
 private struct SidebarSearchEmptyState: View {
     let model: WireboltModel
     let interface: WorkspaceUIState
 
     var body: some View {
-        let query = interface.sidebarFilter
-        if !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-           model.sidebarRows(query: query, collapsed: interface.collapsedSidebarCollections, expanded: interface.expandedSidebarGroups).isEmpty {
-            VStack(spacing: 10) {
-                Image(systemName: "magnifyingglass")
-                    .font(.system(size: 26))
-                    .accessibilityHidden(true)
-                Text("0 matches for “\(query)”")
-                    .font(.system(size: 13))
-                    .multilineTextAlignment(.center)
-                    .lineLimit(4)
+        let query = interface.sidebarFilter.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !query.isEmpty, interface.visibleSidebarRows(model: model).isEmpty {
+            ContentUnavailableView.search(text: query)
+                .padding(.horizontal, WireboltTheme.Spacing.small)
+        }
+    }
+}
+
+/// With no collection left, the sidebar offers the ways to start instead of staying blank.
+private struct SidebarEmptyWorkspaceState: View {
+    let model: WireboltModel
+    let interface: WorkspaceUIState
+
+    var body: some View {
+        if model.hasLoadedWorkspace, model.workspace.collections.isEmpty, !interface.isFilteringSidebar {
+            ContentUnavailableView {
+                Label("No Requests", systemImage: "tray")
+            } description: {
+                Text("Requests you create or import appear here.")
+            } actions: {
+                Button("New Request") { interface.makeNewRequest(model: model) }
+                    .help("New Request (⌘N)")
+                WorkspaceImportMenu(interface: interface)
+                    .fixedSize()
             }
-            .foregroundStyle(.secondary)
-            .padding(24)
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .accessibilityElement(children: .combine)
-            .allowsHitTesting(false)
+            .padding(.horizontal, WireboltTheme.Spacing.small)
         }
     }
 }
@@ -610,21 +707,49 @@ private struct WorkspaceSidebarOutline: View {
     @Bindable var interface: WorkspaceUIState
 
     var body: some View {
-        ForEach(model.sidebarRows(query: interface.sidebarFilter, collapsed: interface.collapsedSidebarCollections, expanded: interface.expandedSidebarGroups)) { row in
+        ForEach(interface.visibleSidebarRows(model: model)) { row in
             Group {
                 switch row.content {
                 case .collection(let collection):
-                    SavedCollectionDisclosure(collection: collection, model: model, interface: interface)
+                    SavedCollectionRow(row: row, collection: collection, model: model, interface: interface)
                 case .group(let collection, let group):
-                    SavedGroupDisclosure(collection: collection, group: group, model: model, interface: interface)
+                    SavedGroupRow(row: row, collection: collection, group: group, model: model, interface: interface)
                 case .request(let location):
-                    SavedRequestRow(model: model, interface: interface, location: location)
+                    SavedRequestRow(model: model, interface: interface, location: location, depth: row.depth)
                 }
             }
             .padding(.leading, Double(row.depth) * 14)
             .frame(height: 24)
             .modifier(SidebarReorderTarget(row: row, model: model, interface: interface))
+            .id(row.id)
+            if case .collection(let collection) = row.content, collection.groups.isEmpty, collection.requests.isEmpty,
+               interface.isSidebarRowExpanded(row) {
+                EmptyCollectionRow(collection: collection, model: model, interface: interface)
+            }
         }
+    }
+}
+
+/// An empty collection offers its next step inline instead of looking like a dead end.
+private struct EmptyCollectionRow: View {
+    let collection: CollectionDraft
+    let model: WireboltModel
+    let interface: WorkspaceUIState
+
+    var body: some View {
+        Button {
+            interface.makeNewRequest(model: model, collectionID: collection.id)
+        } label: {
+            Label("New Request", systemImage: "plus")
+                .frame(maxWidth: .infinity, minHeight: 24, alignment: .leading)
+                .contentShape(.rect)
+        }
+        .buttonStyle(.plain)
+        .foregroundStyle(.secondary)
+        .padding(.leading, 32)
+        .frame(height: 24)
+        .accessibilityLabel("New Request in \(collection.name)")
+        .help("Create a request in “\(collection.name)”")
     }
 }
 
@@ -648,15 +773,7 @@ private struct SidebarReorderTarget: ViewModifier {
             content
         default:
             content
-                .onDrag {
-                    let identifier: String
-                    switch row.content {
-                    case .group(let collection, let group): identifier = "group|\(collection.id)|\(group.id)"
-                    case .request(let location): identifier = "request|\(location.collectionID)|\(location.request.id)"
-                    case .collection: identifier = ""
-                    }
-                    return sidebarDragProvider(identifier, interface: interface)
-                }
+                .onDrag { sidebarDragProvider(row.moveIdentifier ?? "", interface: interface) }
                 .overlay(alignment: position == .after ? .bottom : .top) {
                     if let position {
                         if position == .inside {
@@ -727,17 +844,7 @@ private struct SidebarReorderDrop: DropDelegate {
             guard let identifier = value as? String, identifier == expected else { return }
             Task { @MainActor in
                 if destination == .inside, let folder = target.folder {
-                    let parts = identifier.split(separator: "|", omittingEmptySubsequences: false).map(String.init)
-                    guard parts.count == 3,
-                          let collection = model.workspace.collections.first(where: { $0.id == target.collection }) else { return }
-                    let order = max(collection.groups.filter { $0.parentID == folder }.map(\.order).max() ?? -1,
-                                    collection.requests.filter { $0.groupID == folder }.map(\.order).max() ?? -1) + 1
-                    if parts[0] == "request" {
-                        await model.moveRequest(fromCollectionID: parts[1], requestID: parts[2],
-                                                toCollectionID: target.collection, groupID: folder, order: order)
-                    } else {
-                        await model.moveGroup(collectionID: target.collection, id: parts[2], parentID: folder, order: order)
-                    }
+                    await model.moveSidebarItem(identifier, toCollectionID: target.collection, parentID: folder)
                 } else {
                     await model.reorderSidebar(identifier, relativeTo: target.item, after: destination == .after,
                                                collectionID: target.collection, parentID: target.parent)
@@ -753,11 +860,16 @@ private struct SavedRequestRow: View {
     let model: WireboltModel
     let interface: WorkspaceUIState
     let location: RequestLocation
+    let depth: Int
 
     var body: some View {
-        SidebarRequestButton(model: model, interface: interface, location: location,
-            isSelected: model.selectedRequestID == location.id,
-            action: { interface.activateSavedRequest(location, model: model); interface.focusSidebarTrigger += 1 },
+        SidebarRequestButton(model: model, interface: interface, location: location, depth: depth,
+            isSelected: model.selectedRequestID == location.id && interface.sidebarCursor == nil,
+            action: {
+                interface.sidebarCursor = nil
+                interface.activateSavedRequest(location, model: model)
+                interface.focusSidebarTrigger += 1
+            },
             onSplit: {
                 interface.activateSavedRequest(location, model: model)
                 if let tabID = model.sessions.activeSession?.id { interface.openInNewSplit(tabID: tabID, model: model) }
@@ -769,89 +881,132 @@ private struct SavedRequestRow: View {
                     saveExportedDocument(named: location.request.name, content: document)
                 }
             } },
-            onDelete: { interface.requestDelete(.request(collectionID: location.collectionID, id: location.request.id), title: location.request.name) }
+            onDelete: {
+                interface.requestDelete(.request(collectionID: location.collectionID, id: location.request.id),
+                                        title: location.request.name, model: model)
+            }
         ).equatable()
     }
 }
 
-private struct SidebarDisclosureStyle: DisclosureGroupStyle {
-    var isEditing = false
-    var title = "Folder"
+/// A collection or folder row: disclosure chevron, name, selection and outline accessibility.
+private struct SidebarContainerRow<Name: View, Actions: View>: View {
+    let kind: String
+    let title: String
+    let depth: Int
+    let isExpanded: Bool
+    let isSelected: Bool
+    let isEditing: Bool
+    var isHeader = false
+    let toggle: () -> Void
+    let select: () -> Void
+    let actions: SidebarRowActions
+    @ViewBuilder let name: Name
+    @ViewBuilder let menu: Actions
+    @Environment(\.sidebarSelectionIsEmphasized) private var emphasized
 
-    func makeBody(configuration: Configuration) -> some View {
-        VStack(alignment: .leading, spacing: 0) {
-            HStack(spacing: 0) {
-                Button {
-                    configuration.isExpanded.toggle()
-                } label: {
-                    Image(systemName: configuration.isExpanded ? "chevron.down" : "chevron.right")
-                        .font(.system(size: 9, weight: .semibold)).foregroundStyle(.secondary)
-                        .frame(width: 12, height: 24).padding(.trailing, 6).contentShape(.rect)
-                }.buttonStyle(.plain).accessibilityLabel("\(configuration.isExpanded ? "Collapse" : "Expand") \(title)")
-                if isEditing {
-                    configuration.label.font(.system(size: 13)).frame(maxWidth: .infinity, alignment: .leading)
-                } else {
-                    Button { configuration.isExpanded.toggle() } label: {
-                        configuration.label.font(.system(size: 13))
-                            .frame(maxWidth: .infinity, minHeight: 24, alignment: .leading)
-                            .contentShape(.rect)
-                    }.buttonStyle(.plain)
-                        .accessibilityLabel(title)
-                        .accessibilityValue(configuration.isExpanded ? "Expanded" : "Collapsed")
+    var body: some View {
+        let highlighted = isSelected && emphasized
+        HStack(spacing: 0) {
+            Button(action: toggle) {
+                Image(systemName: isExpanded ? "chevron.down" : "chevron.forward")
+                    .font(.system(size: 9, weight: .semibold))
+                    .foregroundStyle(highlighted ? AnyShapeStyle(Color.white) : AnyShapeStyle(.secondary))
+                    .frame(width: 12, height: 24).padding(.trailing, 6).contentShape(.rect)
+            }
+            .buttonStyle(.plain)
+            .help(isExpanded ? "Collapse" : "Expand")
+            let label = HStack(spacing: 6) {
+                Image(systemName: "folder.fill")
+                name
+            }
+            .foregroundStyle(highlighted ? Color.white : Color.primary)
+            .frame(maxWidth: .infinity, minHeight: 24, alignment: .leading)
+            .contentShape(.rect)
+            if isEditing {
+                label
+            } else {
+                Button { select(); toggle() } label: { label }.buttonStyle(.plain)
+            }
+        }
+        .frame(height: 24)
+        .background { SidebarSelectionBackground(isSelected: isSelected, leadingInset: 4) }
+        .contextMenu { menu }
+        // One outline row for VoiceOver: kind, name, state and level, with its actions.
+        .accessibilityElement(children: isEditing ? .contain : .ignore)
+        .accessibilityLabel("\(kind), \(title)")
+        .accessibilityValue("\(isExpanded ? "Expanded" : "Collapsed"), level \(depth + 1)")
+        .accessibilityAddTraits(isHeader ? [.isHeader, .isButton] : .isButton)
+        .accessibilityAddTraits(isSelected ? .isSelected : [])
+        .accessibilityAction { select(); toggle() }
+        .accessibilityAction(named: isExpanded ? "Collapse" : "Expand", toggle)
+        .modifier(SidebarAccessibilityActions(actions: actions))
+    }
+}
+
+/// Custom VoiceOver actions shared by every sidebar row.
+private struct SidebarRowActions {
+    let newRequest: () -> Void
+    let rename: () -> Void
+    let delete: () -> Void
+    var move: ((Int) -> Void)?
+}
+
+private struct SidebarAccessibilityActions: ViewModifier {
+    let actions: SidebarRowActions
+
+    func body(content: Content) -> some View {
+        content
+            .accessibilityAction(named: "New Request", actions.newRequest)
+            .accessibilityAction(named: "Rename", actions.rename)
+            .accessibilityActions {
+                if let move = actions.move {
+                    Button("Move Up") { move(-1) }
+                    Button("Move Down") { move(1) }
                 }
-            }.frame(height: 24)
-            if configuration.isExpanded {
-                configuration.content.padding(.leading, 14)
+            }
+            .accessibilityAction(named: "Delete", actions.delete)
+    }
+}
+
+/// Move Up/Down and Move To for a request or folder. Built only when its menu is shown,
+/// so rows don't pay for sibling and destination lookups while rendering.
+private struct SidebarMoveMenu: View {
+    let model: WireboltModel
+    let interface: WorkspaceUIState
+    let identifier: String
+
+    var body: some View {
+        Button("Move Up") { interface.moveSidebarItem(identifier, by: -1, model: model) }
+            .keyboardShortcut(.upArrow, modifiers: [.command, .option])
+            .disabled(!model.canMoveSidebarItem(identifier, by: -1))
+        Button("Move Down") { interface.moveSidebarItem(identifier, by: 1, model: model) }
+            .keyboardShortcut(.downArrow, modifiers: [.command, .option])
+            .disabled(!model.canMoveSidebarItem(identifier, by: 1))
+        Menu("Move To") {
+            let isFolder = identifier.hasPrefix("group|")
+            let sourceCollection = identifier.split(separator: "|", omittingEmptySubsequences: false).dropFirst().first.map(String.init)
+            let collections = model.workspace.collections
+                .filter { !isFolder || $0.id == sourceCollection }
+                .sorted { ($0.order, $0.name, $0.id) < ($1.order, $1.name, $1.id) }
+            ForEach(collections) { collection in
+                if collection.id != collections.first?.id { Divider() }
+                // The root collection has no sidebar header; its items sit at the top level.
+                destination(collection.id == WorkspaceDraft.rootCollectionID ? "Top Level" : collection.name,
+                            collectionID: collection.id, parentID: nil)
+                ForEach(collection.folderOutline(), id: \.group.id) { entry in
+                    destination(String(repeating: "    ", count: entry.depth + 1) + entry.group.name,
+                                collectionID: collection.id, parentID: entry.group.id)
+                }
             }
         }
     }
-}
 
-private enum SidebarItem: Identifiable {
-    case group(GroupDraft)
-    case request(RequestLocation)
-    var id: String {
-        switch self { case let .group(group): "group:" + group.id; case let .request(request): "request:" + request.id }
-    }
-    var order: Int {
-        switch self { case let .group(group): group.order; case let .request(request): request.order }
-    }
-}
-
-private struct SidebarFolderLabel: View {
-    let title: String
-
-    init(_ title: String) {
-        self.title = title
-    }
-
-    var body: some View {
-        HStack(spacing: 7) {
-            Image(systemName: "folder.fill")
-                .font(.system(size: 13)).foregroundStyle(.primary)
-            Text(title)
-                .foregroundStyle(.primary)
-                .lineLimit(1)
+    private func destination(_ title: String, collectionID: String, parentID: String?) -> some View {
+        Button(title) {
+            Task { await model.moveSidebarItem(identifier, toCollectionID: collectionID, parentID: parentID) }
         }
-        .padding(.vertical, -2)
-    }
-}
-
-private struct CollapsedSidebarFolder: View {
-    let title: String
-
-    @State private var isExpanded = false
-
-    init(_ title: String) {
-        self.title = title
-    }
-
-    var body: some View {
-        DisclosureGroup(isExpanded: $isExpanded) {
-            EmptyView()
-        } label: {
-            SidebarFolderLabel(title)
-        }
+        .disabled(!model.canMoveSidebarItem(identifier, toCollectionID: collectionID, parentID: parentID))
     }
 }
 
@@ -893,151 +1048,129 @@ struct InlineSidebarName: View {
     }
 }
 
-private struct SavedCollectionDisclosure: View {
+private struct SavedCollectionRow: View {
+    let row: SidebarSnapshot.Row
     let collection: CollectionDraft
-    @Bindable var model: WireboltModel
-    @Bindable var interface: WorkspaceUIState
-
-    private var expansion: Binding<Bool> {
-        Binding(get: { !interface.collapsedSidebarCollections.contains(collection.id) || !interface.sidebarFilter.isEmpty }, set: {
-            if $0 { interface.collapsedSidebarCollections.remove(collection.id) }
-            else { interface.collapsedSidebarCollections.insert(collection.id) }
-        })
-    }
-    @State private var isRenaming = false
+    let model: WireboltModel
+    let interface: WorkspaceUIState
 
     var body: some View {
-        DisclosureGroup(isExpanded: expansion) { EmptyView()
-        } label: {
-            HStack(spacing: 6) {
-                Image(systemName: "folder.fill")
-                InlineSidebarName(title: collection.name, isEditing: $isRenaming) { name in
-                    Task { await model.renameCollection(id: collection.id, name: name) }
+        let isExpanded = interface.isSidebarRowExpanded(row)
+        SidebarContainerRow(
+            kind: "Collection", title: collection.name, depth: row.depth,
+            isExpanded: isExpanded,
+            isSelected: interface.sidebarCursor == row.id,
+            isEditing: interface.renamingCollectionID == collection.id,
+            isHeader: true,
+            toggle: { interface.setSidebarRow(row, expanded: !interface.isSidebarRowExpanded(row)) },
+            select: { interface.sidebarCursor = row.id; interface.focusSidebarTrigger += 1 },
+            actions: SidebarRowActions(
+                newRequest: { interface.makeNewRequest(model: model, collectionID: collection.id) },
+                rename: { interface.beginRename(row) },
+                delete: { interface.requestDelete(.collection(id: collection.id), title: collection.name, model: model) }
+            )
+        ) {
+            InlineSidebarName(title: collection.name, isEditing: Binding(
+                get: { interface.renamingCollectionID == collection.id },
+                set: { editing in
+                    if editing { interface.renamingCollectionID = collection.id }
+                    else if interface.renamingCollectionID == collection.id { interface.renamingCollectionID = nil }
+                }
+            )) { name in
+                Task { await model.renameCollection(id: collection.id, name: name) }
+            }
+        } menu: {
+            NewRequestMenu(model: model, interface: interface, collectionID: collection.id)
+            Button("New Folder") {
+                interface.makeNewFolder(model: model, collectionID: collection.id)
+            }
+            Divider()
+            WorkspaceImportMenu(interface: interface)
+            Button("Export Wirebolt JSON…") {
+                Task {
+                    if let document = await model.exportCollection(id: collection.id) {
+                        saveExportedDocument(named: collection.name, content: document)
+                    }
                 }
             }
-                .contextMenu {
-                    NewRequestMenu(model: model, interface: interface, collectionID: collection.id)
-                    Button("New Folder") {
-                        interface.makeNewFolder(model: model, collectionID: collection.id)
-                    }
-                    Divider()
-                    WorkspaceImportMenu(interface: interface)
-                    Button("Export Wirebolt JSON…") {
-                        Task {
-                            if let document = await model.exportCollection(id: collection.id) {
-                                saveExportedDocument(named: collection.name, content: document)
-                            }
-                        }
-                    }
-                    Button("Rename") { isRenaming = true }
-                    Button("Delete", role: .destructive) {
-                        interface.requestDelete(
-                            .collection(id: collection.id),
-                            title: collection.name
-                        )
-                    }
-                }
+            Divider()
+            Button("Rename") { interface.beginRename(row) }
+            Button("Delete", role: .destructive) {
+                interface.requestDelete(.collection(id: collection.id), title: collection.name, model: model)
+            }
         }
-        .disclosureGroupStyle(SidebarDisclosureStyle(isEditing: isRenaming, title: collection.name))
         .dropDestination(for: String.self) { identifiers, _ in
-            handleDrop(identifiers.first, parentID: nil)
+            guard let identifier = identifiers.first,
+                  model.canMoveSidebarItem(identifier, toCollectionID: collection.id, parentID: nil) else { return false }
+            Task { await model.moveSidebarItem(identifier, toCollectionID: collection.id, parentID: nil) }
+            return true
         }
-    }
-
-    private var nextRootOrder: Int {
-        max(collection.groups.filter { $0.parentID == nil }.map(\.order).max() ?? -1,
-            collection.requests.filter { $0.groupID == nil }.map(\.order).max() ?? -1) + 1
-    }
-
-    private func handleDrop(_ identifier: String?, parentID: String?) -> Bool {
-        guard let identifier else { return false }
-        let parts = identifier.split(separator: "|", omittingEmptySubsequences: false).map(String.init)
-        guard parts.count == 3 else { return false }
-        switch parts[0] {
-        case "request":
-            Task {
-                await model.moveRequest(
-                    fromCollectionID: parts[1],
-                    requestID: parts[2],
-                    toCollectionID: collection.id,
-                    groupID: parentID,
-                    order: nextRootOrder
-                )
-            }
-        case "group" where parts[1] == collection.id:
-            Task {
-                await model.moveGroup(
-                    collectionID: collection.id,
-                    id: parts[2],
-                    parentID: parentID,
-                    order: nextRootOrder
-                )
-            }
-        default:
-            return false
-        }
-        return true
     }
 }
 
-private struct SavedGroupDisclosure: View {
+private struct SavedGroupRow: View {
+    let row: SidebarSnapshot.Row
     let collection: CollectionDraft
     let group: GroupDraft
-    @Bindable var model: WireboltModel
-    @Bindable var interface: WorkspaceUIState
-
-    private var expansion: Binding<Bool> {
-        Binding(get: { interface.expandedSidebarGroups.contains(collection.id + ":" + group.id) || !interface.sidebarFilter.isEmpty }, set: {
-            let id = collection.id + ":" + group.id
-            if $0 { interface.expandedSidebarGroups.insert(id) } else { interface.expandedSidebarGroups.remove(id) }
-        })
-    }
-    @State private var isRenaming = false
+    let model: WireboltModel
+    let interface: WorkspaceUIState
 
     var body: some View {
-        DisclosureGroup(isExpanded: expansion) { EmptyView()
-        } label: {
-            HStack(spacing: 6) {
-                Image(systemName: "folder.fill")
-                InlineSidebarName(title: group.name, isEditing: Binding(
-                    get: { isRenaming || interface.renamingGroupID == group.id },
-                    set: { isRenaming = $0; if !$0 && interface.renamingGroupID == group.id { interface.renamingGroupID = nil } }
-                )) { name in
-                    Task { await model.renameGroup(collectionID: collection.id, id: group.id, name: name) }
+        let identifier = "group|\(collection.id)|\(group.id)"
+        SidebarContainerRow(
+            kind: "Folder", title: group.name, depth: row.depth,
+            isExpanded: interface.isSidebarRowExpanded(row),
+            isSelected: interface.sidebarCursor == row.id,
+            isEditing: interface.renamingGroupID == group.id,
+            toggle: { interface.setSidebarRow(row, expanded: !interface.isSidebarRowExpanded(row)) },
+            select: { interface.sidebarCursor = row.id; interface.focusSidebarTrigger += 1 },
+            actions: SidebarRowActions(
+                newRequest: { interface.makeNewRequest(model: model, collectionID: collection.id, groupID: group.id) },
+                rename: { interface.beginRename(row) },
+                delete: { delete() },
+                move: { delta in interface.moveSidebarItem(identifier, by: delta, model: model) }
+            )
+        ) {
+            InlineSidebarName(title: group.name, isEditing: Binding(
+                get: { interface.renamingGroupID == group.id },
+                set: { editing in
+                    if editing { interface.renamingGroupID = group.id }
+                    else if interface.renamingGroupID == group.id { interface.renamingGroupID = nil }
                 }
+            )) { name in
+                Task { await model.renameGroup(collectionID: collection.id, id: group.id, name: name) }
             }
-                .contextMenu {
-                    NewRequestMenu(model: model, interface: interface, collectionID: collection.id, groupID: group.id)
-                    Button("New Folder") {
-                        expansion.wrappedValue = true
-                        interface.makeNewFolder(model: model, collectionID: collection.id, parentID: group.id)
-                    }
-                    Divider()
-                    Button("Rename") { isRenaming = true }
-                    Button("Delete", role: .destructive) {
-                        interface.requestDelete(
-                            .group(collectionID: collection.id, id: group.id),
-                            title: group.name
-                        )
-                    }
-                }
+        } menu: {
+            NewRequestMenu(model: model, interface: interface, collectionID: collection.id, groupID: group.id)
+            Button("New Folder") {
+                interface.setSidebarRow(row, expanded: true)
+                interface.makeNewFolder(model: model, collectionID: collection.id, parentID: group.id)
+            }
+            Divider()
+            Button("Rename") { interface.beginRename(row) }
+            SidebarMoveMenu(model: model, interface: interface, identifier: identifier)
+            Divider()
+            Button("Delete", role: .destructive, action: delete)
         }
-        .disclosureGroupStyle(SidebarDisclosureStyle(isEditing: isRenaming || interface.renamingGroupID == group.id, title: group.name))
     }
 
-
+    private func delete() {
+        interface.requestDelete(.group(collectionID: collection.id, id: group.id), title: group.name, model: model)
+    }
 }
 
 private struct SidebarRequestButton: View, @MainActor Equatable {
     static func == (lhs: Self, rhs: Self) -> Bool {
-        lhs.model === rhs.model && lhs.interface === rhs.interface && lhs.location == rhs.location && lhs.isSelected == rhs.isSelected
+        lhs.model === rhs.model && lhs.interface === rhs.interface && lhs.location == rhs.location
+            && lhs.isSelected == rhs.isSelected && lhs.depth == rhs.depth
     }
 
     @Bindable var model: WireboltModel
     @Bindable var interface: WorkspaceUIState
-    @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.sidebarSelectionIsEmphasized) private var emphasized
 
     let location: RequestLocation
+    let depth: Int
     let isSelected: Bool
     let action: () -> Void
     let onSplit: () -> Void
@@ -1045,22 +1178,29 @@ private struct SidebarRequestButton: View, @MainActor Equatable {
     let onDuplicate: () -> Void
     let onExport: () -> Void
     let onDelete: () -> Void
-    @State private var isRenaming = false
+
+    private var isRenaming: Bool { interface.renamingRequestID == location.id }
+    private var identifier: String { "request|\(location.collectionID)|\(location.request.id)" }
 
     var body: some View {
+        let highlighted = isSelected && emphasized
             HStack(spacing: 3) {
                 Text(location.request.webSocket ? "WS" : location.request.method.rawValue)
                     .font(WireboltTheme.Typography.methodLabel)
                     .lineLimit(1).minimumScaleFactor(0.8)
                     // Method hues can't keep contrast on the accent selection fill.
-                    .foregroundStyle(isSelected ? Color.white : WireboltTheme.methodColor(location.request.method, webSocket: location.request.webSocket))
+                    .foregroundStyle(highlighted ? Color.white : isSelected ? Color.primary
+                        : WireboltTheme.methodColor(location.request.method, webSocket: location.request.webSocket))
                     .frame(width: 40, alignment: .trailing)
                 InlineSidebarName(title: location.request.name, isEditing: Binding(
-                    get: { isRenaming || interface.renamingRequestID == location.id },
-                    set: { isRenaming = $0; if !$0 && interface.renamingRequestID == location.id { interface.renamingRequestID = nil } }
+                    get: { interface.renamingRequestID == location.id },
+                    set: { editing in
+                    if editing { interface.renamingRequestID = location.id }
+                    else if interface.renamingRequestID == location.id { interface.renamingRequestID = nil }
+                }
                 ), renameOnDoubleClick: true, save: onRename)
                     .lineLimit(1)
-                    .foregroundStyle(isSelected ? Color.white : Color.primary)
+                    .foregroundStyle(highlighted ? Color.white : Color.primary)
                 Spacer(minLength: 0)
             }
             .font(.system(size: 13))
@@ -1068,21 +1208,17 @@ private struct SidebarRequestButton: View, @MainActor Equatable {
             .frame(height: 24)
             .contentShape(.rect)
             .background {
-                GeometryReader { geometry in
-                    let inset: CGFloat = location.collectionID == WorkspaceDraft.rootCollectionID && location.groupID == nil ? 0 : 14
-                    RoundedRectangle(cornerRadius: 5)
-                        .fill(selectionBackground)
-                        .frame(width: geometry.size.width + inset)
-                        .frame(height: 24)
-                        .offset(x: -inset)
-                }
+                SidebarSelectionBackground(
+                    isSelected: isSelected,
+                    leadingInset: location.collectionID == WorkspaceDraft.rootCollectionID && location.groupID == nil ? 0 : 14
+                )
             }
         .buttonStyle(.plain)
         // Selection must not wait for the name's double-click rename gesture to fail.
         .simultaneousGesture(TapGesture().onEnded {
-            if !isRenaming && interface.renamingRequestID != location.id { action() }
+            if !isRenaming { action() }
         })
-        .accessibilityElement(children: isRenaming || interface.renamingRequestID == location.id ? .contain : .combine)
+        .accessibilityElement(children: isRenaming ? .contain : .combine)
         .accessibilityAction(.default, action)
         .frame(height: 24)
         .listRowInsets(EdgeInsets(top: 0, leading: 0, bottom: 0, trailing: 0))
@@ -1090,26 +1226,28 @@ private struct SidebarRequestButton: View, @MainActor Equatable {
             NewRequestMenu(model: model, interface: interface, collectionID: location.collectionID, groupID: location.groupID)
             Button("New Folder") { interface.makeNewFolder(model: model, collectionID: location.collectionID, parentID: location.groupID) }
             Divider()
-            Button("Open in new split", action: onSplit)
+            Button("Open in New Split", action: onSplit)
             Divider()
             WorkspaceImportMenu(interface: interface)
             Button("Export Wirebolt JSON…", action: onExport)
             Divider()
             Button("Copy cURL") { copyRequestAsCurl(location.request, model: model) }
             Divider()
-            Button("Rename") { isRenaming = true }
+            Button("Rename") { interface.renamingRequestID = location.id }
             Button("Duplicate", action: onDuplicate)
+            SidebarMoveMenu(model: model, interface: interface, identifier: identifier)
             Divider()
             Button("Delete", role: .destructive, action: onDelete)
         }
         .accessibilityLabel("\(location.request.webSocket ? "WebSocket" : location.request.method.rawValue) request, \(location.request.name)")
+        .accessibilityValue("level \(depth + 1)")
         .accessibilityAddTraits(isSelected ? .isSelected : [])
-    }
-
-    private var selectionBackground: Color {
-        guard isSelected else { return .clear }
-        // Opaque in light mode so white labels keep 4.5:1 over the sidebar.
-        return WireboltTheme.primaryAccent.opacity(colorScheme == .dark ? 0.82 : 1)
+        .modifier(SidebarAccessibilityActions(actions: SidebarRowActions(
+            newRequest: { interface.makeNewRequest(model: model, collectionID: location.collectionID, groupID: location.groupID) },
+            rename: { interface.renamingRequestID = location.id },
+            delete: onDelete,
+            move: { delta in interface.moveSidebarItem(identifier, by: delta, model: model) }
+        )))
     }
 }
 
@@ -1131,9 +1269,10 @@ private struct SidebarFooter: View {
             Image(systemName: "magnifyingglass")
                 .foregroundStyle(.secondary)
                 .font(.system(size: 12)).frame(width: 12)
-            TextField("Filter (⌘⇧F)", text: $interface.sidebarFilter)
+            TextField("Filter", text: $interface.sidebarFilter)
                 .textFieldStyle(.plain)
                 .focused(filterIsFocused)
+                .help("Filter Requests (⇧⌘F)")
         }
         .padding(.horizontal, 7)
         .frame(height: 24)
@@ -1258,11 +1397,7 @@ private struct EditorGroupDeck: View {
                 .id(session.id)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
-                LightweightPlaceholder(
-                    title: "No Open Request",
-                    systemImage: "doc",
-                    description: "Create or open a request from the sidebar."
-                )
+                NoOpenRequestPlaceholder(model: model, interface: interface)
             }
         }
     }
@@ -3644,22 +3779,53 @@ private struct WorkspaceStatusBar: View {
     }
 }
 
+/// A system empty state for panels that have nothing to show yet.
 struct LightweightPlaceholder: View {
     let title: String
     let systemImage: String
     var description: String?
 
     var body: some View {
-        VStack(spacing: 10) {
-            Image(systemName: systemImage).font(.system(size: 32, weight: .light))
-            if !title.isEmpty { Text(title).font(.system(size: 13)) }
-            if let description {
-                Text(description).font(.system(size: 12)).multilineTextAlignment(.center).frame(maxWidth: 250)
+        ContentUnavailableView {
+            Label(title, systemImage: systemImage)
+        } description: {
+            if let description { Text(description) }
+        }
+    }
+}
+
+/// The editor area without an open tab: a first-run welcome while the workspace has no
+/// requests, otherwise a pointer to the sidebar. Both offer the next step directly.
+private struct NoOpenRequestPlaceholder: View {
+    let model: WireboltModel
+    let interface: WorkspaceUIState
+
+    var body: some View {
+        if model.workspace.collections.allSatisfy({ $0.requests.isEmpty }) {
+            ContentUnavailableView {
+                Label("Start Your Workspace", systemImage: "paperplane")
+            } description: {
+                Text("Create a request, or import a cURL command, HAR file, Postman collection or Wirebolt JSON. You can also drop one of those files on this window.")
+            } actions: {
+                Button("New Request") { interface.makeNewRequest(model: model) }
+                    .buttonStyle(.borderedProminent)
+                    .help("New Request (⌘N)")
+                WorkspaceImportMenu(interface: interface)
+                    .fixedSize()
+                Button("Open Workspace…") { chooseWorkspace(model: model, interface: interface, create: false) }
+                    .disabled(model.isLoadingWorkspace || model.isGitBusy || model.isOAuthBusy)
+                    .help("Open Workspace (⌘O)")
+            }
+        } else {
+            ContentUnavailableView {
+                Label("No Open Request", systemImage: "doc")
+            } description: {
+                Text("Select a request in the sidebar, or create one with ⌘N.")
+            } actions: {
+                Button("New Request") { interface.makeNewRequest(model: model) }
+                    .help("New Request (⌘N)")
             }
         }
-        .foregroundStyle(.secondary)
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .accessibilityElement(children: .combine)
     }
 }
 

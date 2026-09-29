@@ -135,6 +135,10 @@ public final class WireboltModel {
     @ObservationIgnored private var persistedTransport: TransportSettings?
     public private(set) var exportFailureMessage: String?
     public var operationFailure: RunFailure?
+    /// The window's undo manager; workspace mutations register their inverse here.
+    @ObservationIgnored public weak var undoManager: UndoManager?
+    /// Undo and redo run one at a time so each inverse sees the state its predecessor left.
+    @ObservationIgnored var undoWork: Task<Void, Never>?
 
     public init(
         runner: any RequestRunner,
@@ -507,6 +511,8 @@ public final class WireboltModel {
             gitOperation = nil
             gitFailure = nil
             applyLoadedWorkspace(loaded, restoring: layout)
+            // Inverses recorded for the previous workspace must not touch this one.
+            undoManager?.removeAllActions(withTarget: self)
             hasLoadedWorkspace = true
             return true
         } catch {
@@ -826,19 +832,18 @@ public final class WireboltModel {
     }
 
     public func createRequest(kind: DocumentKind = .http, collectionID: String? = nil, groupID: String? = nil) async -> DocumentSession? {
-        guard let persistence else { return nil }
+        guard persistence != nil else { return nil }
         let collectionID = collectionID ?? WorkspaceDraft.rootCollectionID
         do {
             if collectionID == WorkspaceDraft.rootCollectionID { try await ensureRootCollection() }
-            guard let collection = workspace.collections.first(where: { $0.id == collectionID }) else { return nil }
-            let draft = RequestDraft(id: UUID().uuidString.lowercased(),
-                name: kind == .http ? "Untitled Request" : "Untitled WebSocket Request", webSocket: kind == .webSocket)
-            let location = RequestLocation(collectionID: collectionID, groupID: groupID,
-                order: max(Int.min + 1, min(0, collection.requests.map(\.order).min() ?? 0)) - 1, request: draft)
-            _ = try await persistence.apply(.saveRequest(collectionID: collectionID, location: location))
-            applySavedRequest(location)
-            return sessions.open(draft: draft, collectionID: collectionID, kind: kind)
         } catch { operationFailure = RunFailure(kind: "workspace", issues: []); return nil }
+        guard let collection = workspace.collections.first(where: { $0.id == collectionID }) else { return nil }
+        let draft = RequestDraft(id: UUID().uuidString.lowercased(),
+            name: kind == .http ? "Untitled Request" : "Untitled WebSocket Request", webSocket: kind == .webSocket)
+        let location = RequestLocation(collectionID: collectionID, groupID: groupID,
+            order: max(Int.min + 1, min(0, collection.requests.map(\.order).min() ?? 0)) - 1, request: draft)
+        guard await perform(.restoreRequest(location), named: "New Request") else { return nil }
+        return sessions.open(draft: draft, collectionID: collectionID, kind: kind)
     }
 
     private func ensureRootCollection() async throws {
@@ -859,152 +864,60 @@ public final class WireboltModel {
     }
 
     public func createCollection(name: String = "New Collection") async {
-        guard let persistence else { return }
         let collection = CollectionDraft(
             id: Self.documentID(from: name, fallback: "collection"),
             name: name,
             order: workspace.collections.count
         )
-        do {
-            _ = try await persistence.apply(.createCollection(collection))
-            workspace.collections.append(collection)
-        } catch {
-            operationFailure = RunFailure(kind: "workspace", issues: [])
-        }
+        await perform(.restoreCollection(collection), named: "New Collection")
     }
 
     public func renameRequest(collectionID: String, requestID: String, name: String) async {
-        guard let persistence,
-              var location = workspace.location(collectionID: collectionID, requestID: requestID)
-        else { return }
-        location.request.name = name
-        do {
-            _ = try await persistence.apply(.saveRequest(collectionID: collectionID, location: location))
-            applySavedRequest(location)
-            for session in sessions.sessions.values where session.collectionID == collectionID && session.requestID == requestID {
-                session.renameSavedRequest(name)
-            }
-        } catch { operationFailure = RunFailure(kind: "workspace", issues: []) }
+        await perform(.renameRequest(collectionID: collectionID, id: requestID, name: name), named: "Rename")
     }
 
     public func renameCollection(id: String, name: String) async {
-        guard let persistence,
-              let index = workspace.collections.firstIndex(where: { $0.id == id })
-        else { return }
-        do {
-            _ = try await persistence.apply(.renameCollection(id: id, name: name))
-            workspace.collections[index].name = name
-        } catch {
-            operationFailure = RunFailure(kind: "workspace", issues: [])
-        }
+        await perform(.renameCollection(id: id, name: name), named: "Rename")
     }
 
     public func deleteCollection(id: String) async {
-        guard let persistence else { return }
-        do {
-            _ = try await persistence.apply(.deleteCollection(id: id))
-            workspace.collections.removeAll { $0.id == id }
-            closeSessions(collectionID: id)
-        } catch {
-            operationFailure = RunFailure(kind: "workspace", issues: [])
-        }
+        let name = workspace.collections.first { $0.id == id }?.name ?? ""
+        await perform(.removeCollection(id: id), named: "Delete “\(name)”")
     }
 
     @discardableResult
     public func createGroup(collectionID: String, parentID: String? = nil, name: String = "New Folder") async -> String? {
-        guard let persistence,
-              let collectionIndex = workspace.collections.firstIndex(where: { $0.id == collectionID })
-        else { return nil }
-        let siblings = workspace.collections[collectionIndex].groups.filter { $0.parentID == parentID }
+        guard let collection = workspace.collections.first(where: { $0.id == collectionID }) else { return nil }
         let group = GroupDraft(
             id: Self.documentID(from: name, fallback: "group"),
             name: name,
             parentID: parentID,
-            order: siblings.count
+            order: collection.groups.filter { $0.parentID == parentID }.count
         )
-        do {
-            _ = try await persistence.apply(.createGroup(collectionID: collectionID, group: group))
-            workspace.collections[collectionIndex].groups.append(group)
-            return group.id
-        } catch {
-            operationFailure = RunFailure(kind: "workspace", issues: [])
-            return nil
-        }
+        let created = await perform(.restoreGroups(collectionID: collectionID, groups: [group], requests: []), named: "New Folder")
+        return created ? group.id : nil
     }
 
     public func renameGroup(collectionID: String, id: String, name: String) async {
-        guard let persistence,
-              let collectionIndex = workspace.collections.firstIndex(where: { $0.id == collectionID }),
-              let groupIndex = workspace.collections[collectionIndex].groups.firstIndex(where: { $0.id == id })
-        else { return }
-        do {
-            _ = try await persistence.apply(.renameGroup(collectionID: collectionID, id: id, name: name))
-            workspace.collections[collectionIndex].groups[groupIndex].name = name
-        } catch {
-            operationFailure = RunFailure(kind: "workspace", issues: [])
-        }
+        await perform(.renameGroup(collectionID: collectionID, id: id, name: name), named: "Rename")
     }
 
     public func deleteGroup(collectionID: String, id: String) async {
-        guard let persistence,
-              let collectionIndex = workspace.collections.firstIndex(where: { $0.id == collectionID })
-        else { return }
-        do {
-            _ = try await persistence.apply(.deleteGroup(collectionID: collectionID, id: id))
-            let descendantIDs = workspace.collections[collectionIndex].descendantGroupIDs(of: id)
-            let removedRequestIDs = workspace.collections[collectionIndex].requests.filter {
-                $0.groupID.map(descendantIDs.contains) ?? false
-            }.map { $0.request.id }
-            for requestID in removedRequestIDs { closeSessions(collectionID: collectionID, requestID: requestID) }
-            workspace.collections[collectionIndex].groups.removeAll { descendantIDs.contains($0.id) }
-            workspace.collections[collectionIndex].requests.removeAll { location in
-                location.groupID.map(descendantIDs.contains) ?? false
-            }
-            rebuildRequestSearchIndex()
-        } catch {
-            operationFailure = RunFailure(kind: "workspace", issues: [])
-        }
+        let name = workspace.collections.first { $0.id == collectionID }?.groups.first { $0.id == id }?.name ?? ""
+        await perform(.removeGroup(collectionID: collectionID, id: id), named: "Delete “\(name)”")
     }
 
     public func deleteRequest(collectionID: String, requestID: String) async {
-        guard let persistence,
-              let collectionIndex = workspace.collections.firstIndex(where: { $0.id == collectionID })
-        else { return }
-        do {
-            _ = try await persistence.apply(.deleteRequest(collectionID: collectionID, id: requestID))
-            workspace.collections[collectionIndex].requests.removeAll { $0.request.id == requestID }
-            rebuildRequestSearchIndex()
-            closeSessions(collectionID: collectionID, requestID: requestID)
-        } catch {
-            operationFailure = RunFailure(kind: "workspace", issues: [])
-        }
+        let name = workspace.location(collectionID: collectionID, requestID: requestID)?.request.name ?? ""
+        await perform(.removeRequest(collectionID: collectionID, id: requestID), named: "Delete “\(name)”")
     }
 
     public func duplicateRequest(collectionID: String, requestID: String) async {
-        guard let persistence,
-              let collectionIndex = workspace.collections.firstIndex(where: { $0.id == collectionID }),
-              let source = workspace.collections[collectionIndex].requests.first(where: {
-                  $0.request.id == requestID
-              })
-        else { return }
+        guard let source = workspace.location(collectionID: collectionID, requestID: requestID) else { return }
         let newID = Self.documentID(from: "\(source.request.id)-copy", fallback: "request")
-        let name = "\(source.request.name) Copy"
-        do {
-            _ = try await persistence.apply(.duplicateRequest(
-                collectionID: collectionID,
-                id: requestID,
-                newID: newID,
-                name: name
-            ))
-            var copy = source
-            copy.request.id = newID
-            copy.request.name = name
-            copy.order = workspace.collections[collectionIndex].requests.count
-            workspace.collections[collectionIndex].requests.append(copy)
-            rebuildRequestSearchIndex()
-        } catch {
-            operationFailure = RunFailure(kind: "workspace", issues: [])
-        }
+        await perform(.duplicateRequest(collectionID: collectionID, id: requestID, newID: newID,
+                                        name: "\(source.request.name) Copy"),
+                      named: "Duplicate “\(source.request.name)”")
     }
 
     private var isReorderingSidebar = false
@@ -1021,7 +934,7 @@ public final class WireboltModel {
 
     public func reorderSidebar(_ identifier: String, relativeTo target: String, after: Bool,
                                collectionID: String, parentID: String?) async {
-        guard !isReorderingSidebar, let persistence,
+        guard !isReorderingSidebar,
               canReorderSidebar(identifier, relativeTo: target, collectionID: collectionID, parentID: parentID),
               let collection = workspace.collections.first(where: { $0.id == collectionID }) else { return }
         let parts = identifier.split(separator: "|", omittingEmptySubsequences: false)
@@ -1033,23 +946,94 @@ public final class WireboltModel {
         guard items != previous else { return }
         isReorderingSidebar = true
         defer { isReorderingSidebar = false }
-        do {
-            _ = try await persistence.apply(.reorderChildren(collectionID: collectionID, parentID: parentID, items: items))
-            guard let index = workspace.collections.firstIndex(where: { $0.id == collectionID }) else { return }
-            let orders = Dictionary(uniqueKeysWithValues: items.enumerated().map { ($0.element, $0.offset) })
-            for i in workspace.collections[index].groups.indices {
-                if let order = orders["group:" + workspace.collections[index].groups[i].id] {
-                    workspace.collections[index].groups[i].order = order
-                }
-            }
-            for i in workspace.collections[index].requests.indices {
-                if let order = orders["request:" + workspace.collections[index].requests[i].request.id] {
-                    workspace.collections[index].requests[i].order = order
-                }
-            }
-        } catch {
-            operationFailure = RunFailure(kind: "workspace", issues: [])
+        await perform(.reorder(collectionID: collectionID, parentID: parentID, items: items),
+                      named: "Move “\(sidebarItemName(identifier))”")
+    }
+
+    /// Whether Move Up (-1) or Move Down (+1) can swap the item with a sibling.
+    public func canMoveSidebarItem(_ identifier: String, by delta: Int) -> Bool {
+        // Evaluated for menus on every selection change: use the cached, ordered snapshot.
+        let parts = identifier.split(separator: "|", omittingEmptySubsequences: false).map(String.init)
+        guard parts.count == 3 else { return false }
+        let rowID = parts[0] == "request" ? "request:\(parts[1])/\(parts[2])" : "group:\(parts[1]):\(parts[2])"
+        if sidebarSnapshot == nil { sidebarSnapshot = SidebarSnapshot(collections: workspace.collections) }
+        return sidebarSnapshot?.sibling(of: rowID, by: delta) != nil
+    }
+
+    /// Moves a request or folder one position among its siblings, like dragging it past its neighbor.
+    public func moveSidebarItem(_ identifier: String, by delta: Int) async {
+        guard let (collectionID, parentID, neighbor) = sidebarNeighbor(of: identifier, by: delta) else { return }
+        await reorderSidebar(identifier, relativeTo: neighbor, after: delta > 0,
+                             collectionID: collectionID, parentID: parentID)
+    }
+
+    /// Whether the request or folder can move into `parentID` of `collectionID` (nil = top level).
+    public func canMoveSidebarItem(_ identifier: String, toCollectionID collectionID: String, parentID: String?) -> Bool {
+        let parts = identifier.split(separator: "|", omittingEmptySubsequences: false).map(String.init)
+        guard parts.count == 3,
+              let destination = workspace.collections.first(where: { $0.id == collectionID }),
+              parentID.map({ parent in destination.groups.contains { $0.id == parent } }) ?? true
+        else { return false }
+        switch parts[0] {
+        case "request":
+            guard let location = workspace.location(collectionID: parts[1], requestID: parts[2]) else { return false }
+            return location.collectionID != collectionID || location.groupID != parentID
+        case "group":
+            guard parts[1] == collectionID,
+                  let group = destination.groups.first(where: { $0.id == parts[2] }) else { return false }
+            return group.parentID != parentID
+                && !(parentID.map { destination.descendantGroupIDs(of: group.id).contains($0) } ?? false)
+        default:
+            return false
         }
+    }
+
+    /// Moves a request or folder to the end of another container, as a drop on that container does.
+    public func moveSidebarItem(_ identifier: String, toCollectionID collectionID: String, parentID: String?) async {
+        guard canMoveSidebarItem(identifier, toCollectionID: collectionID, parentID: parentID) else { return }
+        let parts = identifier.split(separator: "|", omittingEmptySubsequences: false).map(String.init)
+        let order = nextChildOrder(collectionID: collectionID, parentID: parentID)
+        if parts[0] == "request" {
+            await moveRequest(fromCollectionID: parts[1], requestID: parts[2], toCollectionID: collectionID,
+                              groupID: parentID, order: order)
+        } else {
+            await moveGroup(collectionID: collectionID, id: parts[2], parentID: parentID, order: order)
+        }
+    }
+
+    /// The order that places a new child after every existing child of the container.
+    public func nextChildOrder(collectionID: String, parentID: String?) -> Int {
+        guard let collection = workspace.collections.first(where: { $0.id == collectionID }) else { return 0 }
+        return max(collection.groups.filter { $0.parentID == parentID }.map(\.order).max() ?? -1,
+                   collection.requests.filter { $0.groupID == parentID }.map(\.order).max() ?? -1) + 1
+    }
+
+    private func sidebarNeighbor(of identifier: String, by delta: Int) -> (String, String?, String)? {
+        let parts = identifier.split(separator: "|", omittingEmptySubsequences: false).map(String.init)
+        guard parts.count == 3, delta != 0,
+              let collection = workspace.collections.first(where: { $0.id == parts[1] }) else { return nil }
+        let parentID: String?
+        switch parts[0] {
+        case "request":
+            guard let location = collection.requests.first(where: { $0.request.id == parts[2] }) else { return nil }
+            parentID = location.groupID
+        case "group":
+            guard let group = collection.groups.first(where: { $0.id == parts[2] }) else { return nil }
+            parentID = group.parentID
+        default:
+            return nil
+        }
+        let siblings = collection.orderedChildren(parentID: parentID)
+        guard let index = siblings.firstIndex(of: parts[0] + ":" + parts[2]),
+              siblings.indices.contains(index + delta) else { return nil }
+        return (collection.id, parentID, siblings[index + delta])
+    }
+
+    private func sidebarItemName(_ identifier: String) -> String {
+        let parts = identifier.split(separator: "|", omittingEmptySubsequences: false).map(String.init)
+        guard parts.count == 3 else { return "" }
+        if parts[0] == "request" { return workspace.location(collectionID: parts[1], requestID: parts[2])?.request.name ?? "" }
+        return workspace.collections.first { $0.id == parts[1] }?.groups.first { $0.id == parts[2] }?.name ?? ""
     }
 
     public func moveRequest(
@@ -1059,43 +1043,10 @@ public final class WireboltModel {
         groupID: String?,
         order: Int
     ) async {
-        guard let persistence,
-              let sourceCollectionIndex = workspace.collections.firstIndex(where: {
-                  $0.id == fromCollectionID
-              }),
-              let sourceRequestIndex = workspace.collections[sourceCollectionIndex].requests.firstIndex(where: {
-                  $0.request.id == requestID
-              }),
-              let destinationIndex = workspace.collections.firstIndex(where: { $0.id == toCollectionID })
-        else { return }
-        do {
-            _ = try await persistence.apply(.moveRequest(
-                fromCollectionID: fromCollectionID,
-                requestID: requestID,
-                toCollectionID: toCollectionID,
-                groupID: groupID,
-                order: order
-            ))
-            var location = workspace.collections[sourceCollectionIndex].requests.remove(
-                at: sourceRequestIndex
-            )
-            location = RequestLocation(
-                collectionID: toCollectionID,
-                groupID: groupID,
-                order: order,
-                request: location.request
-            )
-            let resolvedDestinationIndex = workspace.collections.firstIndex(where: {
-                $0.id == toCollectionID
-            }) ?? destinationIndex
-            workspace.collections[resolvedDestinationIndex].requests.append(location)
-            for session in sessions.sessions.values where session.collectionID == fromCollectionID && session.requestID == requestID {
-                session.relocate(to: toCollectionID)
-            }
-            rebuildRequestSearchIndex()
-        } catch {
-            operationFailure = RunFailure(kind: "workspace", issues: [])
-        }
+        let name = workspace.location(collectionID: fromCollectionID, requestID: requestID)?.request.name ?? ""
+        await perform(.moveRequest(fromCollectionID: fromCollectionID, id: requestID, toCollectionID: toCollectionID,
+                                   groupID: groupID, order: order),
+                      named: "Move “\(name)”")
     }
 
     public func moveGroup(
@@ -1104,22 +1055,9 @@ public final class WireboltModel {
         parentID: String?,
         order: Int
     ) async {
-        guard let persistence,
-              let collectionIndex = workspace.collections.firstIndex(where: { $0.id == collectionID }),
-              let groupIndex = workspace.collections[collectionIndex].groups.firstIndex(where: { $0.id == id })
-        else { return }
-        do {
-            _ = try await persistence.apply(.moveGroup(
-                collectionID: collectionID,
-                id: id,
-                parentID: parentID,
-                order: order
-            ))
-            workspace.collections[collectionIndex].groups[groupIndex].parentID = parentID
-            workspace.collections[collectionIndex].groups[groupIndex].order = order
-        } catch {
-            operationFailure = RunFailure(kind: "workspace", issues: [])
-        }
+        let name = workspace.collections.first { $0.id == collectionID }?.groups.first { $0.id == id }?.name ?? ""
+        await perform(.moveGroup(collectionID: collectionID, id: id, parentID: parentID, order: order),
+                      named: "Move “\(name)”")
     }
 
     private func applyLoadedWorkspace(_ loaded: WorkspaceDraft, restoring layout: SessionLayout? = nil) {
@@ -1238,12 +1176,260 @@ public final class WireboltModel {
         guard let persistence else { return }
         do {
             applyLoadedWorkspace(try await persistence.load())
+            // Pulled files may no longer match the recorded inverses.
+            undoManager?.removeAllActions(withTarget: self)
         } catch {
             gitFailure = GitFailure(
                 kind: "workspace_reload",
                 reason: "Git updated the workspace, but Wirebolt could not reload it."
             )
         }
+    }
+}
+
+/// One reversible workspace mutation. Applying a step persists it and returns the step
+/// that reverses it, so undo and redo share the code path of the original command.
+enum WorkspaceEditStep: Equatable, Sendable {
+    case restoreRequest(RequestLocation)
+    case removeRequest(collectionID: String, id: String)
+    case duplicateRequest(collectionID: String, id: String, newID: String, name: String)
+    /// Recreates folders (parents first) and the requests inside them with their IDs and order.
+    case restoreGroups(collectionID: String, groups: [GroupDraft], requests: [RequestLocation])
+    case removeGroup(collectionID: String, id: String)
+    case restoreCollection(CollectionDraft)
+    case removeCollection(id: String)
+    case renameRequest(collectionID: String, id: String, name: String)
+    case renameGroup(collectionID: String, id: String, name: String)
+    case renameCollection(id: String, name: String)
+    case moveRequest(fromCollectionID: String, id: String, toCollectionID: String, groupID: String?, order: Int)
+    case moveGroup(collectionID: String, id: String, parentID: String?, order: Int)
+    case reorder(collectionID: String, parentID: String?, items: [String])
+}
+
+/// Filled when the step that produces it finishes, so redo can be registered synchronously
+/// while undo runs, as UndoManager requires, even though persistence is asynchronous.
+@MainActor
+private final class PendingEditStep {
+    var step: WorkspaceEditStep?
+    init(_ step: WorkspaceEditStep? = nil) { self.step = step }
+}
+
+extension WireboltModel {
+    /// Applies a mutation and, when it succeeds, makes it undoable under `name`.
+    @discardableResult
+    func perform(_ step: WorkspaceEditStep, named name: String) async -> Bool {
+        await undoWork?.value
+        guard let inverse = await apply(step) else { return false }
+        guard let undoManager else { return true }
+        let opensGroup = !undoManager.isUndoing && !undoManager.isRedoing
+        if opensGroup { undoManager.beginUndoGrouping() }
+        let pending = PendingEditStep(inverse)
+        undoManager.registerUndo(withTarget: self) { $0.runUndoStep(pending, named: name) }
+        undoManager.setActionName(name)
+        if opensGroup { undoManager.endUndoGrouping() }
+        return true
+    }
+
+    /// Waits for queued undo and redo steps; used by tests and callers that need settled state.
+    func finishUndoWork() async {
+        await undoWork?.value
+    }
+
+    private func runUndoStep(_ pending: PendingEditStep, named name: String) {
+        let reverse = PendingEditStep()
+        undoManager?.registerUndo(withTarget: self) { $0.runUndoStep(reverse, named: name) }
+        undoManager?.setActionName(name)
+        let previous = undoWork
+        undoWork = Task { [weak self] in
+            await previous?.value
+            guard let self else { return }
+            guard let step = pending.step, let inverse = await self.apply(step) else {
+                // The stack no longer describes the workspace; keep what was restored so far.
+                self.undoManager?.removeAllActions(withTarget: self)
+                return
+            }
+            reverse.step = inverse
+        }
+    }
+
+    /// Persists one step and mirrors it in the loaded tree. Returns the inverse, or nil when
+    /// nothing changed or persistence failed (failures are reported through `operationFailure`).
+    func apply(_ step: WorkspaceEditStep) async -> WorkspaceEditStep? {
+        guard let persistence else { return nil }
+        do {
+            switch step {
+            case let .restoreRequest(location):
+                guard let collection = workspace.collections.first(where: { $0.id == location.collectionID }),
+                      location.groupID.map({ id in collection.groups.contains { $0.id == id } }) ?? true
+                else { return nil }
+                _ = try await persistence.apply(.saveRequest(collectionID: location.collectionID, location: location))
+                applySavedRequest(location)
+                return .removeRequest(collectionID: location.collectionID, id: location.request.id)
+
+            case let .removeRequest(collectionID, id):
+                guard let location = workspace.location(collectionID: collectionID, requestID: id) else { return nil }
+                _ = try await persistence.apply(.deleteRequest(collectionID: collectionID, id: id))
+                if let index = workspace.collections.firstIndex(where: { $0.id == collectionID }) {
+                    workspace.collections[index].requests.removeAll { $0.request.id == id }
+                }
+                rebuildRequestSearchIndex()
+                closeSessions(collectionID: collectionID, requestID: id)
+                return .restoreRequest(location)
+
+            case let .duplicateRequest(collectionID, id, newID, name):
+                guard var copy = workspace.location(collectionID: collectionID, requestID: id) else { return nil }
+                _ = try await persistence.apply(.duplicateRequest(collectionID: collectionID, id: id, newID: newID, name: name))
+                guard let index = workspace.collections.firstIndex(where: { $0.id == collectionID }) else { return nil }
+                copy.request.id = newID
+                copy.request.name = name
+                copy.order = workspace.collections[index].requests.count
+                workspace.collections[index].requests.append(copy)
+                rebuildRequestSearchIndex()
+                return .removeRequest(collectionID: collectionID, id: newID)
+
+            case let .restoreGroups(collectionID, groups, requests):
+                guard let root = groups.first,
+                      workspace.collections.contains(where: { $0.id == collectionID }) else { return nil }
+                for group in groups {
+                    _ = try await persistence.apply(.createGroup(collectionID: collectionID, group: group))
+                    guard let index = workspace.collections.firstIndex(where: { $0.id == collectionID }) else { return nil }
+                    workspace.collections[index].groups.append(group)
+                }
+                try await restoreRequests(requests, in: collectionID)
+                return .removeGroup(collectionID: collectionID, id: root.id)
+
+            case let .removeGroup(collectionID, id):
+                guard let collection = workspace.collections.first(where: { $0.id == collectionID }),
+                      collection.groups.contains(where: { $0.id == id }) else { return nil }
+                let descendantIDs = collection.descendantGroupIDs(of: id)
+                let removedRequests = collection.requests.filter { $0.groupID.map(descendantIDs.contains) ?? false }
+                _ = try await persistence.apply(.deleteGroup(collectionID: collectionID, id: id))
+                for location in removedRequests { closeSessions(collectionID: collectionID, requestID: location.request.id) }
+                if let index = workspace.collections.firstIndex(where: { $0.id == collectionID }) {
+                    workspace.collections[index].groups.removeAll { descendantIDs.contains($0.id) }
+                    workspace.collections[index].requests.removeAll { $0.groupID.map(descendantIDs.contains) ?? false }
+                }
+                rebuildRequestSearchIndex()
+                return .restoreGroups(collectionID: collectionID, groups: collection.subtreeGroups(of: id),
+                                      requests: removedRequests)
+
+            case let .restoreCollection(collection):
+                guard !workspace.collections.contains(where: { $0.id == collection.id }) else { return nil }
+                let empty = CollectionDraft(id: collection.id, name: collection.name, order: collection.order)
+                _ = try await persistence.apply(.createCollection(empty))
+                workspace.collections.append(empty)
+                for group in collection.subtreeGroups(of: nil) {
+                    _ = try await persistence.apply(.createGroup(collectionID: collection.id, group: group))
+                    guard let index = workspace.collections.firstIndex(where: { $0.id == collection.id }) else { return nil }
+                    workspace.collections[index].groups.append(group)
+                }
+                try await restoreRequests(collection.requests, in: collection.id)
+                return .removeCollection(id: collection.id)
+
+            case let .removeCollection(id):
+                guard let collection = workspace.collections.first(where: { $0.id == id }) else { return nil }
+                _ = try await persistence.apply(.deleteCollection(id: id))
+                workspace.collections.removeAll { $0.id == id }
+                rebuildRequestSearchIndex()
+                closeSessions(collectionID: id)
+                return .restoreCollection(collection)
+
+            case let .renameRequest(collectionID, id, name):
+                guard var location = workspace.location(collectionID: collectionID, requestID: id),
+                      location.request.name != name else { return nil }
+                let previous = location.request.name
+                location.request.name = name
+                _ = try await persistence.apply(.saveRequest(collectionID: collectionID, location: location))
+                applySavedRequest(location)
+                for session in sessions.sessions.values where session.collectionID == collectionID && session.requestID == id {
+                    session.renameSavedRequest(name)
+                }
+                return .renameRequest(collectionID: collectionID, id: id, name: previous)
+
+            case let .renameGroup(collectionID, id, name):
+                guard let collection = workspace.collections.first(where: { $0.id == collectionID }),
+                      let previous = collection.groups.first(where: { $0.id == id })?.name, previous != name
+                else { return nil }
+                _ = try await persistence.apply(.renameGroup(collectionID: collectionID, id: id, name: name))
+                if let index = workspace.collections.firstIndex(where: { $0.id == collectionID }),
+                   let groupIndex = workspace.collections[index].groups.firstIndex(where: { $0.id == id }) {
+                    workspace.collections[index].groups[groupIndex].name = name
+                }
+                return .renameGroup(collectionID: collectionID, id: id, name: previous)
+
+            case let .renameCollection(id, name):
+                guard let previous = workspace.collections.first(where: { $0.id == id })?.name, previous != name
+                else { return nil }
+                _ = try await persistence.apply(.renameCollection(id: id, name: name))
+                if let index = workspace.collections.firstIndex(where: { $0.id == id }) {
+                    workspace.collections[index].name = name
+                }
+                return .renameCollection(id: id, name: previous)
+
+            case let .moveRequest(fromCollectionID, id, toCollectionID, groupID, order):
+                guard let source = workspace.location(collectionID: fromCollectionID, requestID: id),
+                      workspace.collections.contains(where: { $0.id == toCollectionID }) else { return nil }
+                _ = try await persistence.apply(.moveRequest(fromCollectionID: fromCollectionID, requestID: id,
+                                                             toCollectionID: toCollectionID, groupID: groupID, order: order))
+                if let index = workspace.collections.firstIndex(where: { $0.id == fromCollectionID }) {
+                    workspace.collections[index].requests.removeAll { $0.request.id == id }
+                }
+                if let index = workspace.collections.firstIndex(where: { $0.id == toCollectionID }) {
+                    workspace.collections[index].requests.append(RequestLocation(
+                        collectionID: toCollectionID, groupID: groupID, order: order, request: source.request))
+                }
+                for session in sessions.sessions.values where session.collectionID == fromCollectionID && session.requestID == id {
+                    session.relocate(to: toCollectionID)
+                }
+                rebuildRequestSearchIndex()
+                return .moveRequest(fromCollectionID: toCollectionID, id: id, toCollectionID: fromCollectionID,
+                                    groupID: source.groupID, order: source.order)
+
+            case let .moveGroup(collectionID, id, parentID, order):
+                guard let collection = workspace.collections.first(where: { $0.id == collectionID }),
+                      let group = collection.groups.first(where: { $0.id == id }) else { return nil }
+                _ = try await persistence.apply(.moveGroup(collectionID: collectionID, id: id, parentID: parentID, order: order))
+                if let index = workspace.collections.firstIndex(where: { $0.id == collectionID }),
+                   let groupIndex = workspace.collections[index].groups.firstIndex(where: { $0.id == id }) {
+                    workspace.collections[index].groups[groupIndex].parentID = parentID
+                    workspace.collections[index].groups[groupIndex].order = order
+                }
+                return .moveGroup(collectionID: collectionID, id: id, parentID: group.parentID, order: group.order)
+
+            case let .reorder(collectionID, parentID, items):
+                guard let collection = workspace.collections.first(where: { $0.id == collectionID }) else { return nil }
+                let previous = collection.orderedChildren(parentID: parentID)
+                guard items != previous, Set(items) == Set(previous) else { return nil }
+                _ = try await persistence.apply(.reorderChildren(collectionID: collectionID, parentID: parentID, items: items))
+                guard let index = workspace.collections.firstIndex(where: { $0.id == collectionID }) else { return nil }
+                let orders = Dictionary(uniqueKeysWithValues: items.enumerated().map { ($0.element, $0.offset) })
+                for i in workspace.collections[index].groups.indices {
+                    if let order = orders["group:" + workspace.collections[index].groups[i].id] {
+                        workspace.collections[index].groups[i].order = order
+                    }
+                }
+                for i in workspace.collections[index].requests.indices {
+                    if let order = orders["request:" + workspace.collections[index].requests[i].request.id] {
+                        workspace.collections[index].requests[i].order = order
+                    }
+                }
+                return .reorder(collectionID: collectionID, parentID: parentID, items: previous)
+            }
+        } catch {
+            operationFailure = RunFailure(kind: "workspace", issues: [])
+            return nil
+        }
+    }
+
+    /// Saves each request, then indexes once; a restored subtree can hold many requests.
+    private func restoreRequests(_ requests: [RequestLocation], in collectionID: String) async throws {
+        guard let persistence, !requests.isEmpty else { return }
+        for location in requests {
+            _ = try await persistence.apply(.saveRequest(collectionID: collectionID, location: location))
+            guard let index = workspace.collections.firstIndex(where: { $0.id == collectionID }) else { return }
+            workspace.collections[index].requests.append(location)
+        }
+        rebuildRequestSearchIndex()
     }
 }
 

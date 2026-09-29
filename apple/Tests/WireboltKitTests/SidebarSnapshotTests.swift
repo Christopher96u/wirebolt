@@ -37,4 +37,71 @@ import Testing
         #expect(!snapshot.rows.contains { if case .collection = $0.content { true } else { false } })
         #expect(Set(snapshot.rows.map(\.id)).count == snapshot.rows.count)
     }
+
+    @Test func rowsKnowTheirParentTitleAndMoveIdentity() {
+        let rows = SidebarSnapshot(collections: [fixture()]).rows
+        #expect(rows.map(\.parentID) == [nil, "collection:c", "group:c:folder", "group:c:nested", "collection:c"])
+        #expect(rows.map(\.title) == ["Collection", "Folder", "Nested", "Café 東京", "Root"])
+        #expect(rows.map(\.moveIdentifier) == [nil, "group|c|folder", "group|c|nested", "request|c|inside", "request|c|root"])
+    }
+
+    @Test func arrowKeysVisitEveryVisibleRowAndFollowOutlineConventions() {
+        let snapshot = SidebarSnapshot(collections: [fixture()])
+        var expanded: Set<String> = []
+        func rows() -> [SidebarSnapshot.Row] { snapshot.visible(query: "", collapsedCollections: [], expandedGroups: expanded) }
+        func isExpanded(_ row: SidebarSnapshot.Row) -> Bool { row.isExpanded(collapsed: [], expanded: expanded, filtering: false) }
+
+        // Up/Down include collections and folders, and start at an end without a selection.
+        #expect(SidebarNavigation.step(from: nil, by: 1, in: rows()) == "collection:c")
+        #expect(SidebarNavigation.step(from: nil, by: -1, in: rows()) == "request:c/root")
+        #expect(SidebarNavigation.step(from: "collection:c", by: 1, in: rows()) == "group:c:folder")
+        #expect(SidebarNavigation.step(from: "request:c/root", by: 1, in: rows()) == "request:c/root")
+
+        // Right expands a collapsed folder, then moves to its first child.
+        #expect(SidebarNavigation.right(from: "group:c:folder", in: rows(), isExpanded: isExpanded) == .expand("group:c:folder"))
+        expanded.insert("c:folder")
+        #expect(SidebarNavigation.right(from: "group:c:folder", in: rows(), isExpanded: isExpanded) == .select("group:c:nested"))
+        expanded.insert("c:nested")
+        #expect(SidebarNavigation.step(from: "group:c:nested", by: 1, in: rows()) == "request:c/inside")
+        #expect(SidebarNavigation.right(from: "request:c/inside", in: rows(), isExpanded: isExpanded) == .none)
+
+        // Left goes to the parent from a leaf and collapses an expanded container.
+        #expect(SidebarNavigation.left(from: "request:c/inside", in: rows(), isExpanded: isExpanded) == .select("group:c:nested"))
+        #expect(SidebarNavigation.left(from: "group:c:nested", in: rows(), isExpanded: isExpanded) == .collapse("group:c:nested"))
+        expanded.remove("c:nested")
+        #expect(SidebarNavigation.left(from: "group:c:nested", in: rows(), isExpanded: isExpanded) == .select("group:c:folder"))
+        #expect(SidebarNavigation.left(from: "collection:c", in: rows(), isExpanded: isExpanded) == .collapse("collection:c"))
+    }
+
+    @Test func typeSelectMatchesTitlesAndCyclesOnRepeatedLetters() {
+        var collection = fixture()
+        collection.requests.append(RequestLocation(collectionID: "c", order: 1, request: RequestDraft(id: "second", name: "Reports")))
+        let rows = SidebarSnapshot(collections: [collection]).visible(query: "", collapsedCollections: [], expandedGroups: ["c:folder", "c:nested"])
+        #expect(SidebarNavigation.typeSelect("r", from: nil, in: rows) == "request:c/root")
+        #expect(SidebarNavigation.typeSelect("r", from: "request:c/root", in: rows) == "request:c/second")
+        #expect(SidebarNavigation.typeSelect("r", from: "request:c/second", in: rows) == "request:c/root")
+        #expect(SidebarNavigation.typeSelect("rep", from: "request:c/root", in: rows) == "request:c/second")
+        #expect(SidebarNavigation.typeSelect("cafe", from: nil, in: rows) == "request:c/inside")
+        #expect(SidebarNavigation.typeSelect("zzz", from: nil, in: rows) == nil)
+    }
+
+    @Test func subtreeAndOutlineListParentsBeforeChildren() {
+        let collection = fixture()
+        #expect(collection.subtreeGroups(of: "folder").map(\.id) == ["folder", "nested"])
+        #expect(collection.subtreeGroups(of: nil).map(\.id) == ["folder", "nested"])
+        #expect(collection.folderOutline().map { "\($0.group.id):\($0.depth)" } == ["folder:0", "nested:1"])
+    }
+
+    @Test func siblingsSkipDescendantsAndStayInTheirContainer() {
+        var collection = fixture()
+        collection.requests.append(RequestLocation(collectionID: "c", order: 1, request: RequestDraft(id: "last", name: "Last")))
+        let snapshot = SidebarSnapshot(collections: [collection, CollectionDraft(id: "d", name: "D", order: 1,
+            requests: [RequestLocation(collectionID: "d", request: RequestDraft(id: "other"))])])
+        #expect(snapshot.sibling(of: "request:c/root", by: -1)?.id == "group:c:folder")
+        #expect(snapshot.sibling(of: "group:c:folder", by: 1)?.id == "request:c/root")
+        #expect(snapshot.sibling(of: "request:c/last", by: 1) == nil)
+        #expect(snapshot.sibling(of: "group:c:nested", by: -1) == nil)
+        #expect(snapshot.sibling(of: "request:d/other", by: -1) == nil)
+    }
 }
+

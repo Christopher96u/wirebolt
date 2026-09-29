@@ -95,6 +95,15 @@ struct WorkspaceDeleteRequest: Identifiable, Equatable {
     let id = UUID()
     let target: WorkspaceDeleteTarget
     let title: String
+    /// What else the deletion removes, shown in the confirmation.
+    var detail = ""
+}
+
+/// Move Up/Down availability for the focused sidebar's selected request or folder.
+struct SidebarMoveCommands: Equatable {
+    let identifier: String
+    let canMoveUp: Bool
+    let canMoveDown: Bool
 }
 
 @MainActor
@@ -258,6 +267,8 @@ final class WorkspaceUIState {
         expandedSidebarGroups = []
         renamingRequestID = nil
         renamingGroupID = nil
+        renamingCollectionID = nil
+        sidebarCursor = nil
         synchronizeSelection(model: model)
     }
 
@@ -281,18 +292,14 @@ final class WorkspaceUIState {
     var collapsedSidebarCollections: Set<String> = []
     var expandedSidebarGroups: Set<String> = []
     var renamingRequestID: String?
-
-    func moveSidebarSelection(_ delta: Int, model: WireboltModel) {
-        let visible = model.sidebarRows(query: sidebarFilter, collapsed: collapsedSidebarCollections, expanded: expandedSidebarGroups).compactMap { row -> RequestLocation? in
-            if case .request(let location) = row.content { return location }
-            return nil
-        }
-        guard !visible.isEmpty else { return }
-        let current = visible.firstIndex(where: { $0.id == model.selectedRequestID }) ?? (delta > 0 ? -1 : visible.count)
-        activateSavedRequest(visible[min(max(0, current + delta), visible.count - 1)], model: model)
-    }
-
     var renamingGroupID: String?
+    var renamingCollectionID: String?
+    /// A folder or collection row selected in the sidebar; nil means the active request's row.
+    var sidebarCursor: String?
+    /// The row that keyboard navigation last selected, so the sidebar can scroll it into view.
+    var sidebarScrollTarget: String?
+    @ObservationIgnored var typeSelectBuffer = ""
+    @ObservationIgnored var typeSelectTime = Date.distantPast
 
     func makeNewFolder(model: WireboltModel, collectionID: String? = nil, parentID: String? = nil) {
         Task {
@@ -317,26 +324,52 @@ final class WorkspaceUIState {
         )
     }
 
-    func requestDelete(_ target: WorkspaceDeleteTarget, title: String) {
-        workspaceDeleteRequest = WorkspaceDeleteRequest(target: target, title: title)
+    /// Deletes at once when Undo can bring everything back; asks first when the deletion
+    /// also removes other items or discards unsaved edits (HIG: no alerts for common,
+    /// undoable actions).
+    func requestDelete(_ target: WorkspaceDeleteTarget, title: String, model: WireboltModel) {
+        let detail = deleteConsequences(of: target, model: model)
+        if detail.isEmpty {
+            performDelete(target, model: model)
+        } else {
+            workspaceDeleteRequest = WorkspaceDeleteRequest(target: target, title: title, detail: detail)
+        }
     }
 
-    /// Delete key in the focused sidebar asks to delete the selected saved request.
+    /// Delete in the focused sidebar deletes the selected row.
     func requestDeleteOfSelection(model: WireboltModel) {
+        if let cursor = sidebarCursor,
+           let row = model.sidebarRows(query: sidebarFilter, collapsed: collapsedSidebarCollections, expanded: expandedSidebarGroups)
+            .first(where: { $0.id == cursor }) {
+            switch row.content {
+            case .collection(let collection):
+                requestDelete(.collection(id: collection.id), title: collection.name, model: model)
+            case .group(let collection, let group):
+                requestDelete(.group(collectionID: collection.id, id: group.id), title: group.name, model: model)
+            case .request(let location):
+                requestDelete(.request(collectionID: location.collectionID, id: location.request.id), title: location.request.name, model: model)
+            }
+            return
+        }
         guard let session = model.sessions.activeSession, let collectionID = session.collectionID,
               let location = model.workspace.location(collectionID: collectionID, requestID: session.requestID)
         else { return }
-        requestDelete(.request(collectionID: collectionID, id: location.request.id), title: location.request.name)
+        requestDelete(.request(collectionID: collectionID, id: location.request.id), title: location.request.name, model: model)
     }
 
     func confirmWorkspaceDelete(model: WireboltModel) {
         guard let request = workspaceDeleteRequest else { return }
         workspaceDeleteRequest = nil
+        performDelete(request.target, model: model)
+    }
+
+    private func performDelete(_ target: WorkspaceDeleteTarget, model: WireboltModel) {
         // Deleted documents must not be restored by the last-closed-tab fallback.
         lastClosedSession = nil
         lastClosedPresentation = nil
+        sidebarCursor = nil
         Task {
-            switch request.target {
+            switch target {
             case let .collection(id): await model.deleteCollection(id: id)
             case let .group(collectionID, id):
                 await model.deleteGroup(collectionID: collectionID, id: id)
@@ -349,6 +382,47 @@ final class WorkspaceUIState {
     /// Keeps a preview tab open (double-click on the tab or Keep Open).
     func pinTab(id: String, model: WireboltModel) {
         model.sessions.pin(tabID: id)
+    }
+
+    /// Describes what a deletion removes besides the item itself; empty when nothing else is lost.
+    func deleteConsequences(of target: WorkspaceDeleteTarget, model: WireboltModel) -> String {
+        let collectionID: String
+        let requests: [RequestLocation]
+        let folderCount: Int
+        switch target {
+        case let .request(id, requestID):
+            collectionID = id
+            requests = model.workspace.location(collectionID: id, requestID: requestID).map { [$0] } ?? []
+            folderCount = 0
+        case let .group(id, groupID):
+            guard let collection = model.workspace.collections.first(where: { $0.id == id }) else { return "" }
+            let folders = collection.descendantGroupIDs(of: groupID)
+            collectionID = id
+            requests = collection.requests.filter { $0.groupID.map(folders.contains) ?? false }
+            folderCount = folders.count - 1
+        case let .collection(id):
+            guard let collection = model.workspace.collections.first(where: { $0.id == id }) else { return "" }
+            collectionID = id
+            requests = collection.requests
+            folderCount = collection.groups.count
+        }
+        let ids = Set(requests.map(\.request.id))
+        let hasUnsavedEdits = model.sessions.sessions.values.contains {
+            $0.isDirty && $0.collectionID == collectionID && ids.contains($0.requestID)
+        }
+        var parts: [String] = []
+        let isContainer = if case .request = target { false } else { true }
+        if isContainer {
+            let contents = [
+                requests.isEmpty ? nil : requests.count == 1 ? "1 request" : "\(requests.count) requests",
+                folderCount == 0 ? nil : folderCount == 1 ? "1 folder" : "\(folderCount) folders",
+            ].compactMap(\.self)
+            if !contents.isEmpty { parts.append("Its \(contents.joined(separator: " and ")) will also be deleted.") }
+        }
+        if hasUnsavedEdits { parts.append("Unsaved changes in open tabs will be discarded and can’t be restored.") }
+        guard !parts.isEmpty else { return "" }
+        parts.append("You can undo the deletion with Edit ▸ Undo (⌘Z).")
+        return parts.joined(separator: " ")
     }
 
     func openInNewSplit(tabID: String, model: WireboltModel) {
@@ -475,4 +549,137 @@ final class WorkspaceUIState {
 
 extension FocusedValues {
     @Entry var workspaceCommands: WorkspaceUIState?
+    @Entry var sidebarMove: SidebarMoveCommands?
+}
+
+// MARK: - Sidebar outline navigation
+
+extension WorkspaceUIState {
+    var isRenamingInSidebar: Bool {
+        renamingRequestID != nil || renamingGroupID != nil || renamingCollectionID != nil
+    }
+
+    var isFilteringSidebar: Bool {
+        !sidebarFilter.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    func visibleSidebarRows(model: WireboltModel) -> [SidebarSnapshot.Row] {
+        model.sidebarRows(query: sidebarFilter, collapsed: collapsedSidebarCollections, expanded: expandedSidebarGroups)
+    }
+
+    /// The highlighted row: a selected folder or collection, otherwise the active request.
+    func sidebarSelectionRowID(model: WireboltModel) -> String? {
+        sidebarCursor ?? model.selectedRequestID.map { "request:" + $0 }
+    }
+
+    func isSidebarRowExpanded(_ row: SidebarSnapshot.Row) -> Bool {
+        row.isExpanded(collapsed: collapsedSidebarCollections, expanded: expandedSidebarGroups, filtering: isFilteringSidebar)
+    }
+
+    func setSidebarRow(_ row: SidebarSnapshot.Row, expanded: Bool) {
+        switch row.content {
+        case .collection(let collection):
+            if expanded { collapsedSidebarCollections.remove(collection.id) } else { collapsedSidebarCollections.insert(collection.id) }
+        case .group(let collection, let group):
+            let key = collection.id + ":" + group.id
+            if expanded { expandedSidebarGroups.insert(key) } else { expandedSidebarGroups.remove(key) }
+        case .request:
+            break
+        }
+    }
+
+    /// Selecting a request row opens it; folders and collections are only highlighted.
+    func selectSidebarRow(_ id: String, model: WireboltModel, scroll: Bool = false) {
+        guard let row = visibleSidebarRows(model: model).first(where: { $0.id == id }) else { return }
+        if case .request(let location) = row.content {
+            sidebarCursor = nil
+            if model.selectedRequestID != location.id { activateSavedRequest(location, model: model) }
+        } else {
+            sidebarCursor = id
+        }
+        if scroll { sidebarScrollTarget = id }
+    }
+
+    /// ↑/↓ over every visible row, including folders and collections.
+    func moveSidebarSelection(_ delta: Int, model: WireboltModel) {
+        let rows = visibleSidebarRows(model: model)
+        guard let id = SidebarNavigation.step(from: sidebarSelectionRowID(model: model), by: delta, in: rows) else { return }
+        selectSidebarRow(id, model: model, scroll: true)
+    }
+
+    /// ← collapses or selects the parent; → expands or selects the first child.
+    func moveSidebarSelectionHorizontally(right: Bool, model: WireboltModel) {
+        let rows = visibleSidebarRows(model: model)
+        let current = sidebarSelectionRowID(model: model)
+        let outcome = right
+            ? SidebarNavigation.right(from: current, in: rows, isExpanded: isSidebarRowExpanded)
+            : SidebarNavigation.left(from: current, in: rows, isExpanded: isSidebarRowExpanded)
+        switch outcome {
+        case let .select(id): selectSidebarRow(id, model: model, scroll: true)
+        case let .expand(id), let .collapse(id):
+            guard let row = rows.first(where: { $0.id == id }) else { return }
+            // Collapsing hides the active request; keep the container selected instead.
+            if case .collapse = outcome { sidebarCursor = id }
+            setSidebarRow(row, expanded: !isSidebarRowExpanded(row))
+        case .none: break
+        }
+    }
+
+    /// Type-select: letters typed within a second extend the search prefix.
+    func typeSelectInSidebar(_ characters: String, model: WireboltModel) -> Bool {
+        let now = Date()
+        if now.timeIntervalSince(typeSelectTime) > 1 { typeSelectBuffer = "" }
+        guard !(typeSelectBuffer.isEmpty && characters == " ") else { return false }
+        typeSelectBuffer += characters
+        typeSelectTime = now
+        let rows = visibleSidebarRows(model: model)
+        guard let id = SidebarNavigation.typeSelect(typeSelectBuffer, from: sidebarSelectionRowID(model: model), in: rows)
+        else { return true }
+        selectSidebarRow(id, model: model, scroll: true)
+        return true
+    }
+
+    /// Return renames the selected row, as in Finder and the Xcode navigator.
+    func renameSidebarSelection(model: WireboltModel) {
+        guard let id = sidebarSelectionRowID(model: model),
+              let row = visibleSidebarRows(model: model).first(where: { $0.id == id }) else { return }
+        beginRename(row)
+    }
+
+    func beginRename(_ row: SidebarSnapshot.Row) {
+        switch row.content {
+        case .collection(let collection): renamingCollectionID = collection.id
+        case .group(_, let group): renamingGroupID = group.id
+        case .request(let location): renamingRequestID = location.id
+        }
+    }
+
+    /// ⌘↓ opens the selection: a request moves focus to its URL, a container toggles.
+    func openSidebarSelection(model: WireboltModel) {
+        guard let id = sidebarSelectionRowID(model: model),
+              let row = visibleSidebarRows(model: model).first(where: { $0.id == id }) else { return }
+        if row.isContainer { setSidebarRow(row, expanded: !isSidebarRowExpanded(row)) } else { focusURLTrigger += 1 }
+    }
+
+    /// The selected request or folder as a move identifier ("kind|collection|id").
+    func sidebarMoveIdentifier(model: WireboltModel) -> String? {
+        if let cursor = sidebarCursor {
+            return visibleSidebarRows(model: model).first { $0.id == cursor }?.moveIdentifier
+        }
+        guard let session = model.sessions.activeSession, let collectionID = session.collectionID,
+              model.workspace.location(collectionID: collectionID, requestID: session.requestID) != nil
+        else { return nil }
+        return "request|\(collectionID)|\(session.requestID)"
+    }
+
+    func sidebarMoveCommands(model: WireboltModel) -> SidebarMoveCommands? {
+        guard let identifier = sidebarMoveIdentifier(model: model) else { return nil }
+        return SidebarMoveCommands(identifier: identifier,
+                                   canMoveUp: model.canMoveSidebarItem(identifier, by: -1),
+                                   canMoveDown: model.canMoveSidebarItem(identifier, by: 1))
+    }
+
+    func moveSidebarItem(_ identifier: String, by delta: Int, model: WireboltModel) {
+        Task { await model.moveSidebarItem(identifier, by: delta) }
+    }
 }
