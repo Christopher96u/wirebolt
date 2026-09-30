@@ -4,12 +4,12 @@ title: "[Bug]: "
 body:
   - type: markdown
     attributes:
-      value: Use demo data. Do not include credentials, cookies or private responses. For vulnerabilities, read SECURITY.md before posting.
+      value: Use demo data. Do not include credentials, cookies or private responses. Do not report vulnerabilities here; use [private reporting](https://github.com/Christopher96u/wirebolt/security/advisories/new) as described in [SECURITY.md](https://github.com/Christopher96u/wirebolt/blob/main/SECURITY.md).
   - type: input
     id: version
     attributes:
       label: Wirebolt version or source commit
-      placeholder: 0.1.0-beta.2 or commit hash
+      placeholder: 0.1.0 (2) from About Wirebolt, or commit hash
     validations:
       required: true
   - type: input

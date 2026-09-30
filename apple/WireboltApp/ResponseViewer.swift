@@ -12,6 +12,9 @@ struct ResponseViewer: View {
     var cancel: (() -> Void)?
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
+    // The viewer stays mounted across tab switches so the common empty state is updated
+    // rather than rebuilt; everything that holds per-document state (the response views and
+    // the run progress) is identified by the document instead.
     var body: some View {
         Group {
             if hasPresentation {
@@ -37,28 +40,21 @@ struct ResponseViewer: View {
                             }
                         }
                 }
+                .id(session.id)
             } else if session.isRunning, let startedAt = session.runStartedAt {
                 RunProgressView(startedAt: startedAt, cancel: cancel)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .id(session.id)
                     .transition(.opacity)
             } else {
                 NoResponseState(session: session, canSend: send != nil) { send?() }
             }
         }
+        // Phase changes of one document animate; switching documents does not.
+        .transaction(value: session.id) { $0.animation = nil }
         .animation(reduceMotion ? nil : .easeOut(duration: 0.18), value: phase)
         .background(WireboltTheme.paneBackground)
-        .onChange(of: session.responseHead) {
-            guard interface.usesAutomaticRenderer, let head = session.responseHead else { return }
-            let mime = head.headers.first { $0.name.lowercased() == "content-type" }?.value.lowercased() ?? ""
-            if mime.contains("json") { interface.responseRenderer = .json }
-            else if mime.contains("html") { interface.responseRenderer = .html }
-            else if mime.contains("xml") { interface.responseRenderer = .xml }
-            else if mime.hasPrefix("image/") { interface.responseRenderer = .image }
-            else { interface.responseRenderer = .raw }
-        }
-        .onChange(of: session.isRunning) { wasRunning, isRunning in
-            if wasRunning, !isRunning { announceOutcome() }
-        }
+        .background { ResponseRunObserver(interface: interface, session: session).id(session.id) }
     }
 
     private enum Phase: Equatable {
@@ -140,6 +136,31 @@ struct ResponseViewer: View {
         let statusLine = head.version.hasPrefix("HTTP/1") ? "\(head.version) \(ResponseFormatting.statusLine(head.status))" : "\(head.version) \(head.status)"
         let headers = head.headers.map { "\($0.name): \($0.value)" }.joined(separator: "\n")
         return [statusLine, headers, "", ""].joined(separator: "\n")
+    }
+
+}
+
+/// Reacts to one document's run: picks the renderer for a new response and announces the
+/// outcome. Identified by the document, so switching tabs never looks like a change.
+private struct ResponseRunObserver: View {
+    let interface: DocumentPresentationState
+    let session: DocumentSession
+
+    var body: some View {
+        Color.clear
+            .accessibilityHidden(true)
+            .onChange(of: session.responseHead) {
+                guard interface.usesAutomaticRenderer, let head = session.responseHead else { return }
+                let mime = head.headers.first { $0.name.lowercased() == "content-type" }?.value.lowercased() ?? ""
+                if mime.contains("json") { interface.responseRenderer = .json }
+                else if mime.contains("html") { interface.responseRenderer = .html }
+                else if mime.contains("xml") { interface.responseRenderer = .xml }
+                else if mime.hasPrefix("image/") { interface.responseRenderer = .image }
+                else { interface.responseRenderer = .raw }
+            }
+            .onChange(of: session.isRunning) { wasRunning, isRunning in
+                if wasRunning, !isRunning { announceOutcome() }
+            }
     }
 
     private func announceOutcome() {
@@ -495,14 +516,14 @@ private struct ResponseBodyViewer: View {
                 Spacer(minLength: 8)
 
                 HStack(spacing: 13) {
-                Button("Find", systemImage: "magnifyingglass") {
-                    if [.json, .xml, .html, .raw].contains(interface.responseRenderer) { find.isVisible = true }
-                }
+                Button("Find", systemImage: "magnifyingglass") { find.isVisible = true }
                 .labelStyle(.iconOnly)
                 .buttonStyle(.borderless)
                 .foregroundStyle(.secondary)
                 .frame(width: 20)
-                .help("Find in Response (⌘F)")
+                // Tree, image, web and hex renderers have no text to search.
+                .disabled(!rendererSupportsFind)
+                .help(rendererSupportsFind ? "Find in Response (⌘F)" : "Find is available in the JSON, XML, HTML and Raw renderers")
 
                 Menu("Response Actions", systemImage: "ellipsis.circle") {
                     Button("Copy Body", systemImage: "doc.on.doc") {
@@ -512,6 +533,7 @@ private struct ResponseBodyViewer: View {
                             NSPasteboard.general.setString(String(decoding: data, as: UTF8.self), forType: .string)
                         }
                     }
+                    .disabled(store == nil || receivedBytes == 0)
                     Divider()
                     Button("Export Body…", systemImage: "square.and.arrow.up", action: saveResponse).disabled(store == nil)
                     Divider()
@@ -604,6 +626,7 @@ private struct ResponseBodyViewer: View {
         }
     }
 
+    private var rendererSupportsFind: Bool { [.json, .xml, .html, .raw].contains(interface.responseRenderer) }
     private var renderedData: Data { loadedViewportData ?? previewData }
     private var renderedText: String { String(decoding: renderedData, as: UTF8.self) }
 
@@ -617,12 +640,6 @@ private struct ResponseBodyViewer: View {
             do { try await store.export(to: destination) }
             catch { actionError = error.localizedDescription }
         }
-    }
-
-
-    private func showInFinder() {
-        guard let store else { return }
-        NSWorkspace.shared.activateFileViewerSelecting([store.url])
     }
 
     @ViewBuilder
@@ -917,20 +934,6 @@ private struct SentRequestViewer: View {
         }
         return lines.joined(separator: "\n")
     }
-
-    private var headerText: String {
-        sentRequestText
-            .components(separatedBy: "\n\n")
-            .first ?? sentRequestText
-    }
-
-}
-
-private enum SentRequestMode: String, CaseIterable, Identifiable {
-    case raw = "Raw"
-    case headers = "Headers"
-
-    var id: Self { self }
 }
 
 private struct JSONResponseTree: View {

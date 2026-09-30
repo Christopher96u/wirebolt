@@ -26,17 +26,23 @@ public protocol WorkspacePersistence: Sendable {
     func save(environment: EnvironmentDraft) async throws
     func saveSecret(name: String, value: String) async throws
     func readSecret(name: String) async throws -> String?
+    /// Removes a Keychain item. Deleting a missing item succeeds.
+    func deleteSecret(name: String) async throws
     func apply(_ command: WorkspaceCommand) async throws -> WorkspaceDelta
     func previewImport(format: ImportFormat, source: String) async throws -> ImportPreview
-    func commitImport(format: ImportFormat, source: String) async throws -> WorkspaceDelta
-    func commitImportFile(format: ImportFormat, source: String, name: String) async throws -> WorkspaceDelta
+        func commitImport(format: ImportFormat, source: String) async throws -> ImportResult
+    func commitImportFile(format: ImportFormat, source: String, name: String) async throws -> ImportResult
     func exportCollection(id: String) async throws -> String
     func exportWorkspace() async throws -> String
     func exportRequest(collectionID: String, id: String) async throws -> String
+    /// The workspace folder, used to key local runtime storage such as cookies.
+    var location: URL? { get }
 }
 
 public extension WorkspacePersistence {
+    var location: URL? { nil }
     func readSecret(name _: String) async throws -> String? { nil }
+    func deleteSecret(name _: String) async throws {}
     func apply(_ command: WorkspaceCommand) async throws -> WorkspaceDelta {
         switch command {
         case let .saveRequest(collectionID, location):
@@ -54,11 +60,11 @@ public extension WorkspacePersistence {
         throw WorkspaceMutationError.unsupported
     }
 
-    func commitImport(format _: ImportFormat, source _: String) async throws -> WorkspaceDelta {
+        func commitImport(format _: ImportFormat, source _: String) async throws -> ImportResult {
         throw WorkspaceMutationError.unsupported
     }
 
-    func commitImportFile(format: ImportFormat, source: String, name: String) async throws -> WorkspaceDelta {
+    func commitImportFile(format: ImportFormat, source: String, name _: String) async throws -> ImportResult {
         try await commitImport(format: format, source: source)
     }
 
@@ -78,6 +84,18 @@ public protocol GitCollaboration: Sendable {
     func pull() async throws -> GitOperationSnapshot
     func commit(message: String) async throws -> GitOperationSnapshot
     func push() async throws -> GitOperationSnapshot
+    func abortMerge() async throws -> GitOperationSnapshot
+    func initializeRepository() async throws -> GitStatusSnapshot
+}
+
+public extension GitCollaboration {
+    func abortMerge() async throws -> GitOperationSnapshot {
+        throw GitFailure(kind: "unsupported", reason: "This workspace cannot abort a merge.")
+    }
+
+    func initializeRepository() async throws -> GitStatusSnapshot {
+        throw GitFailure(kind: "unsupported", reason: "This workspace cannot create a Git repository.")
+    }
 }
 
 @MainActor
@@ -115,15 +133,28 @@ public final class WireboltModel {
     public private(set) var gitFailure: GitFailure?
     public private(set) var isGitBusy = false
     public private(set) var isImporting = false
-    public var importFailureMessage: String?
+        public var importFailureMessage: String?
+    /// The last successful import, until the user dismisses its summary.
+    public var importSummary: ImportSummary?
     public private(set) var historyEntries: [RunHistoryEntry] = []
     public private(set) var historyRevision = 0
     private var editedSecrets: [String: String] = [:]
     private var dirtySecrets: Set<String> = []
+    /// Keychain names Wirebolt generated that this workspace used during this session. Those
+    /// no longer referenced are deleted only when the undo stack is discarded (switching
+    /// workspace, reloading after a pull, quitting), so an undone deletion still finds its value.
+    @ObservationIgnored private var observedSecretNames: Set<String> = []
+    /// Other workspace folders this Mac knows about (Open Recent, the built-in workspace).
+    /// A Keychain item one of them still references is never deleted.
+    @ObservationIgnored public var knownWorkspaceLocations: @MainActor () -> [URL] = { [] }
     public private(set) var oauthReceipts: [String: OAuth2TokenReceipt] = [:]
     public private(set) var oauthFailureMessage: String?
     public private(set) var isOAuthBusy = false
     public var isShowingGitCollaboration = false
+    /// The open workspace folder, when the persistence has one.
+    public private(set) var workspaceLocation: URL?
+    /// Increases whenever the active cookie jar changes, so a cookie list can refresh.
+    public private(set) var cookieRevision = 0
     public var isShowingWorkspaceSettings = false
     public var settingsTab = "general"
 
@@ -132,7 +163,10 @@ public final class WireboltModel {
     @ObservationIgnored private var persistence: (any WorkspacePersistence)?
     @ObservationIgnored private var gitCollaboration: (any GitCollaboration)?
     @ObservationIgnored private let history: HistoryRepository
-    @ObservationIgnored private let cookieJar: CookieJar
+    @ObservationIgnored private var cookieJar: CookieJar
+    /// Used while no workspace folder is known, for example in tests and previews.
+    @ObservationIgnored private let defaultCookieJar: CookieJar
+    @ObservationIgnored private let cookieDirectory: URL?
     @ObservationIgnored private let oauth2: any OAuth2Authorizing
     @ObservationIgnored private var requestSearchIndex: [String: String] = [:]
     @ObservationIgnored private var rootCreation: Task<Void, any Error>?
@@ -145,6 +179,11 @@ public final class WireboltModel {
     /// Undo and redo run one at a time so each inverse sees the state its predecessor left.
     @ObservationIgnored var undoWork: Task<Void, Never>?
 
+    public nonisolated static var defaultCookieDirectory: URL {
+        FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            .appending(path: "Wirebolt/Cookies", directoryHint: .isDirectory)
+    }
+
     public init(
         runner: any RequestRunner,
         socketConnector: (any WebSocketConnecting)? = nil,
@@ -152,10 +191,8 @@ public final class WireboltModel {
         gitCollaboration: (any GitCollaboration)? = nil,
         sessions: DocumentSessionStore? = nil,
         history: HistoryRepository = HistoryRepository(),
-        cookieJar: CookieJar = CookieJar(
-            storageURL: FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-                .appending(path: "Wirebolt/Cookies/cookies.json")
-        ),
+        cookieJar: CookieJar = CookieJar(),
+        cookieDirectory: URL? = WireboltModel.defaultCookieDirectory,
         oauth2: (any OAuth2Authorizing)? = nil,
         proxyPreferences: ProxyPreferences? = nil
     ) {
@@ -167,6 +204,8 @@ public final class WireboltModel {
         self.sessions = sessions ?? DocumentSessionStore()
         self.history = history
         self.cookieJar = cookieJar
+        defaultCookieJar = cookieJar
+        self.cookieDirectory = cookieDirectory
         self.oauth2 = oauth2 ?? OAuth2Service()
     }
 
@@ -178,6 +217,16 @@ public final class WireboltModel {
         self.gitCollaboration = gitCollaboration
         editedSecrets = [:]
         dirtySecrets = []
+        workspaceLocation = persistence.location
+        // Each workspace keeps its own cookies, as a browser profile would.
+        if let cookieDirectory, let location = persistence.location {
+            cookieJar = CookieJar(storageURL: CookieJar.storageURL(forWorkspaceAt: location, in: cookieDirectory))
+            // Earlier versions shared one jar between all workspaces and kept session cookies.
+            try? FileManager.default.removeItem(at: cookieDirectory.appending(path: "cookies.json"))
+        } else {
+            cookieJar = defaultCookieJar
+        }
+        cookieRevision += 1
     }
 
     public var selectedRequestID: String? {
@@ -185,6 +234,12 @@ public final class WireboltModel {
               let collectionID = session.collectionID
         else { return nil }
         return "\(collectionID)/\(session.requestID)"
+    }
+
+    /// Whether `location` is the active document's saved request. Observes only that
+    /// request, so a selection change re-renders two sidebar rows rather than every row.
+    public func isSelectedRequest(_ location: RequestLocation) -> Bool {
+        sessions.isActiveRequest(collectionID: location.collectionID, requestID: location.request.id)
     }
 
     public var draft: RequestDraft {
@@ -342,6 +397,7 @@ public final class WireboltModel {
                 }
                 if case let .cookies(update) = event, let url = URL(string: update.url) {
                     let received = await cookieJar.store(headers: update.headers, requestURL: url)
+                    if !received.isEmpty { cookieRevision += 1 }
                     guard session.activeRunID == runID else { return }
                     session.appendResponseCookies(received)
                 }
@@ -383,14 +439,19 @@ public final class WireboltModel {
     }
 
     public func acquireOAuthToken(for session: DocumentSession) async {
-        guard case let .oauth2(configuration) = session.draft.authentication,
-              let persistence
-        else { return }
+        guard case .oauth2 = session.draft.authentication, let persistence else { return }
         isOAuthBusy = true
         oauthFailureMessage = nil
         defer { isOAuthBusy = false }
         do {
+            // A client secret typed in the editor must reach Keychain before the token request reads it.
+            try await flushSecrets()
+            // A new token must never overwrite the legacy shared item other requests read.
+            let migrated = try await migratingLegacySecrets(session.draft)
+            if migrated != session.draft { session.draft = migrated }
+            guard case let .oauth2(configuration) = session.draft.authentication else { return }
             let (token, receipt) = try await oauth2.acquireToken(configuration: configuration)
+            observeSecrets([configuration.accessTokenReference])
             try await persistence.saveSecret(name: configuration.accessTokenReference, value: token)
             oauthReceipts[session.id] = receipt
         } catch {
@@ -506,6 +567,10 @@ public final class WireboltModel {
             let loaded = try await persistence.load()
             for session in sessions.sessions.values { cancel(session) }
             sessions.removeAll()
+            // The previous workspace's undo stack is discarded below, so its released
+            // Keychain items can go.
+            await purgeReleasedSecrets()
+            observedSecretNames = []
             configurePersistence(persistence, gitCollaboration: gitCollaboration)
             transportSave = nil
             persistedTransport = nil
@@ -563,6 +628,57 @@ public final class WireboltModel {
         }
     }
 
+    /// Abandons the merge a conflicted pull started and reloads the restored documents.
+    public func abortGitMerge() async {
+        await performGitOperation { collaboration in
+            self.apply(try await collaboration.abortMerge())
+            await self.reloadWorkspaceAfterGitUpdate()
+        }
+    }
+
+    /// Runs `git init` in the workspace folder so it becomes the repository root.
+    public func initializeGitRepository() async {
+        await performGitOperation { collaboration in
+            let status = try await collaboration.initializeRepository()
+            self.gitOperation = nil
+            self.gitStatus = status
+        }
+    }
+
+    // MARK: Workspace name
+
+    @discardableResult
+    public func renameWorkspace(_ proposedName: String) async -> Bool {
+        let name = proposedName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let persistence, !name.isEmpty else { return false }
+        guard name != workspace.name else { return true }
+        do {
+            _ = try await persistence.apply(.renameWorkspace(name: name))
+            workspace.name = name
+            return true
+        } catch {
+            operationFailure = RunFailure(kind: "workspace", issues: [])
+            return false
+        }
+    }
+
+    // MARK: Cookies
+
+    /// The active workspace's cookies, most specific domain first.
+    public func cookies() async -> [CookieSnapshot] {
+        await cookieJar.all().sorted { ($0.domain, $0.path, $0.name) < ($1.domain, $1.path, $1.name) }
+    }
+
+    public func deleteCookie(id: CookieSnapshot.ID) async {
+        await cookieJar.delete(id: id)
+        cookieRevision += 1
+    }
+
+    public func clearCookies() async {
+        await cookieJar.removeAll()
+        cookieRevision += 1
+    }
+
     /// Opens a saved request. `preview` reuses the group's preview tab instead of adding a tab.
     public func select(_ location: RequestLocation, preview: Bool = false) {
         if preview {
@@ -590,6 +706,9 @@ public final class WireboltModel {
         }
         do {
             try await flushSecrets()
+            let migrated = try await migratingLegacySecrets(session.draft)
+            if migrated != session.draft { session.draft = migrated }
+            observeSecrets(session.draft.secretReferences)
             let location = RequestLocation(
                 collectionID: collectionID,
                 groupID: workspace.location(collectionID: collectionID, requestID: session.draft.id)?.groupID,
@@ -609,6 +728,10 @@ public final class WireboltModel {
     @discardableResult
     public func saveEnvironment(_ environment: EnvironmentDraft) async -> Bool {
         guard let persistence else { return false }
+        observeSecrets(environment.secretReferences)
+        if let previous = workspace.environments.first(where: { $0.id == environment.id }) {
+            observeSecrets(previous.secretReferences)
+        }
         do {
             _ = try await persistence.apply(.saveEnvironment(environment))
             if let index = workspace.environments.firstIndex(where: { $0.id == environment.id }) {
@@ -711,17 +834,24 @@ public final class WireboltModel {
         }
         do {
             try await flushSecrets()
+            // Resolving validates the draft exactly as a send would. Secret values are read only
+            // to choose how the shell decodes them; the command references Keychain instead.
             let sources = draft.curlValueSources
-            let values = try await runner.resolveValues(sources, variables: variables)
-            guard sources.count == values.count else { throw RunFailure(kind: "export", issues: []) }
-            let resolved = Dictionary(zip(sources, values), uniquingKeysWith: { first, _ in first })
-            let url = resolved[.literal(draft.url)]!
-            var credentials: [String] = []
+            var secretNames = draft.curlSecretNames(variables: variables)
+            let values = try await runner.resolveValues(sources + secretNames.map { .secret($0) }, variables: variables)
+            guard values.count == sources.count + secretNames.count else { throw RunFailure(kind: "export", issues: []) }
+            let url = values[0]
+            var secretValues = Array(values.suffix(secretNames.count))
             if let references = proxy.curlRoute(for: url)?.credentials {
-                credentials = try await runner.resolveValues([.secret(references.username), .secret(references.password)], variables: variables)
+                let names = [references.username, references.password]
+                let credentials = try await runner.resolveValues(names.map { .secret($0) }, variables: variables)
                 guard credentials.count == 2 else { throw RunFailure(kind: "export", issues: []) }
+                secretNames += names
+                secretValues += credentials
             }
-            return draft.curlCommand { resolved[$0]! } + proxy.curlArguments(for: url, credentials: credentials)
+            let hexEncoded = zip(secretNames, secretValues).filter { CurlSecretReferences.printsAsHex($1) }.map(\.0)
+            let secrets = CurlSecretReferences(variables: variables, hexEncoded: Set(hexEncoded))
+            return draft.curlCommand(secrets: secrets) + proxy.curlArguments(for: url, secrets: secrets)
         } catch {
             operationFailure = (error as? RunFailure) ?? RunFailure(kind: "export", issues: [])
             return nil
@@ -756,10 +886,100 @@ public final class WireboltModel {
         }
         for name in dirtySecrets {
             guard let value = editedSecrets[name] else { continue }
+            observeSecrets([name])
             try await persistence.saveSecret(name: name, value: value)
             if editedSecrets[name] == value { dirtySecrets.remove(name) }
         }
         if !dirtySecrets.isEmpty { try await flushSecrets() }
+    }
+
+    private func observeSecrets(_ names: some Sequence<String>) {
+        observedSecretNames.formUnion(names.lazy.filter(CredentialReference.isOwned))
+    }
+
+    /// Whether quitting may have Keychain items to clean up.
+    public var hasReleasableSecrets: Bool { !observedSecretNames.isEmpty }
+
+    /// Deletes Keychain items Wirebolt generated for requests and variables that no saved
+    /// document or open tab references any more. Call only when the undo stack is being
+    /// discarded; items of deletions that can still be undone must stay.
+    public func purgeReleasedSecrets() async {
+        guard let persistence, !observedSecretNames.isEmpty else { return }
+        var inUse = workspace.secretReferences
+        for session in sessions.sessions.values {
+            inUse.formUnion(session.draft.secretReferences)
+            if let saved = session.savedDraft { inUse.formUnion(saved.secretReferences) }
+        }
+        var released = observedSecretNames.subtracting(inUse)
+        guard !released.isEmpty else { return }
+        // Clones of a repository, or copies of a workspace folder, share reference names.
+        let current = workspaceLocation?.standardizedFileURL.path
+        let others = Array(Set(knownWorkspaceLocations().map(\.standardizedFileURL.path)).subtracting([current].compactMap { $0 }))
+            .map { URL(fileURLWithPath: $0, isDirectory: true) }
+        if !others.isEmpty {
+            let candidates = released
+            let shared = await Task.detached(priority: .utility) {
+                WorkspaceSecretScan.referencedNames(candidates, in: others)
+            }.value
+            // Another workspace owns these too; its own session releases them later.
+            observedSecretNames.subtract(shared)
+            released.subtract(shared)
+        }
+        for name in released.sorted() {
+            do {
+                try await persistence.deleteSecret(name: name)
+                editedSecrets[name] = nil
+                dirtySecrets.remove(name)
+                observedSecretNames.remove(name)
+            } catch {
+                // Keep the name; a later purge retries. A leftover item is harmless.
+            }
+        }
+    }
+
+    /// Gives a request per-request Keychain names in place of legacy shared ones, copying
+    /// each value. The shared items stay: other workspaces may still use them.
+    private func migratingLegacySecrets(_ draft: RequestDraft) async throws -> RequestDraft {
+        let (authentication, renames) = draft.authentication.withOwnKeychainNames(onlyLegacy: true)
+        guard !renames.isEmpty else { return draft }
+        try await copySecrets(renames)
+        var migrated = draft
+        migrated.authentication = authentication
+        return migrated
+    }
+
+    /// Copies Keychain values from old to new names. Missing values stay missing.
+    private func copySecrets(_ renames: [String: String]) async throws {
+        guard let persistence else { throw WorkspaceMutationError.unsupported }
+        for (old, new) in renames.sorted(by: { $0.key < $1.key }) {
+            let value: String? = if dirtySecrets.contains(old) { editedSecrets[old] } else {
+                try await persistence.readSecret(name: old) ?? editedSecrets[old]
+            }
+            guard let value else { continue }
+            try await persistence.saveSecret(name: new, value: value)
+            editedSecrets[new] = value
+            observeSecrets([new])
+        }
+    }
+
+    /// Writes secret values straight to Keychain, for editors with their own Save button.
+    /// The in-memory copy is updated so other editors show the new value.
+    @discardableResult
+    public func saveSecrets(_ values: [String: String]) async -> Bool {
+        guard !values.isEmpty else { return true }
+        guard let persistence else { return false }
+        do {
+            for (name, value) in values.sorted(by: { $0.key < $1.key }) {
+                observeSecrets([name])
+                try await persistence.saveSecret(name: name, value: value)
+                editedSecrets[name] = value
+                dirtySecrets.remove(name)
+            }
+            return true
+        } catch {
+            operationFailure = RunFailure(kind: "keychain", issues: [])
+            return false
+        }
     }
 
     public func saveSecret(name: String, value: String) async {
@@ -771,7 +991,7 @@ public final class WireboltModel {
         }
     }
 
-    public func importDocument(url: URL, format: ImportFormat) async {
+        public func importDocument(url: URL, format: ImportFormat) async {
         guard !isImporting, persistence != nil else { return }
         isImporting = true
         importFailureMessage = nil
@@ -780,8 +1000,19 @@ public final class WireboltModel {
             let source = try await Task.detached(priority: .userInitiated) {
                 try String(contentsOf: url, encoding: .utf8)
             }.value
-            await commitDocument(source: source, format: format, fileName: url.deletingPathExtension().lastPathComponent)
-        } catch { importFailureMessage = "The selected document could not be read." }
+            await importFile(source: source, format: format, url: url)
+        } catch {
+            importFailureMessage = ImportFormat.unreadableMessage(fileName: url.lastPathComponent)
+        }
+    }
+
+    /// Imports contents already read from `url`, naming the collection after the file.
+    public func importDocument(source: String, format: ImportFormat, url: URL) async {
+        guard !isImporting, persistence != nil else { return }
+        isImporting = true
+        importFailureMessage = nil
+        defer { isImporting = false }
+        await importFile(source: source, format: format, url: url)
     }
 
     public func importDocument(source: String, format: ImportFormat) async {
@@ -789,22 +1020,82 @@ public final class WireboltModel {
         isImporting = true
         importFailureMessage = nil
         defer { isImporting = false }
-        await commitDocument(source: source, format: format)
+        importFailureMessage = await commitDocument(source: source, format: format)
     }
 
-    private func commitDocument(source: String, format: ImportFormat, fileName: String? = nil) async {
-        guard let persistence else { return }
+    /// Imports a Bruno collection folder, or a single `.bru` request file.
+    public func importBrunoCollection(at url: URL) async {
+        guard !isImporting, persistence != nil else { return }
+        isImporting = true
+        importFailureMessage = nil
+        defer { isImporting = false }
+        do {
+            let source = try await Task.detached(priority: .userInitiated) {
+                try BrunoCollectionSource.bundle(at: url)
+            }.value
+            importFailureMessage = await commitDocument(
+                source: source,
+                format: .brunoFolder,
+                fileName: url.deletingPathExtension().lastPathComponent,
+                displayName: url.lastPathComponent
+            )
+        } catch BrunoCollectionSource.ReadError.tooLarge {
+            importFailureMessage = "“\(url.lastPathComponent)” is too large to import."
+        } catch {
+            importFailureMessage = "“\(url.lastPathComponent)” isn’t a Bruno collection or couldn’t be read."
+        }
+    }
+
+    /// Imports pasted text and returns why it failed instead of raising the window alert,
+    /// so a sheet can show the reason in place.
+    public func importPastedDocument(source: String, format: ImportFormat) async -> String? {
+        guard !isImporting, persistence != nil else { return nil }
+        isImporting = true
+        defer { isImporting = false }
+        return await commitDocument(source: source, format: format)
+    }
+
+    private func importFile(source: String, format: ImportFormat, url: URL) async {
+        importFailureMessage = await commitDocument(
+            source: source,
+            format: format,
+            fileName: url.deletingPathExtension().lastPathComponent,
+            displayName: url.lastPathComponent
+        )
+    }
+
+    /// Commits an import and returns a failure message, or `nil` after success.
+    private func commitDocument(
+        source: String,
+        format: ImportFormat,
+        fileName: String? = nil,
+        displayName: String? = nil
+    ) async -> String? {
+        guard let persistence else { return nil }
         await flushWorkspaceTransport()
         let previousIDs = Set(workspace.collections.map(\.id))
+        let previousEnvironmentID = selectedEnvironmentID
         do {
-            if let fileName {
-                _ = try await persistence.commitImportFile(format: format, source: source, name: fileName)
-            } else { _ = try await persistence.commitImport(format: format, source: source) }
+            let result = if let fileName {
+                try await persistence.commitImportFile(format: format, source: source, name: fileName)
+            } else {
+                try await persistence.commitImport(format: format, source: source)
+            }
             applyLoadedWorkspace(try await persistence.load())
+            // Keep the user's environment; otherwise select the one the import created
+            // so its variables resolve right away.
+            let environmentIDs = Set(workspace.environments.map(\.id))
+            if let previousEnvironmentID, environmentIDs.contains(previousEnvironmentID) {
+                selectedEnvironmentID = previousEnvironmentID
+            } else if let created = result.summary.environments.first(where: { environmentIDs.contains($0.id) }) {
+                selectedEnvironmentID = created.id
+            }
+            importSummary = result.summary
             if let imported = workspace.collections.first(where: { !previousIDs.contains($0.id) }),
                let request = imported.requests.first { select(request) }
+            return nil
         } catch {
-            importFailureMessage = "The document could not be imported. Check its format and contents."
+            return ImportFormat.failureMessage(for: error, fileName: displayName)
         }
     }
 
@@ -1067,6 +1358,7 @@ public final class WireboltModel {
 
     private func applyLoadedWorkspace(_ loaded: WorkspaceDraft, restoring layout: SessionLayout? = nil) {
         workspace = loaded
+        observeSecrets(loaded.secretReferences)
         persistedTransport = loaded.transport
         rebuildRequestSearchIndex()
         selectedEnvironmentID = loaded.environments.first(where: { $0.id != WorkspaceDraft.globalEnvironmentID })?.id
@@ -1183,6 +1475,7 @@ public final class WireboltModel {
             applyLoadedWorkspace(try await persistence.load())
             // Pulled files may no longer match the recorded inverses.
             undoManager?.removeAllActions(withTarget: self)
+            await purgeReleasedSecrets()
         } catch {
             gitFailure = GitFailure(
                 kind: "workspace_reload",
@@ -1283,11 +1576,23 @@ extension WireboltModel {
 
             case let .duplicateRequest(collectionID, id, newID, name):
                 guard var copy = workspace.location(collectionID: collectionID, requestID: id) else { return nil }
+                // The copy gets its own Keychain items holding the same values, so editing
+                // or deleting either request never changes the other's credentials.
+                try await flushSecrets()
+                let (authentication, renames) = copy.request.authentication.withOwnKeychainNames(onlyLegacy: false)
+                try await copySecrets(renames)
                 _ = try await persistence.apply(.duplicateRequest(collectionID: collectionID, id: id, newID: newID, name: name))
                 guard let index = workspace.collections.firstIndex(where: { $0.id == collectionID }) else { return nil }
                 copy.request.id = newID
                 copy.request.name = name
+                copy.request.authentication = authentication
                 copy.order = workspace.collections[index].requests.count
+                if !renames.isEmpty {
+                    // Same position the bridge gave the duplicate, now with its own names.
+                    var persisted = copy
+                    persisted.order = (workspace.location(collectionID: collectionID, requestID: id)?.order ?? 0) + 1
+                    _ = try await persistence.apply(.saveRequest(collectionID: collectionID, location: persisted))
+                }
                 workspace.collections[index].requests.append(copy)
                 rebuildRequestSearchIndex()
                 return .removeRequest(collectionID: collectionID, id: newID)
@@ -1386,6 +1691,7 @@ extension WireboltModel {
                 for session in sessions.sessions.values where session.collectionID == fromCollectionID && session.requestID == id {
                     session.relocate(to: toCollectionID)
                 }
+                sessions.refreshActiveRequest()
                 rebuildRequestSearchIndex()
                 return .moveRequest(fromCollectionID: toCollectionID, id: id, toCollectionID: fromCollectionID,
                                     groupID: source.groupID, order: source.order)
@@ -1491,18 +1797,112 @@ public final class WorkspaceCommandState {
 }
 
 public extension ImportFormat {
+    /// The name used in menus and messages.
+    var displayName: String {
+        switch self {
+        case .curl: "cURL"
+        case .har: "HAR"
+        case .legacyWorkspaceV1: "Wirebolt JSON"
+        case .postmanV2: "Postman Collection v2"
+        case .insomnia: "Insomnia"
+        case .bruno: "Bruno collection"
+        case .brunoFolder: "Bruno collection folder"
+        }
+    }
+
+    /// Explains a failed import with the importer's reason when it has one.
+    static func failureMessage(for error: any Error, fileName: String?) -> String {
+        let subject = fileName.map { "“\($0)” couldn’t be imported." } ?? "The import failed."
+        guard let reason = (error as? LocalizedError)?.errorDescription, !reason.isEmpty else {
+            return "\(subject) Check its format and contents."
+        }
+        return "\(subject) \(sentence(reason))"
+    }
+
+    static func unreadableMessage(fileName: String) -> String {
+        "“\(fileName)” couldn’t be read. Check that it’s a UTF-8 text file you have permission to open."
+    }
+
+    /// Explains why dropped or opened contents matched no importer.
+    static func unrecognizedMessage(fileName: String, contents: String) -> String {
+        if isOpenAPI(contents) {
+            return "“\(fileName)” is an OpenAPI or Swagger document. OpenAPI import isn’t supported yet."
+        }
+        let formats = ListFormatter.localizedString(byJoining: allCases.filter { $0 != .brunoFolder }.map(\.displayName))
+        return "“\(fileName)” isn’t a format Wirebolt can import. Supported formats: \(formats)."
+    }
+
+    private static func isOpenAPI(_ contents: String) -> Bool {
+        let head = contents.prefix(4_096)
+        if head.contains("\"openapi\"") || head.contains("\"swagger\"") { return true }
+        return head.split(whereSeparator: \.isNewline).prefix(40).contains { line in
+            line.hasPrefix("openapi:") || line.hasPrefix("swagger:")
+        }
+    }
+
+    /// Bridge reasons may be lowercase phrases; show them as sentences.
+    private static func sentence(_ reason: String) -> String {
+        var text = reason.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let first = text.first, first.isLowercase { text = first.uppercased() + text.dropFirst() }
+        if let last = text.last, !".!?".contains(last) { text += "." }
+        return text
+    }
+
     /// Infers the importer for a file opened from Finder or dropped on the window.
     static func detect(fileExtension: String, contents: String) -> ImportFormat? {
         let trimmed = contents.trimmingCharacters(in: .whitespacesAndNewlines)
-        if trimmed.hasPrefix("curl ") || trimmed.hasPrefix("curl\t") { return .curl }
+        // Shell files may start with comments before the first command.
+        let command = trimmed.split(whereSeparator: \.isNewline)
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .first { !$0.isEmpty && !$0.hasPrefix("#") } ?? ""
+        if command.hasPrefix("curl ") || command.hasPrefix("curl\t") { return .curl }
         guard let data = trimmed.data(using: .utf8),
               let root = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
-        else { return nil }
+        else { return detectCollectionExport(fileExtension: fileExtension, contents: trimmed, root: nil) }
         if let log = root["log"] as? [String: Any], log["entries"] is [Any] { return .har }
         if let info = root["info"] as? [String: Any], info["schema"] != nil || info["_postman_id"] != nil {
             return .postmanV2
         }
         if root["version"] as? Int == 1, root["nodes"] is [Any] { return .legacyWorkspaceV1 }
+        if let format = detectCollectionExport(fileExtension: fileExtension, contents: trimmed, root: root) {
+            return format
+        }
         return fileExtension.lowercased() == "har" ? .har : nil
+    }
+}
+
+/// Finds Keychain reference names in workspace folders on disk without opening them as
+/// workspaces: only request and environment documents are read, as plain text.
+public enum WorkspaceSecretScan {
+    /// The names in `candidates` that any request or environment document of `workspaces`
+    /// mentions. Missing or unreadable folders and files are skipped.
+    public nonisolated static func referencedNames(_ candidates: Set<String>, in workspaces: [URL]) -> Set<String> {
+        var remaining = candidates
+        var found: Set<String> = []
+        for root in workspaces {
+            for file in documentFiles(in: root) {
+                guard !remaining.isEmpty else { return found }
+                guard let text = try? String(contentsOf: file, encoding: .utf8) else { continue }
+                for name in remaining where text.contains("\"\(name)\"") || text.contains("'\(name)'") {
+                    found.insert(name)
+                }
+                remaining.subtract(found)
+            }
+        }
+        return found
+    }
+
+    /// `collections/<collection>/requests/*.toml` and `environments/*.toml`.
+    private nonisolated static func documentFiles(in root: URL) -> [URL] {
+        let manager = FileManager.default
+        func toml(in directory: URL) -> [URL] {
+            ((try? manager.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)) ?? [])
+                .filter { $0.pathExtension == "toml" }
+        }
+        let collections = (try? manager.contentsOfDirectory(
+            at: root.appending(path: "collections", directoryHint: .isDirectory), includingPropertiesForKeys: nil
+        )) ?? []
+        return collections.flatMap { toml(in: $0.appending(path: "requests", directoryHint: .isDirectory)) }
+            + toml(in: root.appending(path: "environments", directoryHint: .isDirectory))
     }
 }

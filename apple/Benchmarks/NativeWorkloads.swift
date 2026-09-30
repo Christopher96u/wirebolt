@@ -25,7 +25,7 @@ private struct NotesFixture: View {
 final class ProbeWindow: NSWindow { override var canBecomeKey: Bool { true } }
 
 @main @MainActor struct NativeWorkloads {
-    static let log = OSLog(subsystem: "com.wirebolt.profiling", category: .pointsOfInterest)
+    static let log = OSLog(subsystem: "io.github.christopher96u.wirebolt", category: .pointsOfInterest)
     static var measurements: [[String: Any]] = []
     private struct Budgets: Decodable {
         let nativeColdWindowFirstContentMilliseconds: Double
@@ -168,6 +168,8 @@ final class ProbeWindow: NSWindow { override var canBecomeKey: Bool { true } }
         spin(0.4)
         flush(host)
         record("workspace_mount",[cold],budget:windowFirstContentBudget,details:["requests":count,"tabs":tabs.count,"excludes_deferred_content":false])
+        precondition(model.undoManager != nil && model.undoManager === window.undoManager,
+                     "Workspace edits must register their undo on the window's undo manager")
         var switches:[Double]=[]
         for i in 0..<samples {
             os_signpost(.begin,log:log,name:"TabSwitch")

@@ -22,6 +22,7 @@ swiftc \
   apple/Sources/WireboltKit/ProxySettings.swift \
   apple/Sources/WireboltKit/Models.swift \
   apple/Sources/WireboltKit/CurlExport.swift \
+  apple/Sources/WireboltKit/VariableTemplates.swift \
   apple/Sources/WireboltKit/WebSocket.swift \
   apple/Sources/WireboltKit/JSONNode.swift \
   apple/Sources/WireboltKit/CodeFolding.swift \
@@ -34,6 +35,7 @@ swiftc \
   apple/Sources/WireboltKit/ResponseStorage.swift \
   apple/Sources/WireboltKit/JSONResponseDocument.swift \
   apple/Sources/WireboltKit/OAuth2Service.swift \
+  apple/Sources/WireboltKit/CollectionImportSources.swift \
   apple/Sources/WireboltKit/WireboltModel.swift \
   apple/Sources/WireboltKit/SidebarSnapshot.swift \
   apple/Tests/BridgeSmoke.swift \

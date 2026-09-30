@@ -53,6 +53,30 @@
         </dict>
         <dict>
             <key>CFBundleTypeName</key>
+            <string>Insomnia Collection</string>
+            <key>CFBundleTypeRole</key>
+            <string>Viewer</string>
+            <key>LSHandlerRank</key>
+            <string>Alternate</string>
+            <key>LSItemContentTypes</key>
+            <array>
+                <string>public.yaml</string>
+            </array>
+        </dict>
+        <dict>
+            <key>CFBundleTypeName</key>
+            <string>Bruno Request</string>
+            <key>CFBundleTypeRole</key>
+            <string>Viewer</string>
+            <key>LSHandlerRank</key>
+            <string>Alternate</string>
+            <key>LSItemContentTypes</key>
+            <array>
+                <string>io.github.christopher96u.wirebolt.bru</string>
+            </array>
+        </dict>
+        <dict>
+            <key>CFBundleTypeName</key>
             <string>cURL Command</string>
             <key>CFBundleTypeRole</key>
             <string>Viewer</string>
@@ -81,6 +105,23 @@
                 <key>public.filename-extension</key>
                 <array>
                     <string>har</string>
+                </array>
+            </dict>
+        </dict>
+        <dict>
+            <key>UTTypeIdentifier</key>
+            <string>io.github.christopher96u.wirebolt.bru</string>
+            <key>UTTypeDescription</key>
+            <string>Bruno Request</string>
+            <key>UTTypeConformsTo</key>
+            <array>
+                <string>public.plain-text</string>
+            </array>
+            <key>UTTypeTagSpecification</key>
+            <dict>
+                <key>public.filename-extension</key>
+                <array>
+                    <string>bru</string>
                 </array>
             </dict>
         </dict>

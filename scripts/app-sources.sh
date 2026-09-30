@@ -22,16 +22,19 @@ wirebolt_app_inputs=(
   apple/Sources/WireboltKit/ResponseStorage.swift
   apple/Sources/WireboltKit/JSONResponseDocument.swift
   apple/Sources/WireboltKit/OAuth2Service.swift
+  apple/Sources/WireboltKit/CollectionImportSources.swift
   apple/Sources/WireboltKit/WireboltModel.swift
   apple/Sources/WireboltKit/SidebarSnapshot.swift
   apple/Sources/WireboltKit/VariableTemplates.swift
   apple/WireboltApp/WorkspaceUIState.swift
   apple/WireboltApp/ContentView.swift
   apple/WireboltApp/WorkspaceActions.swift
+  apple/WireboltApp/ImportSummaryView.swift
   apple/WireboltApp/NetworkSettingsView.swift
   apple/WireboltApp/NotesEditor.swift
   apple/WireboltApp/EnvironmentEditor.swift
   apple/WireboltApp/GitCollaborationView.swift
+  apple/WireboltApp/CookiesView.swift
   apple/WireboltApp/PerformanceProbe.swift
   apple/WireboltApp/ResponseViewer.swift
   apple/WireboltApp/ResponseHexView.swift
@@ -42,7 +45,6 @@ wirebolt_app_inputs=(
   apple/WireboltApp/IndexedResponseEditor.swift
   apple/WireboltApp/WireboltTheme.swift
   apple/WireboltApp/ResponseViewport.swift
-  apple/WireboltApp/RustCore.swift
   apple/WireboltApp/RustRequestRunner.swift
   apple/WireboltApp/RustWebSocketRunner.swift
   apple/WireboltApp/RustWorkspacePersistence.swift

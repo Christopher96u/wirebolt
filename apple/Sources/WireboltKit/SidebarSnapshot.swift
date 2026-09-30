@@ -91,24 +91,41 @@ public struct SidebarSnapshot: Sendable {
                 ancestors = [rows.count]
                 rows.append(Row(id: "collection:" + collection.id, depth: 0, content: .collection(collection), parentID: nil, ancestors: [], search: Self.normalize(collection.name)))
             }
-            let groups = Dictionary(grouping: collection.groups, by: { $0.parentID ?? "" })
-            let requests = Dictionary(grouping: collection.requests, by: { $0.groupID ?? "" })
+            // Children are ordered by index so sorting moves integers rather than request
+            // drafts; the order is the same (order, folders first, name, id).
+            let groups = collection.groups, requests = collection.requests
+            let groupsByParent = Dictionary(grouping: groups.indices, by: { groups[$0].parentID ?? "" })
+            let requestsByParent = Dictionary(grouping: requests.indices, by: { requests[$0].groupID ?? "" })
             var visited = Set<String>()
             func append(parent: String, ancestors: [Int]) {
-                let children: [(Int, Int, String, String, Row.Content)] = (groups[parent] ?? []).map { ($0.order, 0, $0.name, $0.id, .group(collection, $0)) }
-                    + (requests[parent] ?? []).map { ($0.order, 1, $0.request.name, $0.id, .request($0)) }
-                for (_, _, name, id, content) in children.sorted(by: { ($0.0, $0.1, $0.2, $0.3) < ($1.0, $1.1, $1.2, $1.3) }) {
+                // (order, kind: 0 folder / 1 request, index)
+                var children: [(Int, Int, Int)] = []
+                for index in groupsByParent[parent] ?? [] { children.append((groups[index].order, 0, index)) }
+                for index in requestsByParent[parent] ?? [] { children.append((requests[index].order, 1, index)) }
+                func name(_ child: (Int, Int, Int)) -> String { child.1 == 0 ? groups[child.2].name : requests[child.2].request.name }
+                func id(_ child: (Int, Int, Int)) -> String { child.1 == 0 ? groups[child.2].id : requests[child.2].id }
+                children.sort { lhs, rhs in
+                    if lhs.0 != rhs.0 { return lhs.0 < rhs.0 }
+                    if lhs.1 != rhs.1 { return lhs.1 < rhs.1 }
+                    let (left, right) = (name(lhs), name(rhs))
+                    if left != right { return left < right }
+                    return id(lhs) < id(rhs)
+                }
+                for child in children {
                     let rowID: String
                     let search: String
-                    switch content {
-                    case .group(_, let group):
+                    let content: Row.Content
+                    if child.1 == 0 {
+                        let group = groups[child.2]
                         guard visited.insert(group.id).inserted else { continue }
-                        rowID = "group:" + collection.id + ":" + id
-                        search = name
-                    case .request(let location):
-                        rowID = "request:" + id
-                        search = [name, location.request.method.rawValue, location.request.url].joined(separator: "\u{0}")
-                    case .collection: continue
+                        rowID = "group:" + collection.id + ":" + group.id
+                        search = group.name
+                        content = .group(collection, group)
+                    } else {
+                        let location = requests[child.2]
+                        rowID = "request:" + location.id
+                        search = location.request.name + "\u{0}" + location.request.method.rawValue + "\u{0}" + location.request.url
+                        content = .request(location)
                     }
                     let position = rows.count
                     rows.append(Row(id: rowID, depth: ancestors.count, content: content, parentID: ancestors.last.map { rows[$0].id },

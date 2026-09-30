@@ -1,127 +1,293 @@
+use std::{
+    collections::{BTreeMap, HashMap},
+    path::Path,
+};
+
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use serde_json::Value;
 
-use super::{ImportError, ImportedCollection, ImportedGroup, ImportedRequest};
+use super::{
+    ImportError, ImportedCollection, ImportedEnvironment, ImportedGroup, ImportedRequest,
+    ImportedRequestSettings, ImportedWorkspace,
+};
 use crate::{
     MultipartPart, MultipartPartKind, RequestAuthentication, RequestBody, RequestHeader,
     RequestValueField, ValueSource,
+    export_engine::{NativeEnvironment, NativeRequest},
 };
 
-// Exported paths describe hierarchy only. Import never opens these paths.
+// Exported paths describe hierarchy only. Import never opens these paths; it
+// only checks whether referenced upload files exist so it can warn.
 pub(super) fn parse(root: &Value) -> Result<ImportedCollection, ImportError> {
     parse_named(root, None)
 }
 
+/// Imports the document as one collection. A single exported collection keeps
+/// its own name instead of becoming a folder inside a file-named collection.
 pub(super) fn parse_named(
     root: &Value,
     file_name: Option<&str>,
 ) -> Result<ImportedCollection, ImportError> {
-    if root.get("version").and_then(Value::as_u64) != Some(1) {
-        return Err(ImportError::new("unsupported legacy collection version"));
-    }
-    let nodes = root
-        .get("nodes")
-        .and_then(Value::as_array)
-        .ok_or_else(|| ImportError::new("legacy collection has no nodes"))?;
-    let folders: Vec<_> = nodes
-        .iter()
-        .filter(|node| node["kind"] == "folder")
-        .collect();
-    let collection = folders.iter().copied().find(|node| {
-        if file_name.is_some() {
-            return false;
-        }
-        let path = node["path"].as_str().unwrap_or_default();
-        !folders.iter().any(|parent| {
-            parent["path"]
-                .as_str()
-                .is_some_and(|parent| path.starts_with(&format!("{parent}/")))
-        })
-    });
-    let collection_id = collection.and_then(|node| node["uuid"].as_str());
-    let parent = |node: &Value| -> Option<String> {
-        let path = node["path"].as_str()?;
-        folders
-            .iter()
-            .filter(|folder| {
-                folder["path"]
-                    .as_str()
-                    .is_some_and(|folder| path.starts_with(&format!("{folder}/")))
-            })
-            .max_by_key(|folder| folder["path"].as_str().map_or(0, str::len))
-            .and_then(|folder| folder["uuid"].as_str())
-            .filter(|id| Some(*id) != collection_id)
-            .map(str::to_owned)
+    let export = Export::new(root)?;
+    let roots = &export.collection_roots;
+    let collection = match roots.as_slice() {
+        [collection] if export.loose().next().is_none() => export.collection(
+            name(collection),
+            Some(collection),
+            export.members(collection),
+            &mut BTreeMap::new(),
+        )?,
+        _ => export.collection(
+            export.fallback_name(file_name),
+            None,
+            export.nodes.iter().enumerate(),
+            &mut BTreeMap::new(),
+        )?,
     };
-    let mut result = ImportedCollection {
-        name: file_name
-            .or_else(|| collection.and_then(|node| node["name"].as_str()))
-            .or_else(|| root["workspaceName"].as_str())
-            .unwrap_or("Imported Collection")
-            .to_owned(),
-        groups: Vec::new(),
-        requests: Vec::new(),
-        warnings: Vec::new(),
-    };
-    for (index, node) in nodes.iter().enumerate() {
-        let source_id = node["uuid"]
-            .as_str()
-            .ok_or_else(|| ImportError::new("legacy node has no identifier"))?
-            .to_owned();
-        let name = node["name"].as_str().unwrap_or("Untitled").to_owned();
-        let sibling_index = folders
-            .iter()
-            .find_map(|folder| {
-                folder["folderMetadata"]["childIds"]
-                    .as_array()?
-                    .iter()
-                    .position(|id| id.as_str() == Some(source_id.as_str()))
-            })
-            .unwrap_or(index);
-        let order = i64::try_from(sibling_index).unwrap_or(i64::MAX);
-        match node["kind"].as_str() {
-            Some("folder") if Some(source_id.as_str()) != collection_id => {
-                result.groups.push(ImportedGroup {
-                    source_id,
-                    name,
-                    parent_source_id: parent(node),
-                    order,
-                });
-            }
-            Some("request" | "websocketRequest") => {
-                result
-                    .requests
-                    .push(request(node, source_id, name, parent(node), order)?);
-            }
-            Some("folder") => {}
-            _ => return Err(ImportError::new("unsupported legacy node type")),
-        }
-    }
-    if result.requests.is_empty() && folders.is_empty() {
+    if collection.requests.is_empty() && export.folders.is_empty() {
         return Err(ImportError::new("legacy collection has no requests"));
     }
-    Ok(result)
+    Ok(collection)
+}
+
+/// Imports every exported collection separately, plus requests outside any
+/// collection (named after the file) and the exported environments.
+pub(super) fn parse_workspace(
+    root: &Value,
+    file_name: Option<&str>,
+) -> Result<ImportedWorkspace, ImportError> {
+    let export = Export::new(root)?;
+    let roots = &export.collection_roots;
+    let mut request_settings = BTreeMap::new();
+    let mut collections = Vec::new();
+    if export.loose().next().is_some() || roots.is_empty() {
+        collections.push(export.collection(
+            export.fallback_name(file_name),
+            None,
+            export.loose(),
+            &mut request_settings,
+        )?);
+    }
+    for &collection in roots {
+        collections.push(export.collection(
+            name(collection),
+            Some(collection),
+            export.members(collection),
+            &mut request_settings,
+        )?);
+    }
+    if export.folders.is_empty() && collections.iter().all(|c| c.requests.is_empty()) {
+        return Err(ImportError::new("legacy collection has no requests"));
+    }
+    let environments = match root.pointer("/wirebolt/environments") {
+        Some(value) => serde_json::from_value::<Vec<NativeEnvironment>>(value.clone())
+            .map_err(|_| ImportError::new("invalid Wirebolt environment metadata"))?
+            .into_iter()
+            .map(|environment| ImportedEnvironment {
+                name: environment.name,
+                global: environment.global,
+                variables: environment.variables,
+            })
+            .collect(),
+        None => Vec::new(),
+    };
+    Ok(ImportedWorkspace {
+        collections,
+        environments,
+        request_settings,
+    })
+}
+
+fn name(node: &Value) -> String {
+    node["name"].as_str().unwrap_or("Untitled").to_owned()
+}
+
+fn path(node: &Value) -> &str {
+    node["path"].as_str().unwrap_or_default()
+}
+
+/// Top-level folders that stand for whole collections: the ones Wirebolt
+/// marks, or else a lone top-level folder, as in older collection exports.
+fn collection_roots<'a>(nodes: &'a [Value], folders: &[&'a Value]) -> Vec<&'a Value> {
+    let is_top_level = |node: &Value| !folders.iter().any(|folder| is_inside(node, folder));
+    let marked: Vec<_> = folders
+        .iter()
+        .copied()
+        .filter(|folder| folder.pointer("/wirebolt/collection") == Some(&Value::Bool(true)))
+        .filter(|folder| is_top_level(folder))
+        .collect();
+    if !marked.is_empty() {
+        return marked;
+    }
+    let mut top_level = nodes.iter().filter(|node| is_top_level(node));
+    match (top_level.next(), top_level.next()) {
+        (Some(folder), None) if folder["kind"] == "folder" => vec![folder],
+        _ => Vec::new(),
+    }
+}
+
+fn is_inside(node: &Value, folder: &Value) -> bool {
+    let folder = path(folder);
+    !folder.is_empty()
+        && path(node)
+            .strip_prefix(folder)
+            .is_some_and(|rest| rest.starts_with('/'))
+}
+
+struct Export<'a> {
+    root: &'a Value,
+    nodes: &'a [Value],
+    folders: Vec<&'a Value>,
+    /// Top-level folders that stand for whole collections.
+    collection_roots: Vec<&'a Value>,
+    /// Position of each node among its folder's children.
+    sibling_positions: HashMap<&'a str, usize>,
+}
+
+impl<'a> Export<'a> {
+    fn new(root: &'a Value) -> Result<Self, ImportError> {
+        if root.get("version").and_then(Value::as_u64) != Some(1) {
+            return Err(ImportError::new("unsupported legacy collection version"));
+        }
+        let nodes = root
+            .get("nodes")
+            .and_then(Value::as_array)
+            .ok_or_else(|| ImportError::new("legacy collection has no nodes"))?;
+        let folders: Vec<_> = nodes
+            .iter()
+            .filter(|node| node["kind"] == "folder")
+            .collect();
+        let mut sibling_positions = HashMap::new();
+        for folder in &folders {
+            let children = folder["folderMetadata"]["childIds"].as_array();
+            for (position, child) in children.into_iter().flatten().enumerate() {
+                if let Some(child) = child.as_str() {
+                    sibling_positions.entry(child).or_insert(position);
+                }
+            }
+        }
+        let collection_roots = collection_roots(nodes, &folders);
+        Ok(Self {
+            root,
+            nodes,
+            folders,
+            collection_roots,
+            sibling_positions,
+        })
+    }
+
+    fn fallback_name(&self, file_name: Option<&str>) -> String {
+        file_name
+            .or_else(|| self.root["workspaceName"].as_str())
+            .unwrap_or("Imported Collection")
+            .to_owned()
+    }
+
+    fn members(&self, collection: &'a Value) -> impl Iterator<Item = (usize, &'a Value)> {
+        self.nodes
+            .iter()
+            .enumerate()
+            .filter(move |(_, node)| is_inside(node, collection))
+    }
+
+    /// Nodes outside every collection root.
+    fn loose(&self) -> impl Iterator<Item = (usize, &'a Value)> {
+        self.nodes.iter().enumerate().filter(|(_, node)| {
+            !self
+                .collection_roots
+                .iter()
+                .any(|root| std::ptr::eq(*root, *node) || is_inside(node, root))
+        })
+    }
+
+    /// Nearest enclosing folder below the collection root.
+    fn parent(&self, node: &Value, collection: Option<&Value>) -> Option<String> {
+        self.folders
+            .iter()
+            .filter(|folder| is_inside(node, folder))
+            .max_by_key(|folder| path(folder).len())
+            .filter(|folder| !collection.is_some_and(|root| std::ptr::eq(root, **folder)))
+            .and_then(|folder| folder["uuid"].as_str())
+            .map(str::to_owned)
+    }
+
+    fn collection(
+        &self,
+        name: String,
+        root: Option<&Value>,
+        members: impl Iterator<Item = (usize, &'a Value)>,
+        request_settings: &mut BTreeMap<String, ImportedRequestSettings>,
+    ) -> Result<ImportedCollection, ImportError> {
+        let mut result = ImportedCollection {
+            name,
+            groups: Vec::new(),
+            requests: Vec::new(),
+            warnings: Vec::new(),
+        };
+        for (index, node) in members {
+            let source_id = node["uuid"]
+                .as_str()
+                .ok_or_else(|| ImportError::new("legacy node has no identifier"))?
+                .to_owned();
+            let sibling_index = self
+                .sibling_positions
+                .get(source_id.as_str())
+                .copied()
+                .unwrap_or(index);
+            let order = i64::try_from(sibling_index).unwrap_or(i64::MAX);
+            let parent_source_id = self.parent(node, root);
+            match node["kind"].as_str() {
+                Some("folder") => result.groups.push(ImportedGroup {
+                    source_id,
+                    name: self::name(node),
+                    parent_source_id,
+                    order,
+                }),
+                Some("request" | "websocketRequest") => {
+                    let (request, settings) = request(node, source_id, parent_source_id, order)?;
+                    warn_about_missing_uploads(&request, &mut result.warnings);
+                    if let Some(settings) = settings {
+                        request_settings.insert(request.source_id.clone(), settings);
+                    }
+                    result.requests.push(request);
+                }
+                _ => return Err(ImportError::new("unsupported legacy node type")),
+            }
+        }
+        Ok(result)
+    }
+}
+
+fn warn_about_missing_uploads(request: &ImportedRequest, warnings: &mut Vec<String>) {
+    let paths: Vec<&str> = match &request.body {
+        RequestBody::File { path, .. } => vec![path.as_str()],
+        RequestBody::Multipart { parts } => parts
+            .iter()
+            .filter(|part| part.kind == MultipartPartKind::File)
+            .filter_map(|part| part.file_path.as_deref())
+            .collect(),
+        _ => Vec::new(),
+    };
+    for path in paths {
+        if !path.is_empty() && !Path::new(path).exists() {
+            warnings.push(format!(
+                "“{}” uploads {path}, which does not exist on this Mac. Choose the file again before sending.",
+                request.name
+            ));
+        }
+    }
 }
 
 fn request(
     node: &Value,
     source_id: String,
-    name: String,
     group_source_id: Option<String>,
     order: i64,
-) -> Result<ImportedRequest, ImportError> {
+) -> Result<(ImportedRequest, Option<ImportedRequestSettings>), ImportError> {
     let request = &node["flow"]["request"];
-    let mut url = request["url"]
+    let url = request["url"]
         .as_str()
-        .ok_or_else(|| ImportError::new("legacy request has no URL"))?
-        .to_owned();
-    let query = rows(request.get("queries"));
-    if !query.is_empty()
-        && let Ok(mut parsed) = url::Url::parse(&url)
-    {
-        parsed.set_query(None);
-        url = parsed.into();
-    }
+        .ok_or_else(|| ImportError::new("legacy request has no URL"))?;
     let method = request["method"]
         .as_object()
         .and_then(|method| method.iter().next())
@@ -140,16 +306,48 @@ fn request(
     } else {
         method
     };
-    let authentication = if let Some(native) = node.pointer("/wirebolt/authentication") {
-        serde_json::from_value(native.clone())
-            .map_err(|_| ImportError::new("invalid Wirebolt authentication metadata"))?
-    } else {
-        authentication(&request["auth"])?
+    let native = node
+        .get("wirebolt")
+        .map(|native| serde_json::from_value::<NativeRequest>(native.clone()))
+        .transpose()
+        .map_err(|_| ImportError::new("invalid Wirebolt request metadata"))?;
+    let (authentication, definition) = match native {
+        Some(native) => (native.authentication, native.request),
+        None => (authentication(&request["auth"])?, None),
     };
-    let headers = rows(request.get("headers"))
+    let mut imported = ImportedRequest {
+        source_id,
+        name: name(node),
+        group_source_id,
+        order,
+        method,
+        url: url.to_owned(),
+        headers: Vec::new(),
+        query: Vec::new(),
+        authentication,
+        body: RequestBody::Empty,
+        web_socket: node["kind"] == "websocketRequest",
+        note: node["note"].as_str().unwrap_or_default().to_owned(),
+    };
+    // Wirebolt's own definition is authoritative; the portable fields are a
+    // lossy mirror of it for other readers.
+    if let Some(definition) = definition {
+        imported.headers = definition.headers;
+        imported.query = definition.query;
+        imported.body = definition.body;
+        let settings = ImportedRequestSettings {
+            proxy_override: definition.proxy_override,
+            transport: definition.transport,
+            inherits_workspace_transport: definition.inherits_workspace_transport,
+        };
+        return Ok((imported, Some(settings)));
+    }
+    imported.query = rows(request.get("queries"));
+    imported.url = without_repeated_query(url, &imported.query);
+    imported.headers = rows(request.get("headers"))
         .into_iter()
         .filter(|field| {
-            matches!(authentication, RequestAuthentication::None)
+            matches!(imported.authentication, RequestAuthentication::None)
                 || !field.name.eq_ignore_ascii_case("authorization")
         })
         .map(|field| RequestHeader {
@@ -160,20 +358,44 @@ fn request(
             sensitive: field.sensitive,
         })
         .collect();
-    Ok(ImportedRequest {
-        source_id,
-        name,
-        group_source_id,
-        order,
-        method,
-        url,
-        headers,
-        query,
-        authentication,
-        body: body(&request["body"]["contentType"])?,
-        web_socket: node["kind"] == "websocketRequest",
-        note: node["note"].as_str().unwrap_or_default().to_owned(),
-    })
+    imported.body = body(&request["body"]["contentType"])?;
+    Ok((imported, None))
+}
+
+/// Legacy documents repeat enabled query rows in the URL. Drops only the URL
+/// pairs that a row already describes, so other query text is never lost.
+fn without_repeated_query(url: &str, rows: &[RequestValueField]) -> String {
+    let Some((base, rest)) = url.split_once('?') else {
+        return url.to_owned();
+    };
+    let (query, fragment) = match rest.split_once('#') {
+        Some((query, fragment)) => (query, Some(fragment)),
+        None => (rest, None),
+    };
+    let mut unmatched: Vec<_> = rows.iter().collect();
+    let kept: Vec<_> = query
+        .split('&')
+        .filter(|segment| !segment.is_empty())
+        .filter(|segment| {
+            let Some((name, value)) = url::form_urlencoded::parse(segment.as_bytes()).next() else {
+                return true;
+            };
+            let repeated = unmatched.iter().position(|row| {
+                row.name == name && matches!(&row.value, ValueSource::Literal(v) if *v == value)
+            });
+            repeated.map(|index| unmatched.remove(index)).is_none()
+        })
+        .collect();
+    let mut result = base.to_owned();
+    if !kept.is_empty() {
+        result.push('?');
+        result.push_str(&kept.join("&"));
+    }
+    if let Some(fragment) = fragment {
+        result.push('#');
+        result.push_str(fragment);
+    }
+    result
 }
 
 fn authentication(value: &Value) -> Result<RequestAuthentication, ImportError> {
@@ -338,6 +560,29 @@ mod tests {
             RequestBody::Json {
                 value: "{\"n\":1}".into()
             }
+        );
+    }
+
+    #[test]
+    fn url_query_text_is_kept_unless_a_row_repeats_it() {
+        let rows = [
+            RequestValueField::enabled("q", ValueSource::literal("a&b")),
+            RequestValueField::enabled("page", ValueSource::literal("2")),
+        ];
+        assert_eq!(
+            without_repeated_query(
+                "https://api.example.test/items?fixed=1&q=a%26b&page=3#top",
+                &rows
+            ),
+            "https://api.example.test/items?fixed=1&page=3#top"
+        );
+        assert_eq!(
+            without_repeated_query("{{baseUrl}}/items?q=a%26b&page=2", &rows),
+            "{{baseUrl}}/items"
+        );
+        assert_eq!(
+            without_repeated_query("{{baseUrl}}/items?view=compact", &[]),
+            "{{baseUrl}}/items?view=compact"
         );
     }
 

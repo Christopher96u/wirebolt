@@ -81,16 +81,20 @@ struct ResponseStorageTests {
         let origin = try #require(URL(string: "https://api.example.com/account/login"))
         await jar.store(headers: [
             ResponseHeader(name: "Set-Cookie", value: "session=abc; Path=/account; Secure; HttpOnly; SameSite=Lax"),
+            ResponseHeader(name: "Set-Cookie", value: "remember=1; Path=/account; Secure; Max-Age=3600"),
             ResponseHeader(name: "Set-Cookie", value: "gone=1; Max-Age=0"),
         ], requestURL: origin)
 
-        #expect(await jar.header(for: try #require(URL(string: "https://api.example.com/account/me"))) == "session=abc")
+        let sent = await jar.header(for: try #require(URL(string: "https://api.example.com/account/me")))
+        #expect(Set(sent?.components(separatedBy: "; ") ?? []) == ["session=abc", "remember=1"])
         #expect(await jar.header(for: try #require(URL(string: "http://api.example.com/account/me"))) == nil)
         #expect(await jar.header(for: try #require(URL(string: "https://sub.api.example.com/account/me"))) == nil)
         #expect(await jar.header(for: try #require(URL(string: "https://api.example.com/accounts"))) == nil)
 
+        // Session cookies end with the app; cookies with an expiry survive a relaunch.
         let restored = CookieJar(storageURL: storage)
-        #expect(await restored.header(for: try #require(URL(string: "https://api.example.com/account/me"))) == "session=abc")
+        #expect(await restored.header(for: try #require(URL(string: "https://api.example.com/account/me"))) == "remember=1")
+        #expect(!String(decoding: try Data(contentsOf: storage), as: UTF8.self).contains("session"))
     }
 
     private func temporaryDirectory() -> URL {

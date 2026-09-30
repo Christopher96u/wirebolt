@@ -165,7 +165,7 @@ struct LifecycleTests {
         defer { try? FileManager.default.removeItem(at: root) }
         let cookies = root.appending(path: "cookies.json")
         let writer = CookieJar(storageURL: cookies)
-        await writer.store(headers: [ResponseHeader(name: "Set-Cookie", value: "id=1")], requestURL: URL(string: "https://example.com")!)
+        await writer.store(headers: [ResponseHeader(name: "Set-Cookie", value: "id=1; Max-Age=3600")], requestURL: URL(string: "https://example.com")!)
         let reader = CookieJar(storageURL: cookies)
         #expect(await reader.header(for: URL(string: "https://example.com/")!) == "id=1")
         #expect(await HistoryRepository(root: root.appending(path: "missing")).list(requestID: "a").isEmpty)

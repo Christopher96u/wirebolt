@@ -3,7 +3,8 @@
 mod body_decoder;
 mod export_engine;
 pub use export_engine::{
-    ExportError, export_legacy_v1_collection, export_legacy_v1_request, export_legacy_v1_workspace,
+    ExportError, GLOBAL_ENVIRONMENT_ID, export_legacy_v1_collection, export_legacy_v1_request,
+    export_legacy_v1_workspace,
 };
 mod git_collaboration;
 mod http_engine;
@@ -26,7 +27,9 @@ pub use http_engine::{
     TlsConfigurationError,
 };
 pub use import_engine::{
-    ImportEngine, ImportError, ImportFormat, ImportedCollection, ImportedGroup, ImportedRequest,
+    ImportEngine, ImportError, ImportFormat, ImportedCollection, ImportedEnvironment,
+    ImportedGroup, ImportedRequest, ImportedRequestSettings, ImportedSecret, ImportedWorkspace,
+    ParsedImport,
 };
 #[cfg(target_vendor = "apple")]
 pub use proxy::{KeychainSecretResolver, KeychainSecretStore};

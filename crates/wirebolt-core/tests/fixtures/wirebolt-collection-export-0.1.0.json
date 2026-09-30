@@ -1,0 +1,545 @@
+{
+  "appVersion": "0.1.0",
+  "exportDate": 812456483.7439139,
+  "historyFlows": {},
+  "historyItems": {},
+  "nodes": [
+    {
+      "folderMetadata": {
+        "childIds": [
+          "00000000-0000-4000-88da-12151e39d813",
+          "00000000-0000-4000-88da-12151e39d811",
+          "00000000-0000-4000-88da-12151e39d816",
+          "00000000-0000-4000-88da-12151e39d817",
+          "00000000-0000-4000-88da-12151e39d818",
+          "00000000-0000-4000-88da-12151e39d819",
+          "00000000-0000-4000-88da-12151e39d81a",
+          "00000000-0000-4000-88da-12151e39d81b"
+        ],
+        "folderName": "My API",
+        "uuid": "00000000-0000-4000-88da-12151e39d810"
+      },
+      "historyManager": {
+        "historyItems": []
+      },
+      "kind": "folder",
+      "name": "My API",
+      "path": "/00000000-0000-4000-88da-12151e39d810",
+      "responseDisplayMode": null,
+      "uuid": "00000000-0000-4000-88da-12151e39d810"
+    },
+    {
+      "folderMetadata": {
+        "childIds": [
+          "00000000-0000-4000-88da-12151e39d812",
+          "00000000-0000-4000-88da-12151e39d815"
+        ],
+        "folderName": "Outer",
+        "uuid": "00000000-0000-4000-88da-12151e39d811"
+      },
+      "historyManager": {
+        "historyItems": []
+      },
+      "kind": "folder",
+      "name": "Outer",
+      "path": "/00000000-0000-4000-88da-12151e39d810/00000000-0000-4000-88da-12151e39d811",
+      "responseDisplayMode": null,
+      "uuid": "00000000-0000-4000-88da-12151e39d811"
+    },
+    {
+      "folderMetadata": {
+        "childIds": [
+          "00000000-0000-4000-88da-12151e39d814"
+        ],
+        "folderName": "Inner",
+        "uuid": "00000000-0000-4000-88da-12151e39d812"
+      },
+      "historyManager": {
+        "historyItems": []
+      },
+      "kind": "folder",
+      "name": "Inner",
+      "path": "/00000000-0000-4000-88da-12151e39d810/00000000-0000-4000-88da-12151e39d811/00000000-0000-4000-88da-12151e39d812",
+      "responseDisplayMode": null,
+      "uuid": "00000000-0000-4000-88da-12151e39d812"
+    },
+    {
+      "flow": {
+        "error": null,
+        "events": [],
+        "request": {
+          "auth": {
+            "mode": "none"
+          },
+          "body": {
+            "contentType": {
+              "none": {}
+            }
+          },
+          "headers": [
+            {
+              "isBold": false,
+              "isEnabled": true,
+              "isSubItem": false,
+              "key": "X-Secret",
+              "value": "{{hdr.secret}}"
+            },
+            {
+              "isBold": false,
+              "isEnabled": false,
+              "isSubItem": false,
+              "key": "X-Off",
+              "value": "off"
+            },
+            {
+              "isBold": false,
+              "isEnabled": true,
+              "isSubItem": false,
+              "key": "Authorization",
+              "value": "Bearer literal-in-header"
+            }
+          ],
+          "info": null,
+          "method": {
+            "get": {}
+          },
+          "queries": [
+            {
+              "isBold": false,
+              "isEnabled": false,
+              "isSubItem": false,
+              "key": "page",
+              "value": "2"
+            },
+            {
+              "isBold": false,
+              "isEnabled": true,
+              "isSubItem": false,
+              "key": "apikey",
+              "value": "{{q.secret}}"
+            }
+          ],
+          "url": "https://api.test/items?fixed=1"
+        },
+        "response": null,
+        "type": {
+          "request": {}
+        }
+      },
+      "folderMetadata": null,
+      "historyManager": {
+        "historyItems": []
+      },
+      "kind": "request",
+      "name": "Headers+query",
+      "note": "Markdown **note**",
+      "path": "/00000000-0000-4000-88da-12151e39d810/00000000-0000-4000-88da-12151e39d813.request",
+      "responseDisplayMode": null,
+      "uuid": "00000000-0000-4000-88da-12151e39d813",
+      "wirebolt": {
+        "authentication": {
+          "kind": "none"
+        }
+      }
+    },
+    {
+      "flow": {
+        "error": null,
+        "events": [],
+        "request": {
+          "auth": {
+            "bearer": {
+              "token": "{{tok.ref}}"
+            },
+            "mode": "bearer"
+          },
+          "body": {
+            "contentType": {
+              "json": {
+                "_0": "{\"a\":{{n}}}"
+              }
+            }
+          },
+          "headers": [],
+          "info": null,
+          "method": {
+            "post": {}
+          },
+          "queries": [],
+          "url": "{{base}}/json"
+        },
+        "response": null,
+        "type": {
+          "request": {}
+        }
+      },
+      "folderMetadata": null,
+      "historyManager": {
+        "historyItems": []
+      },
+      "kind": "request",
+      "name": "Bearer secret",
+      "note": "",
+      "path": "/00000000-0000-4000-88da-12151e39d810/00000000-0000-4000-88da-12151e39d811/00000000-0000-4000-88da-12151e39d812/00000000-0000-4000-88da-12151e39d814.request",
+      "responseDisplayMode": null,
+      "uuid": "00000000-0000-4000-88da-12151e39d814",
+      "wirebolt": {
+        "authentication": {
+          "kind": "bearer",
+          "token": {
+            "secret": "tok.ref"
+          }
+        }
+      }
+    },
+    {
+      "flow": {
+        "error": null,
+        "events": [],
+        "request": {
+          "auth": {
+            "mode": "none"
+          },
+          "body": {
+            "contentType": {
+              "text": {
+                "_0": "RAW"
+              }
+            }
+          },
+          "headers": [],
+          "info": null,
+          "method": {
+            "post": {}
+          },
+          "queries": [],
+          "url": "https://api.test/raw"
+        },
+        "response": null,
+        "type": {
+          "request": {}
+        }
+      },
+      "folderMetadata": null,
+      "historyManager": {
+        "historyItems": []
+      },
+      "kind": "request",
+      "name": "Raw",
+      "note": "",
+      "path": "/00000000-0000-4000-88da-12151e39d810/00000000-0000-4000-88da-12151e39d816.request",
+      "responseDisplayMode": null,
+      "uuid": "00000000-0000-4000-88da-12151e39d816",
+      "wirebolt": {
+        "authentication": {
+          "kind": "none"
+        }
+      }
+    },
+    {
+      "flow": {
+        "error": null,
+        "events": [],
+        "request": {
+          "auth": {
+            "mode": "none"
+          },
+          "body": {
+            "contentType": {
+              "fileURL": {
+                "_0": "/Users/example/Documents/upload.txt"
+              }
+            }
+          },
+          "headers": [],
+          "info": null,
+          "method": {
+            "put": {}
+          },
+          "queries": [],
+          "url": "https://api.test/file"
+        },
+        "response": null,
+        "type": {
+          "request": {}
+        }
+      },
+      "folderMetadata": null,
+      "historyManager": {
+        "historyItems": []
+      },
+      "kind": "request",
+      "name": "File body",
+      "note": "",
+      "path": "/00000000-0000-4000-88da-12151e39d810/00000000-0000-4000-88da-12151e39d817.request",
+      "responseDisplayMode": null,
+      "uuid": "00000000-0000-4000-88da-12151e39d817",
+      "wirebolt": {
+        "authentication": {
+          "kind": "none"
+        }
+      }
+    },
+    {
+      "flow": {
+        "error": null,
+        "events": [],
+        "request": {
+          "auth": {
+            "mode": "none"
+          },
+          "body": {
+            "contentType": {
+              "multipartFormData": {
+                "_0": {
+                  "parts": [
+                    {
+                      "contentType": "text/plain",
+                      "fileName": "upload.txt",
+                      "id": "p1",
+                      "isEnabled": true,
+                      "part": "doc",
+                      "value": "aGVsbG8tYnl0ZXMK"
+                    },
+                    {
+                      "contentType": "",
+                      "fileName": "",
+                      "id": "p2",
+                      "isEnabled": false,
+                      "part": "tok",
+                      "value": "e3ttcC5zZWNyZXR9fQ=="
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "headers": [],
+          "info": null,
+          "method": {
+            "post": {}
+          },
+          "queries": [],
+          "url": "https://api.test/mp"
+        },
+        "response": null,
+        "type": {
+          "request": {}
+        }
+      },
+      "folderMetadata": null,
+      "historyManager": {
+        "historyItems": []
+      },
+      "kind": "request",
+      "name": "Multipart",
+      "note": "",
+      "path": "/00000000-0000-4000-88da-12151e39d810/00000000-0000-4000-88da-12151e39d818.request",
+      "responseDisplayMode": null,
+      "uuid": "00000000-0000-4000-88da-12151e39d818",
+      "wirebolt": {
+        "authentication": {
+          "kind": "none"
+        }
+      }
+    },
+    {
+      "flow": {
+        "error": null,
+        "events": [],
+        "request": {
+          "auth": {
+            "basic": {
+              "password": "{{pw.ref}}",
+              "username": "u"
+            },
+            "mode": "basic"
+          },
+          "body": {
+            "contentType": {
+              "text": {
+                "_0": "a,b\n1,2"
+              }
+            }
+          },
+          "headers": [],
+          "info": null,
+          "method": {
+            "custom": {
+              "_0": "PURGE"
+            }
+          },
+          "queries": [],
+          "url": "https://api.test/purge"
+        },
+        "response": null,
+        "type": {
+          "request": {}
+        }
+      },
+      "folderMetadata": null,
+      "historyManager": {
+        "historyItems": []
+      },
+      "kind": "request",
+      "name": "Basic literal",
+      "note": "",
+      "path": "/00000000-0000-4000-88da-12151e39d810/00000000-0000-4000-88da-12151e39d811/00000000-0000-4000-88da-12151e39d815.request",
+      "responseDisplayMode": null,
+      "uuid": "00000000-0000-4000-88da-12151e39d815",
+      "wirebolt": {
+        "authentication": {
+          "kind": "basic",
+          "password": {
+            "secret": "pw.ref"
+          },
+          "username": "u"
+        }
+      }
+    },
+    {
+      "flow": {
+        "error": null,
+        "events": [],
+        "request": {
+          "auth": {
+            "mode": "none"
+          },
+          "body": {
+            "contentType": {
+              "formURLEncoded": {
+                "_0": [
+                  {
+                    "isBold": false,
+                    "isEnabled": true,
+                    "isSubItem": false,
+                    "key": "pw",
+                    "value": "{{form.secret}}"
+                  }
+                ]
+              }
+            }
+          },
+          "headers": [],
+          "info": null,
+          "method": {
+            "post": {}
+          },
+          "queries": [],
+          "url": "https://api.test/form"
+        },
+        "response": null,
+        "type": {
+          "request": {}
+        }
+      },
+      "folderMetadata": null,
+      "historyManager": {
+        "historyItems": []
+      },
+      "kind": "request",
+      "name": "Form",
+      "note": "",
+      "path": "/00000000-0000-4000-88da-12151e39d810/00000000-0000-4000-88da-12151e39d819.request",
+      "responseDisplayMode": null,
+      "uuid": "00000000-0000-4000-88da-12151e39d819",
+      "wirebolt": {
+        "authentication": {
+          "kind": "none"
+        }
+      }
+    },
+    {
+      "flow": {
+        "error": null,
+        "events": [],
+        "request": {
+          "auth": {
+            "mode": "none"
+          },
+          "body": {
+            "contentType": {
+              "none": {}
+            }
+          },
+          "headers": [],
+          "info": null,
+          "method": {
+            "custom": {
+              "_0": "WS"
+            }
+          },
+          "queries": [],
+          "url": "wss://api.test/ws"
+        },
+        "response": null,
+        "type": {
+          "request": {}
+        }
+      },
+      "folderMetadata": null,
+      "historyManager": {
+        "historyItems": []
+      },
+      "kind": "websocketRequest",
+      "name": "Socket",
+      "note": "",
+      "path": "/00000000-0000-4000-88da-12151e39d810/00000000-0000-4000-88da-12151e39d81a.request",
+      "responseDisplayMode": null,
+      "uuid": "00000000-0000-4000-88da-12151e39d81a",
+      "wirebolt": {
+        "authentication": {
+          "kind": "none"
+        }
+      }
+    },
+    {
+      "flow": {
+        "error": null,
+        "events": [],
+        "request": {
+          "auth": {
+            "mode": "wirebolt"
+          },
+          "body": {
+            "contentType": {
+              "none": {}
+            }
+          },
+          "headers": [],
+          "info": null,
+          "method": {
+            "get": {}
+          },
+          "queries": [],
+          "url": "https://api.test/k"
+        },
+        "response": null,
+        "type": {
+          "request": {}
+        }
+      },
+      "folderMetadata": null,
+      "historyManager": {
+        "historyItems": []
+      },
+      "kind": "request",
+      "name": "ApiKey",
+      "note": "",
+      "path": "/00000000-0000-4000-88da-12151e39d810/00000000-0000-4000-88da-12151e39d81b.request",
+      "responseDisplayMode": null,
+      "uuid": "00000000-0000-4000-88da-12151e39d81b",
+      "wirebolt": {
+        "authentication": {
+          "kind": "api_key",
+          "name": "key",
+          "placement": "query",
+          "value": "literal-key"
+        }
+      }
+    }
+  ],
+  "responseBodies": {},
+  "version": 1,
+  "workspaceName": "My API"
+}

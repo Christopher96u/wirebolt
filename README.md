@@ -40,6 +40,19 @@ brew install --cask Christopher96u/tap/wirebolt
 
 Or download the ZIP from [beta releases](https://github.com/Christopher96u/homebrew-tap/releases), extract it, and move Wirebolt to Applications. Current beta packages are ad-hoc signed, not notarized; see [first launch](docs/installation.md#first-launch) if macOS blocks opening the app.
 
+### Build from source
+
+On an Apple Silicon Mac with Xcode and [rustup](https://rustup.rs) or mise (the pinned Rust toolchain is selected automatically):
+
+```sh
+git clone https://github.com/Christopher96u/wirebolt.git
+cd wirebolt
+./scripts/build-app.sh
+open build/Wirebolt.app
+```
+
+See the [development guide](docs/development.md) for requirements and checks.
+
 ## Your first request
 
 1. Open Wirebolt and choose **File → New Workspace…**.
@@ -62,7 +75,7 @@ The [quick start](docs/quick-start.md) includes a local demo server and copyable
 | [WebSockets](docs/websockets.md) | Connect, send text or binary messages, inspect replies and disconnect |
 | [Markdown notes](docs/notes.md) | Request documentation with local Edit/Preview modes |
 | [Git collaboration](docs/git-collaboration.md) | Review status and explicitly commit, pull or push workspace documents |
-| [Import and export](docs/import-export.md) | cURL, HAR, Postman v2 and Wirebolt JSON import; Wirebolt JSON export |
+| [Import and export](docs/import-export.md) | cURL, HAR, Postman v2, Insomnia, Bruno and Wirebolt JSON import; Wirebolt JSON export |
 
 ### Configure once, reuse across requests
 
@@ -100,7 +113,7 @@ See [troubleshooting](docs/troubleshooting.md) for setup and compatibility detai
 
 ## Contribute
 
-Read [CONTRIBUTING.md](CONTRIBUTING.md) to report an issue, improve the documentation or work on the app. Build instructions and checks live in the [development guide](docs/development.md). Security reporting guidance is in [SECURITY.md](SECURITY.md).
+Read [CONTRIBUTING.md](CONTRIBUTING.md) to report an issue, improve the documentation or work on the app. Build instructions and checks live in the [development guide](docs/development.md). Report vulnerabilities privately as described in [SECURITY.md](SECURITY.md), not in public issues.
 
 ## License
 

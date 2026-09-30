@@ -52,6 +52,8 @@ pub struct GitStatus {
     /// `None` before the first commit.
     pub revision: Option<String>,
     pub changes: Vec<GitChange>,
+    /// A merge started by a pull is still in progress (`MERGE_HEAD` exists).
+    pub merging: bool,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -62,6 +64,7 @@ pub enum GitOperationOutcome {
     UpToDate,
     Pushed,
     Conflicted,
+    MergeAborted,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -105,6 +108,7 @@ pub enum GitErrorKind {
     MissingRemote,
     DetachedHead,
     TimedOut,
+    NoMergeInProgress,
 }
 
 #[derive(Debug)]
@@ -137,6 +141,7 @@ impl fmt::Display for GitError {
             GitErrorKind::MissingRemote => "workspace has no origin remote",
             GitErrorKind::DetachedHead => "workspace is in detached HEAD state",
             GitErrorKind::TimedOut => "Git did not finish in time",
+            GitErrorKind::NoMergeInProgress => "no merge is in progress",
         };
         write!(
             formatter,
@@ -195,6 +200,28 @@ impl GitWorkspace {
         self
     }
 
+    /// Makes the workspace folder the root of a new Git repository.
+    ///
+    /// An existing repository rooted at the workspace is opened unchanged.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`GitError`] when Git is unavailable, when the workspace sits
+    /// inside another repository (a nested repository would hide the
+    /// workspace from the outer one), or when `git init` fails.
+    pub fn initialize(root: impl Into<PathBuf>) -> Result<Self, GitError> {
+        let root = root.into();
+        match Self::open(&root) {
+            Err(error) if error.kind == GitErrorKind::NotRepository => {}
+            result => return result,
+        }
+        let canonical_root = fs::canonicalize(&root)
+            .map_err(|_| GitError::new(GitErrorKind::NotRepository, "initialize repository"))?;
+        let init = git_output(&canonical_root, ["init", "--quiet"], &[], None)?;
+        require_success(&init, "initialize repository")?;
+        Self::open(canonical_root)
+    }
+
     /// Returns the current local Git state without fetching or mutating files.
     ///
     /// One `git status --porcelain=v2 --branch` call provides the branch,
@@ -219,7 +246,33 @@ impl GitWorkspace {
         status
             .changes
             .sort_by(|left, right| left.path.cmp(&right.path));
+        status.merging = self.merge_in_progress()?;
         Ok(status)
+    }
+
+    /// Abandons the merge a conflicted pull left behind and restores the
+    /// files to their state before the pull.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`GitError`] when no merge is in progress or Git cannot abort it.
+    pub fn abort_merge(&self) -> Result<GitOperation, GitError> {
+        if !self.merge_in_progress()? {
+            return Err(GitError::new(
+                GitErrorKind::NoMergeInProgress,
+                "abort merge",
+            ));
+        }
+        let abort = self.git(["merge", "--abort"])?;
+        require_success(&abort, "abort merge")?;
+        Ok(self
+            .status()?
+            .into_operation(GitOperationOutcome::MergeAborted))
+    }
+
+    fn merge_in_progress(&self) -> Result<bool, GitError> {
+        let output = self.git(["rev-parse", "-q", "--verify", "MERGE_HEAD"])?;
+        Ok(output.status.success())
     }
 
     /// Commits only Wirebolt-managed documents and preserves unrelated index
@@ -575,6 +628,7 @@ fn parse_status(bytes: &[u8]) -> Result<GitStatus, GitError> {
         behind: 0,
         revision: None,
         changes: Vec::new(),
+        merging: false,
     };
     let mut records = bytes
         .split(|byte| *byte == 0)
@@ -742,6 +796,7 @@ mod tests {
             ahead: 0,
             behind: 0,
             revision: None,
+            merging: false,
             changes: vec![
                 change("notes.txt", None),
                 change("wirebolt.toml", None),

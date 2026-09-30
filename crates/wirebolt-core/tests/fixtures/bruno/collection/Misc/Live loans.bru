@@ -1,0 +1,19 @@
+meta {
+  name: Live loans
+  type: ws
+  seq: 4
+}
+
+ws {
+  url: wss://library.example.test/loans
+  body: ws
+  auth: inherit
+}
+
+body:ws {
+  name: message 1
+  type: json
+  content: '''
+    {"subscribe": "loans"}
+  '''
+}

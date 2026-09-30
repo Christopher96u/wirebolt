@@ -47,6 +47,8 @@ enum ResponseOrientation: String, CaseIterable {
 final class ResponseLayoutState {
     var requestHeight: CGFloat?
     var requestWidth: CGFloat?
+    /// Whether the group is wide enough to place the response on the right.
+    var fitsResponseOnRight = true
 }
 
 @MainActor
@@ -139,6 +141,11 @@ final class WorkspaceUIState {
     }
     private var responseLayoutsByGroupID: [String: ResponseLayoutState] = [:]
 
+    /// True when at least one of the groups can show the response on the right.
+    func fitsResponseOnRight(groupIDs: [String]) -> Bool {
+        groupIDs.isEmpty || groupIDs.contains { responseLayoutsByGroupID[$0]?.fitsResponseOnRight ?? true }
+    }
+
     func responseLayout(for groupID: String) -> ResponseLayoutState {
         if let layout = responseLayoutsByGroupID[groupID] { return layout }
         let layout = ResponseLayoutState()
@@ -170,8 +177,7 @@ final class WorkspaceUIState {
     var sidebarFilter = ""
     var isShowingImporter = false
     var isShowingCurlImporter = false
-    var importFormat: ImportFormat = .postmanV2
-    var importStatus: String?
+        var importFormat: ImportFormat = .postmanV2
     var focusURLTrigger = 0
     var focusSearchTrigger = 0
     /// Moves keyboard focus into the active editor group's response content.
@@ -326,14 +332,6 @@ final class WorkspaceUIState {
             if let collectionID { renamingGroupID = await model.createGroup(collectionID: collectionID, parentID: parentID, name: "Untitled Folder") }
             else { renamingGroupID = await model.createRootFolder() }
         }
-    }
-
-    func promptForNewGroup(collectionID: String) {
-        workspaceNamePrompt = WorkspaceNamePrompt(
-            target: .group(collectionID: collectionID, id: nil),
-            title: "New Folder",
-            initialName: "New Folder"
-        )
     }
 
     func promptForGroupRename(collectionID: String, group: GroupDraft) {
@@ -510,18 +508,6 @@ final class WorkspaceUIState {
             lastClosedPresentation = previousPresentation
             NSApp.keyWindow?.performClose(nil)
         }
-    }
-
-    func selectImportedFile(_ url: URL) {
-        let hasAccess = url.startAccessingSecurityScopedResource()
-        defer {
-            if hasAccess { url.stopAccessingSecurityScopedResource() }
-        }
-        importStatus = "Ready to import \(url.lastPathComponent)"
-    }
-
-    func reportImportFailure() {
-        importStatus = "The collection could not be imported"
     }
 
     func presentation(for session: DocumentSession) -> DocumentPresentationState {

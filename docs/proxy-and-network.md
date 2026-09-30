@@ -46,5 +46,9 @@ Expand **Timeouts, redirects & TLS** in workspace settings. Workspace transport 
 - **Total timeout** limits the total execution; **Read timeout** controls the read deadline. Values are milliseconds; `0` disables that deadline.
 - **Follow redirects** enables redirect following up to **Maximum redirects**.
 - **Validate TLS certificates** controls certificate validation. Keep it enabled for normal use; disabling it removes server-certificate verification for that configuration.
+- **Client certificate** sends a certificate to servers that require mutual TLS (mTLS). Click **Choose…** and select one PEM file that contains the certificate and its private key, or select the certificate and key files together. Include intermediate certificates after the leaf certificate if the server needs them. The private key must be unencrypted; convert DER or PKCS #12 (`.p12`) files to PEM first, for example `openssl pkcs12 -in client.p12 -out client.pem -nodes`. Wirebolt stores the certificate and key in Keychain; workspace files keep only a reference, so each teammate chooses their own certificate. **Remove** stops sending it.
+- **Custom CA** also trusts the certificate authorities in a PEM bundle, such as a private or development CA. Wirebolt reads the file when it sends a request and stores its absolute path in the workspace, so the file must exist at the same path on each Mac that uses it.
+
+If the certificate or the CA file can't be loaded, the request fails with a TLS configuration error before it connects. **Copy cURL** includes `--cacert` with the CA path, and `--cert` and `--key` that read the certificate and key from Keychain with `security find-generic-password` when the command runs. The copied command never contains the key, and it works only on a Mac whose Keychain holds that item.
 
 In the workspace settings sheet, **Save** (Return) applies every edit and **Cancel** (Esc) discards them after confirmation.

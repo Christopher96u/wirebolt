@@ -12,8 +12,6 @@ struct ContentView: View {
     @State private var liveSidebarWidth: Double?
     @State private var sidebarDragOrigin: Double?
     @State private var isDropTargeted = false
-    /// The window's undo manager; workspace mutations register their inverses on it.
-    @Environment(\.undoManager) private var undoManager
     private var sidebarWidth: Double { liveSidebarWidth ?? storedSidebarWidth }
     private var toolbarGap: Double { max(0, sidebarWidth - 184) }
     /// Until the first workspace load finishes, show placeholders instead of an empty sidebar
@@ -110,7 +108,8 @@ struct ContentView: View {
         }
         .fileImporter(
             isPresented: $interface.isShowingImporter,
-            allowedContentTypes: [.json, .data],
+            // Bruno collections are folders; every other importer reads a file.
+            allowedContentTypes: interface.importFormat == .bruno ? [.folder, .json] : [.json, .data],
             allowsMultipleSelection: false,
             onCompletion: handleImport
         )
@@ -127,8 +126,26 @@ struct ContentView: View {
         }
     }
 
-    private var workspaceWithDialogs: some View {
+        private var workspaceWithDialogs: some View {
         workspaceSurface
+        .overlay(alignment: .bottom) {
+            if let summary = model.importSummary, !summary.needsReview {
+                ImportCompleteBanner(summary: summary) {
+                    if model.importSummary?.id == summary.id { model.importSummary = nil }
+                }
+                .padding(.bottom, 16)
+                .transition(.move(edge: .bottom).combined(with: .opacity))
+            }
+        }
+        .sheet(item: Binding(
+            // The cURL sheet shows its own summary; one sheet at a time.
+            get: { model.importSummary.flatMap { $0.needsReview && !interface.isShowingCurlImporter ? $0 : nil } },
+            set: { if $0 == nil { model.importSummary = nil } }
+        )) { summary in
+            ImportSummaryView(summary: summary) { model.importSummary = nil }
+                .padding(20)
+                .frame(width: 520)
+        }
         .alert("Import Failed", isPresented: Binding(
             get: { model.importFailureMessage != nil },
             set: { if !$0 { model.importFailureMessage = nil } }
@@ -175,12 +192,11 @@ struct ContentView: View {
         } message: { request in
             Text(request.detail)
         }
+        .background { UndoManagerBridge(model: model) }
         .onAppear {
-            model.undoManager = undoManager
             interface.reopenLastDocument(model: model)
             interface.synchronizeSelection(model: model)
         }
-        .onChange(of: undoManager) { model.undoManager = undoManager }
         .task {
             // The model outlives the window; reopening it must not reload the workspace.
             guard loadsWorkspace, !model.hasLoadedWorkspace else { return }
@@ -247,17 +263,7 @@ struct ContentView: View {
                 .labelStyle(.iconOnly).buttonStyle(.borderless).help("Workspace Settings")
         }
         ToolbarItem(id: "response-placement", placement: .primaryAction) {
-            Button {
-                interface.responseOrientation = interface.responseOrientation == .bottom ? .right : .bottom
-            } label: {
-                // Shows the current layout, like Xcode's area toggles.
-                Image(systemName: interface.responseOrientation == .right
-                    ? "rectangle.righthalf.inset.filled" : "rectangle.bottomthird.inset.filled")
-            }
-            .accessibilityLabel(interface.responseOrientation == .bottom ? "Place Response on Right" : "Place Response on Bottom")
-            .buttonStyle(.borderless)
-            .frame(width: 30, height: 30)
-            .help(interface.responseOrientation == .bottom ? "Place Response on Right" : "Place Response on Bottom")
+            ResponsePlacementButton(model: model, interface: interface)
         }
     }
 
@@ -270,18 +276,63 @@ struct ContentView: View {
         .help(interface.columnVisibility == .detailOnly ? "Show Sidebar (⌃⌘S)" : "Hide Sidebar (⌃⌘S)")
     }
 
-    private func handleImport(_ result: Result<[URL], any Error>) {
+        private func handleImport(_ result: Result<[URL], any Error>) {
         switch result {
         case let .success(urls):
             guard let url = urls.first else { return }
             let hasAccess = url.startAccessingSecurityScopedResource()
+            let preferred = interface.importFormat
             Task {
-                await model.importDocument(url: url, format: interface.importFormat)
+                await importExternalFile(url, model: model, preferred: preferred)
                 if hasAccess { url.stopAccessingSecurityScopedResource() }
             }
         case let .failure(error):
-            if (error as NSError).code != NSUserCancelledError { interface.reportImportFailure() }
+            if (error as NSError).code != NSUserCancelledError {
+                model.importFailureMessage = "The file couldn’t be opened. \(error.localizedDescription)"
+            }
         }
+    }
+}
+
+/// Toggles the response between bottom and right. Its own view: it reads the editor groups,
+/// and reading them in the workspace's toolbar re-rendered the whole window on every tab
+/// switch.
+private struct ResponsePlacementButton: View {
+    let model: WireboltModel
+    let interface: WorkspaceUIState
+
+    var body: some View {
+        // Below the split's minimum width every group stacks the response under the
+        // request, so the toggle would have no visible effect.
+        let fitsRight = interface.fitsResponseOnRight(groupIDs: model.sessions.groups.map(\.id))
+        Button {
+            interface.responseOrientation = interface.responseOrientation == .bottom ? .right : .bottom
+        } label: {
+            // Shows the current layout, like Xcode's area toggles.
+            Image(systemName: interface.responseOrientation == .right && fitsRight
+                ? "rectangle.righthalf.inset.filled" : "rectangle.bottomthird.inset.filled")
+        }
+        .accessibilityLabel(interface.responseOrientation == .bottom ? "Place Response on Right" : "Place Response on Bottom")
+        .buttonStyle(.borderless)
+        .frame(width: 30, height: 30)
+        .disabled(!fitsRight)
+        .help(fitsRight
+            ? (interface.responseOrientation == .bottom ? "Place Response on Right" : "Place Response on Bottom")
+            : "Widen the editor to place the response on the right")
+    }
+}
+
+/// Gives the model the window's undo manager; workspace mutations register their inverses on
+/// it. Its own view: the undo manager arrives once the window exists, and reading it in the
+/// workspace body re-rendered the whole window (toolbar included) as it opened.
+private struct UndoManagerBridge: View {
+    let model: WireboltModel
+    @Environment(\.undoManager) private var undoManager
+
+    var body: some View {
+        Color.clear
+            .accessibilityHidden(true)
+            .onChange(of: undoManager, initial: true) { model.undoManager = undoManager }
     }
 }
 
@@ -620,31 +671,61 @@ private struct CurlImportSheet: View {
     @Bindable var model: WireboltModel
     @Environment(\.dismiss) private var dismiss
     @State private var source = "curl "
+    @State private var failure: String?
+    @State private var summary: ImportSummary?
 
     var body: some View {
+        Group {
+            if let summary {
+                ImportSummaryView(summary: summary) {
+                    if model.importSummary?.id == summary.id { model.importSummary = nil }
+                    dismiss()
+                }
+                .frame(width: 520)
+            } else {
+                editor.frame(width: 620, height: failure == nil ? 300 : 340)
+            }
+        }
+        .padding(20)
+    }
+
+    private var editor: some View {
         VStack(alignment: .leading, spacing: 12) {
             Text("Import cURL")
                 .font(.headline)
+            Text("Paste one or more commands, such as “Copy as cURL” from a browser.")
+                .font(.callout)
+                .foregroundStyle(.secondary)
             TextEditor(text: $source)
                 .font(.body.monospaced())
-                .frame(minHeight: 180)
+                .frame(minHeight: 160)
                 .overlay { RoundedRectangle(cornerRadius: 6).stroke(WireboltTheme.separator) }
+                .onChange(of: source) { failure = nil }
+            if let failure {
+                Label(failure, systemImage: "exclamationmark.triangle.fill")
+                    .foregroundStyle(.red)
+                    .font(.callout)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
             HStack {
                 Spacer()
                 Button("Cancel", role: .cancel) { dismiss() }
                     .keyboardShortcut(.cancelAction)
                 Button("Import") {
                     Task {
-                        await model.importDocument(source: source, format: .curl)
-                        if model.importFailureMessage == nil { dismiss() }
+                        if let message = await model.importPastedDocument(source: source, format: .curl) {
+                            failure = message
+                        } else if let imported = model.importSummary, imported.needsReview {
+                            summary = imported
+                        } else {
+                            dismiss()
+                        }
                     }
                 }
                 .keyboardShortcut(.defaultAction)
-                .disabled(source.trimmingCharacters(in: .whitespacesAndNewlines).hasPrefix("curl ") == false)
+                .disabled(!source.contains("curl") || model.isImporting)
             }
         }
-        .padding(20)
-        .frame(width: 620, height: 300)
     }
 }
 
@@ -701,6 +782,8 @@ private struct WorkspaceImportMenu: View {
             Divider()
             Button("Wirebolt / Legacy Collection v1 JSON") { open(.legacyWorkspaceV1) }
             Button("Postman Collection v2") { open(.postmanV2) }
+            Button("Insomnia (v4 JSON or v5 YAML)") { open(.insomnia) }
+            Button("Bruno Collection (Folder or JSON)") { open(.bruno) }
         }
     }
     private func open(_ format: ImportFormat) {
@@ -921,29 +1004,10 @@ private struct SavedRequestRow: View {
     let location: RequestLocation
     let depth: Int
 
+    // Only decides the selection; the row builds its actions itself, so this stays cheap.
     var body: some View {
         SidebarRequestButton(model: model, interface: interface, location: location, depth: depth,
-            isSelected: model.selectedRequestID == location.id && interface.sidebarCursor == nil,
-            action: {
-                interface.sidebarCursor = nil
-                interface.activateSavedRequest(location, model: model)
-                interface.focusSidebarTrigger += 1
-            },
-            onSplit: {
-                interface.activateSavedRequest(location, model: model)
-                if let tabID = model.sessions.activeSession?.id { interface.openInNewSplit(tabID: tabID, model: model) }
-            },
-            onRename: { name in Task { await model.renameRequest(collectionID: location.collectionID, requestID: location.request.id, name: name) } },
-            onDuplicate: { Task { await model.duplicateRequest(collectionID: location.collectionID, requestID: location.request.id) } },
-            onExport: { Task {
-                if let document = await model.exportRequest(collectionID: location.collectionID, id: location.request.id) {
-                    saveExportedDocument(named: location.request.name, content: document)
-                }
-            } },
-            onDelete: {
-                interface.requestDelete(.request(collectionID: location.collectionID, id: location.request.id),
-                                        title: location.request.name, model: model)
-            }
+            isSelected: interface.sidebarCursor == nil && model.isSelectedRequest(location)
         ).equatable()
     }
 }
@@ -1082,8 +1146,6 @@ struct InlineSidebarName: View {
     var renameOnDoubleClick = false
     let setEditing: (Bool) -> Void
     let save: (String) -> Void
-    @State private var value = ""
-    @FocusState private var focused: Bool
 
     init(title: String, isEditing: Binding<Bool>, renameOnDoubleClick: Bool = false, save: @escaping (String) -> Void) {
         self.title = title
@@ -1093,35 +1155,59 @@ struct InlineSidebarName: View {
         self.save = save
     }
 
+    // The editor, with its text and focus state, exists only while renaming: every sidebar
+    // row shows a name, and rows are created on each filter keystroke.
     var body: some View {
-        Group {
-            if isEditing {
-                TextField("Name", text: $value)
-                    .textFieldStyle(.plain).focused($focused)
-                    .onSubmit(commit)
-                    .onExitCommand { setEditing(false) }
-                    .onChange(of: focused) { _, focused in if !focused && isEditing { commit() } }
-            } else if renameOnDoubleClick {
-                Text(title).lineLimit(1)
-                    .contentShape(.rect)
-                    .onTapGesture(count: 2) { setEditing(true) }
-            } else { Text(title).lineLimit(1) }
+        if isEditing {
+            InlineNameEditor(title: title, setEditing: setEditing, save: save)
+        } else if renameOnDoubleClick {
+            Text(title).lineLimit(1)
+                .contentShape(.rect)
+                .onTapGesture(count: 2) { setEditing(true) }
+        } else {
+            Text(title).lineLimit(1)
         }
-        // Only a rename does work here; rows are created on every filter change, so they
-        // don't start a task each.
-        .onChange(of: isEditing, initial: true) {
-            guard isEditing else { return }
-            value = title
-            Task {
+    }
+}
+
+private struct InlineNameEditor: View {
+    let title: String
+    let setEditing: (Bool) -> Void
+    let save: (String) -> Void
+    @State private var value: String
+    /// Set once Return, Esc or losing focus ended this rename, so it ends only once.
+    @State private var isFinished = false
+    @FocusState private var focused: Bool
+
+    init(title: String, setEditing: @escaping (Bool) -> Void, save: @escaping (String) -> Void) {
+        self.title = title
+        self.setEditing = setEditing
+        self.save = save
+        _value = State(initialValue: title)
+    }
+
+    var body: some View {
+        TextField("Name", text: $value)
+            .textFieldStyle(.plain).focused($focused)
+            .onSubmit(commit)
+            .onExitCommand { finish() }
+            .onChange(of: focused) { _, focused in if !focused { commit() } }
+            .task {
                 await Task.yield()
-                if isEditing { focused = true }
+                focused = true
             }
-        }
+    }
+
+    private func finish() {
+        guard !isFinished else { return }
+        isFinished = true
+        setEditing(false)
     }
 
     private func commit() {
+        guard !isFinished else { return }
         let name = value.trimmingCharacters(in: .whitespacesAndNewlines)
-        setEditing(false)
+        finish()
         if !name.isEmpty && name != title { save(name) }
     }
 }
@@ -1250,12 +1336,41 @@ private struct SidebarRequestButton: View, @MainActor Equatable {
     let location: RequestLocation
     let depth: Int
     let isSelected: Bool
-    let action: () -> Void
-    let onSplit: () -> Void
-    let onRename: (String) -> Void
-    let onDuplicate: () -> Void
-    let onExport: () -> Void
-    let onDelete: () -> Void
+
+    private func action() {
+        interface.sidebarCursor = nil
+        interface.activateSavedRequest(location, model: model)
+        interface.focusSidebarTrigger += 1
+    }
+
+    private func onSplit() {
+        interface.activateSavedRequest(location, model: model)
+        if let tabID = model.sessions.activeSession?.id { interface.openInNewSplit(tabID: tabID, model: model) }
+    }
+
+    private func onRename(_ name: String) {
+        let (model, location) = (model, location)
+        Task { await model.renameRequest(collectionID: location.collectionID, requestID: location.request.id, name: name) }
+    }
+
+    private func onDuplicate() {
+        let (model, location) = (model, location)
+        Task { await model.duplicateRequest(collectionID: location.collectionID, requestID: location.request.id) }
+    }
+
+    private func onExport() {
+        let (model, location) = (model, location)
+        Task {
+            if let document = await model.exportRequest(collectionID: location.collectionID, id: location.request.id) {
+                saveExportedDocument(named: location.request.name, content: document)
+            }
+        }
+    }
+
+    private func onDelete() {
+        interface.requestDelete(.request(collectionID: location.collectionID, id: location.request.id),
+                                title: location.request.name, model: model)
+    }
 
     private var isRenaming: Bool { interface.renamingRequestID == location.id }
     private var identifier: String { "request|\(location.collectionID)|\(location.request.id)" }
@@ -1310,6 +1425,7 @@ private struct SidebarRequestButton: View, @MainActor Equatable {
             Button("Export Wirebolt JSON…", action: onExport)
             Divider()
             Button("Copy cURL") { copyRequestAsCurl(location.request, model: model) }
+                .disabled(location.request.webSocket)
             Divider()
             Button("Rename") { interface.renamingRequestID = location.id }
             Button("Duplicate", action: onDuplicate)
@@ -1359,34 +1475,6 @@ private struct SidebarFooter: View {
         .padding(.trailing, 5)
         .padding(.top, 11)
         .padding(.bottom, 14)
-    }
-}
-
-private struct ImportStatusBanner: View {
-    let message: String
-    let dismiss: () -> Void
-
-    var body: some View {
-        HStack(spacing: 7) {
-            Image(systemName: "checkmark.circle.fill")
-                .foregroundStyle(.green)
-            Text(message)
-                .lineLimit(1)
-            Spacer(minLength: 4)
-            Button("Dismiss", systemImage: "xmark", action: dismiss)
-                .labelStyle(.iconOnly)
-                .buttonStyle(.borderless)
-                .help("Dismiss")
-        }
-        .font(.caption)
-        .padding(.horizontal, 10)
-        .frame(height: 34)
-        .background(.regularMaterial, in: .rect(cornerRadius: 7))
-        .overlay {
-            RoundedRectangle(cornerRadius: 7)
-                .stroke(WireboltTheme.separator, lineWidth: 0.5)
-        }
-        .shadow(color: .black.opacity(0.16), radius: 8, y: 3)
     }
 }
 
@@ -1465,11 +1553,12 @@ private struct EditorGroupDeck: View {
                             cancel: { model.cancel(session) }
                         )
                     } else {
+                        // Each document gets fresh response views (scroll, find, renderer
+                        // state); the HTTP viewer identifies its per-document parts itself.
                         WebSocketResponseView(session: session)
+                            .id(session.id)
                     }
                     }
-                    // Each document gets fresh response views (scroll, find, renderer state).
-                    .id(session.id)
                     .background { ResponseFocusAnchor(model: model, interface: interface, groupID: groupID) }
                 }
                 .environment(\.editorStorage, presentation.editorStorage)
@@ -2005,9 +2094,20 @@ private struct WebSocketRequestWorkspace: View {
                 } else if interface.requestSection == .auth {
                     AuthenticationTypePicker(authentication: $session.draft.authentication)
                 }
-                Menu("Message Actions", systemImage: "ellipsis.circle") { EditorPreferencesMenu() }
+                if interface.requestSection == .params || interface.requestSection == .headers {
+                    Menu("Section Actions", systemImage: "ellipsis.circle") {
+                        Button("New Entry") { interface.isBulkEditing = false; interface.focusNewKeyTrigger += 1 }
+                        Divider()
+                        Button("Key-Value Edit") { interface.isBulkEditing = false }
+                        Button("Bulk Edit") { interface.isBulkEditing = true }
+                    }
                     .menuStyle(.borderlessButton).menuIndicator(.hidden).labelStyle(.iconOnly).fixedSize()
-                    .help("Message Actions")
+                    .help("Section Actions")
+                } else {
+                    Menu("Message Actions", systemImage: "ellipsis.circle") { EditorPreferencesMenu() }
+                        .menuStyle(.borderlessButton).menuIndicator(.hidden).labelStyle(.iconOnly).fixedSize()
+                        .help("Message Actions")
+                }
             }
             .padding(.horizontal, 11)
             .frame(height: 32)
@@ -2027,9 +2127,17 @@ private struct WebSocketRequestWorkspace: View {
                 FileBodyEditor(path: path, contentType: contentType) { session.draft.body = .file(path: $0, contentType: $1) }
             } else { BodyTextEditor(text: messageText, language: messageKind.wrappedValue == .json ? .json : .plain) }
         case .params:
-            FieldEditor(title: "Query Params", fields: $session.draft.query, kind: .query, focusTrigger: interface.focusNewKeyTrigger)
+            if interface.isBulkEditing {
+                BulkFieldEditor(fields: $session.draft.query)
+            } else {
+                FieldEditor(title: "Query Params", fields: $session.draft.query, kind: .query, focusTrigger: interface.focusNewKeyTrigger)
+            }
         case .headers:
-            FieldEditor(title: "Header List", fields: $session.draft.headers, kind: .header, focusTrigger: interface.focusNewKeyTrigger)
+            if interface.isBulkEditing {
+                BulkFieldEditor(fields: $session.draft.headers)
+            } else {
+                FieldEditor(title: "Header List", fields: $session.draft.headers, kind: .header, focusTrigger: interface.focusNewKeyTrigger)
+            }
         case .auth:
             AuthenticationEditor(model: model, session: session, authentication: $session.draft.authentication)
         case .settings:
@@ -2182,8 +2290,11 @@ private struct RequestURLBar: View {
                 .accessibilityLabel("Edit Long URL")
                 .help("Edit Long URL")
 
-            RequestHistoryMenu(model: model, session: session)
-                .frame(width: 24, height: 30)
+            // History records HTTP runs only.
+            if session.kind == .http {
+                RequestHistoryMenu(model: model, session: session)
+                    .frame(width: 24, height: 30)
+            }
 
             primaryAction
         }
@@ -3030,12 +3141,6 @@ private struct RequestSectionBar: View {
         }
     }
 
-    private func updateAll(enabled: Bool) {
-        guard var fields = fieldsBinding?.wrappedValue else { return }
-        for index in fields.indices { fields[index].enabled = enabled }
-        fieldsBinding?.wrappedValue = fields
-    }
-
     private func clearFields() {
         fieldsBinding?.wrappedValue = []
     }
@@ -3519,8 +3624,7 @@ private struct AuthenticationEditor: View {
     @Bindable var model: WireboltModel
     @Bindable var session: DocumentSession
     @Binding var authentication: RequestAuthentication
-    @State private var clientSecretMaterial = ""
-    @State private var revealsPassword = false
+    @State private var revealsSecret = false
 
     var body: some View {
         Group {
@@ -3538,20 +3642,7 @@ private struct AuthenticationEditor: View {
                     }
                     GridRow {
                         Text("Password")
-                        HStack(spacing: WireboltTheme.Spacing.xSmall) {
-                            Group {
-                                if revealsPassword {
-                                    TextField("Password", text: credential(password, role: "password"))
-                                } else {
-                                    SecureField("Password", text: credential(password, role: "password"))
-                                }
-                            }
-                            .labelsHidden()
-                            Button(revealsPassword ? "Hide Password" : "Show Password",
-                                   systemImage: revealsPassword ? "eye.slash" : "eye") { revealsPassword.toggle() }
-                                .labelStyle(.iconOnly).buttonStyle(.borderless)
-                                .help(revealsPassword ? "Hide Password" : "Show Password")
-                        }
+                        secretField("Password", text: credential(password, role: "password"))
                     }
                     GridRow(alignment: .top) {
                         Text("Generated Header").padding(.top, 3)
@@ -3575,21 +3666,76 @@ private struct AuthenticationEditor: View {
                         .overlay { RoundedRectangle(cornerRadius: 5).stroke(WireboltTheme.separator) }
                 }.padding(20)
                     .task(id: token) { await model.loadSecret(token) }
-            case .apiKey, .oauth2:
-                advancedAuthentication
+            case let .apiKey(placement, name, value):
+                Grid(alignment: .leading, horizontalSpacing: 8, verticalSpacing: 5) {
+                    GridRow {
+                        Text("Add To").gridColumnAlignment(.trailing)
+                        Picker("Add To", selection: Binding(
+                            get: { placement },
+                            set: { authentication = .apiKey(placement: $0, name: name, value: value) }
+                        )) {
+                            Text("Header").tag(APIKeyPlacement.header)
+                            Text("Query Params").tag(APIKeyPlacement.query)
+                        }
+                        .labelsHidden().fixedSize()
+                    }
+                    GridRow {
+                        Text("Key")
+                        TextField("Key", text: Binding(
+                            get: { name },
+                            set: { authentication = .apiKey(placement: placement, name: $0, value: value) }
+                        ))
+                        .labelsHidden()
+                    }
+                    GridRow {
+                        Text("Value")
+                        secretField("Value", text: credential(value, role: "api-key"))
+                    }
+                    GridRow {
+                        Color.clear.frame(width: 1, height: 1)
+                        Text("The value is stored in this Mac’s Keychain, not in the workspace.")
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                .font(.system(size: 13)).controlSize(.small)
+                .textFieldStyle(.roundedBorder).padding(.horizontal, 20).padding(.top, 16)
+                .task(id: value) { await model.loadSecret(value) }
+            case let .oauth2(configuration):
+                oauthEditor(configuration)
             }
         }
         .font(.system(size: 12))
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
 
+    private func secretField(_ title: String, text: Binding<String>) -> some View {
+        HStack(spacing: WireboltTheme.Spacing.xSmall) {
+            Group {
+                if revealsSecret {
+                    TextField(title, text: text)
+                } else {
+                    SecureField(title, text: text)
+                }
+            }
+            .labelsHidden()
+            .accessibilityLabel(title)
+            Button(revealsSecret ? "Hide \(title)" : "Show \(title)",
+                   systemImage: revealsSecret ? "eye.slash" : "eye") { revealsSecret.toggle() }
+                .labelStyle(.iconOnly).buttonStyle(.borderless)
+                .help(revealsSecret ? "Hide \(title)" : "Show \(title)")
+        }
+    }
+
+    /// Edits secret material staged for Keychain; the request keeps only the reference.
     private func credential(_ source: ValueSource, role: String) -> Binding<String> {
         Binding(
             get: { model.secretMaterial(for: source) },
             set: { value in
                 let name: String
-                if case let .secret(existing) = source { name = existing }
-                else { name = "request.\(session.requestID).\(role)" }
+                // A legacy shared name is never written: other requests may read it.
+                if case let .secret(existing) = source, !existing.isEmpty,
+                   !CredentialReference.isLegacyShared(existing) { name = existing }
+                else { name = CredentialReference.unique(role: role) }
                 model.editSecret(name: name, value: value)
                 switch authentication {
                 case let .basic(username, password):
@@ -3597,86 +3743,64 @@ private struct AuthenticationEditor: View {
                         ? .basic(username: .secret(name), password: password)
                         : .basic(username: username, password: .secret(name))
                 case .bearer: authentication = .bearer(token: .secret(name))
-                default: break
+                case let .apiKey(placement, keyName, _):
+                    authentication = .apiKey(placement: placement, name: keyName, value: .secret(name))
+                case var .oauth2(configuration):
+                    configuration.clientSecretReference = name
+                    authentication = .oauth2(configuration: configuration)
+                case .none: break
                 }
             }
         )
     }
 
-    private var advancedAuthentication: some View {
-        Form {
-            switch authentication {
-            case .none, .basic, .bearer: EmptyView()
-            case let .apiKey(placement, name, value):
-                Picker("Placement", selection: Binding(
-                    get: { placement },
-                    set: { authentication = .apiKey(placement: $0, name: name, value: value) }
-                )) {
-                    ForEach(APIKeyPlacement.allCases, id: \.self) {
-                        Text($0.rawValue.capitalized).tag($0)
+    private func oauthEditor(_ configuration: OAuth2Configuration) -> some View {
+        let clientSecret = ValueSource.secret(configuration.clientSecretReference)
+        return Form {
+            Picker("Grant", selection: oauthBinding(\.grant)) {
+                Text("Authorization Code + PKCE").tag(OAuth2Grant.authorizationCodePKCE)
+                Text("Client Credentials").tag(OAuth2Grant.clientCredentials)
+            }
+            if configuration.grant == .authorizationCodePKCE {
+                TextField("Authorization URL", text: oauthBinding(\.authorizationURL))
+                TextField("Redirect URI", text: oauthBinding(\.redirectURI))
+            }
+            TextField("Token URL", text: oauthBinding(\.tokenURL))
+            TextField("Client ID", text: oauthBinding(\.clientID))
+            if configuration.grant == .clientCredentials {
+                LabeledContent("Client Secret") {
+                    secretField("Client Secret", text: credential(clientSecret, role: "oauth-client-secret"))
+                }
+                .task(id: clientSecret) { await model.loadSecret(clientSecret) }
+            }
+            TextField("Scopes", text: oauthBinding(\.scopes))
+            TextField("Audience", text: oauthBinding(\.audience))
+            LabeledContent("Token") {
+                HStack {
+                    if model.isOAuthBusy {
+                        ProgressView().controlSize(.small)
+                    } else if let receipt = model.oauthReceipts[session.id] {
+                        Label(
+                            receipt.expiresAt.map { "Valid until \($0.formatted(date: .omitted, time: .shortened))" }
+                                ?? "Stored in Keychain",
+                            systemImage: "checkmark.circle.fill"
+                        )
+                        .foregroundStyle(.green)
                     }
-                }
-                TextField("Name", text: Binding(
-                    get: { name },
-                    set: { authentication = .apiKey(placement: placement, name: $0, value: value) }
-                ))
-                TextField("Value Secret", text: Binding(
-                    get: { value.editableValue },
-                    set: { authentication = .apiKey(placement: placement, name: name, value: .secret($0)) }
-                ))
-            case let .oauth2(configuration):
-                Picker("Grant", selection: oauthBinding(\.grant)) {
-                    Text("Authorization Code + PKCE").tag(OAuth2Grant.authorizationCodePKCE)
-                    Text("Client Credentials").tag(OAuth2Grant.clientCredentials)
-                }
-                if configuration.grant == .authorizationCodePKCE {
-                    TextField("Authorization URL", text: oauthBinding(\.authorizationURL))
-                    TextField("Redirect URI", text: oauthBinding(\.redirectURI))
-                } else {
-                    TextField("Client Secret Reference", text: oauthBinding(\.clientSecretReference))
-                    SecureField("Client Secret (Keychain only)", text: $clientSecretMaterial)
-                    Button("Store Client Secret in Keychain") {
-                        guard clientSecretMaterial.isEmpty == false else { return }
-                        let material = clientSecretMaterial
-                        clientSecretMaterial = ""
-                        Task {
-                            await model.saveSecret(
-                                name: configuration.clientSecretReference,
-                                value: material
-                            )
-                        }
+                    Button("Get New Access Token") {
+                        Task { await model.acquireOAuthToken(for: session) }
                     }
-                    .disabled(clientSecretMaterial.isEmpty || configuration.clientSecretReference.isEmpty)
-                }
-                TextField("Token URL", text: oauthBinding(\.tokenURL))
-                TextField("Client ID", text: oauthBinding(\.clientID))
-                TextField("Scopes", text: oauthBinding(\.scopes))
-                TextField("Audience", text: oauthBinding(\.audience))
-                TextField("Access Token Reference", text: oauthBinding(\.accessTokenReference))
-                LabeledContent("Token") {
-                    HStack {
-                        if model.isOAuthBusy {
-                            ProgressView().controlSize(.small)
-                        } else if let receipt = model.oauthReceipts[session.id] {
-                            Label(
-                                receipt.expiresAt.map { "Valid until \($0.formatted(date: .omitted, time: .shortened))" }
-                                    ?? "Stored in Keychain",
-                                systemImage: "checkmark.circle.fill"
-                            )
-                            .foregroundStyle(.green)
-                        }
-                        Button("Get New Access Token") {
-                            Task { await model.acquireOAuthToken(for: session) }
-                        }
-                        .disabled(model.isOAuthBusy)
-                    }
-                }
-                if let message = model.oauthFailureMessage {
-                    Text(message).foregroundStyle(.red)
+                    .disabled(model.isOAuthBusy || configuration.tokenURL.isEmpty || configuration.clientID.isEmpty)
                 }
             }
+            if let message = model.oauthFailureMessage {
+                Text(message).foregroundStyle(.red)
+            }
+            Text("The client secret and access token are stored in this Mac’s Keychain, not in the workspace.")
+                .foregroundStyle(.secondary)
         }
         .formStyle(.columns)
+        .textFieldStyle(.roundedBorder)
         .padding(20)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
@@ -3705,51 +3829,30 @@ private struct AuthenticationTypePicker: View {
     var body: some View {
         Menu {
             Picker("Auth Type", selection: kindBinding) {
-                ForEach(AuthenticationKind.allCases.filter { [.none, .basic, .bearer, kindBinding.wrappedValue].contains($0) }) { kind in Text(kind.title).tag(kind) }
+                ForEach(AuthenticationKind.allCases, id: \.self) { kind in Text(kind.title).tag(kind) }
             }
             .pickerStyle(.inline).labelsHidden()
         } label: {
-            Text(kindBinding.wrappedValue.title)
+            Text(authentication.kind.title)
         }
         .menuStyle(.borderlessButton).controlSize(.small).fixedSize()
         .accessibilityLabel("Auth Type")
-        .accessibilityValue(kindBinding.wrappedValue.title)
+        .accessibilityValue(authentication.kind.title)
         .help("Auth Type")
     }
+
     private var kindBinding: Binding<AuthenticationKind> {
         Binding(
-            get: {
-                switch authentication {
-                case .none: .none
-                case .basic: .basic
-                case .bearer: .bearer
-                case .apiKey: .apiKey
-                case .oauth2: .oauth2
-                }
-            },
-            set: {
-                authentication = switch $0 {
-                case .none: .none
-                case .basic: .basic(username: .literal(""), password: .secret("auth.\(UUID().uuidString).password"))
-                case .bearer: .bearer(token: .secret("auth.\(UUID().uuidString).token"))
-                case .apiKey: .apiKey(placement: .header, name: "X-API-Key", value: .secret("auth.api-key"))
-                case .oauth2: .oauth2(configuration: OAuth2Configuration())
-                }
+            get: { authentication.kind },
+            set: { kind in
+                guard kind != authentication.kind else { return }
+                authentication = .new(kind)
             }
         )
     }
-
 }
 
-private enum AuthenticationKind: CaseIterable, Identifiable {
-    case none
-    case basic
-    case bearer
-    case apiKey
-    case oauth2
-
-    var id: Self { self }
-
+private extension AuthenticationKind {
     var title: String {
         switch self {
         case .none: "None"
@@ -3764,7 +3867,6 @@ private enum AuthenticationKind: CaseIterable, Identifiable {
 private struct BodyEditor: View {
     @Binding var requestBody: RequestBody
     @Binding var headers: [RequestField]
-    @State private var wrapsLines = true
     @State private var pendingContentType: String?
 
     var body: some View {
@@ -3848,7 +3950,6 @@ private struct BodyEditor: View {
 
 private struct BodyTools: View {
     @Binding var requestBody: RequestBody
-    @AppStorage("editor.wordWrap") private var wrapsLines = true
     var body: some View {
         HStack(spacing: 7) {
             // A borderless menu sized to the chosen type, so it reads as a value rather
@@ -4213,46 +4314,6 @@ private struct FileBodyEditor: View {
     }
 }
 
-private struct WorkspaceStatusBar: View {
-    @Bindable var model: WireboltModel
-    let status: CoreStatus
-
-    var body: some View {
-        HStack {
-            Text("UTF-8")
-            Spacer()
-            Text("\(requestLineCount) lines")
-            Spacer()
-            HStack(spacing: 6) {
-                Image(systemName: "lock")
-                Text("Local · No telemetry")
-                Circle()
-                    .fill(.green)
-                    .frame(width: 8, height: 8)
-            }
-            .accessibilityElement(children: .combine)
-            .accessibilityLabel("Local mode. No telemetry.")
-            Text("Core \(status.coreVersion)")
-                .help("ABI \(status.streamABIVersion)")
-        }
-        .font(.caption)
-        .foregroundStyle(.secondary)
-        .padding(.horizontal, 12)
-        .frame(height: 27)
-        .background(WireboltTheme.barBackground)
-        .overlay(alignment: .top) { Divider() }
-    }
-
-    private var requestLineCount: Int {
-        let text = switch model.draft.body {
-        case let .json(value), let .text(_, value), let .xml(value),
-             let .html(value), let .raw(_, value): value
-        case .empty, .formURLEncoded, .multipart, .file: ""
-        }
-        return max(text.components(separatedBy: .newlines).count, 1)
-    }
-}
-
 /// A system empty state for panels that have nothing to show yet.
 struct LightweightPlaceholder: View {
     let title: String
@@ -4279,7 +4340,7 @@ private struct NoOpenRequestPlaceholder: View {
             ContentUnavailableView {
                 Label("Start Your Workspace", systemImage: "paperplane")
             } description: {
-                Text("Create a request, or import a cURL command, HAR file, Postman collection or Wirebolt JSON. You can also drop one of those files on this window.")
+                Text("Create a request, or import a cURL command, HAR file, Postman, Insomnia or Bruno collection or Wirebolt JSON. You can also drop one of those files, or a Bruno collection folder, on this window.")
             } actions: {
                 Button("New Request") { interface.makeNewRequest(model: model) }
                     .buttonStyle(.borderedProminent)
@@ -4383,11 +4444,10 @@ private struct EnvironmentPopup: View {
     private var selectedEnvironment: EnvironmentDraft? {
         model.workspace.environments.first { $0.id == model.selectedEnvironmentID }
     }
-
-    private func environmentLabel(_ title: String, selected: Bool) -> some View {
-        Label(title, systemImage: selected ? "checkmark" : "circle.dotted")
-    }
 }
+
+/// Narrower editor groups stack the response below the request.
+private let responseOnRightMinimumWidth: CGFloat = 700
 
 private struct ResponseSplit<RequestContent: View, ResponseContent: View>: View {
     @Bindable var layout: ResponseLayoutState
@@ -4400,7 +4460,7 @@ private struct ResponseSplit<RequestContent: View, ResponseContent: View>: View 
     var body: some View {
         GeometryReader { geometry in
             // Narrow groups use a vertical split so every section remains reachable.
-            let vertical = orientation == .bottom || geometry.size.width < 700
+            let vertical = orientation == .bottom || geometry.size.width < responseOnRightMinimumWidth
             let length = vertical ? geometry.size.height : geometry.size.width
             let minimum: CGFloat = vertical ? 132 : 320
             let maximum = max(minimum, length - (vertical ? 200 : minimumResponseWidth) - 1)
@@ -4437,6 +4497,9 @@ private struct ResponseSplit<RequestContent: View, ResponseContent: View>: View 
                 if vertical { layout.requestHeight = (geometry.size.height / 2).rounded(.down) }
                 else { layout.requestWidth = (geometry.size.width / 2).rounded(.down) }
             }
+        }
+        .onGeometryChange(for: Bool.self) { $0.size.width >= responseOnRightMinimumWidth } action: { fits in
+            if layout.fitsResponseOnRight != fits { layout.fitsResponseOnRight = fits }
         }
     }
 }

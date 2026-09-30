@@ -272,6 +272,89 @@ fn pull_surfaces_conflicts_without_resolving_them() {
 }
 
 #[test]
+fn abort_merge_restores_the_workspace_after_a_conflicted_pull() {
+    let remote = BareRepository::new();
+    let repository = TestRepository::new();
+    repository.add_origin(remote.path());
+    repository.write("wirebolt.toml", "name = \"Before\"\n");
+    repository.commit_all("initial workspace");
+    repository.git_ok(["push", "--set-upstream", "origin", "main"]);
+
+    let collaborator = TestRepository::clone_from(remote.path());
+    collaborator.write("wirebolt.toml", "name = \"Remote\"\n");
+    collaborator.commit_all("remote edit");
+    collaborator.git_ok(["push"]);
+    repository.write("wirebolt.toml", "name = \"Local\"\n");
+    repository.commit_all("local edit");
+    let local_revision = repository.git_text(["rev-parse", "HEAD"]);
+
+    let workspace = GitWorkspace::open(repository.path()).expect("open Git workspace");
+    let conflicted = workspace.pull().expect("surface pull conflict");
+    assert_eq!(conflicted.outcome, GitOperationOutcome::Conflicted);
+    assert!(conflicted.status.merging);
+
+    let aborted = workspace.abort_merge().expect("abort merge");
+
+    assert_eq!(aborted.outcome, GitOperationOutcome::MergeAborted);
+    assert!(!aborted.status.merging);
+    assert!(aborted.status.is_clean());
+    assert_eq!(aborted.revision.as_deref(), Some(local_revision.as_str()));
+    assert_eq!(repository.read("wirebolt.toml"), "name = \"Local\"\n");
+}
+
+#[test]
+fn abort_merge_without_a_merge_changes_nothing() {
+    let repository = TestRepository::new();
+    repository.write("wirebolt.toml", "name = \"Clean\"\n");
+    repository.commit_all("initial workspace");
+
+    let workspace = GitWorkspace::open(repository.path()).expect("open Git workspace");
+    assert!(!workspace.status().expect("read status").merging);
+    let error = workspace.abort_merge().expect_err("no merge to abort");
+
+    assert_eq!(error.kind, GitErrorKind::NoMergeInProgress);
+    assert_eq!(repository.read("wirebolt.toml"), "name = \"Clean\"\n");
+}
+
+#[test]
+fn initialize_makes_a_plain_workspace_folder_a_repository_root() {
+    let directory = tempfile::tempdir().expect("temporary workspace");
+    let root = directory.path().join("Team API");
+    fs::create_dir_all(&root).expect("create workspace folder");
+    fs::write(root.join("wirebolt.toml"), "name = \"Team API\"\n").expect("write manifest");
+
+    let error = GitWorkspace::open(&root).expect_err("folder is not a repository yet");
+    assert_eq!(error.kind, GitErrorKind::NotRepository);
+
+    let workspace = GitWorkspace::initialize(&root).expect("initialize repository");
+    let status = workspace.status().expect("read status of new repository");
+
+    assert_eq!(status.revision, None);
+    assert!(!status.merging);
+    assert_eq!(
+        status
+            .changes
+            .iter()
+            .map(|change| change.path.as_str())
+            .collect::<Vec<_>>(),
+        ["wirebolt.toml"]
+    );
+    GitWorkspace::initialize(&root).expect("initializing again reopens the repository");
+}
+
+#[test]
+fn initialize_refuses_to_nest_a_repository_inside_another() {
+    let repository = TestRepository::new();
+    repository.write("nested/wirebolt.toml", "name = \"Nested\"\n");
+
+    let error = GitWorkspace::initialize(repository.path().join("nested"))
+        .expect_err("nested workspace must not become its own repository");
+
+    assert_eq!(error.kind, GitErrorKind::WorkspaceNotRepositoryRoot);
+    assert!(!repository.path().join("nested/.git").exists());
+}
+
+#[test]
 fn pull_refuses_to_overwrite_uncommitted_work() {
     let remote = BareRepository::new();
     let repository = TestRepository::new();

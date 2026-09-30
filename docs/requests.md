@@ -10,7 +10,7 @@ Create an HTTP request with **File → New Request** (**⌘N**), the toolbar **+
 | --- | --- |
 | Params | Query parameter rows; unchecked rows are omitted |
 | Headers | Request headers; unchecked rows are omitted |
-| Body | Empty, text, JSON, XML, HTML, raw, URL-encoded form, multipart or file content |
+| Body | No Body, JSON, Form URLEncoded, XML, HTML, Raw Text, Multipart or File |
 | Auth | Basic, Bearer, API key or OAuth configuration |
 | Note | Markdown documentation saved with the request |
 | Settings | Request proxy policy and transport overrides |
@@ -45,6 +45,6 @@ Clicking a request in the sidebar opens it in a *preview* tab (italic title) tha
 
 Open multiple requests in tabs. **Navigate → Split Right** (**⇧⌘D**) creates a second editor group for comparison. Drafts and responses are independent between document sessions. Save each edited draft you want to retain. Wirebolt reopens your tabs and the latest response of each request at the next launch.
 
-Use **Request History** beside the request controls to inspect available prior runs. History is local runtime data, subject to storage limits, and is not included in workspace exports or Git commits.
+For HTTP requests, use **Request History** beside the request controls to inspect available prior runs. History is local runtime data, subject to storage limits, and is not included in workspace exports or Git commits.
 
-Use **Request → Copy cURL** to copy a command representation. Review the clipboard content before sharing: URLs, bodies and manually entered values can contain sensitive information even when credential fields are redacted.
+Use **Request → Copy cURL** to copy a command representation. Keychain-backed values, including secret variables and proxy credentials, aren't copied: the command reads them with `security find-generic-password` when it runs, so macOS may ask to allow access, and it works only on a Mac that has those Keychain items. Review the clipboard content before sharing: URLs, bodies and other text you typed are copied as is.

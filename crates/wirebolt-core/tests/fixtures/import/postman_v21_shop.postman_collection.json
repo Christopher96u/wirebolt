@@ -1,0 +1,240 @@
+{
+  "info": {
+    "_postman_id": "5f0c8a52-3c1e-4d57-9a0e-6b1f2d9c7e10",
+    "name": "Shop API",
+    "description": "Demo storefront API used by the **Wirebolt** import tests.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
+    "_exporter_id": "1234567"
+  },
+  "auth": {
+    "type": "bearer",
+    "bearer": [{ "key": "token", "value": "{{accessToken}}", "type": "string" }]
+  },
+  "event": [
+    {
+      "listen": "prerequest",
+      "script": { "type": "text/javascript", "exec": ["pm.variables.set('requestedAt', Date.now());"] }
+    },
+    { "listen": "test", "script": { "type": "text/javascript", "exec": [""] } }
+  ],
+  "variable": [
+    { "key": "baseUrl", "value": "https://shop.example.test/v1", "type": "string" },
+    { "key": "accessToken", "value": "demo-access-token", "type": "string" },
+    { "key": "tenant", "value": "acme", "type": "secret" },
+    { "key": "legacyFlag", "value": "on", "disabled": true }
+  ],
+  "item": [
+    {
+      "name": "Customers",
+      "description": { "content": "Customer management endpoints.", "type": "text/markdown" },
+      "auth": {
+        "type": "basic",
+        "basic": [
+          { "key": "username", "value": "demo-user", "type": "string" },
+          { "key": "password", "value": "demo-password", "type": "string" }
+        ]
+      },
+      "variable": [
+        { "key": "customerId", "value": "42" },
+        { "key": "baseUrl", "value": "https://other.example.test" }
+      ],
+      "item": [
+        {
+          "name": "Get customer",
+          "event": [
+            {
+              "listen": "test",
+              "script": { "exec": ["pm.test('status', () => pm.response.to.have.status(200));"], "type": "text/javascript" }
+            }
+          ],
+          "request": {
+            "auth": { "type": "inherit" },
+            "method": "GET",
+            "header": [
+              { "key": "Accept", "value": "application/json" },
+              { "key": "X-Debug", "value": "1", "disabled": true }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/customers/:customerId?expand=orders&debug=true&q=hello%20world",
+              "host": ["{{baseUrl}}"],
+              "path": ["customers", ":customerId"],
+              "query": [
+                { "key": "expand", "value": "orders" },
+                { "key": "debug", "value": "true", "disabled": true },
+                { "key": "q", "value": "hello%20world" }
+              ],
+              "variable": [{ "key": "customerId", "value": "{{customerId}}", "description": "Customer identifier" }]
+            },
+            "description": "Returns one customer with their **orders**."
+          },
+          "response": [
+            {
+              "name": "Found",
+              "originalRequest": { "method": "GET", "header": [], "url": { "raw": "{{baseUrl}}/customers/42" } },
+              "status": "OK",
+              "code": 200,
+              "_postman_previewlanguage": "json",
+              "header": [],
+              "cookie": [],
+              "body": "{\"id\":42}"
+            }
+          ]
+        },
+        {
+          "name": "Create customer",
+          "request": {
+            "auth": {
+              "type": "apikey",
+              "apikey": [
+                { "key": "value", "value": "demo-api-key", "type": "string" },
+                { "key": "key", "value": "X-Api-Key", "type": "string" },
+                { "key": "in", "value": "header", "type": "string" }
+              ]
+            },
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"{{customerName}}\",\n  \"tier\": {{tier}}\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": { "raw": "{{baseUrl}}/customers", "host": ["{{baseUrl}}"], "path": ["customers"] }
+          },
+          "response": []
+        },
+        {
+          "name": "Private",
+          "auth": { "type": "noauth" },
+          "item": [
+            {
+              "name": "Search customers",
+              "protocolProfileBehavior": { "strictSSL": false, "followRedirects": true },
+              "request": {
+                "method": "POST",
+                "header": [],
+                "body": {
+                  "mode": "urlencoded",
+                  "urlencoded": [
+                    { "key": "query", "value": "smith", "type": "text" },
+                    { "key": "limit", "value": "10", "type": "text", "disabled": true }
+                  ]
+                },
+                "url": { "raw": "{{baseUrl}}/customers/search", "host": ["{{baseUrl}}"], "path": ["customers", "search"] }
+              },
+              "response": []
+            },
+            {
+              "name": "Upload avatar",
+              "request": {
+                "auth": { "type": "digest", "digest": [{ "key": "username", "value": "demo-user" }] },
+                "method": "PUT",
+                "header": [],
+                "body": {
+                  "mode": "formdata",
+                  "formdata": [
+                    { "key": "avatar", "type": "file", "src": "/Users/demo/Pictures/avatar.png" },
+                    { "key": "caption", "value": "Hello {{customerName}}", "type": "text" },
+                    { "key": "draft", "value": "yes", "type": "text", "disabled": true },
+                    { "key": "backup", "type": "file", "src": [] }
+                  ]
+                },
+                "url": {
+                  "raw": "{{baseUrl}}/customers/:customerId/avatar",
+                  "host": ["{{baseUrl}}"],
+                  "path": ["customers", ":customerId", "avatar"],
+                  "variable": [{ "key": "customerId", "value": "" }]
+                }
+              },
+              "response": []
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Catalog GraphQL",
+      "request": {
+        "auth": {
+          "type": "oauth2",
+          "oauth2": [
+            { "key": "grant_type", "value": "client_credentials", "type": "string" },
+            { "key": "accessTokenUrl", "value": "https://auth.example.test/oauth/token", "type": "string" },
+            { "key": "clientId", "value": "shop-cli", "type": "string" },
+            { "key": "clientSecret", "value": "demo-client-secret", "type": "string" },
+            { "key": "scope", "value": "catalog:read", "type": "string" },
+            { "key": "addTokenTo", "value": "header", "type": "string" }
+          ]
+        },
+        "method": "POST",
+        "header": [],
+        "body": {
+          "mode": "graphql",
+          "graphql": { "query": "query Products($first: Int) {\n  products(first: $first) { id name }\n}", "variables": "{\"first\": 10}" }
+        },
+        "url": { "raw": "{{baseUrl}}/graphql", "host": ["{{baseUrl}}"], "path": ["graphql"] }
+      },
+      "response": []
+    },
+    {
+      "name": "Sign in with browser",
+      "request": {
+        "auth": {
+          "type": "oauth2",
+          "oauth2": [
+            { "key": "grant_type", "value": "authorization_code", "type": "string" },
+            { "key": "authUrl", "value": "https://auth.example.test/authorize", "type": "string" },
+            { "key": "accessTokenUrl", "value": "https://auth.example.test/oauth/token", "type": "string" },
+            { "key": "clientId", "value": "shop-web", "type": "string" },
+            { "key": "clientSecret", "value": "{{clientSecret}}", "type": "string" },
+            { "key": "redirect_uri", "value": "https://oauth.pstmn.io/v1/callback", "type": "string" }
+          ]
+        },
+        "method": "GET",
+        "header": [],
+        "url": { "raw": "{{baseUrl}}/me", "host": ["{{baseUrl}}"], "path": ["me"] }
+      },
+      "response": []
+    },
+    {
+      "name": "Legacy password grant",
+      "request": {
+        "auth": { "type": "oauth2", "oauth2": [{ "key": "grant_type", "value": "password_credentials" }] },
+        "method": "GET",
+        "header": [],
+        "url": { "raw": "{{baseUrl}}/legacy", "host": ["{{baseUrl}}"], "path": ["legacy"] }
+      },
+      "response": []
+    },
+    {
+      "name": "Import price list",
+      "request": {
+        "method": "POST",
+        "header": [],
+        "body": { "mode": "file", "file": { "src": "/Users/demo/Documents/prices.csv" } },
+        "url": { "raw": "{{baseUrl}}/prices/import", "host": ["{{baseUrl}}"], "path": ["prices", "import"] }
+      },
+      "response": []
+    },
+    {
+      "name": "Export XML feed",
+      "request": {
+        "method": "POST",
+        "header": [],
+        "body": { "mode": "raw", "raw": "<feed><item id=\"1\"/></feed>", "options": { "raw": { "language": "xml" } } },
+        "url": { "raw": "{{baseUrl}}/feeds", "host": ["{{baseUrl}}"], "path": ["feeds"] }
+      },
+      "response": []
+    },
+    {
+      "name": "Archived draft",
+      "request": {
+        "method": "POST",
+        "header": [],
+        "body": { "mode": "raw", "raw": "not sent", "disabled": true },
+        "url": { "raw": "{{baseUrl}}/drafts", "host": ["{{baseUrl}}"], "path": ["drafts"] }
+      },
+      "response": []
+    },
+    { "name": "Empty folder", "item": [] }
+  ]
+}

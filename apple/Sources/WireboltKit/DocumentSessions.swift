@@ -329,14 +329,62 @@ public enum TabCloseScope: Equatable, Sendable {
 @MainActor
 @Observable
 public final class DocumentSessionStore {
-    public private(set) var sessions: [String: DocumentSession]
+    public private(set) var sessions: [String: DocumentSession] {
+        didSet { refreshActiveRequest() }
+    }
     public private(set) var groups: [EditorGroup] {
-        didSet { if groupCount != groups.count { groupCount = groups.count } }
+        didSet {
+            if groupCount != groups.count { groupCount = groups.count }
+            refreshActiveRequest()
+        }
     }
     /// Changes only when a split opens or closes, so layout that depends on the
     /// number of editor groups does not re-render on every tab selection.
     public private(set) var groupCount = 1
-    public var activeGroupID: String
+    public var activeGroupID: String {
+        didSet { refreshActiveRequest() }
+    }
+
+    /// The saved request of the active document.
+    private struct RequestKey: Hashable {
+        let collectionID: String
+        let requestID: String
+    }
+
+    /// One observable flag per saved request that has been asked about, so each sidebar row
+    /// depends only on its own flag: a selection change updates two rows, not every row.
+    @Observable
+    final class ActiveRequestFlag {
+        var isActive: Bool
+        init(isActive: Bool) { self.isActive = isActive }
+    }
+
+    @ObservationIgnored private var activeRequestKey: RequestKey?
+    @ObservationIgnored private var activeRequestFlags: [RequestKey: ActiveRequestFlag] = [:]
+
+    /// Whether the saved request is the active document's; observes only that request.
+    public func isActiveRequest(collectionID: String, requestID: String) -> Bool {
+        let key = RequestKey(collectionID: collectionID, requestID: requestID)
+        let flag = activeRequestFlags[key] ?? {
+            let flag = ActiveRequestFlag(isActive: key == activeRequestKey)
+            activeRequestFlags[key] = flag
+            return flag
+        }()
+        return flag.isActive
+    }
+
+    /// Brings the flags up to date with the active document. Runs after every change to
+    /// the groups, the active group or the open documents; call it after moving a
+    /// document's request to another collection.
+    public func refreshActiveRequest() {
+        let key = activeSession.flatMap { session in
+            session.collectionID.map { RequestKey(collectionID: $0, requestID: session.requestID) }
+        }
+        guard key != activeRequestKey else { return }
+        if let previous = activeRequestKey { activeRequestFlags[previous]?.isActive = false }
+        activeRequestKey = key
+        if let key { activeRequestFlags[key]?.isActive = true }
+    }
 
     public init() {
         let group = EditorGroup()

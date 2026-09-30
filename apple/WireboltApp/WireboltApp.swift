@@ -47,6 +47,12 @@ struct WireboltApp: App {
         .defaultSize(width: 650, height: 590)
         .windowResizability(.contentMinSize)
 
+        Window("Cookies", id: CookiesView.windowID) {
+            CookiesView(model: appDelegate.model)
+        }
+        .defaultSize(width: 760, height: 420)
+        .windowResizability(.contentMinSize)
+
         Settings {
             WireboltSettingsView(model: appDelegate.model)
         }
@@ -67,6 +73,9 @@ final class WireboltAppDelegate: NSObject, NSApplicationDelegate {
     private var tabSwitchMonitor: Any?
 
     func applicationWillFinishLaunching(_: Notification) {
+        model.knownWorkspaceLocations = {
+            RecentWorkspaces.shared.urls + [RustWorkspacePersistence.builtInWorkspaceURL]
+        }
         // In-app tabs own ⌘T; native window tabs would stack a second tab bar on top.
         NSWindow.allowsAutomaticWindowTabbing = false
         Self.applyInterfaceAppearance()
@@ -90,11 +99,12 @@ final class WireboltAppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func application(_: NSApplication, open urls: [URL]) {
-        // Only regular files are imports; folders (such as a workspace dropped on the Dock
-        // icon) are ignored.
+        // Regular files and Bruno collection folders are imports; other folders (such as a
+        // workspace dropped on the Dock icon) are ignored.
         let files = urls.filter { url in
             var isDirectory: ObjCBool = false
-            return FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory) && isDirectory.boolValue == false
+            guard FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory) else { return false }
+            return isDirectory.boolValue == false || BrunoCollectionSource.isCollection(url)
         }
         ExternalFileQueue.shared.enqueue(files)
     }
@@ -104,14 +114,21 @@ final class WireboltAppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
-        guard model.hasUnsavedRequestChanges else {
+        guard model.hasUnsavedRequestChanges || model.hasReleasableSecrets else {
             interface.persistSessionLayout(model: model)
             return .terminateNow
         }
         let window = WorkspaceWindowRegistry.primary.flatMap { $0.isVisible ? $0 : nil } ?? NSApp.mainWindow
         Task {
-            let proceed = await confirmUnsavedChanges(model: model, in: window, quitting: true)
-            if proceed { interface.persistSessionLayout(model: model) }
+            var proceed = true
+            if model.hasUnsavedRequestChanges {
+                proceed = await confirmUnsavedChanges(model: model, in: window, quitting: true)
+            }
+            if proceed {
+                interface.persistSessionLayout(model: model)
+                // Undo ends with the app, so Keychain items of deleted requests can go now.
+                await model.purgeReleasedSecrets()
+            }
             sender.reply(toApplicationShouldTerminate: proceed)
         }
         return .terminateLater
@@ -249,8 +266,9 @@ struct WireboltCommands: Commands {
             }.keyboardShortcut(.downArrow, modifiers: [.command, .option])
                 .disabled(sidebarMove?.canMoveDown != true)
             Divider()
+            // ⇧⌘C shows the Colors panel and ⌥⌘C copies style (Match Case in the find bar).
             Button("Copy cURL") { copyRequestAsCurl(model.draft, model: model) }
-                .keyboardShortcut("c", modifiers: [.command, .shift])
+                .keyboardShortcut("c", modifiers: [.command, .option, .shift])
                 .disabled(noWorkspace || state.activeKind != .http)
             Divider()
             Button("Edit URL") { interface.focusURLTrigger += 1 }
@@ -317,8 +335,13 @@ struct WireboltCommands: Commands {
         CommandMenu("Workspace") {
             Button("Workspace Settings…") { model.isShowingWorkspaceSettings = true }
                 .disabled(noWorkspace)
+            Button("Rename Workspace…") { promptToRenameWorkspace(model: model) }
+                .disabled(noWorkspace || workspaceActionsBusy)
+            Button("Cookies…") { openWindow(id: CookiesView.windowID) }
+                .disabled(noWorkspace)
+            // ⇧⌘G is the system Find Previous.
             Button("Git Collaboration…") { model.isShowingGitCollaboration = true }
-                .keyboardShortcut("g", modifiers: [.command, .shift])
+                .keyboardShortcut("g", modifiers: [.command, .control])
                 .disabled(noWorkspace || model.isLoadingWorkspace)
         }
     }

@@ -79,6 +79,7 @@ private struct IndexedCodeScrollView: NSViewRepresentable {
     let storageKey: String
     let find: EditorFindState
     @AppStorage("editor.scrollBeyondLastLine") private var beyond = true
+    @AppStorage("editor.showInvisibles") private var invisibles = false
 
     func makeNSView(context: Context) -> NSScrollView {
         let scroll = NSScrollView()
@@ -111,6 +112,7 @@ private struct IndexedCodeScrollView: NSViewRepresentable {
         view.index = index
         view.fontSize = fontSize
         view.language = language
+        if view.showsInvisibles != invisibles { view.showsInvisibles = invisibles }
         scroll.hasHorizontalScroller = !wraps
         view.autoresizingMask = wraps ? [.width] : []
         let width = wraps ? scroll.contentSize.width : max(scroll.contentSize.width, Double(index.maximumColumns) * (" " as NSString).size(withAttributes: [.font: NSFont.monospacedSystemFont(ofSize: fontSize, weight: .regular)]).width + view.gutterWidth + 22)
@@ -144,6 +146,14 @@ final class IndexedCodeView: NSView, NSUserInterfaceValidations {
     var index: ResponseTextIndex?
     var fontSize = 12.0
     var language = SyntaxLanguage.plain
+    var showsInvisibles = false {
+        didSet {
+            shapingTask?.cancel()
+            shapingText = nil
+            shapedLines = []
+            needsDisplay = true
+        }
+    }
     private(set) var query = ""
     var lineHeight: Double { CodeEditorMetrics.lineHeight(fontSize) }
     var gutterWidth: Double { CodeEditorMetrics.gutterWidth(fontSize, lineCount: index?.lineCount ?? 1) }
@@ -293,7 +303,7 @@ final class IndexedCodeView: NSView, NSUserInterfaceValidations {
                     let progressive = singleLongLine && source.length <= 2 * 1024 * 1024
                     let prefix = progressive ? source.substring(with: source.rangeOfComposedCharacterSequences(for: NSRange(location: 0, length: min(2048, source.length)))) : row.text
                     cached = ShapedLine(text: row.text, language: language, fontSize: fontSize, appearance: effectiveAppearance.name,
-                        line: IndexedTextLine(SyntaxHighlighter.attributedString(text: prefix, language: language, fontSize: fontSize), fontSize: fontSize), complete: !progressive)
+                        line: IndexedTextLine(Self.styled(prefix, language: language, fontSize: fontSize, invisibles: showsInvisibles), fontSize: fontSize), complete: !progressive)
                 }
                 shapedLines.append(cached)
                 if !cached.complete { prepareLongLine(row.text) }
@@ -302,7 +312,7 @@ final class IndexedCodeView: NSView, NSUserInterfaceValidations {
                 hasDrawnViewport = true
                 continue
             }
-            let attributed = NSMutableAttributedString(attributedString: SyntaxHighlighter.attributedString(text: row.text, language: language, fontSize: fontSize))
+            let attributed = NSMutableAttributedString(attributedString: Self.styled(row.text, language: language, fontSize: fontSize, invisibles: showsInvisibles))
             for range in findHighlights(row: row.number, length: attributed.length) {
                 attributed.addAttribute(.backgroundColor, value: NSColor.findHighlightColor.withAlphaComponent(0.25), range: range)
             }
@@ -324,13 +334,14 @@ final class IndexedCodeView: NSView, NSUserInterfaceValidations {
         guard shapingText == nil else { return }
         shapingTask?.cancel()
         shapingText = text
-        let fontSize = fontSize, language = language, appearance = effectiveAppearance.name
+        let fontSize = fontSize, language = language, appearance = effectiveAppearance.name, invisibles = showsInvisibles
         shapingTask = Task { [weak self] in
             do {
-                let styled = SyntaxHighlighter.attributedString(text: text, language: language, fontSize: fontSize)
-                let line = try await IndexedTextLine.prepare(styled, fontSize: fontSize)
+                let attributed = Self.styled(text, language: language, fontSize: fontSize, invisibles: invisibles)
+                let line = try await IndexedTextLine.prepare(attributed, fontSize: fontSize)
                 try Task.checkCancellation()
-                guard let self, self.fontSize == fontSize, self.language == language, self.effectiveAppearance.name == appearance else { return }
+                guard let self, self.fontSize == fontSize, self.language == language, self.effectiveAppearance.name == appearance,
+                      self.showsInvisibles == invisibles else { return }
                 self.shapedLines.removeAll { $0.text == text }
                 self.shapedLines.append(ShapedLine(text: text, language: language, fontSize: fontSize, appearance: appearance, line: line))
                 while self.shapedLines.count > 2 { self.shapedLines.removeFirst() }
@@ -340,6 +351,11 @@ final class IndexedCodeView: NSView, NSUserInterfaceValidations {
                 if !Task.isCancelled { self?.shapingText = nil }
             }
         }
+    }
+
+    private static func styled(_ text: String, language: SyntaxLanguage, fontSize: Double, invisibles: Bool) -> NSAttributedString {
+        let highlighted = SyntaxHighlighter.attributedString(text: text, language: language, fontSize: fontSize)
+        return invisibles ? InvisibleSpaces.marking(highlighted, attributes: [.foregroundColor: NSColor.tertiaryLabelColor]) : highlighted
     }
 
     private func load(_ range: Range<Int>) {

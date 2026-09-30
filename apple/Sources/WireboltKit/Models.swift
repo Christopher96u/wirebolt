@@ -145,11 +145,11 @@ public struct OAuth2Configuration: Codable, Equatable, Sendable {
         authorizationURL: String = "",
         tokenURL: String = "",
         clientID: String = "",
-        clientSecretReference: String = "oauth.client-secret",
+        clientSecretReference: String = CredentialReference.unique(role: "oauth-client-secret"),
         scopes: String = "",
         audience: String = "",
         redirectURI: String = "wirebolt://oauth/callback",
-        accessTokenReference: String = "oauth.access-token"
+        accessTokenReference: String = CredentialReference.unique(role: "oauth-access-token")
     ) {
         self.grant = grant
         self.authorizationURL = authorizationURL
@@ -226,6 +226,124 @@ public enum RequestAuthentication: Codable, Equatable, Sendable {
         case let .oauth2(configuration):
             try container.encode(Kind.oauth2, forKey: .kind)
             try container.encode(configuration, forKey: .configuration)
+        }
+    }
+}
+
+/// Keychain names for credentials a request stores. Every new credential gets its own
+/// name so two requests never read or overwrite each other's secret material.
+public enum CredentialReference {
+    public static func unique(role: String, scope: String = "auth") -> String {
+        String("\(scope).\(UUID().uuidString.lowercased()).\(sanitized(role))".prefix(128))
+    }
+
+    /// Names earlier versions gave every API Key and OAuth request. Other workspaces may still
+    /// use them, so Wirebolt copies their values to per-request names and never deletes them.
+    public static let legacySharedNames: Set<String> = ["auth.api-key", "oauth.client-secret", "oauth.access-token"]
+
+    public static func isLegacyShared(_ name: String) -> Bool { legacySharedNames.contains(name) }
+
+    /// Whether Wirebolt generated `name` for exactly one request or variable, so the Keychain
+    /// item can be deleted once nothing references it. Names people chose (such as proxy
+    /// credentials or `{{secret}}` references) and legacy shared names never qualify.
+    public static func isOwned(_ name: String) -> Bool {
+        name.wholeMatch(of: ownedPattern) != nil
+    }
+
+    // `auth.<uuid>.<role>` and `env.<uuid>.<environment>` from this version, the uppercase
+    // `auth.<UUID>.<role>` and `request.<uuid>.<role>` from earlier ones, and names created
+    // by an import (`import-<time>-<process>-<sequence>-request-<n>-<role>`).
+    private nonisolated(unsafe) static let ownedPattern =
+        /(?:(?:auth|env|request)\.[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\.[A-Za-z0-9._-]+)|(?:import-[0-9a-f]+-[0-9a-f]+-[0-9a-f]+-request-[0-9]+-[a-z-]+)/
+
+    static func sanitized(_ text: String) -> String {
+        let allowed = Set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789.-_")
+        let clean = String(text.map { allowed.contains($0) ? $0 : "-" })
+        return clean.isEmpty ? "value" : clean
+    }
+}
+
+public extension ValueSource {
+    var secretName: String? {
+        if case let .secret(name) = self { name } else { nil }
+    }
+}
+
+public extension RequestAuthentication {
+    /// Keychain names this authentication reads or writes.
+    var secretReferences: [String] {
+        switch self {
+        case .none: []
+        case let .basic(username, password): [username.secretName, password.secretName].compactMap { $0 }
+        case let .bearer(token): [token.secretName].compactMap { $0 }
+        case let .apiKey(_, _, value): [value.secretName].compactMap { $0 }
+        case let .oauth2(configuration):
+            [configuration.clientSecretReference, configuration.accessTokenReference].filter { !$0.isEmpty }
+        }
+    }
+
+    /// The same authentication with each Keychain name passed through `rename`.
+    func renamingSecrets(_ rename: (String) -> String) -> RequestAuthentication {
+        func renamed(_ source: ValueSource) -> ValueSource {
+            source.secretName.map { .secret(rename($0)) } ?? source
+        }
+        switch self {
+        case .none: return .none
+        case let .basic(username, password): return .basic(username: renamed(username), password: renamed(password))
+        case let .bearer(token): return .bearer(token: renamed(token))
+        case let .apiKey(placement, name, value): return .apiKey(placement: placement, name: name, value: renamed(value))
+        case var .oauth2(configuration):
+            if !configuration.clientSecretReference.isEmpty {
+                configuration.clientSecretReference = rename(configuration.clientSecretReference)
+            }
+            if !configuration.accessTokenReference.isEmpty {
+                configuration.accessTokenReference = rename(configuration.accessTokenReference)
+            }
+            return .oauth2(configuration: configuration)
+        }
+    }
+
+    /// Fresh per-request names for every credential, for a copy of a request (`all`) or for
+    /// migrating legacy shared names only. Returns the new authentication and old → new names.
+    func withOwnKeychainNames(onlyLegacy: Bool) -> (RequestAuthentication, [String: String]) {
+        var renames: [String: String] = [:]
+        let authentication = renamingSecrets { name in
+            guard !onlyLegacy || CredentialReference.isLegacyShared(name) else { return name }
+            if let existing = renames[name] { return existing }
+            let role = name.contains(".") ? String(name.split(separator: ".").last ?? "secret") : "secret"
+            let fresh = CredentialReference.unique(role: role)
+            renames[name] = fresh
+            return fresh
+        }
+        return (authentication, renames)
+    }
+}
+
+public enum AuthenticationKind: CaseIterable, Sendable {
+    case none, basic, bearer, apiKey, oauth2
+}
+
+public extension RequestAuthentication {
+    var kind: AuthenticationKind {
+        switch self {
+        case .none: .none
+        case .basic: .basic
+        case .bearer: .bearer
+        case .apiKey: .apiKey
+        case .oauth2: .oauth2
+        }
+    }
+
+    /// An empty authentication of `kind` whose secrets use fresh Keychain names.
+    static func new(_ kind: AuthenticationKind) -> RequestAuthentication {
+        switch kind {
+        case .none: .none
+        case .basic: .basic(username: .literal(""), password: .secret(CredentialReference.unique(role: "password")))
+        case .bearer: .bearer(token: .secret(CredentialReference.unique(role: "token")))
+        case .apiKey:
+            .apiKey(placement: .header, name: "X-API-Key", value: .secret(CredentialReference.unique(role: "api-key")))
+        case .oauth2:
+            .oauth2(configuration: OAuth2Configuration())
         }
     }
 }
@@ -524,6 +642,53 @@ public struct EnvironmentVariableDraft: Identifiable, Codable, Equatable, Sendab
     }
 }
 
+public extension EnvironmentVariableDraft {
+    var isSecret: Bool {
+        if case .secret = value { true } else { false }
+    }
+
+    /// A new Keychain name for this variable's secret value. It is stored in the variable, so
+    /// renaming the key keeps its value, and it is unique, so no other environment,
+    /// workspace or Mac user of the same Keychain shares it.
+    func makeSecretReference(environmentID: String) -> String {
+        CredentialReference.unique(role: environmentID, scope: "env")
+    }
+}
+
+public extension EnvironmentDraft {
+    var secretReferences: Set<String> { Set(variables.compactMap(\.value.secretName)) }
+}
+
+public extension RequestDraft {
+    /// Every Keychain name the request refers to: authentication, fields, bodies and proxy.
+    var secretReferences: Set<String> {
+        var names = Set(authentication.secretReferences)
+        names.formUnion((query + headers).compactMap(\.value.secretName))
+        switch body {
+        case let .formURLEncoded(fields): names.formUnion(fields.compactMap(\.value.secretName))
+        case let .multipart(parts): names.formUnion(parts.compactMap(\.value.secretName))
+        default: break
+        }
+        if case let .manual(.manual(routes)) = proxy {
+            names.formUnion(routes.compactMap(\.credentials).flatMap { [$0.username, $0.password] })
+        }
+        return names
+    }
+}
+
+public extension WorkspaceDraft {
+    var secretReferences: Set<String> {
+        var names = Set(environments.flatMap(\.secretReferences))
+        for collection in collections {
+            for location in collection.requests { names.formUnion(location.request.secretReferences) }
+        }
+        if case let .manual(routes) = proxy {
+            names.formUnion(routes.compactMap(\.credentials).flatMap { [$0.username, $0.password] })
+        }
+        return names
+    }
+}
+
 public struct EnvironmentDraft: Identifiable, Codable, Equatable, Sendable {
     public var id: String
     public var name: String
@@ -636,6 +801,7 @@ public enum WorkspaceCommand: Equatable, Sendable {
     case reorderChildren(collectionID: String, parentID: String?, items: [String])
     case saveWorkspaceProxy(ProxyDocument?)
     case saveWorkspaceSettings(TransportSettings)
+    case renameWorkspace(name: String)
     case createCollection(CollectionDraft)
     case renameCollection(id: String, name: String)
     case deleteCollection(id: String)
@@ -679,6 +845,12 @@ public enum ImportFormat: String, Codable, CaseIterable, Sendable {
     case har
     case legacyWorkspaceV1 = "legacy_workspace_v1"
     case postmanV2 = "postman_v2"
+    /// Insomnia v4 export (JSON or YAML) or v5 YAML collection.
+    case insomnia
+    /// Bruno "Export collection" JSON.
+    case bruno
+    /// A Bruno collection folder or `.bru` file, bundled by `BrunoCollectionSource`.
+    case brunoFolder = "bruno_folder"
 }
 
 public struct ImportPreview: Codable, Equatable, Identifiable, Sendable {
@@ -688,12 +860,114 @@ public struct ImportPreview: Codable, Equatable, Identifiable, Sendable {
     public let warnings: [String]
     public var id: String { "\(collectionName)-\(requestCount)-\(groupCount)" }
 
-    enum CodingKeys: String, CodingKey {
+        enum CodingKeys: String, CodingKey {
         case warnings
         case collectionName = "collection_name"
         case requestCount = "request_count"
         case groupCount = "group_count"
     }
+}
+
+/// What an import created and everything it could not carry over exactly.
+public struct ImportSummary: Codable, Equatable, Identifiable, Sendable {
+    public struct Environment: Codable, Equatable, Sendable {
+        public let id: String
+        public let name: String
+
+        public init(id: String, name: String) {
+            self.id = id
+            self.name = name
+        }
+    }
+
+    /// Distinguishes consecutive imports so presentations restart.
+    public var id = UUID()
+    public let collectionNames: [String]
+    public let requestCount: Int
+    public let groupCount: Int
+    public let environments: [Environment]
+    public let warnings: [String]
+
+    public init(
+        collectionNames: [String],
+        requestCount: Int,
+        groupCount: Int,
+        environments: [Environment] = [],
+        warnings: [String] = []
+    ) {
+        self.collectionNames = collectionNames
+        self.requestCount = requestCount
+        self.groupCount = groupCount
+        self.environments = environments
+        self.warnings = warnings
+    }
+
+    public init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        collectionNames = try container.decode([String].self, forKey: .collectionNames)
+        requestCount = try container.decode(Int.self, forKey: .requestCount)
+        groupCount = try container.decode(Int.self, forKey: .groupCount)
+        environments = try container.decodeIfPresent([Environment].self, forKey: .environments) ?? []
+        warnings = try container.decodeIfPresent([String].self, forKey: .warnings) ?? []
+    }
+
+        /// Warnings or new environments deserve a closer look than a transient banner.
+    public var needsReview: Bool { !warnings.isEmpty || !environments.isEmpty }
+
+    /// One sentence describing what was imported, such as
+    /// "Imported 9 requests in 3 folders into “Shop API”."
+    public var headline: String {
+        var text = "Imported \(Self.counted(requestCount, "request"))"
+        if groupCount > 0 { text += " in \(Self.counted(groupCount, "folder"))" }
+        if collectionNames.count == 1, let name = collectionNames.first {
+            text += " into “\(name)”."
+        } else if collectionNames.count > 1 {
+            text += " into \(collectionNames.count) collections."
+        } else {
+            text += "."
+        }
+        return text
+    }
+
+    /// Describes the environments the import created, if any.
+    public var environmentLine: String? {
+        switch environments.count {
+        case 0: nil
+        case 1: "Created the environment “\(environments[0].name)” for its variables."
+        default:
+            "Created \(environments.count) environments: "
+                + ListFormatter.localizedString(byJoining: environments.map { "“\($0.name)”" }) + "."
+        }
+    }
+
+    private static func counted(_ count: Int, _ noun: String) -> String {
+        "\(count) \(noun)\(count == 1 ? "" : "s")"
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case warnings, environments
+        case collectionNames = "collection_names"
+        case requestCount = "request_count"
+        case groupCount = "group_count"
+    }
+}
+
+/// A committed import: the workspace delta and its summary, decoded from one bridge document.
+public struct ImportResult: Decodable, Equatable, Sendable {
+    public let delta: WorkspaceDelta
+    public let summary: ImportSummary
+
+    public init(delta: WorkspaceDelta, summary: ImportSummary) {
+        self.delta = delta
+        self.summary = summary
+    }
+
+    public init(from decoder: any Decoder) throws {
+        delta = try WorkspaceDelta(from: decoder)
+        summary = try decoder.container(keyedBy: CodingKeys.self).decode(ImportSummary.self, forKey: .summary)
+    }
+
+    enum CodingKeys: String, CodingKey { case summary }
 }
 
 public struct WorkspaceDraft: Equatable, Sendable {
@@ -832,19 +1106,39 @@ public struct GitStatusSnapshot: Codable, Equatable, Sendable {
     public let ahead: UInt64
     public let behind: UInt64
     public let changes: [GitChangeSnapshot]
+    /// A pull stopped mid-merge; Abort Merge returns to the state before the pull.
+    public let merging: Bool
+
+    enum CodingKeys: String, CodingKey { case branch, upstream, ahead, behind, changes, merging }
 
     public init(
         branch: String?,
         upstream: String?,
         ahead: UInt64,
         behind: UInt64,
-        changes: [GitChangeSnapshot]
+        changes: [GitChangeSnapshot],
+        merging: Bool = false
     ) {
         self.branch = branch
         self.upstream = upstream
         self.ahead = ahead
         self.behind = behind
         self.changes = changes
+        self.merging = merging
+    }
+
+    public init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        branch = try container.decodeIfPresent(String.self, forKey: .branch)
+        upstream = try container.decodeIfPresent(String.self, forKey: .upstream)
+        ahead = try container.decode(UInt64.self, forKey: .ahead)
+        behind = try container.decode(UInt64.self, forKey: .behind)
+        changes = try container.decode([GitChangeSnapshot].self, forKey: .changes)
+        merging = try container.decodeIfPresent(Bool.self, forKey: .merging) ?? false
+    }
+
+    public var conflictedChanges: [GitChangeSnapshot] {
+        changes.filter { $0.kind == .conflicted }
     }
 }
 
@@ -855,6 +1149,7 @@ public enum GitOperationOutcome: String, Codable, Equatable, Sendable {
     case upToDate = "up_to_date"
     case pushed
     case conflicted
+    case mergeAborted = "merge_aborted"
 }
 
 public struct GitOperationSnapshot: Codable, Equatable, Sendable {
@@ -870,6 +1165,22 @@ public struct GitOperationSnapshot: Codable, Equatable, Sendable {
         self.outcome = outcome
         self.revision = revision
         self.status = status
+    }
+}
+
+/// Git failures that mean the workspace cannot use Git yet, each with its own guidance.
+public enum GitRepositoryProblem: Equatable, Sendable {
+    case notRepository
+    case notRepositoryRoot
+    case gitUnavailable
+
+    public init?(kind: String) {
+        switch kind {
+        case "not_repository": self = .notRepository
+        case "workspace_not_repository_root": self = .notRepositoryRoot
+        case "git_unavailable": self = .gitUnavailable
+        default: return nil
+        }
     }
 }
 

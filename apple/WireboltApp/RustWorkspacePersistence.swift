@@ -2,6 +2,7 @@ import Foundation
 
 struct RustWorkspacePersistence: WorkspacePersistence, GitCollaboration {
     private let bridge: WorkspaceBridge
+    let location: URL?
 
     init(
         path: URL = Self.defaultWorkspaceURL,
@@ -18,8 +19,18 @@ struct RustWorkspacePersistence: WorkspacePersistence, GitCollaboration {
             break
         }
         // A new workspace starts empty; the first request creates the top-level list, so the
-        // sidebar never opens on an empty placeholder collection.
-        bridge = try WorkspaceBridge.openOrCreate(path: path.path, name: "Wirebolt")
+        // sidebar never opens on an empty placeholder collection. Its name follows the folder.
+        bridge = try WorkspaceBridge.openOrCreate(path: path.path, name: Self.defaultName(for: path))
+        location = path
+    }
+
+    /// The folder name, except for the built-in workspace in Application Support.
+    static func defaultName(for path: URL) -> String {
+        let name = path.standardizedFileURL.lastPathComponent.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard path.standardizedFileURL != builtInWorkspaceURL.standardizedFileURL, !name.isEmpty, name != "/" else {
+            return "Wirebolt"
+        }
+        return name
     }
 
     func load() async throws -> WorkspaceDraft {
@@ -64,6 +75,13 @@ struct RustWorkspacePersistence: WorkspacePersistence, GitCollaboration {
         }.value
     }
 
+    func deleteSecret(name: String) async throws {
+        let bridge = bridge
+        try await Task.detached(priority: .userInitiated) {
+            try bridge.deleteSecret(name: name)
+        }.value
+    }
+
     func apply(_ command: WorkspaceCommand) async throws -> WorkspaceDelta {
         let bridge = bridge
         let document = WorkspaceCommandDocument(command)
@@ -76,28 +94,43 @@ struct RustWorkspacePersistence: WorkspacePersistence, GitCollaboration {
         }.value
     }
 
-    func previewImport(format: ImportFormat, source: String) async throws -> ImportPreview {
+        func previewImport(format: ImportFormat, source: String) async throws -> ImportPreview {
         let bridge = bridge
         return try await Task.detached(priority: .userInitiated) {
-            let json = try bridge.previewImport(format: format.rawValue, source: source)
+            let json = try Self.importDocument { try bridge.previewImport(format: format.rawValue, source: source) }
             return try JSONDecoder().decode(ImportPreview.self, from: Data(json.utf8))
         }.value
     }
 
-    func commitImport(format: ImportFormat, source: String) async throws -> WorkspaceDelta {
+    func commitImport(format: ImportFormat, source: String) async throws -> ImportResult {
         let bridge = bridge
         return try await Task.detached(priority: .userInitiated) {
-            let json = try bridge.commitImport(format: format.rawValue, source: source)
-            return try JSONDecoder().decode(WorkspaceDelta.self, from: Data(json.utf8))
+            let json = try Self.importDocument { try bridge.commitImport(format: format.rawValue, source: source) }
+            return try JSONDecoder().decode(ImportResult.self, from: Data(json.utf8))
         }.value
     }
 
-    func commitImportFile(format: ImportFormat, source: String, name: String) async throws -> WorkspaceDelta {
+    func commitImportFile(format: ImportFormat, source: String, name: String) async throws -> ImportResult {
         let bridge = bridge
         return try await Task.detached(priority: .userInitiated) {
-            let json = try bridge.commitImportFile(format: format.rawValue, source: source, name: name)
-            return try JSONDecoder().decode(WorkspaceDelta.self, from: Data(json.utf8))
+            let json = try Self.importDocument {
+                try bridge.commitImportFile(format: format.rawValue, source: source, name: name)
+            }
+            return try JSONDecoder().decode(ImportResult.self, from: Data(json.utf8))
         }.value
+    }
+
+    /// Keeps the importer's user-facing reason, which never quotes the source.
+    private static func importDocument(_ operation: () throws -> String) throws -> String {
+        do { return try operation() }
+        catch let WorkspaceBridgeError.OperationFailed(reason) {
+            throw ImportFailure(reason: reason)
+        }
+    }
+
+    private struct ImportFailure: LocalizedError {
+        let reason: String
+        var errorDescription: String? { reason }
     }
 
     func exportWorkspace() async throws -> String {
@@ -169,6 +202,24 @@ struct RustWorkspacePersistence: WorkspacePersistence, GitCollaboration {
         }.value
     }
 
+    func abortMerge() async throws -> GitOperationSnapshot {
+        let bridge = bridge
+        return try await Task.detached(priority: .userInitiated) {
+            try Self.decodeGitDocument(GitOperationSnapshot.self) {
+                try bridge.gitAbortMergeJson()
+            }
+        }.value
+    }
+
+    func initializeRepository() async throws -> GitStatusSnapshot {
+        let bridge = bridge
+        return try await Task.detached(priority: .userInitiated) {
+            try Self.decodeGitDocument(GitStatusSnapshot.self) {
+                try bridge.gitInitializeJson()
+            }
+        }.value
+    }
+
     static var defaultWorkspaceURL: URL {
         let arguments = ProcessInfo.processInfo.arguments
         if let index = arguments.firstIndex(of: "--workspace"), arguments.indices.contains(index + 1) {
@@ -177,6 +228,11 @@ struct RustWorkspacePersistence: WorkspacePersistence, GitCollaboration {
         if let path = UserDefaults.standard.string(forKey: "workspace.lastOpenedPath") {
             return URL(fileURLWithPath: path, isDirectory: true)
         }
+        return builtInWorkspaceURL
+    }
+
+    /// The workspace used until another one is created or opened.
+    static var builtInWorkspaceURL: URL {
         let applicationSupport = FileManager.default.urls(
             for: .applicationSupportDirectory,
             in: .userDomainMask
@@ -401,6 +457,9 @@ private struct WorkspaceCommandDocument: Encodable {
         case let .saveWorkspaceSettings(transport):
             try container.encode("save_workspace_settings", forKey: .kind)
             try container.encode(transport, forKey: .transport)
+        case let .renameWorkspace(name):
+            try container.encode("rename_workspace", forKey: .kind)
+            try container.encode(name, forKey: .name)
         case let .createCollection(collection):
             try container.encode("create_collection", forKey: .kind)
             try container.encode(collection.id, forKey: .id)

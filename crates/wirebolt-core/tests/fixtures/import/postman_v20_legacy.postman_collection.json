@@ -1,0 +1,29 @@
+{
+  "variables": [],
+  "info": {
+    "name": "Legacy Inventory",
+    "_postman_id": "0b9d7e0c-6a53-4f6a-8a3b-2f0d8c6a1e55",
+    "description": "",
+    "schema": "https://schema.getpostman.com/json/collection/v2.0.0/collection.json"
+  },
+  "auth": { "type": "bearer", "bearer": { "token": "demo-v20-token" } },
+  "item": [
+    {
+      "name": "Stock",
+      "item": [
+        {
+          "name": "List stock",
+          "request": {
+            "url": "https://inventory.example.test/v2/stock?page=2&size=50",
+            "method": "GET",
+            "auth": { "type": "basic", "basic": { "username": "demo-user", "password": "demo-password", "saveHelperData": true, "showPassword": false } },
+            "header": "Accept: text/csv\nX-Client: legacy",
+            "description": "Paged stock levels."
+          },
+          "response": []
+        }
+      ]
+    },
+    { "name": "Health", "request": "https://inventory.example.test/health", "response": [] }
+  ]
+}
