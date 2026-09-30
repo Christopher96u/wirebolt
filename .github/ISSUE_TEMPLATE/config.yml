@@ -3,6 +3,6 @@ contact_links:
   - name: Documentation
     url: https://github.com/Christopher96u/wirebolt/tree/main/docs
     about: Installation, requests, proxy settings, environments and troubleshooting.
-  - name: Security reporting guidance
-    url: https://github.com/Christopher96u/wirebolt/blob/main/SECURITY.md
-    about: Read this before sharing details of a possible vulnerability.
+  - name: Report a vulnerability
+    url: https://github.com/Christopher96u/wirebolt/security/advisories/new
+    about: Report security issues privately. Do not open a public issue.
