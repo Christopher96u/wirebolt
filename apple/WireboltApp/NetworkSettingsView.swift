@@ -452,7 +452,7 @@ struct WireboltSettingsView: View {
                                     Text(String(size)).tag(Double(size))
                                 }
                             }.labelsHidden().frame(width: 60)
-                            Text("Applies only to the Body tab.").font(WireboltTheme.Typography.detail).foregroundStyle(.secondary)
+                            Text("Applies to request and response editors.").font(WireboltTheme.Typography.detail).foregroundStyle(.secondary)
                         }
                     }
                     GridRow {
