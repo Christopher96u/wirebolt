@@ -170,6 +170,7 @@ struct GitStatusDocument<'a> {
     behind: u64,
     revision: &'a Option<String>,
     changes: Vec<GitChangeDocument<'a>>,
+    merging: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -635,6 +636,28 @@ impl WorkspaceBridge {
     pub fn git_push_json(&self) -> Result<String, GitBridgeError> {
         let operation = self.git_workspace()?.push()?;
         encode_git_document(&GitOperationDocument::from(&operation))
+    }
+
+    /// Aborts the merge left behind by a conflicted pull.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`GitBridgeError`] when no merge is in progress or Git cannot abort it.
+    pub fn git_abort_merge_json(&self) -> Result<String, GitBridgeError> {
+        let operation = self.git_workspace()?.abort_merge()?;
+        encode_git_document(&GitOperationDocument::from(&operation))
+    }
+
+    /// Makes the workspace folder the root of a new Git repository and
+    /// returns its status.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`GitBridgeError`] when the workspace is inside another
+    /// repository or Git cannot initialize it.
+    pub fn git_initialize_json(&self) -> Result<String, GitBridgeError> {
+        let status = GitWorkspace::initialize(self.store.root())?.status()?;
+        encode_git_document(&GitStatusDocument::from(&status))
     }
 }
 
@@ -1187,6 +1210,7 @@ impl<'a> From<&'a GitStatus> for GitStatusDocument<'a> {
             behind: status.behind,
             revision: &status.revision,
             changes: status.changes.iter().map(Into::into).collect(),
+            merging: status.merging,
         }
     }
 }
@@ -1242,6 +1266,7 @@ const fn git_operation_outcome(outcome: GitOperationOutcome) -> &'static str {
         GitOperationOutcome::UpToDate => "up_to_date",
         GitOperationOutcome::Pushed => "pushed",
         GitOperationOutcome::Conflicted => "conflicted",
+        GitOperationOutcome::MergeAborted => "merge_aborted",
     }
 }
 
@@ -1260,6 +1285,7 @@ const fn git_error_kind(kind: GitErrorKind) -> &'static str {
         GitErrorKind::MissingRemote => "missing_remote",
         GitErrorKind::DetachedHead => "detached_head",
         GitErrorKind::TimedOut => "timed_out",
+        GitErrorKind::NoMergeInProgress => "no_merge_in_progress",
     }
 }
 
@@ -2849,6 +2875,37 @@ mod tests {
         assert_eq!(operation["outcome"], "committed");
         assert!(operation["revision"].is_string());
         assert_eq!(operation["status"]["changes"], serde_json::json!([]));
+        assert_eq!(operation["status"]["merging"], false);
+
+        let Err(GitBridgeError::OperationFailed { kind, .. }) = bridge.git_abort_merge_json()
+        else {
+            panic!("aborting without a merge must fail");
+        };
+        assert_eq!(kind, "no_merge_in_progress");
+    }
+
+    #[test]
+    fn workspace_bridge_initializes_a_repository_at_the_workspace_root() {
+        let temporary = tempfile::tempdir().expect("temporary parent");
+        let root = temporary.path().join("Payments API");
+        let bridge = WorkspaceBridge::open_or_create(
+            root.to_string_lossy().into_owned(),
+            "Payments API".to_owned(),
+        )
+        .expect("workspace bridge");
+        let Err(GitBridgeError::OperationFailed { kind, .. }) = bridge.git_status_json() else {
+            panic!("a new workspace folder is not a repository");
+        };
+        assert_eq!(kind, "not_repository");
+
+        let status: serde_json::Value =
+            serde_json::from_str(&bridge.git_initialize_json().expect("initialize Git"))
+                .expect("decode Git status");
+
+        assert_eq!(status["revision"], serde_json::Value::Null);
+        assert_eq!(status["merging"], false);
+        assert!(root.join(".git").exists());
+        assert!(bridge.git_status_json().is_ok());
     }
 
     /// Each test owns its cache, so resets in one test cannot race lookups
