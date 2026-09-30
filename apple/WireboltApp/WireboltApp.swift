@@ -73,6 +73,9 @@ final class WireboltAppDelegate: NSObject, NSApplicationDelegate {
     private var tabSwitchMonitor: Any?
 
     func applicationWillFinishLaunching(_: Notification) {
+        model.knownWorkspaceLocations = {
+            RecentWorkspaces.shared.urls + [RustWorkspacePersistence.builtInWorkspaceURL]
+        }
         // In-app tabs own ⌘T; native window tabs would stack a second tab bar on top.
         NSWindow.allowsAutomaticWindowTabbing = false
         Self.applyInterfaceAppearance()

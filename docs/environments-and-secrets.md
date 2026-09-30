@@ -35,7 +35,7 @@ In **Configure Environments…**, click a variable's lock button (or choose **Ma
 - Requests use a secret variable like any other: `{{token}}`. Headers and bodies that use it are redacted in the sent-request view.
 - Click the lock again (**Store in Workspace File**) to turn it back into a literal; the value is then saved in the environment file.
 
-Each secret variable has its own Keychain item, so renaming the key keeps its value. A teammate who pulls the workspace sees the variable with an empty value and enters their own. Removing a secret variable or its environment deletes the Keychain item when you open another workspace, a pull reloads the workspace, or you quit; references you typed yourself, such as proxy credentials, are never deleted.
+Each secret variable has its own Keychain item, so renaming the key keeps its value. A teammate who pulls the workspace sees the variable with an empty value and enters their own. Removing a secret variable or its environment deletes the Keychain item when you open another workspace, a pull reloads the workspace, or you quit; references you typed yourself, such as proxy credentials, are never deleted, and neither are items another workspace in **File → Open Recent** still references.
 
 Basic, Bearer and API Key authentication fields and OAuth client secrets also store their values in Keychain, and OAuth stores acquired tokens there. Proxy credentials are also local. See [authentication](authentication.md) for exact controls.
 
