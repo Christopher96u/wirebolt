@@ -8,7 +8,7 @@
 <p align="center">Free and open source.</p>
 
 <p align="center">
-  <a href="https://github.com/Christopher96u/homebrew-tap/releases"><img alt="Release channel: beta" src="https://img.shields.io/badge/channel-beta-orange"></a>
+  <a href="https://github.com/Christopher96u/wirebolt/releases"><img alt="Latest release" src="https://img.shields.io/github/v/release/Christopher96u/wirebolt?include_prereleases&sort=semver"></a>
   <img alt="Requires macOS 15 or later" src="https://img.shields.io/badge/macOS-15%2B-black">
   <a href="LICENSE"><img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-green"></a>
   <img alt="Apple Silicon" src="https://img.shields.io/badge/architecture-Apple_Silicon-blue">
@@ -16,7 +16,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/Christopher96u/homebrew-tap/releases">Download beta</a> ·
+  <a href="https://github.com/Christopher96u/wirebolt/releases">Download</a> ·
   <a href="docs/quick-start.md">Quick start</a> ·
   <a href="docs/README.md">Documentation</a> ·
   <a href="https://github.com/Christopher96u/wirebolt/issues/new/choose">Report a bug</a>
@@ -28,17 +28,18 @@ Built for speed, from switching tabs to inspecting large responses. Wirebolt pai
 
 Send HTTP requests, connect to WebSockets, and keep your API work in readable local files. No account. No telemetry. Share through Git when you choose.
 
-> **Beta:** this documentation describes the current source on `main`. Published beta builds can lag behind it. See the [changelog](CHANGELOG.md) for unreleased work and [installation](docs/installation.md) for supported hardware and first-launch instructions.
+> **Release candidate:** Wirebolt 1.0 is being finalized through release candidates. This documentation describes the current source on `main`; published builds can lag behind it. See the [changelog](CHANGELOG.md) for unreleased work and [installation](docs/installation.md) for supported hardware and first-launch instructions.
 
 ## Install
 
 Requires **Apple Silicon and macOS 15 or later**.
 
 ```sh
-brew install --cask Christopher96u/tap/wirebolt
+brew tap christopher96u/wirebolt https://github.com/Christopher96u/wirebolt
+brew install --cask christopher96u/wirebolt/wirebolt
 ```
 
-Or download the ZIP from [beta releases](https://github.com/Christopher96u/homebrew-tap/releases), extract it, and move Wirebolt to Applications. Current beta packages are ad-hoc signed, not notarized; see [first launch](docs/installation.md#first-launch) if macOS blocks opening the app.
+Or download the ZIP from [releases](https://github.com/Christopher96u/wirebolt/releases), extract it, and move Wirebolt to Applications. Builds are ad-hoc signed, not notarized; see [first launch](docs/installation.md#first-launch) to approve the app once. Installed a beta from `christopher96u/tap`? [Switch taps](docs/installation.md#migrate-from-the-beta-tap).
 
 ### Build from source
 
@@ -101,7 +102,7 @@ Wirebolt does not collect telemetry or automatically upload diagnostics. Workspa
 
 Git operations run only when requested. There is no background cloud sync and no Wirebolt account to create.
 
-## Beta limitations
+## Known limitations
 
 - Packages currently target Apple Silicon; Intel, Windows and Linux packages are not provided.
 - API key secret provisioning requires Keychain Access; there is no general secret manager in the app yet.
@@ -117,4 +118,4 @@ Read [CONTRIBUTING.md](CONTRIBUTING.md) to report an issue, improve the document
 
 ## License
 
-Wirebolt is free and open source under the [MIT License](LICENSE). Third-party dependencies retain their respective licenses; beta packages include dependency notices.
+Wirebolt is free and open source under the [MIT License](LICENSE). Third-party dependencies retain their respective licenses; release packages include dependency notices.

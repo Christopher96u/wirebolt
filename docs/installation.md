@@ -6,15 +6,18 @@
 
 - macOS 15 (Sequoia) or later.
 - An Apple Silicon Mac (M-series).
-- Homebrew only if using the Homebrew installation method.
+- A current Homebrew (run `brew update`) only if using the Homebrew installation method.
 
 There is no account requirement. Network access is needed for downloads and remote APIs; workspace editing and the bundled help work locally.
 
 ## Homebrew
 
 ```sh
-brew install --cask Christopher96u/tap/wirebolt
+brew tap christopher96u/wirebolt https://github.com/Christopher96u/wirebolt
+brew install --cask christopher96u/wirebolt/wirebolt
 ```
+
+The tap is this source repository; its Cask lives in `Casks/wirebolt.rb`. Homebrew 6 and later only load casks from third-party taps you trust, and installing by the full name trusts just this cask, so later `brew upgrade` commands can use the short name. Wirebolt is ad-hoc signed and not notarized, so the Cask removes the quarantine attribute after installing and the app opens without a Gatekeeper prompt.
 
 To update:
 
@@ -23,25 +26,50 @@ brew update
 brew upgrade --cask wirebolt
 ```
 
+To uninstall and remove the tap:
+
+```sh
+brew uninstall --cask wirebolt
+brew untap christopher96u/wirebolt
+```
+
+Add `--zap` to the uninstall command to also delete preferences, history and cookies. Workspace folders are always kept.
+
+### Migrate from the beta tap
+
+Betas were installed from `christopher96u/tap`, which no longer receives updates. Switch once:
+
+```sh
+brew uninstall --cask wirebolt && brew untap christopher96u/tap
+brew tap christopher96u/wirebolt https://github.com/Christopher96u/wirebolt
+brew install --cask christopher96u/wirebolt/wirebolt
+```
+
+Workspace folders are not affected.
+
 ## Direct download
 
-1. Open [Wirebolt beta releases](https://github.com/Christopher96u/homebrew-tap/releases).
-2. Choose the desired prerelease and download `Wirebolt-<version>-arm64.zip`.
+1. Open [Wirebolt releases](https://github.com/Christopher96u/wirebolt/releases).
+2. Download `Wirebolt-<version>-arm64.zip` from the release you want. Release candidates are marked **Pre-release**.
 3. Extract the ZIP and move **Wirebolt.app** to **Applications**.
-4. Open Wirebolt.
-
-The download repository is separate from the source repository. Choose a release explicitly: GitHub's `releases/latest` URL does not reliably select a prerelease.
+4. Open Wirebolt and follow the first-launch steps below.
 
 ## First launch
 
-Current beta packages use ad-hoc signing and are not notarized. If macOS blocks opening the downloaded app, attempt to open it once, then use **System Settings → Privacy & Security → Open Anyway**, if offered, and confirm the system dialog. Only approve the package you intentionally downloaded from the release repository. Do not disable Gatekeeper globally.
+Downloaded builds are ad-hoc signed and not notarized, so macOS blocks the first launch:
 
-If macOS reports a damaged package or offers no approval option, download it again and report the exact message with your macOS and app versions. [Building from source](development.md) is also available.
+1. Open Wirebolt. When macOS says it cannot verify the app, click **Done**.
+2. Open **System Settings → Privacy & Security** and scroll to **Security**.
+3. Click **Open Anyway** next to the Wirebolt message, then confirm with your password or Touch ID.
+
+macOS remembers the approval. Only approve a package you intentionally downloaded from the releases page, and do not disable Gatekeeper globally.
+
+If macOS reports a damaged package or offers no **Open Anyway** button, download it again and report the exact message with your macOS and app versions. [Building from source](development.md) is also available.
 
 ## Versions
 
-The docs and screenshots follow the source branch. Features under **Unreleased** in the [changelog](../CHANGELOG.md) are not a promise about an older ZIP. To try current source changes, follow the development guide.
+The docs and screenshots follow the source branch. Features under **Unreleased** in the [changelog](../CHANGELOG.md) are not in a published build yet. To try current source changes, follow the development guide.
 
 ## Workspace location
 
-Use **File → New Workspace…** to choose a folder or **File → Open Workspace…** to select a folder containing `wirebolt.toml`. The app remembers the last chosen workspace. Keep a backup or Git history of workspace files before trying a new beta.
+Use **File → New Workspace…** to choose a folder or **File → Open Workspace…** to select a folder containing `wirebolt.toml`. The app remembers the last chosen workspace. Keep a backup or Git history of workspace files before trying a new release candidate.

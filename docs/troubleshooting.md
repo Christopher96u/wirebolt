@@ -5,7 +5,7 @@
 | Symptom | Check |
 | --- | --- |
 | macOS blocks launching | Follow [first-launch instructions](installation.md#first-launch); use an Apple Silicon Mac with macOS 15+ |
-| A feature in the docs is missing | Compare your beta with [Unreleased changes](../CHANGELOG.md); docs follow current source |
+| A feature in the docs is missing | Compare your version with [Unreleased changes](../CHANGELOG.md); docs follow current source |
 | Workspace will not open | Choose the folder containing `wirebolt.toml`; check permissions and preserve a backup before manual edits |
 | Variables are unresolved | Check exact key spelling, row enabled state, Global values and toolbar environment selection |
 | Missing credential | The reference must exist in this Mac's Keychain; importing a workspace does not import its credential material |
@@ -18,7 +18,7 @@
 | Git actions are unavailable | Configure a workspace repository and remote; load status, enter a commit message or establish an upstream as needed |
 | Markdown image does not render | Preview deliberately displays alternative text without fetching remote resources |
 
-## Known beta boundaries
+## Known boundaries
 
 There is no general secret-management screen, no exposed proxy host-exclusion editor, and no promise that other clients understand Wirebolt's advanced-auth export extensions. OAuth compatibility depends on provider configuration. Published packages are ad-hoc signed and currently Apple Silicon only.
 

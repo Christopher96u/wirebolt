@@ -110,7 +110,10 @@ async fn runs_an_http1_request_through_the_public_interface() {
     let raw_request = String::from_utf8(raw_request).expect("ASCII request");
     assert!(raw_request.starts_with("POST /echo?from=wirebolt HTTP/1.1\r\n"));
     assert!(raw_request.contains("x-client: wirebolt\r\n"));
-    assert!(raw_request.contains("user-agent: Wirebolt/0.1.0\r\n"));
+    assert!(raw_request.contains(&format!(
+        "user-agent: Wirebolt/{}\r\n",
+        env!("CARGO_PKG_VERSION")
+    )));
     assert!(raw_request.contains("accept: */*\r\n"));
     assert!(raw_request.contains("accept-encoding: gzip, deflate, br, zstd\r\n"));
     assert!(raw_request.ends_with("\r\n\r\nhello"));

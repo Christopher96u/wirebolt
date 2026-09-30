@@ -1,8 +1,12 @@
 # Changelog
 
-Changes under **Unreleased** describe the source branch and may not be included in downloadable betas. Published binaries are listed in the [distribution releases](https://github.com/Christopher96u/homebrew-tap/releases). This file does not reconstruct unverified release history.
+Changes under **Unreleased** are on `main` but not in a published build yet. Downloads are listed on the [releases page](https://github.com/Christopher96u/wirebolt/releases). Earlier 0.1.0 betas were distributed through a separate tap repository; this file does not reconstruct their history.
 
 ## Unreleased
+
+## 1.0.0-rc.1
+
+First release candidate for Wirebolt 1.0. It collects everything since 0.1.0-beta.2 and is the first build published from this repository; Homebrew users of the old `christopher96u/tap` need to [switch taps](https://github.com/Christopher96u/wirebolt/blob/main/docs/installation.md#migrate-from-the-beta-tap).
 
 ### Breaking changes
 

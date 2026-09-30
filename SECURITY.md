@@ -6,7 +6,7 @@ Report privately through [GitHub private vulnerability reporting](https://github
 
 Include:
 
-- Wirebolt version (**About Wirebolt**, for example `0.1.0 (2)`) or source commit, macOS version and chip
+- Wirebolt version (**About Wirebolt**, for example `1.0.0 (35)`) or source commit, macOS version and chip
 - Steps to reproduce with synthetic data, expected versus actual behavior and impact
 - Proof of concept, if you have one
 
@@ -14,7 +14,7 @@ Never include live credentials, cookies, private workspace files or real respons
 
 ## Supported versions
 
-Wirebolt is in beta. Fixes land on `main` and ship in the next beta; only the latest beta is supported.
+Only the latest [release](https://github.com/Christopher96u/wirebolt/releases), including release candidates, is supported. Fixes land on `main` and ship in the next release.
 
 ## Response
 
@@ -29,4 +29,4 @@ Wirebolt is local-first: no accounts, telemetry or cloud sync. In scope:
 - Proxy, TLS validation or certificate handling that differs from the configured policy
 - Markdown notes loading remote content, or Markdown or HTML response previews executing scripts
 
-Out of scope: servers you send requests to, issues requiring an already compromised Mac or user account, and the ad-hoc signed (not notarized) beta packaging, which is documented.
+Out of scope: servers you send requests to, issues requiring an already compromised Mac or user account, and the ad-hoc signed (not notarized) packaging, which is documented.
