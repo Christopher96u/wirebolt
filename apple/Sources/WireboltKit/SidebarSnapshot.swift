@@ -10,11 +10,33 @@ public struct SidebarSnapshot: Sendable {
         }
         public let id: String
         public let depth: Int
-        public let content: Content
         /// The enclosing folder or collection row; nil at the top level.
         public let parentID: String?
-        let ancestors: [Int]
-        let search: String
+        /// Everything but the identity, shared: SwiftUI copies every row of the outline when
+        /// it diffs the list, and a request row otherwise copies its whole draft each time.
+        private let storage: Storage
+
+        public var content: Content { storage.content }
+        var ancestors: [Int] { storage.ancestors }
+        var search: String { storage.search }
+
+        private final class Storage: Sendable {
+            let content: Content
+            let ancestors: [Int]
+            let search: String
+            init(content: Content, ancestors: [Int], search: String) {
+                self.content = content
+                self.ancestors = ancestors
+                self.search = search
+            }
+        }
+
+        init(id: String, depth: Int, content: Content, parentID: String?, ancestors: [Int], search: String) {
+            self.id = id
+            self.depth = depth
+            self.parentID = parentID
+            storage = Storage(content: content, ancestors: ancestors, search: search)
+        }
 
         public var title: String {
             switch content {
