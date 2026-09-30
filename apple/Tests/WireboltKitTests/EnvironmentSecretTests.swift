@@ -3,19 +3,17 @@ import Testing
 @testable import WireboltKit
 
 struct EnvironmentSecretTests {
-    @Test("Secret variable references are unique per environment and row and valid for Keychain")
+    @Test("Secret variable references are fresh, owned and valid for Keychain")
     func secretReferences() {
         let row = EnvironmentVariableDraft(id: "variable-0", key: "apiToken", value: .literal(""))
-        let staging = row.secretReference(environmentID: "staging")
-        let production = row.secretReference(environmentID: "production")
-        #expect(staging == "env.staging.variable-0")
-        #expect(staging != production)
-        var renamed = row
-        renamed.key = "token"
-        #expect(renamed.secretReference(environmentID: "staging") == staging)
+        let staging = row.makeSecretReference(environmentID: "staging")
+        // Imported rows reuse IDs such as "variable-0" in every workspace; names must not.
+        #expect(staging != row.makeSecretReference(environmentID: "staging"))
+        #expect(staging.hasPrefix("env.") && staging.hasSuffix(".staging"))
+        #expect(CredentialReference.isOwned(staging))
 
         let odd = EnvironmentVariableDraft(id: String(repeating: "é/", count: 100), key: "x")
-        let name = odd.secretReference(environmentID: "team env")
+        let name = odd.makeSecretReference(environmentID: String(repeating: "team env ", count: 30))
         #expect(name.count <= 128)
         #expect(name.allSatisfy { $0.isASCII && ($0.isLetter || $0.isNumber || ".-_".contains($0)) })
     }
@@ -26,7 +24,7 @@ struct EnvironmentSecretTests {
         let keychain = KeychainRecorder()
         let model = WireboltModel(runner: SilentRunner(), persistence: keychain)
         let row = EnvironmentVariableDraft(id: "token-row", key: "token", value: .literal(""))
-        let reference = row.secretReference(environmentID: "staging")
+        let reference = row.makeSecretReference(environmentID: "staging")
         var environment = EnvironmentDraft(id: "staging", name: "Staging", variables: [row])
         environment.variables[0].value = .secret(reference)
 
@@ -37,7 +35,7 @@ struct EnvironmentSecretTests {
         #expect(model.secretMaterial(for: .secret(reference)) == "fixture-environment-token")
         let stored = try #require(await keychain.environments.last)
         let encoded = String(decoding: try JSONEncoder().encode(stored), as: UTF8.self)
-        #expect(encoded.contains(#"{"secret":"env.staging.token-row"}"#))
+        #expect(encoded.contains(#"{"secret":"\#(reference)"}"#))
         #expect(!encoded.contains("fixture-environment-token"))
         #expect(model.activeVariables["token"] == .secret(reference))
     }

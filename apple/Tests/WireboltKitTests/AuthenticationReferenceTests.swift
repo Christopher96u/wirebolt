@@ -75,28 +75,32 @@ struct AuthenticationReferenceTests {
     }
 }
 
-private extension ValueSource {
-    var secretName: String? {
-        if case let .secret(name) = self { name } else { nil }
-    }
-}
-
 actor KeychainRecorder: WorkspacePersistence {
     private(set) var saved: [String: String] = [:]
+    private(set) var deleted: [String] = []
     private(set) var environments: [EnvironmentDraft] = []
     private(set) var commands: [WorkspaceCommand] = []
     var failsSecrets = false
     nonisolated let location: URL?
+    private let workspace: WorkspaceDraft
 
-    init(location: URL? = nil) { self.location = location }
+    init(location: URL? = nil, workspace: WorkspaceDraft = WorkspaceDraft(name: "Fixture"), keychain: [String: String] = [:]) {
+        self.location = location
+        self.workspace = workspace
+        saved = keychain
+    }
 
-    func load() async throws -> WorkspaceDraft { WorkspaceDraft(name: "Fixture") }
+    func load() async throws -> WorkspaceDraft { workspace }
     func save(request _: RequestDraft, in _: String) async throws {}
     func save(environment: EnvironmentDraft) async throws { environments.append(environment) }
     func readSecret(name: String) async throws -> String? { saved[name] }
     func saveSecret(name: String, value: String) async throws {
         if failsSecrets { throw RunFailure(kind: "keychain", issues: []) }
         saved[name] = value
+    }
+    func deleteSecret(name: String) async throws {
+        deleted.append(name)
+        saved[name] = nil
     }
     func failSecrets() { failsSecrets = true }
 

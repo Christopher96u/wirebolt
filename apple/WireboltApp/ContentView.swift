@@ -3627,7 +3627,9 @@ private struct AuthenticationEditor: View {
             get: { model.secretMaterial(for: source) },
             set: { value in
                 let name: String
-                if case let .secret(existing) = source, !existing.isEmpty { name = existing }
+                // A legacy shared name is never written: other requests may read it.
+                if case let .secret(existing) = source, !existing.isEmpty,
+                   !CredentialReference.isLegacyShared(existing) { name = existing }
                 else { name = CredentialReference.unique(role: role) }
                 model.editSecret(name: name, value: value)
                 switch authentication {
