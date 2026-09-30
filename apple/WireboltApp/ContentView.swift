@@ -2005,9 +2005,20 @@ private struct WebSocketRequestWorkspace: View {
                 } else if interface.requestSection == .auth {
                     AuthenticationTypePicker(authentication: $session.draft.authentication)
                 }
-                Menu("Message Actions", systemImage: "ellipsis.circle") { EditorPreferencesMenu() }
+                if interface.requestSection == .params || interface.requestSection == .headers {
+                    Menu("Section Actions", systemImage: "ellipsis.circle") {
+                        Button("New Entry") { interface.isBulkEditing = false; interface.focusNewKeyTrigger += 1 }
+                        Divider()
+                        Button("Key-Value Edit") { interface.isBulkEditing = false }
+                        Button("Bulk Edit") { interface.isBulkEditing = true }
+                    }
                     .menuStyle(.borderlessButton).menuIndicator(.hidden).labelStyle(.iconOnly).fixedSize()
-                    .help("Message Actions")
+                    .help("Section Actions")
+                } else {
+                    Menu("Message Actions", systemImage: "ellipsis.circle") { EditorPreferencesMenu() }
+                        .menuStyle(.borderlessButton).menuIndicator(.hidden).labelStyle(.iconOnly).fixedSize()
+                        .help("Message Actions")
+                }
             }
             .padding(.horizontal, 11)
             .frame(height: 32)
@@ -2027,9 +2038,17 @@ private struct WebSocketRequestWorkspace: View {
                 FileBodyEditor(path: path, contentType: contentType) { session.draft.body = .file(path: $0, contentType: $1) }
             } else { BodyTextEditor(text: messageText, language: messageKind.wrappedValue == .json ? .json : .plain) }
         case .params:
-            FieldEditor(title: "Query Params", fields: $session.draft.query, kind: .query, focusTrigger: interface.focusNewKeyTrigger)
+            if interface.isBulkEditing {
+                BulkFieldEditor(fields: $session.draft.query)
+            } else {
+                FieldEditor(title: "Query Params", fields: $session.draft.query, kind: .query, focusTrigger: interface.focusNewKeyTrigger)
+            }
         case .headers:
-            FieldEditor(title: "Header List", fields: $session.draft.headers, kind: .header, focusTrigger: interface.focusNewKeyTrigger)
+            if interface.isBulkEditing {
+                BulkFieldEditor(fields: $session.draft.headers)
+            } else {
+                FieldEditor(title: "Header List", fields: $session.draft.headers, kind: .header, focusTrigger: interface.focusNewKeyTrigger)
+            }
         case .auth:
             AuthenticationEditor(model: model, session: session, authentication: $session.draft.authentication)
         case .settings:
