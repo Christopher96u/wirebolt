@@ -1,14 +1,26 @@
-use std::{error::Error, fmt};
+use std::{
+    borrow::Cow,
+    error::Error,
+    fmt::{self, Write as _},
+};
 
 use serde_json::Value;
 
+mod curl;
+mod har;
 mod legacy_v1;
+mod postman;
+mod workspace;
+
+pub use workspace::{ImportedEnvironment, ImportedRequestSettings, ImportedWorkspace};
 
 use crate::{
-    MultipartPart, MultipartPartKind, Request, RequestAuthentication, RequestBody, RequestHeader,
-    RequestValueField, ValueSource,
+    EnvironmentVariable, Request, RequestAuthentication, RequestBody, RequestHeader,
+    RequestValueField, SecretName, ValueSource,
 };
 
+/// One supported import source. Each variant is parsed by its own module and
+/// dispatched from [`ImportEngine::parse_import`].
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ImportFormat {
     Curl,
@@ -29,12 +41,15 @@ impl ImportFormat {
             "har" => Ok(Self::Har),
             "legacy_workspace_v1" => Ok(Self::LegacyWorkspaceV1),
             "postman_v2" => Ok(Self::PostmanV2),
-            _ => Err(ImportError::new("unsupported import format")),
+            _ => Err(ImportError::new("This import format isn't supported.")),
         }
     }
 }
 
-#[derive(Clone, Debug)]
+/// One imported collection. Importers report anything they could not carry
+/// over exactly in `warnings`, as short user-facing sentences that never
+/// quote secret material; the app shows them after the import.
+#[derive(Clone, Debug, Default)]
 pub struct ImportedCollection {
     pub name: String,
     pub groups: Vec<ImportedGroup>,
@@ -42,7 +57,7 @@ pub struct ImportedCollection {
     pub warnings: Vec<String>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub struct ImportedGroup {
     pub source_id: String,
     pub name: String,
@@ -50,6 +65,8 @@ pub struct ImportedGroup {
     pub order: i64,
 }
 
+/// Literal credentials in `authentication` are moved to Keychain by the
+/// bridge before the request is written; `{{variable}}` references stay.
 #[derive(Clone, Debug)]
 pub struct ImportedRequest {
     pub source_id: String,
@@ -64,6 +81,25 @@ pub struct ImportedRequest {
     pub body: RequestBody,
     pub web_socket: bool,
     pub note: String,
+}
+
+impl Default for ImportedRequest {
+    fn default() -> Self {
+        Self {
+            source_id: String::new(),
+            name: String::new(),
+            group_source_id: None,
+            order: 0,
+            method: "GET".to_owned(),
+            url: String::new(),
+            headers: Vec::new(),
+            query: Vec::new(),
+            authentication: RequestAuthentication::None,
+            body: RequestBody::Empty,
+            web_socket: false,
+            note: String::new(),
+        }
+    }
 }
 
 impl ImportedRequest {
@@ -86,20 +122,135 @@ impl ImportedRequest {
     }
 }
 
+/// Everything one import creates, plus credential material that the bridge
+/// must store in Keychain before any document is written.
+#[derive(Clone, Debug)]
+pub struct ParsedImport {
+    pub workspace: ImportedWorkspace,
+    /// Material for the placeholder secret names used by the workspace's
+    /// environment variables and OAuth 2.0 client secret references. The
+    /// bridge gives each placeholder a unique Keychain name.
+    pub secrets: Vec<ImportedSecret>,
+}
+
+impl ParsedImport {
+    /// The collections' warnings, in order, for the post-import summary.
+    pub fn warnings(&self) -> impl Iterator<Item = &str> {
+        self.workspace
+            .collections
+            .iter()
+            .flat_map(|collection| collection.warnings.iter().map(String::as_str))
+    }
+}
+
+impl From<ImportedCollection> for ParsedImport {
+    fn from(collection: ImportedCollection) -> Self {
+        ImportedWorkspace::from(collection).into()
+    }
+}
+
+impl From<ImportedWorkspace> for ParsedImport {
+    fn from(workspace: ImportedWorkspace) -> Self {
+        Self {
+            workspace,
+            secrets: Vec::new(),
+        }
+    }
+}
+
+/// Credential material found in an import, under a placeholder reference.
+#[derive(Clone)]
+pub struct ImportedSecret {
+    pub reference: SecretName,
+    pub material: String,
+}
+
+impl fmt::Debug for ImportedSecret {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("ImportedSecret")
+            .field("reference", &self.reference)
+            .field("material", &"[REDACTED]")
+            .finish()
+    }
+}
+
+/// Collects credential material under unique placeholder names while an
+/// importer runs.
+#[derive(Debug, Default)]
+struct SecretCollector {
+    secrets: Vec<ImportedSecret>,
+}
+
+impl SecretCollector {
+    /// Stores `material` and returns its placeholder reference.
+    fn add(&mut self, label: &str, material: String) -> Option<SecretName> {
+        let label = slug(label);
+        let reference = SecretName::new(format!("{label}-{}", self.secrets.len())).ok()?;
+        self.secrets.push(ImportedSecret {
+            reference: reference.clone(),
+            material,
+        });
+        Some(reference)
+    }
+}
+
+/// Builds environment rows; credential-like values become secret references.
+fn environment_variable(
+    order: usize,
+    key: String,
+    value: String,
+    enabled: bool,
+    secret: bool,
+    secrets: &mut SecretCollector,
+) -> EnvironmentVariable {
+    let value = if (secret || looks_like_credential_name(&key))
+        && !value.is_empty()
+        && !value.contains("{{")
+    {
+        secrets
+            .add(&format!("variable-{key}"), value.clone())
+            .map_or_else(|| ValueSource::literal(value), ValueSource::secret)
+    } else {
+        ValueSource::literal(value)
+    };
+    EnvironmentVariable {
+        id: format!("variable-{order}"),
+        key,
+        value,
+        enabled,
+        order: i64::try_from(order).unwrap_or(i64::MAX),
+    }
+}
+
+/// Why an import failed, as a user-facing sentence without source contents.
 #[derive(Debug, Eq, PartialEq)]
 pub struct ImportError {
-    reason: &'static str,
+    reason: Cow<'static, str>,
 }
 
 impl ImportError {
     const fn new(reason: &'static str) -> Self {
-        Self { reason }
+        Self {
+            reason: Cow::Borrowed(reason),
+        }
+    }
+
+    fn message(reason: String) -> Self {
+        Self {
+            reason: Cow::Owned(reason),
+        }
+    }
+
+    #[must_use]
+    pub fn reason(&self) -> &str {
+        &self.reason
     }
 }
 
 impl fmt::Display for ImportError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str(self.reason)
+        formatter.write_str(&self.reason)
     }
 }
 
@@ -109,6 +260,37 @@ impl Error for ImportError {}
 pub struct ImportEngine;
 
 impl ImportEngine {
+    /// Parses a source completely, with every collection, environment,
+    /// request setting and Keychain secret it creates. This is the single
+    /// dispatch point for import formats.
+    ///
+    /// `file_name` names the collection after the imported file when the
+    /// format has no collection name of its own.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ImportError`] with a user-facing reason, never source contents.
+    pub fn parse_import(
+        format: ImportFormat,
+        source: &str,
+        file_name: Option<&str>,
+    ) -> Result<ParsedImport, ImportError> {
+        let result = match format {
+            ImportFormat::Curl => curl::parse(source, file_name),
+            ImportFormat::Har => har::parse(source, file_name).map(ParsedImport::from),
+            ImportFormat::PostmanV2 => postman::parse(source),
+            ImportFormat::LegacyWorkspaceV1 => {
+                match (file_name, serde_json::from_str::<Value>(source)) {
+                    (Some(name), Ok(root)) if root.get("nodes").is_some() => {
+                        Self::parse_workspace_file(format, source, name).map(ParsedImport::from)
+                    }
+                    _ => parse_legacy_workspace(source).map(ParsedImport::from),
+                }
+            }
+        };
+        result.map_err(|error| unsupported_document(source).unwrap_or(error))
+    }
+
     /// Imports a file while retaining its top-level folders under the filename.
     ///
     /// # Errors
@@ -118,348 +300,200 @@ impl ImportEngine {
         source: &str,
         name: &str,
     ) -> Result<ImportedCollection, ImportError> {
+        if format == ImportFormat::LegacyWorkspaceV1
+            && let Ok(root) = serde_json::from_str::<Value>(source)
+            && root.get("nodes").is_some()
+        {
+            return legacy_v1::parse_named(&root, Some(name));
+        }
+        first_collection(Self::parse_import(format, source, Some(name))?)
+    }
+
+    /// Imports a file with everything it describes: a Wirebolt workspace export
+    /// yields one collection per exported collection plus its environments;
+    /// other formats yield the single collection of [`Self::parse_file`].
+    ///
+    /// # Errors
+    /// Returns [`ImportError`] for invalid input without including source contents.
+    pub fn parse_workspace_file(
+        format: ImportFormat,
+        source: &str,
+        name: &str,
+    ) -> Result<ImportedWorkspace, ImportError> {
         if format == ImportFormat::LegacyWorkspaceV1 {
             let root: Value = serde_json::from_str(source)
                 .map_err(|_| ImportError::new("legacy workspace JSON is invalid"))?;
             if root.get("nodes").is_some() {
-                return legacy_v1::parse_named(&root, Some(name));
+                return legacy_v1::parse_named(&root, Some(name)).map(ImportedWorkspace::from);
             }
         }
-        Self::parse(format, source)
+        Self::parse_file(format, source, name).map(ImportedWorkspace::from)
     }
 
-    /// Parses a source completely before returning any documents to storage.
+    /// Parses a source into its first collection.
     ///
     /// # Errors
     ///
     /// Returns [`ImportError`] without including source contents.
     pub fn parse(format: ImportFormat, source: &str) -> Result<ImportedCollection, ImportError> {
-        match format {
-            ImportFormat::Curl => parse_curl(source),
-            ImportFormat::Har => parse_har(source),
-            ImportFormat::LegacyWorkspaceV1 => parse_legacy_workspace(source),
-            ImportFormat::PostmanV2 => parse_postman(source),
-        }
+        first_collection(Self::parse_import(format, source, None)?)
     }
 }
 
-fn parse_curl(source: &str) -> Result<ImportedCollection, ImportError> {
-    let tokens = shell_tokens(source)?;
-    if tokens.first().is_none_or(|token| token != "curl") {
-        return Err(ImportError::new("cURL command must start with curl"));
-    }
-    let mut method = "GET".to_owned();
-    let mut url = None;
-    let mut headers = Vec::new();
-    let mut body = None;
-    let mut index = 1;
-    while index < tokens.len() {
-        match tokens[index].as_str() {
-            "-X" | "--request" => {
-                index += 1;
-                method = tokens
-                    .get(index)
-                    .ok_or_else(|| ImportError::new("missing cURL method"))?
-                    .to_uppercase();
-            }
-            "-H" | "--header" => {
-                index += 1;
-                let header = tokens
-                    .get(index)
-                    .ok_or_else(|| ImportError::new("missing cURL header"))?;
-                let (name, value) = header
-                    .split_once(':')
-                    .ok_or_else(|| ImportError::new("invalid cURL header"))?;
-                headers.push(RequestHeader::enabled(
-                    name.trim(),
-                    ValueSource::literal(value.trim()),
-                ));
-            }
-            "-d" | "--data" | "--data-raw" | "--data-binary" => {
-                index += 1;
-                let value = tokens
-                    .get(index)
-                    .ok_or_else(|| ImportError::new("missing cURL body"))?
-                    .clone();
-                body = Some(
-                    if serde_json::from_str::<serde::de::IgnoredAny>(&value).is_ok() {
-                        RequestBody::Json { value }
-                    } else {
-                        RequestBody::Text {
-                            content_type: None,
-                            value,
-                        }
-                    },
-                );
-                if method == "GET" {
-                    "POST".clone_into(&mut method);
-                }
-            }
-            token if token.starts_with('-') => {}
-            token => url = Some(token.to_owned()),
-        }
-        index += 1;
-    }
-    let url = url.ok_or_else(|| ImportError::new("cURL command has no URL"))?;
-    Ok(ImportedCollection {
-        name: "Imported cURL".to_owned(),
-        groups: Vec::new(),
-        requests: vec![ImportedRequest {
-            source_id: "curl-request".to_owned(),
-            name: "Imported Request".to_owned(),
-            group_source_id: None,
-            order: 0,
-            method,
-            url,
-            headers,
-            query: Vec::new(),
-            authentication: RequestAuthentication::None,
-            web_socket: false,
-            note: String::new(),
-            body: body.unwrap_or(RequestBody::Empty),
-        }],
-        warnings: Vec::new(),
-    })
+fn first_collection(parsed: ParsedImport) -> Result<ImportedCollection, ImportError> {
+    parsed
+        .workspace
+        .collections
+        .into_iter()
+        .next()
+        .ok_or(ImportError::new("The document has nothing to import."))
 }
 
-fn parse_har(source: &str) -> Result<ImportedCollection, ImportError> {
-    let root: Value =
-        serde_json::from_str(source).map_err(|_| ImportError::new("HAR JSON is invalid"))?;
-    let entries = root
-        .pointer("/log/entries")
-        .and_then(Value::as_array)
-        .ok_or_else(|| ImportError::new("HAR has no entries"))?;
-    let requests = entries
+/// Recognizes documents Wirebolt cannot import so a failed parse can name
+/// the actual problem instead of the chosen importer's generic error.
+fn unsupported_document(source: &str) -> Option<ImportError> {
+    let trimmed = source.trim_start();
+    let yaml_key = |key: &str| {
+        trimmed.lines().take(40).any(|line| {
+            line.strip_prefix(key)
+                .is_some_and(|rest| rest.trim_start().starts_with(':'))
+        })
+    };
+    if yaml_key("openapi") || yaml_key("swagger") {
+        return Some(ImportError::new(
+            "OpenAPI and Swagger documents aren't supported yet.",
+        ));
+    }
+    if !trimmed.starts_with('{') {
+        return None;
+    }
+    let root: Value = serde_json::from_str(trimmed).ok()?;
+    if root.get("openapi").is_some() || root.get("swagger").is_some() {
+        return Some(ImportError::new(
+            "OpenAPI and Swagger documents aren't supported yet.",
+        ));
+    }
+    if root.get("_postman_variable_scope").is_some() {
+        return Some(ImportError::new(
+            "This is a Postman environment, not a collection. Import a Postman Collection v2.0 or v2.1 file.",
+        ));
+    }
+    None
+}
+
+/// Joins a warning with the affected item names, keeping the list short.
+fn listed_warning(message: &str, items: &[String]) -> String {
+    const LIMIT: usize = 6;
+    let mut listed = items
+        .iter()
+        .take(LIMIT)
+        .cloned()
+        .collect::<Vec<_>>()
+        .join(", ");
+    if items.len() > LIMIT {
+        let _ = write!(listed, " and {} more", items.len() - LIMIT);
+    }
+    format!("{message}: {listed}.")
+}
+
+/// Credential-like names are imported as Keychain secrets, not plain values.
+fn looks_like_credential_name(name: &str) -> bool {
+    let name = name.to_ascii_lowercase();
+    [
+        "token",
+        "secret",
+        "password",
+        "passwd",
+        "apikey",
+        "api_key",
+        "api-key",
+        "credential",
+        "private",
+    ]
+    .iter()
+    .any(|marker| name.contains(marker))
+}
+
+/// Decodes `%XX` escapes so values are not encoded twice when sent. Invalid
+/// sequences or non-UTF-8 results keep the original text.
+fn percent_decoded(value: &str) -> String {
+    if !value.contains('%') {
+        return value.to_owned();
+    }
+    percent_encoding::percent_decode_str(value)
+        .decode_utf8()
+        .map_or_else(|_| value.to_owned(), Cow::into_owned)
+}
+
+/// Headers that describe one captured connection rather than the request.
+fn is_connection_header(name: &str) -> bool {
+    name.starts_with(':')
+        || [
+            "host",
+            "content-length",
+            "connection",
+            "keep-alive",
+            "proxy-connection",
+            "transfer-encoding",
+            "upgrade",
+        ]
+        .iter()
+        .any(|header| name.eq_ignore_ascii_case(header))
+}
+
+/// Moves a literal `Authorization: Bearer …` or `Basic …` header into typed
+/// authentication, so the bridge stores the credential in Keychain instead
+/// of the workspace.
+fn authorization_header_authentication(headers: &mut Vec<RequestHeader>) -> RequestAuthentication {
+    let mut matching = headers
         .iter()
         .enumerate()
-        .filter_map(|(index, entry)| {
-            let request = entry.get("request")?;
-            let url = request.get("url")?.as_str()?.to_owned();
-            let method = request
-                .get("method")
-                .and_then(Value::as_str)
-                .unwrap_or("GET")
-                .to_owned();
-            let headers = request
-                .get("headers")
-                .and_then(Value::as_array)
-                .into_iter()
-                .flatten()
-                .filter_map(header_from_name_value)
-                .collect();
-            let body = request
-                .pointer("/postData/text")
-                .and_then(Value::as_str)
-                .map_or(RequestBody::Empty, |value| {
-                    let mime = request
-                        .pointer("/postData/mimeType")
-                        .and_then(Value::as_str);
-                    if mime.is_some_and(|mime| mime.contains("json")) {
-                        RequestBody::Json {
-                            value: value.to_owned(),
-                        }
-                    } else {
-                        RequestBody::Text {
-                            content_type: mime.map(str::to_owned),
-                            value: value.to_owned(),
-                        }
-                    }
-                });
-            Some(ImportedRequest {
-                source_id: format!("har-{index}"),
-                name: format!(
-                    "{method} {}",
-                    url.split('/').next_back().unwrap_or("Request")
-                ),
-                group_source_id: None,
-                order: i64::try_from(index).unwrap_or(i64::MAX),
-                method,
-                url,
-                headers,
-                query: Vec::new(),
-                authentication: RequestAuthentication::None,
-                web_socket: false,
-                note: String::new(),
-                body,
-            })
-        })
-        .collect::<Vec<_>>();
-    if requests.is_empty() {
-        return Err(ImportError::new("HAR has no importable requests"));
-    }
-    Ok(ImportedCollection {
-        name: "Imported HAR".to_owned(),
-        groups: Vec::new(),
-        requests,
-        warnings: Vec::new(),
-    })
-}
-
-fn parse_postman(source: &str) -> Result<ImportedCollection, ImportError> {
-    let root: Value =
-        serde_json::from_str(source).map_err(|_| ImportError::new("Postman JSON is invalid"))?;
-    let name = root
-        .pointer("/info/name")
-        .and_then(Value::as_str)
-        .unwrap_or("Imported Postman")
-        .to_owned();
-    let items = root
-        .get("item")
-        .and_then(Value::as_array)
-        .ok_or_else(|| ImportError::new("Postman collection has no items"))?;
-    let mut collection = ImportedCollection {
-        name,
-        groups: Vec::new(),
-        requests: Vec::new(),
-        warnings: Vec::new(),
+        .filter(|(_, header)| header.enabled && header.name.eq_ignore_ascii_case("authorization"));
+    let (Some((index, header)), None) = (matching.next(), matching.next()) else {
+        return RequestAuthentication::None;
     };
-    parse_postman_items(items, None, &mut collection);
-    if collection.requests.is_empty() {
-        return Err(ImportError::new("Postman collection has no requests"));
-    }
-    Ok(collection)
-}
-
-fn parse_postman_items(items: &[Value], parent: Option<&str>, output: &mut ImportedCollection) {
-    for (index, item) in items.iter().enumerate() {
-        let name = item
-            .get("name")
-            .and_then(Value::as_str)
-            .unwrap_or("Untitled");
-        if let Some(children) = item.get("item").and_then(Value::as_array) {
-            let source_id = format!("group-{}-{}", output.groups.len(), slug(name));
-            output.groups.push(ImportedGroup {
-                source_id: source_id.clone(),
-                name: name.to_owned(),
-                parent_source_id: parent.map(str::to_owned),
-                order: i64::try_from(index).unwrap_or(i64::MAX),
-            });
-            parse_postman_items(children, Some(&source_id), output);
-            continue;
-        }
-        let Some(request) = item.get("request") else {
-            continue;
-        };
-        let Some(url) = postman_url(request.get("url")) else {
-            output.warnings.push(format!("Skipped {name}: missing URL"));
-            continue;
-        };
-        let method = request
-            .get("method")
-            .and_then(Value::as_str)
-            .unwrap_or("GET")
-            .to_owned();
-        let headers = request
-            .get("header")
-            .and_then(Value::as_array)
-            .into_iter()
-            .flatten()
-            .filter(|header| {
-                !header
-                    .get("disabled")
-                    .and_then(Value::as_bool)
-                    .unwrap_or(false)
-            })
-            .filter_map(|header| {
-                Some(RequestHeader::enabled(
-                    header.get("key")?.as_str()?,
-                    ValueSource::literal(header.get("value").and_then(Value::as_str).unwrap_or("")),
-                ))
-            })
-            .collect();
-        output.requests.push(ImportedRequest {
-            source_id: format!("request-{}-{}", output.requests.len(), slug(name)),
-            name: name.to_owned(),
-            group_source_id: parent.map(str::to_owned),
-            order: i64::try_from(index).unwrap_or(i64::MAX),
-            method,
-            url,
-            headers,
-            query: Vec::new(),
-            authentication: RequestAuthentication::None,
-            web_socket: false,
-            note: String::new(),
-            body: postman_body(request.get("body")),
-        });
-    }
-}
-
-fn postman_body(body: Option<&Value>) -> RequestBody {
-    let Some(body) = body else {
-        return RequestBody::Empty;
+    let ValueSource::Literal(value) = &header.value else {
+        return RequestAuthentication::None;
     };
-    match body.get("mode").and_then(Value::as_str) {
-        Some("raw") => {
-            let value = body
-                .get("raw")
-                .and_then(Value::as_str)
-                .unwrap_or("")
-                .to_owned();
-            if serde_json::from_str::<serde::de::IgnoredAny>(&value).is_ok() {
-                RequestBody::Json { value }
-            } else {
-                RequestBody::Text {
-                    content_type: None,
-                    value,
-                }
-            }
+    let Some((scheme, credentials)) = value.trim().split_once(' ') else {
+        return RequestAuthentication::None;
+    };
+    let credentials = credentials.trim();
+    let authentication = if scheme.eq_ignore_ascii_case("bearer") && !credentials.is_empty() {
+        RequestAuthentication::Bearer {
+            token: ValueSource::literal(credentials),
         }
-        Some("urlencoded") => RequestBody::FormUrlEncoded {
-            fields: body
-                .get("urlencoded")
-                .and_then(Value::as_array)
-                .into_iter()
-                .flatten()
-                .filter_map(|field| {
-                    Some(RequestValueField::enabled(
-                        field.get("key")?.as_str()?,
-                        ValueSource::literal(
-                            field.get("value").and_then(Value::as_str).unwrap_or(""),
-                        ),
-                    ))
+    } else if scheme.eq_ignore_ascii_case("basic")
+        && let Some((username, password)) =
+            base64::Engine::decode(&base64::engine::general_purpose::STANDARD, credentials)
+                .ok()
+                .and_then(|decoded| String::from_utf8(decoded).ok())
+                .and_then(|decoded| {
+                    decoded
+                        .split_once(':')
+                        .map(|(username, password)| (username.to_owned(), password.to_owned()))
                 })
-                .collect(),
-        },
-        Some("formdata") => RequestBody::Multipart {
-            parts: body
-                .get("formdata")
-                .and_then(Value::as_array)
-                .into_iter()
-                .flatten()
-                .enumerate()
-                .filter_map(|(index, part)| {
-                    let name = part.get("key")?.as_str()?.to_owned();
-                    let is_file = part.get("type").and_then(Value::as_str) == Some("file");
-                    Some(MultipartPart {
-                        id: format!("part-{index}"),
-                        name,
-                        kind: if is_file {
-                            MultipartPartKind::File
-                        } else {
-                            MultipartPartKind::Text
-                        },
-                        value: ValueSource::literal(
-                            part.get("value").and_then(Value::as_str).unwrap_or(""),
-                        ),
-                        file_name: part
-                            .get("fileName")
-                            .and_then(Value::as_str)
-                            .map(str::to_owned),
-                        file_path: part.get("src").and_then(Value::as_str).map(str::to_owned),
-                        content_type: part
-                            .get("contentType")
-                            .and_then(Value::as_str)
-                            .map(str::to_owned),
-                        enabled: !part
-                            .get("disabled")
-                            .and_then(Value::as_bool)
-                            .unwrap_or(false),
-                    })
-                })
-                .collect(),
-        },
-        _ => RequestBody::Empty,
-    }
+    {
+        RequestAuthentication::Basic {
+            username: ValueSource::literal(username),
+            password: ValueSource::literal(password),
+        }
+    } else {
+        return RequestAuthentication::None;
+    };
+    headers.remove(index);
+    authentication
+}
+
+/// A readable request name such as `GET /users/42`.
+fn method_and_path_name(method: &str, url: &str) -> String {
+    let without_scheme = url.split_once("://").map_or(url, |(_, rest)| rest);
+    let path = without_scheme
+        .find('/')
+        .map_or("/", |index| &without_scheme[index..]);
+    let path = path.split(['?', '#']).next().unwrap_or("/");
+    let path = if path.is_empty() { "/" } else { path };
+    format!("{method} {path}")
 }
 
 fn parse_legacy_workspace(source: &str) -> Result<ImportedCollection, ImportError> {
@@ -509,11 +543,7 @@ fn parse_legacy_workspace(source: &str) -> Result<ImportedCollection, ImportErro
                     .flatten()
                     .filter_map(header_from_name_value)
                     .collect(),
-                body: RequestBody::Empty,
-                query: Vec::new(),
-                authentication: RequestAuthentication::None,
-                web_socket: false,
-                note: String::new(),
+                ..ImportedRequest::default()
             })
         })
         .collect::<Vec<_>>();
@@ -524,9 +554,8 @@ fn parse_legacy_workspace(source: &str) -> Result<ImportedCollection, ImportErro
     }
     Ok(ImportedCollection {
         name,
-        groups: Vec::new(),
         requests,
-        warnings: Vec::new(),
+        ..ImportedCollection::default()
     })
 }
 
@@ -535,14 +564,6 @@ fn header_from_name_value(value: &Value) -> Option<RequestHeader> {
         value.get("name").or_else(|| value.get("key"))?.as_str()?,
         ValueSource::literal(value.get("value").and_then(Value::as_str).unwrap_or("")),
     ))
-}
-
-fn postman_url(value: Option<&Value>) -> Option<String> {
-    match value? {
-        Value::String(value) => Some(value.clone()),
-        Value::Object(object) => object.get("raw").and_then(Value::as_str).map(str::to_owned),
-        _ => None,
-    }
 }
 
 fn slug(value: &str) -> String {
@@ -567,48 +588,6 @@ fn slug(value: &str) -> String {
     } else {
         value.chars().take(40).collect()
     }
-}
-
-fn shell_tokens(source: &str) -> Result<Vec<String>, ImportError> {
-    let mut tokens = Vec::new();
-    let mut current = String::new();
-    let mut quote = None;
-    let mut escaped = false;
-    for character in source.chars() {
-        if escaped {
-            current.push(character);
-            escaped = false;
-            continue;
-        }
-        if character == '\\' && quote != Some('\'') {
-            escaped = true;
-            continue;
-        }
-        if matches!(character, '\'' | '"') {
-            if quote == Some(character) {
-                quote = None;
-            } else if quote.is_none() {
-                quote = Some(character);
-            } else {
-                current.push(character);
-            }
-            continue;
-        }
-        if character.is_whitespace() && quote.is_none() {
-            if !current.is_empty() {
-                tokens.push(std::mem::take(&mut current));
-            }
-        } else {
-            current.push(character);
-        }
-    }
-    if escaped || quote.is_some() {
-        return Err(ImportError::new("cURL quoting is incomplete"));
-    }
-    if !current.is_empty() {
-        tokens.push(current);
-    }
-    Ok(tokens)
 }
 
 #[cfg(test)]

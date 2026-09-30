@@ -1,0 +1,11 @@
+curl 'https://api.example.test/v1/orders?status=open' \
+  -H 'accept: application/json, text/plain, */*' \
+  -H 'accept-language: en-US,en;q=0.9' \
+  -H 'authorization: Bearer demo-session-token' \
+  -H 'content-type: application/json' \
+  -b 'theme=dark; region=eu' \
+  -H 'origin: https://app.example.test' \
+  -H 'referer: https://app.example.test/orders' \
+  -H 'user-agent: Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36' \
+  --data-raw $'{"note":"it\'s urgent\\n","items":[1,2]}' \
+  --compressed
