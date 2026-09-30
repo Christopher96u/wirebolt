@@ -10,7 +10,7 @@ Changes under **Unreleased** describe the source branch and may not be included 
 - Wirebolt runs one workspace window. **⌘N** creates a request; File → New Window is gone.
 - Deleting a request or an empty folder happens immediately and can be undone with **⌘Z**. Wirebolt asks first only when a deletion also removes other items or discards unsaved edits.
 - Environment and workspace settings sheets use **Cancel** and **Save** (Return). Esc cancels and asks before discarding edits; closing no longer saves.
-- Shortcuts: **⇧⌘N** is New Collection (it was New HTTP Request), next and previous tab are also **⇧⌘]** / **⇧⌘[**. See [keyboard shortcuts](docs/keyboard-shortcuts.md).
+- Shortcuts: **⇧⌘N** is New Collection (it was New HTTP Request), next and previous tab are also **⇧⌘]** / **⇧⌘[**, Copy cURL is **⌥⇧⌘C** and Git Collaboration is **⌃⌘G** (the old shortcuts clashed with macOS). See [keyboard shortcuts](docs/keyboard-shortcuts.md).
 
 ### Added
 
@@ -22,12 +22,21 @@ Changes under **Unreleased** describe the source branch and may not be included 
 - Keyboard access: full sidebar navigation (arrows, type-select, Return to rename), Move Up/Down (**⌥⌘↑** / **⌥⌘↓**) and Move To, Cancel Request (**⌘.**), request and response section commands (**⌥⌘1–6**, **⌃⌘1–5**), Focus Sidebar (**⌘0**) and Focus Response (**⌥⌘0**).
 - A welcome state with New Request, Import and Open Workspace for empty workspaces, and a New Request row in empty collections.
 - Open or drop cURL, HAR, Postman and Wirebolt JSON files on the app to import them. File → Open Recent lists workspaces.
+- API Key and OAuth 2.0 can be chosen in the Auth tab; every request keeps its own Keychain credentials, including duplicates.
+- Secret environment variables stored in Keychain, a Cookies window per workspace (delete one or Clear All), Rename Workspace, and client certificate / custom CA settings.
+- Git Collaboration can initialize a repository and abort a conflicted merge.
+- An import summary lists what was imported, the environment created and anything skipped.
 - Insomnia (v4 JSON, v5 YAML) and Bruno (collection folder, `.bru` file or JSON export) import, including folders, bodies, authentication and environments.
 - Response pane: elapsed time and Cancel while sending, the previous response stays visible until the new one arrives, and failures explain the cause with Retry, Network Settings and View Request.
 - VoiceOver announcements for finished, failed and cancelled requests; clearer labels for credential, multipart and key-value fields, checkboxes and sidebar rows; help tags on icon-only buttons.
 - Local Markdown Edit/Preview for request notes, Git Collaboration commands, in-app help in its own window, user documentation and a local quick-start API example.
 
 ### Changed
+
+- Postman import keeps authentication (with inheritance), variables, path variables, disabled rows, GraphQL and binary bodies, body languages and descriptions. HAR import drops HTTP/2 pseudo-headers and maps form bodies. cURL import handles multi-line commands and the common options (`-u`, `-F`, `-b`, `--data-urlencode`, `-k`, `-L`, …). Unsupported files (OpenAPI, Postman v1) explain why.
+- Wirebolt JSON export round-trips secret references, request proxy and TLS settings, content types, multipart files, environments and separate collections.
+- Copy cURL reads secrets from Keychain when the command runs instead of placing them on the clipboard.
+- New workspaces are named after their folder. Cookies are kept per workspace and session cookies are no longer saved.
 
 - Native Send, Cancel, Connect and Disconnect buttons in title case; an unavailable Send or Connect looks disabled.
 - The URL bar keeps a fixed-width status that shows the response status, **Failed** or **Cancelled**, and collapses to icons in narrow split editors so the URL stays readable.
