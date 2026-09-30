@@ -28,6 +28,7 @@ wirebolt_app_inputs=(
   apple/WireboltApp/WorkspaceUIState.swift
   apple/WireboltApp/ContentView.swift
   apple/WireboltApp/WorkspaceActions.swift
+  apple/WireboltApp/ImportSummaryView.swift
   apple/WireboltApp/NetworkSettingsView.swift
   apple/WireboltApp/NotesEditor.swift
   apple/WireboltApp/EnvironmentEditor.swift

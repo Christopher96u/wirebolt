@@ -177,8 +177,7 @@ final class WorkspaceUIState {
     var sidebarFilter = ""
     var isShowingImporter = false
     var isShowingCurlImporter = false
-    var importFormat: ImportFormat = .postmanV2
-    var importStatus: String?
+        var importFormat: ImportFormat = .postmanV2
     var focusURLTrigger = 0
     var focusSearchTrigger = 0
     /// Moves keyboard focus into the active editor group's response content.
@@ -509,10 +508,6 @@ final class WorkspaceUIState {
             lastClosedPresentation = previousPresentation
             NSApp.keyWindow?.performClose(nil)
         }
-    }
-
-    func reportImportFailure() {
-        importStatus = "The collection could not be imported"
     }
 
     func presentation(for session: DocumentSession) -> DocumentPresentationState {

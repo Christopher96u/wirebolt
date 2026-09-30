@@ -30,8 +30,8 @@ public protocol WorkspacePersistence: Sendable {
     func deleteSecret(name: String) async throws
     func apply(_ command: WorkspaceCommand) async throws -> WorkspaceDelta
     func previewImport(format: ImportFormat, source: String) async throws -> ImportPreview
-    func commitImport(format: ImportFormat, source: String) async throws -> WorkspaceDelta
-    func commitImportFile(format: ImportFormat, source: String, name: String) async throws -> WorkspaceDelta
+        func commitImport(format: ImportFormat, source: String) async throws -> ImportResult
+    func commitImportFile(format: ImportFormat, source: String, name: String) async throws -> ImportResult
     func exportCollection(id: String) async throws -> String
     func exportWorkspace() async throws -> String
     func exportRequest(collectionID: String, id: String) async throws -> String
@@ -60,11 +60,11 @@ public extension WorkspacePersistence {
         throw WorkspaceMutationError.unsupported
     }
 
-    func commitImport(format _: ImportFormat, source _: String) async throws -> WorkspaceDelta {
+        func commitImport(format _: ImportFormat, source _: String) async throws -> ImportResult {
         throw WorkspaceMutationError.unsupported
     }
 
-    func commitImportFile(format: ImportFormat, source: String, name: String) async throws -> WorkspaceDelta {
+    func commitImportFile(format: ImportFormat, source: String, name _: String) async throws -> ImportResult {
         try await commitImport(format: format, source: source)
     }
 
@@ -133,7 +133,9 @@ public final class WireboltModel {
     public private(set) var gitFailure: GitFailure?
     public private(set) var isGitBusy = false
     public private(set) var isImporting = false
-    public var importFailureMessage: String?
+        public var importFailureMessage: String?
+    /// The last successful import, until the user dismisses its summary.
+    public var importSummary: ImportSummary?
     public private(set) var historyEntries: [RunHistoryEntry] = []
     public private(set) var historyRevision = 0
     private var editedSecrets: [String: String] = [:]
@@ -983,7 +985,7 @@ public final class WireboltModel {
         }
     }
 
-    public func importDocument(url: URL, format: ImportFormat) async {
+        public func importDocument(url: URL, format: ImportFormat) async {
         guard !isImporting, persistence != nil else { return }
         isImporting = true
         importFailureMessage = nil
@@ -992,8 +994,19 @@ public final class WireboltModel {
             let source = try await Task.detached(priority: .userInitiated) {
                 try String(contentsOf: url, encoding: .utf8)
             }.value
-            await commitDocument(source: source, format: format, fileName: url.deletingPathExtension().lastPathComponent)
-        } catch { importFailureMessage = "The selected document could not be read." }
+            await importFile(source: source, format: format, url: url)
+        } catch {
+            importFailureMessage = ImportFormat.unreadableMessage(fileName: url.lastPathComponent)
+        }
+    }
+
+    /// Imports contents already read from `url`, naming the collection after the file.
+    public func importDocument(source: String, format: ImportFormat, url: URL) async {
+        guard !isImporting, persistence != nil else { return }
+        isImporting = true
+        importFailureMessage = nil
+        defer { isImporting = false }
+        await importFile(source: source, format: format, url: url)
     }
 
     public func importDocument(source: String, format: ImportFormat) async {
@@ -1001,22 +1014,59 @@ public final class WireboltModel {
         isImporting = true
         importFailureMessage = nil
         defer { isImporting = false }
-        await commitDocument(source: source, format: format)
+        importFailureMessage = await commitDocument(source: source, format: format)
     }
 
-    private func commitDocument(source: String, format: ImportFormat, fileName: String? = nil) async {
-        guard let persistence else { return }
+    /// Imports pasted text and returns why it failed instead of raising the window alert,
+    /// so a sheet can show the reason in place.
+    public func importPastedDocument(source: String, format: ImportFormat) async -> String? {
+        guard !isImporting, persistence != nil else { return nil }
+        isImporting = true
+        defer { isImporting = false }
+        return await commitDocument(source: source, format: format)
+    }
+
+    private func importFile(source: String, format: ImportFormat, url: URL) async {
+        importFailureMessage = await commitDocument(
+            source: source,
+            format: format,
+            fileName: url.deletingPathExtension().lastPathComponent,
+            displayName: url.lastPathComponent
+        )
+    }
+
+    /// Commits an import and returns a failure message, or `nil` after success.
+    private func commitDocument(
+        source: String,
+        format: ImportFormat,
+        fileName: String? = nil,
+        displayName: String? = nil
+    ) async -> String? {
+        guard let persistence else { return nil }
         await flushWorkspaceTransport()
         let previousIDs = Set(workspace.collections.map(\.id))
+        let previousEnvironmentID = selectedEnvironmentID
         do {
-            if let fileName {
-                _ = try await persistence.commitImportFile(format: format, source: source, name: fileName)
-            } else { _ = try await persistence.commitImport(format: format, source: source) }
+            let result = if let fileName {
+                try await persistence.commitImportFile(format: format, source: source, name: fileName)
+            } else {
+                try await persistence.commitImport(format: format, source: source)
+            }
             applyLoadedWorkspace(try await persistence.load())
+            // Keep the user's environment; otherwise select the one the import created
+            // so its variables resolve right away.
+            let environmentIDs = Set(workspace.environments.map(\.id))
+            if let previousEnvironmentID, environmentIDs.contains(previousEnvironmentID) {
+                selectedEnvironmentID = previousEnvironmentID
+            } else if let created = result.summary.environments.first(where: { environmentIDs.contains($0.id) }) {
+                selectedEnvironmentID = created.id
+            }
+            importSummary = result.summary
             if let imported = workspace.collections.first(where: { !previousIDs.contains($0.id) }),
                let request = imported.requests.first { select(request) }
+            return nil
         } catch {
-            importFailureMessage = "The document could not be imported. Check its format and contents."
+            return ImportFormat.failureMessage(for: error, fileName: displayName)
         }
     }
 
@@ -1717,10 +1767,62 @@ public final class WorkspaceCommandState {
 }
 
 public extension ImportFormat {
+    /// The name used in menus and messages.
+    var displayName: String {
+        switch self {
+        case .curl: "cURL"
+        case .har: "HAR"
+        case .legacyWorkspaceV1: "Wirebolt JSON"
+        case .postmanV2: "Postman Collection v2"
+        }
+    }
+
+    /// Explains a failed import with the importer's reason when it has one.
+    static func failureMessage(for error: any Error, fileName: String?) -> String {
+        let subject = fileName.map { "“\($0)” couldn’t be imported." } ?? "The import failed."
+        guard let reason = (error as? LocalizedError)?.errorDescription, !reason.isEmpty else {
+            return "\(subject) Check its format and contents."
+        }
+        return "\(subject) \(sentence(reason))"
+    }
+
+    static func unreadableMessage(fileName: String) -> String {
+        "“\(fileName)” couldn’t be read. Check that it’s a UTF-8 text file you have permission to open."
+    }
+
+    /// Explains why dropped or opened contents matched no importer.
+    static func unrecognizedMessage(fileName: String, contents: String) -> String {
+        if isOpenAPI(contents) {
+            return "“\(fileName)” is an OpenAPI or Swagger document. OpenAPI import isn’t supported yet."
+        }
+        let formats = ListFormatter.localizedString(byJoining: allCases.map(\.displayName))
+        return "“\(fileName)” isn’t a format Wirebolt can import. Supported formats: \(formats)."
+    }
+
+    private static func isOpenAPI(_ contents: String) -> Bool {
+        let head = contents.prefix(4_096)
+        if head.contains("\"openapi\"") || head.contains("\"swagger\"") { return true }
+        return head.split(whereSeparator: \.isNewline).prefix(40).contains { line in
+            line.hasPrefix("openapi:") || line.hasPrefix("swagger:")
+        }
+    }
+
+    /// Bridge reasons may be lowercase phrases; show them as sentences.
+    private static func sentence(_ reason: String) -> String {
+        var text = reason.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let first = text.first, first.isLowercase { text = first.uppercased() + text.dropFirst() }
+        if let last = text.last, !".!?".contains(last) { text += "." }
+        return text
+    }
+
     /// Infers the importer for a file opened from Finder or dropped on the window.
     static func detect(fileExtension: String, contents: String) -> ImportFormat? {
-        let trimmed = contents.trimmingCharacters(in: .whitespacesAndNewlines)
-        if trimmed.hasPrefix("curl ") || trimmed.hasPrefix("curl\t") { return .curl }
+                let trimmed = contents.trimmingCharacters(in: .whitespacesAndNewlines)
+        // Shell files may start with comments before the first command.
+        let command = trimmed.split(whereSeparator: \.isNewline)
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .first { !$0.isEmpty && !$0.hasPrefix("#") } ?? ""
+        if command.hasPrefix("curl ") || command.hasPrefix("curl\t") { return .curl }
         guard let data = trimmed.data(using: .utf8),
               let root = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
         else { return nil }

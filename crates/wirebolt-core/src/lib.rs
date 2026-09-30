@@ -28,7 +28,8 @@ pub use http_engine::{
 };
 pub use import_engine::{
     ImportEngine, ImportError, ImportFormat, ImportedCollection, ImportedEnvironment,
-    ImportedGroup, ImportedRequest, ImportedRequestSettings, ImportedWorkspace,
+    ImportedGroup, ImportedRequest, ImportedRequestSettings, ImportedSecret, ImportedWorkspace,
+    ParsedImport,
 };
 #[cfg(target_vendor = "apple")]
 pub use proxy::{KeychainSecretResolver, KeychainSecretStore};

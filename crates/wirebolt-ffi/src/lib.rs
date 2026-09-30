@@ -324,12 +324,63 @@ struct WorkspaceDeltaDocument {
     affected_ids: Vec<String>,
 }
 
+/// What an import creates, shown before and after committing it.
 #[derive(Debug, Serialize)]
-struct ImportPreviewDocument<'a> {
-    collection_name: &'a str,
+struct ImportSummaryDocument {
+    /// The first collection's name, kept for the preview's single-collection shape.
+    collection_name: String,
+    collection_names: Vec<String>,
     request_count: usize,
     group_count: usize,
-    warnings: &'a [String],
+    environments: Vec<ImportedEnvironmentDocument>,
+    warnings: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct ImportedEnvironmentDocument {
+    /// Empty in a preview, where nothing has been created yet.
+    id: String,
+    name: String,
+}
+
+impl ImportSummaryDocument {
+    fn new(imported: &wirebolt_core::ParsedImport) -> Self {
+        let collections = &imported.workspace.collections;
+        let collection_names: Vec<String> = collections
+            .iter()
+            .map(|collection| collection.name.clone())
+            .collect();
+        Self {
+            collection_name: collection_names.first().cloned().unwrap_or_default(),
+            collection_names,
+            request_count: collections
+                .iter()
+                .map(|collection| collection.requests.len())
+                .sum(),
+            group_count: collections
+                .iter()
+                .map(|collection| collection.groups.len())
+                .sum(),
+            environments: imported
+                .workspace
+                .environments
+                .iter()
+                .map(|environment| ImportedEnvironmentDocument {
+                    id: String::new(),
+                    name: environment.name.clone(),
+                })
+                .collect(),
+            warnings: imported.warnings().map(str::to_owned).collect(),
+        }
+    }
+}
+
+/// A committed import: the workspace delta plus its summary for the app.
+#[derive(Debug, Serialize)]
+struct ImportCommitDocument {
+    #[serde(flatten)]
+    delta: WorkspaceDeltaDocument,
+    summary: ImportSummaryDocument,
 }
 
 #[uniffi::export]
@@ -507,48 +558,42 @@ impl WorkspaceBridge {
         format: &str,
         source: &str,
     ) -> Result<String, WorkspaceBridgeError> {
-        let imported = parse_import(format, source)?;
-        serde_json::to_string(&ImportPreviewDocument {
-            collection_name: &imported.name,
-            request_count: imported.requests.len(),
-            group_count: imported.groups.len(),
-            warnings: &imported.warnings,
-        })
-        .map_err(|_| WorkspaceBridgeError::operation("import preview could not be encoded"))
+        let imported = parse_import(format, source, None)?;
+        serde_json::to_string(&ImportSummaryDocument::new(&imported))
+            .map_err(|_| WorkspaceBridgeError::operation("import preview could not be encoded"))
     }
 
-    /// Commits a fully parsed import as one new collection.
+    /// Commits a fully parsed import: its collections, environments and
+    /// Keychain credentials, or none of them.
     ///
-    /// If any request write fails, the newly created collection is removed so
-    /// an invalid import never leaves a partial workspace behind.
+    /// Returns the workspace delta with a `summary` of what was created and
+    /// every import warning.
     ///
     /// # Errors
     ///
-    /// Returns [`WorkspaceBridgeError`] for parse or storage failures.
+    /// Returns [`WorkspaceBridgeError`] with the import's user-facing reason
+    /// for parse failures, or a storage failure.
     pub fn commit_import(
         &self,
         format: &str,
         source: &str,
     ) -> Result<String, WorkspaceBridgeError> {
-        self.commit_imported(parse_import(format, source)?.into())
+        self.commit_imported(parse_import(format, source, None)?)
     }
 
     /// Imports a file under its filename, preserving every exported folder. A
     /// Wirebolt workspace export creates each of its collections and environments.
     ///
     /// # Errors
-    /// Returns [`WorkspaceBridgeError`] for invalid source or storage failures.
+    /// Returns [`WorkspaceBridgeError`] with the import's user-facing reason
+    /// for invalid source, or a storage failure.
     pub fn commit_import_file(
         &self,
         format: &str,
         source: &str,
         name: &str,
     ) -> Result<String, WorkspaceBridgeError> {
-        let format = ImportFormat::parse(format)
-            .map_err(|_| WorkspaceBridgeError::operation("unsupported import format"))?;
-        let imported = ImportEngine::parse_workspace_file(format, source, name)
-            .map_err(|_| WorkspaceBridgeError::operation("import could not be parsed"))?;
-        self.commit_imported(imported)
+        self.commit_imported(parse_import(format, source, Some(name))?)
     }
 
     /// Reads a credential only for the authentication editor, never diagnostics.
@@ -695,10 +740,10 @@ impl WorkspaceBridge {
 }
 
 impl WorkspaceBridge {
-    /// Creates every imported collection and environment, or none of them.
+    /// Creates every imported collection, environment and credential, or none of them.
     fn commit_imported(
         &self,
-        imported: wirebolt_core::ImportedWorkspace,
+        imported: wirebolt_core::ParsedImport,
     ) -> Result<String, WorkspaceBridgeError> {
         let sequence = self.version.load(Ordering::Relaxed) + 1;
         let timestamp = std::time::SystemTime::now()
@@ -706,6 +751,7 @@ impl WorkspaceBridge {
             .map_err(|_| WorkspaceBridgeError::operation("import identifier could not be created"))?
             .as_nanos();
         let prefix = format!("import-{timestamp:x}-{:x}-{sequence:x}", std::process::id());
+        let mut summary = ImportSummaryDocument::new(&imported);
         let mut created = CreatedImport::default();
         if let Err(error) = self.save_imported(&prefix, imported, &mut created) {
             for id in &created.collections {
@@ -720,6 +766,9 @@ impl WorkspaceBridge {
             }
             return Err(error);
         }
+        for (environment, id) in summary.environments.iter_mut().zip(&created.environments) {
+            environment.id = id.to_string();
+        }
 
         let delta = WorkspaceDeltaDocument {
             version: self.version.fetch_add(1, Ordering::Relaxed) + 1,
@@ -730,27 +779,39 @@ impl WorkspaceBridge {
                 .map(ToString::to_string)
                 .collect(),
         };
-        serde_json::to_string(&delta)
+        serde_json::to_string(&ImportCommitDocument { delta, summary })
             .map_err(|_| WorkspaceBridgeError::operation("import delta could not be encoded"))
     }
 
     fn save_imported(
         &self,
         prefix: &str,
-        imported: wirebolt_core::ImportedWorkspace,
+        imported: wirebolt_core::ParsedImport,
         created: &mut CreatedImport,
     ) -> Result<(), WorkspaceBridgeError> {
+        let wirebolt_core::ParsedImport { workspace, secrets } = imported;
         let wirebolt_core::ImportedWorkspace {
             collections,
             environments,
             mut request_settings,
-        } = imported;
+        } = workspace;
+        // Placeholder references become unique Keychain names for this import.
+        let mut keychain_names = BTreeMap::new();
+        for secret in secrets {
+            let name = SecretName::new(format!("{prefix}-{}", secret.reference)).map_err(|_| {
+                WorkspaceBridgeError::operation("import credential name is invalid")
+            })?;
+            save_import_credential(&name, &secret.material)?;
+            created.secrets.push(name.clone());
+            keychain_names.insert(secret.reference, name);
+        }
         for (index, imported) in collections.into_iter().enumerate() {
             let collection_id = document_id(format!("{prefix}-{index}"))?;
             self.save_imported_collection(
                 &collection_id,
                 imported,
                 &mut request_settings,
+                &keychain_names,
                 created,
             )?;
         }
@@ -769,8 +830,15 @@ impl WorkspaceBridge {
             } else {
                 format!("{prefix}-env-{index}")
             };
-            let environment =
-                Environment::from_rows(document_id(id)?, environment.name, environment.variables);
+            let mut variables = environment.variables;
+            for variable in &mut variables {
+                if let ValueSource::Secret { secret } = &mut variable.value
+                    && let Some(name) = keychain_names.get(secret)
+                {
+                    *secret = name.clone();
+                }
+            }
+            let environment = Environment::from_rows(document_id(id)?, environment.name, variables);
             created.environments.push(environment.id.clone());
             self.store
                 .save(&WorkspaceDocument::Environment(environment))
@@ -789,6 +857,7 @@ impl WorkspaceBridge {
             String,
             wirebolt_core::ImportedRequestSettings,
         >,
+        keychain_names: &BTreeMap<SecretName, SecretName>,
         created: &mut CreatedImport,
     ) -> Result<(), WorkspaceBridgeError> {
         let mut group_ids = HashMap::new();
@@ -839,6 +908,7 @@ impl WorkspaceBridge {
             secure_import_authentication(
                 &mut request.authentication,
                 &format!("{collection_id}-{}", request.id),
+                keychain_names,
                 &mut created.secrets,
             )?;
             self.store
@@ -1433,11 +1503,13 @@ fn document_id(value: String) -> Result<DocumentId, WorkspaceBridgeError> {
 fn parse_import(
     format: &str,
     source: &str,
-) -> Result<wirebolt_core::ImportedCollection, WorkspaceBridgeError> {
+    file_name: Option<&str>,
+) -> Result<wirebolt_core::ParsedImport, WorkspaceBridgeError> {
     let format = ImportFormat::parse(format)
-        .map_err(|_| WorkspaceBridgeError::operation("import format is unsupported"))?;
-    ImportEngine::parse(format, source)
-        .map_err(|_| WorkspaceBridgeError::operation("import source is invalid"))
+        .map_err(|error| WorkspaceBridgeError::operation(error.reason()))?;
+    // Import reasons are user-facing and never quote the source.
+    ImportEngine::parse_import(format, source, file_name)
+        .map_err(|error| WorkspaceBridgeError::operation(error.reason()))
 }
 
 fn request_from_document(document: SavedRequestDocument) -> Result<Request, WorkspaceBridgeError> {
@@ -2049,17 +2121,26 @@ async fn execute_run_with_secrets<R>(
     }
 }
 
+/// Moves literal credentials to Keychain under per-request names. Variable
+/// references such as `{{token}}` stay literal so they keep resolving.
 fn secure_import_authentication(
     authentication: &mut RequestAuthentication,
     prefix: &str,
+    keychain_names: &BTreeMap<SecretName, SecretName>,
     created: &mut Vec<SecretName>,
 ) -> Result<(), WorkspaceBridgeError> {
+    let secret_name = |label: &str| {
+        SecretName::new(format!("{prefix}-{label}"))
+            .map_err(|_| WorkspaceBridgeError::operation("import credential name is invalid"))
+    };
     let mut store = |source: &mut ValueSource, label: &str| -> Result<(), WorkspaceBridgeError> {
         let ValueSource::Literal(material) = source else {
             return Ok(());
         };
-        let name = SecretName::new(format!("{prefix}-{label}"))
-            .map_err(|_| WorkspaceBridgeError::operation("import credential name is invalid"))?;
+        if material.is_empty() || material.contains("{{") {
+            return Ok(());
+        }
+        let name = secret_name(label)?;
         save_import_credential(&name, material)?;
         created.push(name.clone());
         *source = ValueSource::secret(name);
@@ -2072,7 +2153,15 @@ fn secure_import_authentication(
         }
         RequestAuthentication::Bearer { token } => store(token, "token")?,
         RequestAuthentication::ApiKey { value, .. } => store(value, "api-key")?,
-        RequestAuthentication::None | RequestAuthentication::Oauth2 { .. } => {}
+        RequestAuthentication::Oauth2 { configuration } => {
+            configuration.client_secret_reference =
+                match keychain_names.get(&configuration.client_secret_reference) {
+                    Some(name) => name.clone(),
+                    None => secret_name("oauth-client-secret")?,
+                };
+            configuration.access_token_reference = secret_name("oauth-access-token")?;
+        }
+        RequestAuthentication::None => {}
     }
     Ok(())
 }
@@ -2850,6 +2939,98 @@ mod tests {
             serde_json::from_str::<serde_json::Value>(&reopened.snapshot_json().unwrap()).unwrap(),
             snapshot
         );
+    }
+
+    #[test]
+    fn committed_imports_return_a_summary_and_create_their_environment() {
+        let directory = tempfile::tempdir().unwrap();
+        let bridge = WorkspaceBridge::open_or_create(
+            directory.path().to_string_lossy().into_owned(),
+            "Fixture".into(),
+        )
+        .unwrap();
+        let source = r#"{
+          "info": {"name": "Demo", "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"},
+          "variable": [{"key": "baseUrl", "value": "https://api.example.test"}],
+          "event": [{"listen": "prerequest", "script": {"exec": ["console.log(1)"]}}],
+          "item": [{"name": "Folder", "item": [
+            {"name": "List", "request": {"method": "GET", "url": "{{baseUrl}}/items"}}
+          ]}]
+        }"#;
+
+        let committed: serde_json::Value = serde_json::from_str(
+            &bridge
+                .commit_import_file("postman_v2", source, "demo")
+                .unwrap(),
+        )
+        .unwrap();
+
+        let summary = &committed["summary"];
+        assert_eq!(summary["collection_names"], serde_json::json!(["Demo"]));
+        assert_eq!(summary["request_count"], 1);
+        assert_eq!(summary["group_count"], 1);
+        assert_eq!(summary["environments"][0]["name"], "Demo");
+        assert!(
+            summary["warnings"][0]
+                .as_str()
+                .unwrap()
+                .contains("Scripts aren't supported")
+        );
+        let environment_id = summary["environments"][0]["id"].as_str().unwrap();
+        let snapshot: serde_json::Value =
+            serde_json::from_str(&bridge.snapshot_json().unwrap()).unwrap();
+        assert!(snapshot.to_string().contains(environment_id));
+        assert!(snapshot.to_string().contains("https://api.example.test"));
+        assert_eq!(committed["affected_ids"].as_array().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn imported_curl_transport_options_apply_to_the_request() {
+        let directory = tempfile::tempdir().unwrap();
+        let bridge = WorkspaceBridge::open_or_create(
+            directory.path().to_string_lossy().into_owned(),
+            "Fixture".into(),
+        )
+        .unwrap();
+
+        bridge
+            .commit_import("curl", "curl -k -L \\\n  https://api.example.test/items")
+            .unwrap();
+
+        let snapshot: serde_json::Value =
+            serde_json::from_str(&bridge.snapshot_json().unwrap()).unwrap();
+        let request = &snapshot["collections"][0]["requests"][0];
+        assert_eq!(request["url"], "https://api.example.test/items");
+        assert_eq!(request["inherits_workspace_transport"], false);
+        assert_eq!(request["transport"]["validate_tls"], false);
+        assert_eq!(request["transport"]["follow_redirects"], true);
+    }
+
+    #[test]
+    fn failed_imports_report_why_without_changing_the_workspace() {
+        let directory = tempfile::tempdir().unwrap();
+        let bridge = WorkspaceBridge::open_or_create(
+            directory.path().to_string_lossy().into_owned(),
+            "Fixture".into(),
+        )
+        .unwrap();
+        let before = bridge.snapshot_json().unwrap();
+        let reason = |result: Result<String, WorkspaceBridgeError>| match result {
+            Err(WorkspaceBridgeError::OperationFailed { reason }) => reason,
+            Ok(_) => panic!("import must fail"),
+        };
+
+        assert!(
+            reason(bridge.commit_import_file(
+                "postman_v2",
+                r#"{"openapi": "3.1.0", "info": {"title": "Pets"}, "paths": {}}"#,
+                "pets"
+            ))
+            .contains("OpenAPI")
+        );
+        assert!(reason(bridge.commit_import("har", "{}")).contains("HAR"));
+        assert!(reason(bridge.commit_import("yaml", "a: b")).contains("isn't supported"));
+        assert_eq!(bridge.snapshot_json().unwrap(), before);
     }
 
     #[test]
