@@ -373,15 +373,10 @@ private struct WorkspaceSidebar: View {
         // like a native source list, so focus stays visible without a ring around the list.
         .environment(\.sidebarSelectionIsEmphasized, sidebarIsFocused && controlActiveState != .inactive)
         .overlay {
-            if sidebarIsFocused && interface.sidebarSelectionRowID(model: model) == nil {
-                RoundedRectangle(cornerRadius: WireboltTheme.Radius.control)
-                    .strokeBorder(Color(nsColor: .keyboardFocusIndicatorColor), lineWidth: 3)
-                    .allowsHitTesting(false)
-                    .accessibilityHidden(true)
-            }
+            if sidebarIsFocused { SidebarFocusRing(model: model, interface: interface) }
         }
         .focusable().focusEffectDisabled().focused($sidebarIsFocused)
-        .focusedValue(\.sidebarMove, sidebarIsFocused ? interface.sidebarMoveCommands(model: model) : nil)
+        .modifier(SidebarMoveFocusedValue(model: model, interface: interface, isFocused: sidebarIsFocused))
         .onChange(of: interface.focusSidebarTrigger) {
             if !interface.isRenamingInSidebar { sidebarIsFocused = true }
         }
@@ -452,6 +447,33 @@ private struct WorkspaceSidebar: View {
 
     }
 
+}
+
+/// The focus ring of a focused sidebar without a selected row. Isolated (like the modifier
+/// below) so selection changes don't re-render the whole sidebar.
+private struct SidebarFocusRing: View {
+    let model: WireboltModel
+    let interface: WorkspaceUIState
+
+    var body: some View {
+        if interface.sidebarSelectionRowID(model: model) == nil {
+            RoundedRectangle(cornerRadius: WireboltTheme.Radius.control)
+                .strokeBorder(Color(nsColor: .keyboardFocusIndicatorColor), lineWidth: 3)
+                .allowsHitTesting(false)
+                .accessibilityHidden(true)
+        }
+    }
+}
+
+/// Publishes Move Up/Down for the selection while the sidebar has focus.
+private struct SidebarMoveFocusedValue: ViewModifier {
+    let model: WireboltModel
+    let interface: WorkspaceUIState
+    let isFocused: Bool
+
+    func body(content: Content) -> some View {
+        content.focusedValue(\.sidebarMove, isFocused ? interface.sidebarMoveCommands(model: model) : nil)
+    }
 }
 
 /// Opening a request elsewhere (tabs, history) moves the highlight back to it. Isolated so
@@ -705,26 +727,47 @@ private struct WorkspaceSidebarOutline: View {
     @Bindable var interface: WorkspaceUIState
 
     var body: some View {
+        // Exactly one subview per row: a conditional sibling would make the lazy stack keep
+        // off-screen rows alive and resolve every element to count its views.
         ForEach(interface.visibleSidebarRows(model: model)) { row in
-            Group {
-                switch row.content {
-                case .collection(let collection):
-                    SavedCollectionRow(row: row, collection: collection, model: model, interface: interface)
-                case .group(let collection, let group):
-                    SavedGroupRow(row: row, collection: collection, group: group, model: model, interface: interface)
-                case .request(let location):
-                    SavedRequestRow(model: model, interface: interface, location: location, depth: row.depth)
+            SidebarOutlineRow(row: row, model: model, interface: interface)
+                .id(row.id)
+        }
+    }
+}
+
+private struct SidebarOutlineRow: View {
+    let row: SidebarSnapshot.Row
+    let model: WireboltModel
+    let interface: WorkspaceUIState
+
+    var body: some View {
+        if case .collection(let collection) = row.content, collection.groups.isEmpty, collection.requests.isEmpty {
+            VStack(alignment: .leading, spacing: 0) {
+                content
+                if interface.isSidebarRowExpanded(row) {
+                    EmptyCollectionRow(collection: collection, model: model, interface: interface)
                 }
             }
-            .padding(.leading, Double(row.depth) * 14)
-            .frame(height: 24)
-            .modifier(SidebarReorderTarget(row: row, model: model, interface: interface))
-            .id(row.id)
-            if case .collection(let collection) = row.content, collection.groups.isEmpty, collection.requests.isEmpty,
-               interface.isSidebarRowExpanded(row) {
-                EmptyCollectionRow(collection: collection, model: model, interface: interface)
+        } else {
+            content
+        }
+    }
+
+    private var content: some View {
+        Group {
+            switch row.content {
+            case .collection(let collection):
+                SavedCollectionRow(row: row, collection: collection, model: model, interface: interface)
+            case .group(let collection, let group):
+                SavedGroupRow(row: row, collection: collection, group: group, model: model, interface: interface)
+            case .request(let location):
+                SavedRequestRow(model: model, interface: interface, location: location, depth: row.depth)
             }
         }
+        .padding(.leading, Double(row.depth) * 14)
+        .frame(height: 24)
+        .modifier(SidebarReorderTarget(row: row, model: model, interface: interface))
     }
 }
 
@@ -953,17 +996,22 @@ private struct SidebarRowActions {
 private struct SidebarAccessibilityActions: ViewModifier {
     let actions: SidebarRowActions
 
+    // Plain named actions rather than an `accessibilityActions` builder: rows are created
+    // on every filter keystroke, and the builder's proxy modifier costs more per row.
     func body(content: Content) -> some View {
-        content
-            .accessibilityAction(named: "New Request", actions.newRequest)
-            .accessibilityAction(named: "Rename", actions.rename)
-            .accessibilityActions {
-                if let move = actions.move {
-                    Button("Move Up") { move(-1) }
-                    Button("Move Down") { move(1) }
-                }
-            }
-            .accessibilityAction(named: "Delete", actions.delete)
+        if let move = actions.move {
+            content
+                .accessibilityAction(named: "New Request", actions.newRequest)
+                .accessibilityAction(named: "Rename", actions.rename)
+                .accessibilityAction(named: "Move Up") { move(-1) }
+                .accessibilityAction(named: "Move Down") { move(1) }
+                .accessibilityAction(named: "Delete", actions.delete)
+        } else {
+            content
+                .accessibilityAction(named: "New Request", actions.newRequest)
+                .accessibilityAction(named: "Rename", actions.rename)
+                .accessibilityAction(named: "Delete", actions.delete)
+        }
     }
 }
 
@@ -1010,11 +1058,22 @@ private struct SidebarMoveMenu: View {
 
 struct InlineSidebarName: View {
     let title: String
-    @Binding var isEditing: Bool
+    /// A value rather than a binding: a closure-built binding counts as changed on every
+    /// update, which re-rendered each sidebar row's name several times per update.
+    let isEditing: Bool
     var renameOnDoubleClick = false
+    let setEditing: (Bool) -> Void
     let save: (String) -> Void
     @State private var value = ""
     @FocusState private var focused: Bool
+
+    init(title: String, isEditing: Binding<Bool>, renameOnDoubleClick: Bool = false, save: @escaping (String) -> Void) {
+        self.title = title
+        self.isEditing = isEditing.wrappedValue
+        self.renameOnDoubleClick = renameOnDoubleClick
+        setEditing = { isEditing.wrappedValue = $0 }
+        self.save = save
+    }
 
     var body: some View {
         Group {
@@ -1022,17 +1081,20 @@ struct InlineSidebarName: View {
                 TextField("Name", text: $value)
                     .textFieldStyle(.plain).focused($focused)
                     .onSubmit(commit)
-                    .onExitCommand { isEditing = false }
+                    .onExitCommand { setEditing(false) }
                     .onChange(of: focused) { _, focused in if !focused && isEditing { commit() } }
             } else if renameOnDoubleClick {
                 Text(title).lineLimit(1)
                     .contentShape(.rect)
-                    .onTapGesture(count: 2) { isEditing = true }
+                    .onTapGesture(count: 2) { setEditing(true) }
             } else { Text(title).lineLimit(1) }
         }
-        .task(id: isEditing) {
-            if isEditing {
-                value = title
+        // Only a rename does work here; rows are created on every filter change, so they
+        // don't start a task each.
+        .onChange(of: isEditing, initial: true) {
+            guard isEditing else { return }
+            value = title
+            Task {
                 await Task.yield()
                 if isEditing { focused = true }
             }
@@ -1041,7 +1103,7 @@ struct InlineSidebarName: View {
 
     private func commit() {
         let name = value.trimmingCharacters(in: .whitespacesAndNewlines)
-        isEditing = false
+        setEditing(false)
         if !name.isEmpty && name != title { save(name) }
     }
 }
@@ -1361,8 +1423,8 @@ private struct EditorGroupDeck: View {
             DocumentTabBar(model: model, interface: interface, groupID: groupID)
             if let session {
                 let presentation = interface.presentation(for: session)
+                // Stays mounted across tab switches; the URL field inside is per document.
                 RequestURLBar(model: model, interface: interface, session: session, groupID: groupID)
-                    .id(session.id)
                 ResponseSplit(layout: interface.responseLayout(for: groupID), orientation: interface.responseOrientation, minimumResponseWidth: 349) {
                     RequestWorkspace(
                         model: model,
@@ -1388,6 +1450,8 @@ private struct EditorGroupDeck: View {
                         WebSocketResponseView(session: session)
                     }
                     }
+                    // Each document gets fresh response views (scroll, find, renderer state).
+                    .id(session.id)
                     .background { ResponseFocusAnchor(model: model, interface: interface, groupID: groupID) }
                 }
                 .environment(\.editorStorage, presentation.editorStorage)
@@ -1396,7 +1460,8 @@ private struct EditorGroupDeck: View {
                         interface.activateTab(id: session.id, groupID: groupID, model: model)
                     }
                 })
-                .id(session.id)
+                // The split and the request section bar hold no per-document state, so they
+                // stay mounted across tab switches; only the editors below them are rebuilt.
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
                 // Fill the detail area so the empty state is centered below the tab bar.
@@ -1424,16 +1489,11 @@ private struct DocumentTabBar: View {
     @Bindable var model: WireboltModel
     @Bindable var interface: WorkspaceUIState
     let groupID: String
-    @State private var overflow = TabStripOverflow()
+    // No @State here: this bar re-renders on every tab switch, and a stateful body makes
+    // that update measurably slower. The strip's overflow state lives in TabStripScroller.
 
     /// Tabs shrink to this width before the strip starts scrolling.
     private static let minimumTabWidth = 96.0
-
-    private var overflowDivider: some View {
-        Rectangle().fill(WireboltTheme.separator).frame(width: 1, height: 16)
-            .allowsHitTesting(false)
-            .accessibilityHidden(true)
-    }
 
     var body: some View {
         HStack(spacing: 0) {
@@ -1462,7 +1522,7 @@ private struct DocumentTabBar: View {
 
             GeometryReader { geometry in
             ScrollViewReader { scroll in
-            ScrollView(.horizontal) {
+            TabStripScroller {
             HStack(spacing: 0) {
                 ForEach(tabs) { tab in
                     DocumentTabButton(
@@ -1495,25 +1555,11 @@ private struct DocumentTabBar: View {
             }
             .padding(.top, 2)
             }
-            .scrollIndicators(.never)
-            .onScrollGeometryChange(for: TabStripOverflow.self) { geometry in
-                TabStripOverflow(
-                    leading: geometry.contentOffset.x > 0.5,
-                    trailing: geometry.contentOffset.x + geometry.containerSize.width < geometry.contentSize.width - 0.5
-                )
-            } action: { _, overflow in
-                self.overflow = overflow
-            }
             .onChange(of: group?.selectedTabID) { _, selected in
                 if let selected { scroll.scrollTo(selected, anchor: .center) }
             }
             }
             }
-            .clipped()
-            // Tabs cut off at an edge end at a divider, so they never look like they run
-            // underneath the navigation or split buttons.
-            .overlay(alignment: .leading) { if overflow.leading { overflowDivider } }
-            .overlay(alignment: .trailing) { if overflow.trailing { overflowDivider } }
             .padding(.trailing, WireboltTheme.Spacing.xSmall)
             .frame(maxWidth: .infinity)
 
@@ -1560,6 +1606,35 @@ private struct DocumentTabBar: View {
     }
 }
 
+/// The horizontally scrolling tab strip. Tabs cut off at an edge end at a divider, so they
+/// never look like they run underneath the navigation or split buttons.
+private struct TabStripScroller<Content: View>: View {
+    @ViewBuilder let content: Content
+    @State private var overflow = TabStripOverflow()
+
+    var body: some View {
+        ScrollView(.horizontal) { content }
+            .scrollIndicators(.never)
+            .onScrollGeometryChange(for: TabStripOverflow.self) { geometry in
+                TabStripOverflow(
+                    leading: geometry.contentOffset.x > 0.5,
+                    trailing: geometry.contentOffset.x + geometry.containerSize.width < geometry.contentSize.width - 0.5
+                )
+            } action: { _, overflow in
+                self.overflow = overflow
+            }
+            .clipped()
+            .overlay(alignment: .leading) { if overflow.leading { divider } }
+            .overlay(alignment: .trailing) { if overflow.trailing { divider } }
+    }
+
+    private var divider: some View {
+        Rectangle().fill(WireboltTheme.separator).frame(width: 1, height: 16)
+            .allowsHitTesting(false)
+            .accessibilityHidden(true)
+    }
+}
+
 private struct DocumentTabButton: View {
     let tab: DocumentSession
     let isSelected: Bool
@@ -1575,35 +1650,17 @@ private struct DocumentTabButton: View {
 
     @State private var isHovered = false
     @State private var isRenaming = false
-    @FocusState private var closeIsFocused: Bool
 
     var body: some View {
         let isDirty = tab.isDirty
-        // The close button shows on hover, keyboard focus, and the clean active tab; an
-        // edited tab shows a dot in the same slot instead, so the title never moves.
-        let showsClose = !isRenaming && (isHovered || closeIsFocused || (isSelected && !isDirty))
         HStack(spacing: WireboltTheme.Spacing.xxSmall) {
-            ZStack {
-                if isDirty && !showsClose {
-                    Circle().fill(.secondary).frame(width: 7, height: 7)
-                        .accessibilityHidden(true)
-                }
-                Button(action: onClose) {
-                    Image(systemName: "xmark")
-                        .font(.system(size: 9, weight: .semibold))
-                        .frame(width: 20, height: 20)
-                        .contentShape(.rect)
-                }
-                .buttonStyle(.plain)
-                .foregroundStyle(.secondary)
-                .focused($closeIsFocused)
-                .opacity(showsClose ? 1 : 0)
-                .allowsHitTesting(showsClose)
-                .accessibilityLabel("Close \(tab.title)")
-                .accessibilityHidden(isRenaming)
-                .help("Close Tab (⌘W)")
-            }
-            .frame(width: 20, height: 20)
+            DocumentTabCloseSlot(
+                title: tab.title,
+                isDirty: isDirty,
+                isRevealed: isHovered || (isSelected && !isDirty),
+                isRenaming: isRenaming,
+                onClose: onClose
+            )
 
             if isRenaming {
                 InlineSidebarName(title: tab.title, isEditing: $isRenaming, save: onRename)
@@ -1665,29 +1722,57 @@ private struct DocumentTabButton: View {
     }
 }
 
-private struct DocumentTabLabel: NSViewRepresentable {
+/// The close button, or the unsaved-edit dot in the same slot so the title never moves.
+/// The button shows on hover, keyboard focus and the clean active tab. It owns its focus
+/// state so the tab button itself stays cheap to update on every tab switch.
+private struct DocumentTabCloseSlot: View {
+    let title: String
+    let isDirty: Bool
+    /// Hovered, or the clean active tab.
+    let isRevealed: Bool
+    let isRenaming: Bool
+    let onClose: () -> Void
+    @FocusState private var isFocused: Bool
+
+    var body: some View {
+        let showsClose = !isRenaming && (isRevealed || isFocused)
+        ZStack {
+            if isDirty && !showsClose {
+                Circle().fill(.secondary).frame(width: 7, height: 7)
+                    .accessibilityHidden(true)
+            }
+            Button(action: onClose) {
+                Image(systemName: "xmark")
+                    .font(.system(size: 9, weight: .semibold))
+                    .frame(width: 20, height: 20)
+                    .contentShape(.rect)
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(.secondary)
+            .focused($isFocused)
+            .opacity(showsClose ? 1 : 0)
+            .allowsHitTesting(showsClose)
+            .accessibilityLabel("Close \(title)")
+            .accessibilityHidden(isRenaming)
+            .help("Close Tab (⌘W)")
+        }
+        .frame(width: 20, height: 20)
+    }
+}
+
+/// A tab's title, truncated at the end. Plain text rather than an AppKit label, so opening
+/// a workspace with many tabs does not create a platform view per tab.
+private struct DocumentTabLabel: View {
     let title: String
     var italic = false
 
-    func makeNSView(context: Context) -> NSTextField {
-        let field = NSTextField(labelWithString: title)
-        field.font = Self.font(italic: italic)
-        field.alignment = .center
-        field.lineBreakMode = .byTruncatingTail
-        field.maximumNumberOfLines = 1
-        field.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
-        return field
+    var body: some View {
+        Text(title)
+            .font(.system(size: 12))
+            .italic(italic)
+            .lineLimit(1)
+            .truncationMode(.tail)
     }
-
-    func updateNSView(_ field: NSTextField, context: Context) {
-        if field.stringValue != title { field.stringValue = title }
-        let font = Self.font(italic: italic)
-        if field.font != font { field.font = font }
-    }
-
-    private static let regularFont = NSFont.systemFont(ofSize: 12)
-    private static let italicFont = NSFontManager.shared.convert(regularFont, toHaveTrait: .italicFontMask)
-    private static func font(italic: Bool) -> NSFont { italic ? italicFont : regularFont }
 }
 
 /// Navigate ▸ Focus Response: moves keyboard focus to the largest focusable view inside the
@@ -1697,24 +1782,40 @@ private struct ResponseFocusAnchor: View {
     let model: WireboltModel
     let interface: WorkspaceUIState
     let groupID: String
+    /// The trigger when this pane appeared: a pane that appears later must not steal focus
+    /// for an earlier request.
+    @State private var appearedTrigger: Int
+
+    init(model: WireboltModel, interface: WorkspaceUIState, groupID: String) {
+        self.model = model
+        self.interface = interface
+        self.groupID = groupID
+        _appearedTrigger = State(initialValue: interface.focusResponseTrigger)
+    }
 
     var body: some View {
-        ResponseFocusBridge(
-            trigger: interface.focusResponseTrigger,
-            isActive: model.sessions.activeGroupID == groupID
-        )
-        .accessibilityHidden(true)
+        // The anchor view is added on the first Focus Response for this pane, so switching
+        // tabs (which remounts the pane) does not create an AppKit view each time.
+        if interface.focusResponseTrigger != appearedTrigger {
+            ResponseFocusBridge(
+                trigger: interface.focusResponseTrigger,
+                handledTrigger: appearedTrigger,
+                isActive: model.sessions.activeGroupID == groupID
+            )
+            .accessibilityHidden(true)
+        }
     }
 }
 
 private struct ResponseFocusBridge: NSViewRepresentable {
     let trigger: Int
+    /// The last trigger this pane already handled when the anchor is created.
+    let handledTrigger: Int
     let isActive: Bool
 
     func makeNSView(context: Context) -> AnchorView {
         let view = AnchorView()
-        // A pane that appears later must not steal focus for an earlier request.
-        view.handledTrigger = trigger
+        view.handledTrigger = handledTrigger
         return view
     }
 
@@ -1787,11 +1888,14 @@ private struct RequestWorkspace: View {
     var body: some View {
         if session.kind == .webSocket {
             WebSocketRequestWorkspace(model: model, interface: presentation, session: session)
+                .id(session.id)
         } else {
             VStack(spacing: 0) {
-                RequestSectionBar(interface: presentation, session: session, isBulkEditing: $presentation.isBulkEditing)
+                RequestSectionBar(interface: presentation, session: session)
                 Divider()
+                // Each document gets fresh editors (pending rows, focus, scroll position).
                 requestContent
+                    .id(session.id)
             }
             .background(WireboltTheme.paneBackground)
         }
@@ -1974,16 +2078,13 @@ private struct RequestURLBar: View {
     @Bindable var interface: WorkspaceUIState
     @Bindable var session: DocumentSession
     let groupID: String
-    @State private var urlIsFocused = false
 
     @State private var isEnteringCustomMethod = false
     @State private var customMethod = ""
     @State private var isEditingLongURL = false
-    @State private var urlText = ""
     /// Narrow groups (for example a split editor) collapse the proxy pill and status to
     /// icons so the URL keeps most of the width.
     @State private var isCompact = false
-    @Environment(\.variableCatalog) private var variables
 
     var body: some View {
         HStack(spacing: 7) {
@@ -2015,13 +2116,9 @@ private struct RequestURLBar: View {
 
             }
 
-            NativeRequestURLField(text: Binding(
-                get: { urlText },
-                set: { urlText = $0; session.draft.editURL($0) }
-            ), isEditing: $urlIsFocused, focusTrigger: interface.focusURLTrigger, active: model.sessions.activeGroupID == groupID,
-                variables: variables, submit: send)
-                .onSubmit(send)
-                .accessibilityLabel("Request URL")
+            RequestURLField(session: session, focusTrigger: interface.focusURLTrigger,
+                active: model.sessions.activeGroupID == groupID, submit: send)
+                .id(session.id)
                 .frame(minWidth: 96)
                 .layoutPriority(1)
 
@@ -2030,6 +2127,8 @@ private struct RequestURLBar: View {
             }
             // A fixed slot: the URL field never resizes when a status appears or changes.
             InlineResponseStatus(session: session, compact: isCompact)
+                // A tab switch shows the other document's status without animating.
+                .id(session.id)
                 .frame(width: isCompact ? 20 : 148, alignment: .leading)
 
             Button("Edit Long URL", systemImage: "rectangle.expand.vertical") {
@@ -2052,18 +2151,17 @@ private struct RequestURLBar: View {
         .frame(height: 44)
         .background(WireboltTheme.barBackground)
         .onGeometryChange(for: Bool.self) { $0.size.width < Self.compactWidth } action: { isCompact = $0 }
-        .onAppear { urlText = session.draft.displayURL }
-        .onChange(of: session.draft.query) {
-            if !urlIsFocused { urlText = session.draft.displayURL }
+        .onChange(of: session.id) {
+            // The bar stays mounted across tab switches: close what belonged to the previous
+            // document, as it closed when each document had its own bar.
+            if isEnteringCustomMethod { isEnteringCustomMethod = false }
+            if isEditingLongURL { isEditingLongURL = false }
         }
-        .onChange(of: session.draft.url) {
-            if !urlIsFocused { urlText = session.draft.displayURL }
-        }
-        .onChange(of: session.id) { urlText = session.draft.displayURL }
         .sheet(isPresented: $isEditingLongURL) {
+            // The URL field shows the edited URL once the draft changes.
             LongURLEditor(url: Binding(
                 get: { session.draft.displayURL },
-                set: { session.draft.editURL($0); urlText = $0 }
+                set: { session.draft.editURL($0) }
             ))
         }
         .alert("Custom HTTP Method", isPresented: $isEnteringCustomMethod) {
@@ -2332,8 +2430,22 @@ private struct WebSocketResponseView: View {
 private struct RequestHistoryMenu: View {
     @Bindable var model: WireboltModel
     @Bindable var session: DocumentSession
-    @State private var entries: [RunHistoryEntry] = []
+    @State private var loaded = LoadedHistory()
     @State private var isClearing = false
+
+    /// Entries loaded for a document; the menu stays mounted across tab switches.
+    private struct LoadedHistory {
+        var documentID: String?
+        var entries: [RunHistoryEntry] = []
+    }
+
+    private struct LoadKey: Equatable {
+        let revision: Int
+        let documentID: String
+    }
+
+    /// Only this document's entries: another document's never show while its own load.
+    private var entries: [RunHistoryEntry] { loaded.documentID == session.id ? loaded.entries : [] }
 
     var body: some View {
         Menu("Request History", systemImage: "clock.arrow.circlepath") {
@@ -2357,11 +2469,21 @@ private struct RequestHistoryMenu: View {
         }
         .menuStyle(.borderlessButton).menuIndicator(.hidden).labelStyle(.iconOnly)
         .foregroundStyle(.secondary).help("Request History")
-        .task(id: model.historyRevision) { entries = await model.historyEntries(for: session) }
+        .task(id: LoadKey(revision: model.historyRevision, documentID: session.id)) {
+            let session = session
+            let entries = await model.historyEntries(for: session)
+            guard !Task.isCancelled else { return }
+            loaded = LoadedHistory(documentID: session.id, entries: entries)
+        }
+        .onChange(of: session.id) { if isClearing { isClearing = false } }
         .alert("Clear History?", isPresented: $isClearing) {
             Button("Cancel", role: .cancel) {}
             Button("Clear", role: .destructive) {
-                Task { await model.clearHistory(for: session); entries = [] }
+                let session = session
+                Task {
+                    await model.clearHistory(for: session)
+                    if loaded.documentID == session.id { loaded.entries = [] }
+                }
             }
         }
     }
@@ -2480,6 +2602,43 @@ func commitPendingEdits(in window: NSWindow?) {
     } else if let view = responder as? NSView {
         guard window.makeFirstResponder(nil) else { return }
         window.makeFirstResponder(view)
+    }
+}
+
+/// The URL text field of one document. Identified by the document at its use, so each tab
+/// gets a fresh field (editing, selection and undo state) while the rest of the URL bar
+/// stays mounted across tab switches.
+private struct RequestURLField: View {
+    @Bindable var session: DocumentSession
+    let focusTrigger: Int
+    let active: Bool
+    let submit: () -> Void
+    @State private var isEditing = false
+    @State private var text: String
+    @Environment(\.variableCatalog) private var variables
+
+    init(session: DocumentSession, focusTrigger: Int, active: Bool, submit: @escaping () -> Void) {
+        self.session = session
+        self.focusTrigger = focusTrigger
+        self.active = active
+        self.submit = submit
+        _text = State(initialValue: session.draft.displayURL)
+    }
+
+    var body: some View {
+        NativeRequestURLField(text: Binding(
+            get: { text },
+            set: { text = $0; session.draft.editURL($0) }
+        ), isEditing: $isEditing, focusTrigger: focusTrigger, active: active,
+            variables: variables, submit: submit)
+            .onSubmit(submit)
+            .accessibilityLabel("Request URL")
+            .onChange(of: session.draft.query) {
+                if !isEditing { text = session.draft.displayURL }
+            }
+            .onChange(of: session.draft.url) {
+                if !isEditing { text = session.draft.displayURL }
+            }
     }
 }
 
@@ -2681,9 +2840,11 @@ private struct NativeRequestURLField: NSViewRepresentable {
 private struct RequestSectionBar: View {
     @Bindable var interface: DocumentPresentationState
     @Bindable var session: DocumentSession
-    @Binding var isBulkEditing: Bool
-    @State private var scrollMetrics = SectionScrollMetrics()
-    @State private var tabExtents: [RequestPanelSection: ClosedRange<CGFloat>] = [:]
+    /// Raw strip geometry, written during layout without re-rendering the bar.
+    @State private var geometry = SectionStripGeometry()
+    /// What the bar shows for that geometry; it changes only when a tab's visibility does,
+    /// so mounting a bar that fits (every tab switch) costs no second pass.
+    @State private var overflow = SectionStripOverflow()
 
     /// One row of constant height: section actions stay pinned at the trailing edge and
     /// the section tabs scroll when the pane is too narrow, so the editor never jumps.
@@ -2700,10 +2861,19 @@ private struct RequestSectionBar: View {
                 .onScrollGeometryChange(for: SectionScrollMetrics.self) { geometry in
                     SectionScrollMetrics(offset: geometry.contentOffset.x, contentWidth: geometry.contentSize.width,
                         visibleWidth: geometry.containerSize.width)
-                } action: { _, metrics in scrollMetrics = metrics }
+                } action: { _, metrics in
+                    geometry.metrics = metrics
+                    publishOverflow()
+                }
                 .mask { edgeFadeMask }
-                .onChange(of: interface.requestSection) { _, section in
-                    withAnimation(.snappy(duration: 0.2)) { scroll.scrollTo(section, anchor: .center) }
+                .onChange(of: SectionScrollTarget(documentID: session.id, section: interface.requestSection)) { old, new in
+                    if old.documentID == new.documentID {
+                        withAnimation(.snappy(duration: 0.2)) { scroll.scrollTo(new.section, anchor: .center) }
+                    } else if let first = RequestPanelSection.allCases.first {
+                        // The bar stays mounted across tab switches: another document starts
+                        // at the leading edge, without animation, like a newly shown bar.
+                        scroll.scrollTo(first, anchor: .leading)
+                    }
                 }
             }
             if !hiddenSections.isEmpty {
@@ -2743,7 +2913,10 @@ private struct RequestSectionBar: View {
                 .onGeometryChange(for: ClosedRange<CGFloat>.self) { proxy in
                     let frame = proxy.frame(in: .named(Self.tabSpace))
                     return frame.minX...frame.maxX
-                } action: { tabExtents[section] = $0 }
+                } action: {
+                    geometry.tabExtents[section] = $0
+                    publishOverflow()
+                }
             }
         }
         .fixedSize(horizontal: true, vertical: false)
@@ -2754,21 +2927,19 @@ private struct RequestSectionBar: View {
     private static let fadeWidth: CGFloat = 18
 
     /// Sections whose tab is at least partly scrolled out of view, in tab order.
-    private var hiddenSections: [RequestPanelSection] {
-        guard scrollMetrics.overflows else { return [] }
-        let visible = scrollMetrics.offset...(scrollMetrics.offset + scrollMetrics.visibleWidth)
-        return RequestPanelSection.allCases.filter { section in
-            guard let extent = tabExtents[section] else { return false }
-            return extent.lowerBound < visible.lowerBound - 0.5 || extent.upperBound > visible.upperBound + 0.5
-        }
+    private var hiddenSections: [RequestPanelSection] { overflow.hiddenSections }
+
+    private func publishOverflow() {
+        let current = geometry.overflow
+        if current != overflow { overflow = current }
     }
 
     private var edgeFadeMask: some View {
         HStack(spacing: 0) {
-            LinearGradient(colors: [scrollMetrics.clipsLeading ? .clear : .black, .black], startPoint: .leading, endPoint: .trailing)
+            LinearGradient(colors: [overflow.clipsLeading ? .clear : .black, .black], startPoint: .leading, endPoint: .trailing)
                 .frame(width: Self.fadeWidth)
             Color.black
-            LinearGradient(colors: [.black, scrollMetrics.clipsTrailing ? .clear : .black], startPoint: .leading, endPoint: .trailing)
+            LinearGradient(colors: [.black, overflow.clipsTrailing ? .clear : .black], startPoint: .leading, endPoint: .trailing)
                 .frame(width: Self.fadeWidth)
         }
     }
@@ -2789,8 +2960,8 @@ private struct RequestSectionBar: View {
                 Menu("Section Actions", systemImage: "ellipsis.circle") {
                     Button("New Entry") { interface.isBulkEditing = false; interface.focusNewKeyTrigger += 1 }
                     Divider()
-                    Button("Key-Value Edit") { isBulkEditing = false }
-                    Button("Bulk Edit") { isBulkEditing = true }
+                    Button("Key-Value Edit") { interface.isBulkEditing = false }
+                    Button("Bulk Edit") { interface.isBulkEditing = true }
                     Divider()
                     Button("Clear All", action: clearFields)
                 }
@@ -2829,6 +3000,12 @@ private struct RequestSectionBar: View {
     }
 }
 
+/// The selected section of a document, so the strip can tell a section change from a tab switch.
+private struct SectionScrollTarget: Equatable {
+    let documentID: String
+    let section: RequestPanelSection
+}
+
 private struct SectionScrollMetrics: Equatable {
     var offset: CGFloat = 0
     var contentWidth: CGFloat = 0
@@ -2837,6 +3014,34 @@ private struct SectionScrollMetrics: Equatable {
     var overflows: Bool { contentWidth > visibleWidth + 0.5 }
     var clipsLeading: Bool { overflows && offset > 0.5 }
     var clipsTrailing: Bool { overflows && offset + visibleWidth < contentWidth - 0.5 }
+}
+
+/// The section strip's edge fades and the sections listed in its overflow menu.
+private struct SectionStripOverflow: Equatable {
+    var clipsLeading = false
+    var clipsTrailing = false
+    var hiddenSections: [RequestPanelSection] = []
+}
+
+/// Layout measurements of the section strip. A plain reference so writing them from
+/// geometry callbacks does not invalidate the bar; only the derived overflow does.
+@MainActor
+private final class SectionStripGeometry {
+    var metrics = SectionScrollMetrics()
+    var tabExtents: [RequestPanelSection: ClosedRange<CGFloat>] = [:]
+
+    var overflow: SectionStripOverflow {
+        guard metrics.overflows else { return SectionStripOverflow() }
+        let visible = metrics.offset...(metrics.offset + metrics.visibleWidth)
+        return SectionStripOverflow(
+            clipsLeading: metrics.clipsLeading,
+            clipsTrailing: metrics.clipsTrailing,
+            hiddenSections: RequestPanelSection.allCases.filter { section in
+                guard let extent = tabExtents[section] else { return false }
+                return extent.lowerBound < visible.lowerBound - 0.5 || extent.upperBound > visible.upperBound + 0.5
+            }
+        )
+    }
 }
 
 private struct BulkFieldEditor: View {

@@ -357,6 +357,8 @@ struct ProxyConnectionIndicator: View {
                 .background(.quaternary.opacity(0.4), in: Capsule())
         }.buttonStyle(.plain).accessibilityLabel("Proxy connection: \(label)")
             .help("\(label): " + effective.summary(for: session.draft.url) + " · " + effective.source.title)
+            // The URL bar stays mounted across tab switches; close the previous document's details.
+            .onChange(of: session.id) { if showsDetails { showsDetails = false } }
             .popover(isPresented: $showsDetails) {
                 VStack(alignment: .leading, spacing: 12) {
                     Text("Effective connection").font(.headline)
