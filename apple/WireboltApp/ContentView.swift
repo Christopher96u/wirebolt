@@ -127,8 +127,26 @@ struct ContentView: View {
         }
     }
 
-    private var workspaceWithDialogs: some View {
+        private var workspaceWithDialogs: some View {
         workspaceSurface
+        .overlay(alignment: .bottom) {
+            if let summary = model.importSummary, !summary.needsReview {
+                ImportCompleteBanner(summary: summary) {
+                    if model.importSummary?.id == summary.id { model.importSummary = nil }
+                }
+                .padding(.bottom, 16)
+                .transition(.move(edge: .bottom).combined(with: .opacity))
+            }
+        }
+        .sheet(item: Binding(
+            // The cURL sheet shows its own summary; one sheet at a time.
+            get: { model.importSummary.flatMap { $0.needsReview && !interface.isShowingCurlImporter ? $0 : nil } },
+            set: { if $0 == nil { model.importSummary = nil } }
+        )) { summary in
+            ImportSummaryView(summary: summary) { model.importSummary = nil }
+                .padding(20)
+                .frame(width: 520)
+        }
         .alert("Import Failed", isPresented: Binding(
             get: { model.importFailureMessage != nil },
             set: { if !$0 { model.importFailureMessage = nil } }
@@ -270,17 +288,20 @@ struct ContentView: View {
         .help(interface.columnVisibility == .detailOnly ? "Show Sidebar (⌃⌘S)" : "Hide Sidebar (⌃⌘S)")
     }
 
-    private func handleImport(_ result: Result<[URL], any Error>) {
+        private func handleImport(_ result: Result<[URL], any Error>) {
         switch result {
         case let .success(urls):
             guard let url = urls.first else { return }
             let hasAccess = url.startAccessingSecurityScopedResource()
+            let preferred = interface.importFormat
             Task {
-                await model.importDocument(url: url, format: interface.importFormat)
+                await importExternalFile(url, model: model, preferred: preferred)
                 if hasAccess { url.stopAccessingSecurityScopedResource() }
             }
         case let .failure(error):
-            if (error as NSError).code != NSUserCancelledError { interface.reportImportFailure() }
+            if (error as NSError).code != NSUserCancelledError {
+                model.importFailureMessage = "The file couldn’t be opened. \(error.localizedDescription)"
+            }
         }
     }
 }
@@ -620,31 +641,61 @@ private struct CurlImportSheet: View {
     @Bindable var model: WireboltModel
     @Environment(\.dismiss) private var dismiss
     @State private var source = "curl "
+    @State private var failure: String?
+    @State private var summary: ImportSummary?
 
     var body: some View {
+        Group {
+            if let summary {
+                ImportSummaryView(summary: summary) {
+                    if model.importSummary?.id == summary.id { model.importSummary = nil }
+                    dismiss()
+                }
+                .frame(width: 520)
+            } else {
+                editor.frame(width: 620, height: failure == nil ? 300 : 340)
+            }
+        }
+        .padding(20)
+    }
+
+    private var editor: some View {
         VStack(alignment: .leading, spacing: 12) {
             Text("Import cURL")
                 .font(.headline)
+            Text("Paste one or more commands, such as “Copy as cURL” from a browser.")
+                .font(.callout)
+                .foregroundStyle(.secondary)
             TextEditor(text: $source)
                 .font(.body.monospaced())
-                .frame(minHeight: 180)
+                .frame(minHeight: 160)
                 .overlay { RoundedRectangle(cornerRadius: 6).stroke(WireboltTheme.separator) }
+                .onChange(of: source) { failure = nil }
+            if let failure {
+                Label(failure, systemImage: "exclamationmark.triangle.fill")
+                    .foregroundStyle(.red)
+                    .font(.callout)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
             HStack {
                 Spacer()
                 Button("Cancel", role: .cancel) { dismiss() }
                     .keyboardShortcut(.cancelAction)
                 Button("Import") {
                     Task {
-                        await model.importDocument(source: source, format: .curl)
-                        if model.importFailureMessage == nil { dismiss() }
+                        if let message = await model.importPastedDocument(source: source, format: .curl) {
+                            failure = message
+                        } else if let imported = model.importSummary, imported.needsReview {
+                            summary = imported
+                        } else {
+                            dismiss()
+                        }
                     }
                 }
                 .keyboardShortcut(.defaultAction)
-                .disabled(source.trimmingCharacters(in: .whitespacesAndNewlines).hasPrefix("curl ") == false)
+                .disabled(!source.contains("curl") || model.isImporting)
             }
         }
-        .padding(20)
-        .frame(width: 620, height: 300)
     }
 }
 
@@ -1359,34 +1410,6 @@ private struct SidebarFooter: View {
         .padding(.trailing, 5)
         .padding(.top, 11)
         .padding(.bottom, 14)
-    }
-}
-
-private struct ImportStatusBanner: View {
-    let message: String
-    let dismiss: () -> Void
-
-    var body: some View {
-        HStack(spacing: 7) {
-            Image(systemName: "checkmark.circle.fill")
-                .foregroundStyle(.green)
-            Text(message)
-                .lineLimit(1)
-            Spacer(minLength: 4)
-            Button("Dismiss", systemImage: "xmark", action: dismiss)
-                .labelStyle(.iconOnly)
-                .buttonStyle(.borderless)
-                .help("Dismiss")
-        }
-        .font(.caption)
-        .padding(.horizontal, 10)
-        .frame(height: 34)
-        .background(.regularMaterial, in: .rect(cornerRadius: 7))
-        .overlay {
-            RoundedRectangle(cornerRadius: 7)
-                .stroke(WireboltTheme.separator, lineWidth: 0.5)
-        }
-        .shadow(color: .black.opacity(0.16), radius: 8, y: 3)
     }
 }
 

@@ -170,8 +170,7 @@ final class WorkspaceUIState {
     var sidebarFilter = ""
     var isShowingImporter = false
     var isShowingCurlImporter = false
-    var importFormat: ImportFormat = .postmanV2
-    var importStatus: String?
+        var importFormat: ImportFormat = .postmanV2
     var focusURLTrigger = 0
     var focusSearchTrigger = 0
     /// Moves keyboard focus into the active editor group's response content.
@@ -512,17 +511,7 @@ final class WorkspaceUIState {
         }
     }
 
-    func selectImportedFile(_ url: URL) {
-        let hasAccess = url.startAccessingSecurityScopedResource()
-        defer {
-            if hasAccess { url.stopAccessingSecurityScopedResource() }
-        }
-        importStatus = "Ready to import \(url.lastPathComponent)"
-    }
-
-    func reportImportFailure() {
-        importStatus = "The collection could not be imported"
-    }
+    
 
     func presentation(for session: DocumentSession) -> DocumentPresentationState {
         if let existing = presentationByTabID[session.id] { return existing }
