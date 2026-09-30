@@ -12,6 +12,9 @@ struct ResponseViewer: View {
     var cancel: (() -> Void)?
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
+    // The viewer stays mounted across tab switches so the common empty state is updated
+    // rather than rebuilt; everything that holds per-document state (the response views and
+    // the run progress) is identified by the document instead.
     var body: some View {
         Group {
             if hasPresentation {
@@ -37,28 +40,21 @@ struct ResponseViewer: View {
                             }
                         }
                 }
+                .id(session.id)
             } else if session.isRunning, let startedAt = session.runStartedAt {
                 RunProgressView(startedAt: startedAt, cancel: cancel)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .id(session.id)
                     .transition(.opacity)
             } else {
                 NoResponseState(session: session, canSend: send != nil) { send?() }
             }
         }
+        // Phase changes of one document animate; switching documents does not.
+        .transaction(value: session.id) { $0.animation = nil }
         .animation(reduceMotion ? nil : .easeOut(duration: 0.18), value: phase)
         .background(WireboltTheme.paneBackground)
-        .onChange(of: session.responseHead) {
-            guard interface.usesAutomaticRenderer, let head = session.responseHead else { return }
-            let mime = head.headers.first { $0.name.lowercased() == "content-type" }?.value.lowercased() ?? ""
-            if mime.contains("json") { interface.responseRenderer = .json }
-            else if mime.contains("html") { interface.responseRenderer = .html }
-            else if mime.contains("xml") { interface.responseRenderer = .xml }
-            else if mime.hasPrefix("image/") { interface.responseRenderer = .image }
-            else { interface.responseRenderer = .raw }
-        }
-        .onChange(of: session.isRunning) { wasRunning, isRunning in
-            if wasRunning, !isRunning { announceOutcome() }
-        }
+        .background { ResponseRunObserver(interface: interface, session: session).id(session.id) }
     }
 
     private enum Phase: Equatable {
@@ -140,6 +136,31 @@ struct ResponseViewer: View {
         let statusLine = head.version.hasPrefix("HTTP/1") ? "\(head.version) \(ResponseFormatting.statusLine(head.status))" : "\(head.version) \(head.status)"
         let headers = head.headers.map { "\($0.name): \($0.value)" }.joined(separator: "\n")
         return [statusLine, headers, "", ""].joined(separator: "\n")
+    }
+
+}
+
+/// Reacts to one document's run: picks the renderer for a new response and announces the
+/// outcome. Identified by the document, so switching tabs never looks like a change.
+private struct ResponseRunObserver: View {
+    let interface: DocumentPresentationState
+    let session: DocumentSession
+
+    var body: some View {
+        Color.clear
+            .accessibilityHidden(true)
+            .onChange(of: session.responseHead) {
+                guard interface.usesAutomaticRenderer, let head = session.responseHead else { return }
+                let mime = head.headers.first { $0.name.lowercased() == "content-type" }?.value.lowercased() ?? ""
+                if mime.contains("json") { interface.responseRenderer = .json }
+                else if mime.contains("html") { interface.responseRenderer = .html }
+                else if mime.contains("xml") { interface.responseRenderer = .xml }
+                else if mime.hasPrefix("image/") { interface.responseRenderer = .image }
+                else { interface.responseRenderer = .raw }
+            }
+            .onChange(of: session.isRunning) { wasRunning, isRunning in
+                if wasRunning, !isRunning { announceOutcome() }
+            }
     }
 
     private func announceOutcome() {

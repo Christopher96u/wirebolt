@@ -1531,11 +1531,12 @@ private struct EditorGroupDeck: View {
                             cancel: { model.cancel(session) }
                         )
                     } else {
+                        // Each document gets fresh response views (scroll, find, renderer
+                        // state); the HTTP viewer identifies its per-document parts itself.
                         WebSocketResponseView(session: session)
+                            .id(session.id)
                     }
                     }
-                    // Each document gets fresh response views (scroll, find, renderer state).
-                    .id(session.id)
                     .background { ResponseFocusAnchor(model: model, interface: interface, groupID: groupID) }
                 }
                 .environment(\.editorStorage, presentation.editorStorage)
