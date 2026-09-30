@@ -12,8 +12,6 @@ struct ContentView: View {
     @State private var liveSidebarWidth: Double?
     @State private var sidebarDragOrigin: Double?
     @State private var isDropTargeted = false
-    /// The window's undo manager; workspace mutations register their inverses on it.
-    @Environment(\.undoManager) private var undoManager
     private var sidebarWidth: Double { liveSidebarWidth ?? storedSidebarWidth }
     private var toolbarGap: Double { max(0, sidebarWidth - 184) }
     /// Until the first workspace load finishes, show placeholders instead of an empty sidebar
@@ -194,12 +192,11 @@ struct ContentView: View {
         } message: { request in
             Text(request.detail)
         }
+        .background { UndoManagerBridge(model: model) }
         .onAppear {
-            model.undoManager = undoManager
             interface.reopenLastDocument(model: model)
             interface.synchronizeSelection(model: model)
         }
-        .onChange(of: undoManager) { model.undoManager = undoManager }
         .task {
             // The model outlives the window; reopening it must not reload the workspace.
             guard loadsWorkspace, !model.hasLoadedWorkspace else { return }
@@ -322,6 +319,20 @@ private struct ResponsePlacementButton: View {
         .help(fitsRight
             ? (interface.responseOrientation == .bottom ? "Place Response on Right" : "Place Response on Bottom")
             : "Widen the editor to place the response on the right")
+    }
+}
+
+/// Gives the model the window's undo manager; workspace mutations register their inverses on
+/// it. Its own view: the undo manager arrives once the window exists, and reading it in the
+/// workspace body re-rendered the whole window (toolbar included) as it opened.
+private struct UndoManagerBridge: View {
+    let model: WireboltModel
+    @Environment(\.undoManager) private var undoManager
+
+    var body: some View {
+        Color.clear
+            .accessibilityHidden(true)
+            .onChange(of: undoManager, initial: true) { model.undoManager = undoManager }
     }
 }
 
