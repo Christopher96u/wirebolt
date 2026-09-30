@@ -26,7 +26,13 @@ public final class DocumentSession: Identifiable {
     public let kind: DocumentKind
     public private(set) var collectionID: String?
     public let requestID: String
-    public var draft: RequestDraft
+    public var draft: RequestDraft {
+        // Compares with the saved state (not `oldValue`) so edits don't copy the draft.
+        didSet { if !isTouched, draft != savedDraft { isTouched = true } }
+    }
+    /// Set once the draft is edited or a run starts. A touched preview tab behaves like
+    /// a regular tab: opening another request no longer replaces it.
+    public private(set) var isTouched = false
     public var note: String {
         get { draft.note }
         set { draft.note = newValue }
@@ -43,8 +49,17 @@ public final class DocumentSession: Identifiable {
     public private(set) var activeRunID: RunID?
     public private(set) var bodyStore: ResponseBodyStore?
     public private(set) var responseCookies: [CookieSnapshot] = []
+    /// When the active run started; drives the in-pane elapsed timer.
+    public private(set) var runStartedAt: Date?
+    /// True while a run is active and its response head has not arrived yet.
+    /// The previous response (if any) stays presented until then.
+    public private(set) var isAwaitingResponseHead = false
 
     @ObservationIgnored private var presentedBodyBytes = 0
+    /// Output of the active run staged until its head (or terminal event) replaces the previous response.
+    @ObservationIgnored private var pendingBodyStore: ResponseBodyStore?
+    @ObservationIgnored private var pendingPreparedRun: PreparedRunSnapshot?
+    @ObservationIgnored private var pendingCookies: [CookieSnapshot] = []
 
     public init(
         id: String = UUID().uuidString.lowercased(),
@@ -63,6 +78,8 @@ public final class DocumentSession: Identifiable {
         self.draft.webSocket = self.kind == .webSocket
         if !note.isEmpty { self.draft.note = note }
         self.savedDraft = savedDraft == draft ? self.draft : savedDraft?.separatingURLQuery
+        // Normalizing the draft above is not an edit.
+        isTouched = false
     }
 
     public var title: String { draft.name }
@@ -77,9 +94,33 @@ public final class DocumentSession: Identifiable {
     }
 
     public func beginRun(_ runID: RunID) {
-        resetResponse()
-        bodyStore = try? ResponseBodyStore(runID: runID)
+        isTouched = true
+        failure = nil
+        pendingBodyStore = try? ResponseBodyStore(runID: runID)
+        pendingPreparedRun = nil
+        pendingCookies = []
+        isAwaitingResponseHead = true
+        runStartedAt = Date()
         activeRunID = runID
+    }
+
+    /// Replaces the previous response with the active run's staged output.
+    private func presentPendingRun() {
+        guard isAwaitingResponseHead else { return }
+        let store = pendingBodyStore, prepared = pendingPreparedRun, cookies = pendingCookies
+        resetResponse()
+        bodyStore = store
+        preparedRun = prepared
+        responseCookies = cookies
+        pendingBodyStore = nil
+        pendingPreparedRun = nil
+        pendingCookies = []
+        isAwaitingResponseHead = false
+    }
+
+    private func endRun() {
+        activeRunID = nil
+        runStartedAt = nil
     }
 
     public func consume(_ event: RunEvent, runID: RunID) async {
@@ -87,10 +128,12 @@ public final class DocumentSession: Identifiable {
         switch event {
         case .cookies: break
         case let .prepared(snapshot):
-            preparedRun = snapshot
+            if isAwaitingResponseHead { pendingPreparedRun = snapshot } else { preparedRun = snapshot }
         case let .head(head):
+            presentPendingRun()
             responseHead = head
         case let .chunk(data):
+            presentPendingRun()
             try? await bodyStore?.append(data)
             responseBytes += UInt64(data.count)
             let remaining = max(Self.previewByteLimit - presentedBodyBytes, 0)
@@ -104,24 +147,27 @@ public final class DocumentSession: Identifiable {
             presentedBodyBytes += prefix.count
             responseWasTruncated = prefix.count < data.count
         case let .complete(value):
+            presentPendingRun()
             try? await bodyStore?.finish()
             completion = value
             responseBytes = value.bytesReceived
-            activeRunID = nil
+            endRun()
         }
     }
 
     public func finish(runID: RunID, failure: RunFailure?) async {
         guard activeRunID == runID else { return }
+        presentPendingRun()
         try? await bodyStore?.finish()
         self.failure = failure
-        activeRunID = nil
+        endRun()
     }
 
     public func cancel(runID: RunID) {
         guard activeRunID == runID else { return }
+        presentPendingRun()
         failure = RunFailure(kind: "cancelled", issues: [])
-        activeRunID = nil
+        endRun()
     }
 
     public func markSaved(_ draft: RequestDraft) {
@@ -165,6 +211,11 @@ public final class DocumentSession: Identifiable {
         responseCookies = cookies
     }
 
+    /// Cookies can arrive (for example across redirects) before the head that presents the run.
+    public func appendResponseCookies(_ cookies: [CookieSnapshot]) {
+        if isAwaitingResponseHead { pendingCookies += cookies } else { responseCookies += cookies }
+    }
+
     public func restore(_ entry: RunHistoryEntry, viewport: Data) {
         preparedRun = entry.prepared
         responseHead = entry.responseHead
@@ -173,7 +224,11 @@ public final class DocumentSession: Identifiable {
         responsePreviewData = viewport
         responseBytes = entry.completion?.bytesReceived ?? UInt64(viewport.count)
         responseWasTruncated = responseBytes > UInt64(viewport.count)
-        activeRunID = nil
+        pendingBodyStore = nil
+        pendingPreparedRun = nil
+        pendingCookies = []
+        isAwaitingResponseHead = false
+        endRun()
         failure = entry.failure
         bodyStore = try? ResponseBodyStore(existingURL: URL(fileURLWithPath: entry.bodyPath))
     }
@@ -185,19 +240,82 @@ public struct EditorGroup: Identifiable, Codable, Equatable, Sendable {
     public var selectedTabID: String?
     public var backwardTabIDs: [String]
     public var forwardTabIDs: [String]
+    /// The tab a single click in the sidebar reuses (shown in italics) until it is kept open.
+    public var previewTabID: String?
 
     public init(
         id: String = UUID().uuidString.lowercased(),
         tabIDs: [String] = [],
         selectedTabID: String? = nil,
         backwardTabIDs: [String] = [],
-        forwardTabIDs: [String] = []
+        forwardTabIDs: [String] = [],
+        previewTabID: String? = nil
     ) {
         self.id = id
         self.tabIDs = tabIDs
         self.selectedTabID = selectedTabID
         self.backwardTabIDs = backwardTabIDs
         self.forwardTabIDs = forwardTabIDs
+        self.previewTabID = previewTabID
+    }
+}
+
+/// The restorable shape of the editor: saved requests open per group and the selection.
+public struct SessionLayout: Codable, Equatable, Sendable {
+    public struct Tab: Codable, Equatable, Sendable {
+        public let collectionID: String
+        public let requestID: String
+
+        public init(collectionID: String, requestID: String) {
+            self.collectionID = collectionID
+            self.requestID = requestID
+        }
+    }
+
+    public struct Group: Codable, Equatable, Sendable {
+        public let tabs: [Tab]
+        public let selectedIndex: Int?
+        /// Index of the preview tab, if the group has one. Absent in older layouts.
+        public let previewIndex: Int?
+
+        public init(tabs: [Tab], selectedIndex: Int?, previewIndex: Int? = nil) {
+            self.tabs = tabs
+            self.selectedIndex = selectedIndex
+            self.previewIndex = previewIndex
+        }
+    }
+
+    public let groups: [Group]
+    public let activeGroupIndex: Int
+
+    public init(groups: [Group], activeGroupIndex: Int = 0) {
+        self.groups = groups
+        self.activeGroupIndex = activeGroupIndex
+    }
+
+    public var isEmpty: Bool { groups.isEmpty }
+}
+
+/// Remembers the editor layout per workspace folder so relaunch reopens the same tabs.
+public struct SessionLayoutStore {
+    public static let defaultsKey = "workspace.sessionLayouts"
+    private let defaults: UserDefaults
+
+    public init(defaults: UserDefaults = .standard) {
+        self.defaults = defaults
+    }
+
+    public func layout(forWorkspace path: String) -> SessionLayout? {
+        guard let data = (defaults.dictionary(forKey: Self.defaultsKey) as? [String: Data])?[path] else { return nil }
+        return try? JSONDecoder().decode(SessionLayout.self, from: data)
+    }
+
+    /// Entries for workspace folders that no longer exist are dropped on each save.
+    public func save(_ layout: SessionLayout, forWorkspace path: String) {
+        var stored = (defaults.dictionary(forKey: Self.defaultsKey) as? [String: Data] ?? [:])
+            .filter { FileManager.default.fileExists(atPath: $0.key) }
+        stored[path] = try? JSONEncoder().encode(layout)
+        defaults.set(stored, forKey: Self.defaultsKey)
     }
 }
 
@@ -212,7 +330,12 @@ public enum TabCloseScope: Equatable, Sendable {
 @Observable
 public final class DocumentSessionStore {
     public private(set) var sessions: [String: DocumentSession]
-    public private(set) var groups: [EditorGroup]
+    public private(set) var groups: [EditorGroup] {
+        didSet { if groupCount != groups.count { groupCount = groups.count } }
+    }
+    /// Changes only when a split opens or closes, so layout that depends on the
+    /// number of editor groups does not re-render on every tab selection.
+    public private(set) var groupCount = 1
     public var activeGroupID: String
 
     public init() {
@@ -220,6 +343,66 @@ public final class DocumentSessionStore {
         sessions = [:]
         groups = [group]
         activeGroupID = group.id
+    }
+
+    /// Saved-request tabs per editor group. Unsaved temporary tabs are not restorable.
+    public var layout: SessionLayout {
+        var restorable: [(id: String, group: SessionLayout.Group)] = []
+        for group in groups {
+            let tabs = group.tabIDs.compactMap { id -> (String, SessionLayout.Tab)? in
+                guard let session = sessions[id], let collectionID = session.collectionID else { return nil }
+                return (id, SessionLayout.Tab(collectionID: collectionID, requestID: session.requestID))
+            }
+            guard !tabs.isEmpty else { continue }
+            restorable.append((group.id, SessionLayout.Group(
+                tabs: tabs.map(\.1),
+                selectedIndex: tabs.firstIndex { $0.0 == group.selectedTabID },
+                previewIndex: tabs.firstIndex { isPreview(tabID: $0.0) }
+            )))
+        }
+        return SessionLayout(
+            groups: restorable.map(\.group),
+            activeGroupIndex: restorable.firstIndex { $0.id == activeGroupID } ?? 0
+        )
+    }
+
+    /// Reopens a persisted layout into an empty store. Tabs whose request no longer
+    /// exists are skipped; groups left without tabs are dropped.
+    @discardableResult
+    public func restore(
+        _ layout: SessionLayout,
+        resolve: (SessionLayout.Tab) -> RequestLocation?
+    ) -> [DocumentSession] {
+        guard sessions.isEmpty else { return [] }
+        var restoredGroups: [EditorGroup] = []
+        var restored: [DocumentSession] = []
+        var activeID: String?
+        for (groupIndex, saved) in layout.groups.enumerated() {
+            var group = EditorGroup()
+            var selectedID: String?
+            for (tabIndex, tab) in saved.tabs.enumerated() {
+                guard let location = resolve(tab) else { continue }
+                let session = DocumentSession(
+                    collectionID: location.collectionID,
+                    requestID: location.request.id,
+                    draft: location.request,
+                    savedDraft: location.request
+                )
+                sessions[session.id] = session
+                group.tabIDs.append(session.id)
+                restored.append(session)
+                if tabIndex == saved.selectedIndex { selectedID = session.id }
+                if tabIndex == saved.previewIndex { group.previewTabID = session.id }
+            }
+            guard !group.tabIDs.isEmpty else { continue }
+            group.selectedTabID = selectedID ?? group.tabIDs.last
+            restoredGroups.append(group)
+            if groupIndex == layout.activeGroupIndex { activeID = group.id }
+        }
+        guard let first = restoredGroups.first else { return [] }
+        groups = restoredGroups
+        activeGroupID = activeID ?? first.id
+        return restored
     }
 
     public var activeGroup: EditorGroup? {
@@ -278,6 +461,62 @@ public final class DocumentSessionStore {
         }
         activeGroupID = targetGroupID
         return session
+    }
+
+    /// Opens a saved request in the group's preview tab: an untouched preview tab is
+    /// replaced in place, otherwise a new preview tab is added. A request that is already
+    /// open in the group is selected and keeps its pinned or preview state.
+    @discardableResult
+    public func openPreview(
+        draft: RequestDraft,
+        collectionID: String?,
+        in groupID: String? = nil
+    ) -> DocumentSession {
+        let targetGroupID = groupID ?? activeGroupID
+        let kind: DocumentKind = draft.webSocket || draft.url.hasPrefix("ws://") || draft.url.hasPrefix("wss://") ? .webSocket : .http
+        guard let group = groups.first(where: { $0.id == targetGroupID }) else {
+            return open(draft: draft, collectionID: collectionID, in: groupID)
+        }
+        if let existing = group.tabIDs.lazy.compactMap({ self.sessions[$0] }).first(where: {
+            $0.requestID == draft.id && $0.collectionID == collectionID && $0.kind == kind
+        }) {
+            select(tabID: existing.id, in: targetGroupID)
+            return existing
+        }
+        guard let replaced = group.previewTabID, isPreview(tabID: replaced), sessions[replaced] != nil else {
+            let session = open(draft: draft, collectionID: collectionID, kind: kind, in: targetGroupID, forceNewSession: true)
+            mutateGroup(id: targetGroupID) { $0.previewTabID = session.id }
+            return session
+        }
+        let session = DocumentSession(kind: kind, collectionID: collectionID, requestID: draft.id, draft: draft, savedDraft: draft)
+        sessions[session.id] = session
+        mutateGroup(id: targetGroupID) { group in
+            guard let index = group.tabIDs.firstIndex(of: replaced) else { return }
+            group.tabIDs[index] = session.id
+            group.backwardTabIDs.removeAll { $0 == replaced }
+            group.forwardTabIDs.removeAll { $0 == replaced }
+            if group.selectedTabID == replaced {
+                group.selectedTabID = session.id
+            } else {
+                select(session.id, in: &group)
+            }
+            group.previewTabID = session.id
+        }
+        activeGroupID = targetGroupID
+        removeUnreferencedSessions([replaced])
+        return session
+    }
+
+    /// True while the tab is its group's preview tab and has not been edited or sent.
+    public func isPreview(tabID: String) -> Bool {
+        guard let session = sessions[tabID], !session.isTouched else { return false }
+        return groups.contains { $0.previewTabID == tabID }
+    }
+
+    /// Keeps a preview tab open, so the next single click opens another tab.
+    public func pin(tabID: String) {
+        guard let index = groups.firstIndex(where: { $0.previewTabID == tabID }) else { return }
+        groups[index].previewTabID = nil
     }
 
     @discardableResult
@@ -372,6 +611,7 @@ public final class DocumentSessionStore {
             mutable.tabIDs.removeAll { targetIDs.contains($0) }
             mutable.backwardTabIDs.removeAll { targetIDs.contains($0) }
             mutable.forwardTabIDs.removeAll { targetIDs.contains($0) }
+            if let preview = mutable.previewTabID, targetIDs.contains(preview) { mutable.previewTabID = nil }
             if let priorSelection, targetIDs.contains(priorSelection) {
                 mutable.selectedTabID = mutable.tabIDs.last
             }

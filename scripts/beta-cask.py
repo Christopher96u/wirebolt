@@ -22,4 +22,12 @@ print('''cask "wirebolt" do
   depends_on macos: :sequoia
 
   app "Wirebolt.app"
+
+  # Workspaces under Application Support/Wirebolt/Workspaces are user documents and are kept.
+  zap trash: [
+    "~/Library/Application Support/Wirebolt/Cookies",
+    "~/Library/Application Support/Wirebolt/History",
+    "~/Library/Preferences/io.github.christopher96u.wirebolt.plist",
+    "~/Library/Saved Application State/io.github.christopher96u.wirebolt.savedState",
+  ]
 end''' % (version, digest.hexdigest()))

@@ -7,7 +7,7 @@
 | Scope | Where | Persist changes |
 | --- | --- | --- |
 | App default on this Mac | **Wirebolt → Settings → Network** | **Save** |
-| Workspace override | **Workspace Settings** gear or Workspace menu | **Save** for proxy policy |
+| Workspace override | **Workspace Settings** gear or Workspace menu | **Save** (proxy and transport settings); **Cancel** discards |
 | Request override | Request **Settings** tab | **Apply to request**, then **⌘S** |
 
 Resolution follows **request → workspace → app default**. A new installation uses the system proxy. The indicator beside Send shows the effective policy and its source.
@@ -41,10 +41,10 @@ App defaults remain local to the Mac. Workspace and request proxy definitions ca
 
 ## Timeouts, redirects and TLS
 
-Expand **Timeouts, redirects & TLS** in workspace settings. Workspace transport edits save automatically. In a request, disable **Inherit workspace transport settings** to override them, then save the request.
+Expand **Timeouts, redirects & TLS** in workspace settings. Workspace transport edits are saved together with the proxy policy when you click **Save**. In a request, disable **Inherit workspace transport settings** to override them, then save the request.
 
 - **Total timeout** limits the total execution; **Read timeout** controls the read deadline. Values are milliseconds; `0` disables that deadline.
 - **Follow redirects** enables redirect following up to **Maximum redirects**.
 - **Validate TLS certificates** controls certificate validation. Keep it enabled for normal use; disabling it removes server-certificate verification for that configuration.
 
-Proxy Save/Apply controls and transport autosaving are distinct. Closing a workspace settings sheet does not cancel a pending transport save.
+In the workspace settings sheet, **Save** (Return) applies every edit and **Cancel** (Esc) discards them after confirmation.

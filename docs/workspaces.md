@@ -8,18 +8,28 @@ A workspace is a folder containing request definitions, collections and environm
 
 - **File → New Workspace…** creates a new workspace folder.
 - **File → Open Workspace…** (**⌘O**) opens a folder containing `wirebolt.toml`.
-- **File → New Collection…** creates a top-level collection.
+- **File → New Collection…** (**⇧⌘N**) creates a top-level collection; **File → New Folder** (**⌥⌘N**) creates a folder.
 - The **+** menu also exposes workspace and collection actions.
 
 Switching workspaces closes the old tabs and cancels active requests. If there are unsaved request edits, save them first or explicitly discard them in the prompt. A failed open preserves the current workspace.
 
 ## Collections, folders and ordering
 
-Create requests and folders from the **+** menu or the relevant context menu. Right-click a sidebar item for its available actions.
+A new workspace starts empty: use **New Request** (**⌘N**), **Import**, or drop a cURL, HAR, Postman or Wirebolt file on the window. Create requests and folders from the **+** menu or the relevant context menu; an empty collection shows its own **New Request** row. Right-click a sidebar item for its available actions.
 
-Drag a request or subfolder to the **upper or lower edge** of a sibling row to reorder it. The insertion line shows the destination. Requests and folders can be mixed. Drop in the **center of a folder** to move an item into it.
+Drag a request or subfolder to the **upper or lower edge** of a sibling row to reorder it. The insertion line shows the destination. Requests and folders can be mixed. Drop in the **center of a folder** to move an item into it. Without dragging, use **Move Up** / **Move Down** (**⌥⌘↑** / **⌥⌘↓**) or the context menu's **Move To** submenu.
 
-Moving an open request keeps its document session associated with its new collection. Deleting a folder deletes its descendants and closes their tabs; read the confirmation before discarding edited documents.
+Moving an open request keeps its document session associated with its new collection. Deleting a folder deletes its descendants and closes their tabs. Creating, renaming, moving, reordering and deleting items can be undone with **Edit → Undo** (**⌘Z**) and redone with **⇧⌘Z**; undo restores the files on disk with the same IDs and order. Wirebolt asks before a deletion only when it also removes other items or discards unsaved edits in open tabs, which undo can't bring back.
+
+### Keyboard
+
+When the sidebar has focus, its selection is drawn in the accent color:
+
+- **↑ / ↓** move through every visible row, including collections and folders. Selecting a request opens it.
+- **→** expands a collection or folder, then moves to its first item; **←** collapses it, or moves to the enclosing folder.
+- Type the first letters of a name to jump to it.
+- **Return** renames the selected item; **⌘↓** moves focus to the selected request's URL.
+- **Delete** deletes the selected item.
 
 ## Files on disk
 

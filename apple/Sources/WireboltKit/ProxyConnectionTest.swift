@@ -43,12 +43,12 @@ public final class ProxyConnectionTest {
                 self.isRunning = false; self.runID = nil
             } catch {
                 guard let self, self.runID == id else { return }
-                let failure = error as? RunFailure
-                self.message = switch failure?.kind {
-                case "timeout": "Connection timed out after 5 seconds."
-                case "tls", "tls_configuration": "TLS verification failed. Check the certificate and trust settings."
-                case "proxy", "proxy_configuration", "keychain": "Proxy configuration or credentials could not be loaded."
-                case "cancelled": "Test cancelled."
+                let category = RunFailureMessage((error as? RunFailure) ?? RunFailure(kind: "bridge", issues: [])).category
+                self.message = switch category {
+                case .timeout: "Connection timed out after 5 seconds."
+                case .tls: "TLS verification failed. Check the certificate and trust settings."
+                case .proxy, .secrets: "Proxy configuration or credentials could not be loaded."
+                case .cancelled: "Test cancelled."
                 default: "Connection failed. Check the proxy address, port and destination."
                 }
                 self.isRunning = false; self.runID = nil

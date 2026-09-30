@@ -1,4 +1,5 @@
 import AppKit
+import UniformTypeIdentifiers
 import Foundation
 import Observation
 import SwiftUI
@@ -28,8 +29,15 @@ final class ProbeWindow: NSWindow { override var canBecomeKey: Bool { true } }
     static var measurements: [[String: Any]] = []
     private struct Budgets: Decodable {
         let nativeColdWindowFirstContentMilliseconds: Double
+        let nativeResponseRendererColdSwitchMilliseconds: Double
+        let nativeResponseRendererSwitchP95Milliseconds: Double
     }
     static var windowFirstContentBudget = 0.0
+    /// Each of the first JSON→Raw and Raw→JSON switches mounts or reactivates a renderer.
+    static var rendererColdSwitchBudget = 0.0
+    /// Warm switches between mounted renderers: one 60 Hz frame for the complete native
+    /// SwiftUI/AppKit path. The engine-only synthetic budget (4 ms) is gated by PerformanceContract.
+    static var rendererSwitchBudget = 0.0
     static var samples = 100
     static let defaultsName = "wirebolt-native-workloads-\(UUID().uuidString)"
     static let fixtureDefaults = UserDefaults(suiteName: defaultsName)!
@@ -240,8 +248,9 @@ final class ProbeWindow: NSWindow { override var canBecomeKey: Bool { true } }
             os_signpost(.end,log:log,name:"ResponseRendererSwitch")
             spin(0.02)
         }
-        record("response_renderer_first_switch",[switches[0]],budget:50,details:["rows":rows,"raw_bytes":raw.utf8.count])
-        record("response_renderer_switch",Array(switches.dropFirst(2)),budget:50,details:["rows":rows,"raw_bytes":raw.utf8.count,"alternating":"Raw,JSON","readiness":"expected text or indexed first viewport drawn; not GPU presentation", "cold_switches_ms":Array(switches.prefix(2))])
+        record("response_renderer_first_switch",[switches[0]],budget:rendererColdSwitchBudget,details:["rows":rows,"raw_bytes":raw.utf8.count,"from":"JSON","to":"Raw","budget_key":"nativeResponseRendererColdSwitchMilliseconds"])
+        record("response_renderer_second_switch",[switches[1]],budget:rendererColdSwitchBudget,details:["rows":rows,"raw_bytes":raw.utf8.count,"from":"Raw","to":"JSON","budget_key":"nativeResponseRendererColdSwitchMilliseconds"])
+        record("response_renderer_switch",Array(switches.dropFirst(2)),budget:rendererSwitchBudget,details:["rows":rows,"raw_bytes":raw.utf8.count,"alternating":"Raw,JSON","readiness":"expected text or indexed first viewport drawn; not GPU presentation","budget_key":"nativeResponseRendererSwitchP95Milliseconds"])
         if let editor = textViews(host).first(where: { $0.string.hasPrefix("[\n  {") }),
            let coordinator = editor.delegate as? NativeCodeEditor.Coordinator, let scroll = editor.enclosingScrollView {
             let pretty = editor.string
@@ -300,6 +309,43 @@ final class ProbeWindow: NSWindow { override var canBecomeKey: Bool { true } }
         }
         let received = try Data(contentsOf: session.bodyStore!.url)
         precondition(received == Data(raw.utf8), "presentation must not change received bytes")
+        try streamedResponsePresentation()
+    }
+
+    /// A pane mounted when the head arrives (before the body file is complete)
+    /// must still present the completed body, in both JSON and Raw renderers.
+    static func streamedResponsePresentation() throws {
+        let body = #"{"zeta":1,"alpha":"caf\u00e9"}"#
+        let session = DocumentSession(draft: RequestDraft())
+        let run = RunID()
+        session.beginRun(run)
+        var step = 0
+        Task { @MainActor in
+            await session.consume(.head(ResponseHead(status: 200, version: "HTTP/1.1",
+                headers: [ResponseHeader(name: "Content-Type", value: "application/json")], timeToHeadersNS: 1)), runID: run)
+            step = 1
+        }
+        for _ in 0..<1000 where step < 1 { spin(0.002) }
+        let state = DocumentPresentationState()
+        let (window, host, _) = mount(ResponseViewer(interface: state, session: session))
+        defer { window.close() }
+        spin(0.05); flush(host)
+        Task { @MainActor in
+            await session.consume(.chunk(Data(body.utf8)), runID: run)
+            await session.consume(.complete(RunCompletion(bytesReceived: UInt64(body.utf8.count), totalTimeNS: 1)), runID: run)
+            step = 2
+        }
+        func shows(_ prefix: String) -> Bool {
+            let started = ContinuousClock.now
+            while !textViews(host).contains(where: { $0.string.hasPrefix(prefix) && !$0.isHiddenOrHasHiddenAncestor }) && ms(started) < 5000 {
+                spin(0.002); flush(host)
+            }
+            return textViews(host).contains { $0.string.hasPrefix(prefix) && !$0.isHiddenOrHasHiddenAncestor }
+        }
+        precondition(shows("{\n  \"zeta\": 1,\n  \"alpha\": \"café\""), "a pane mounted while streaming must show the formatted body")
+        state.responseRenderer = .raw
+        precondition(shows(body), "Raw must show the completed body")
+        print("streamed_response_presentation=passed")
     }
     struct Element {
         let role: String
@@ -346,19 +392,21 @@ final class ProbeWindow: NSWindow { override var canBecomeKey: Bool { true } }
                 window.setContentSize(NSSize(width: width, height: 580))
                 spin(); flush(host)
                 let tree = elements(host)
-                for name in ["Send request", "Edit Long URL", "Params", "Headers", "Body", "Auth", "Note", "Format Body"] {
+                for name in ["Send Request", "Edit Long URL", "Params", "Headers", "Body", "Auth", "Note", "Format Body"] {
                     precondition(tree.contains { $0.role == "AXButton" && $0.name == name }, "Missing accessible button: \(name)")
                 }
-                guard let note = tree.first(where: { $0.name == "Note" }),
-                      let type = tree.first(where: { $0.name == "Content Type" }) else {
-                    preconditionFailure("Section labels must be accessible")
+                let context = "\(orientation) at \(Int(width)) pt"
+                checkSectionBar(tree, selected: .body, context: context, clipped: "Clipped request control")
+                // Every section stays reachable: selecting it scrolls its tab fully into view,
+                // clear of the pinned section actions.
+                for section in RequestPanelSection.allCases {
+                    interface.presentation(for: session).requestSection = section
+                    spin(0.3); flush(host)
+                    checkSectionBar(elements(host), selected: section, context: "\(context), \(section.rawValue) selected",
+                        clipped: "Clipped request control")
                 }
-                precondition(!note.frame.isEmpty && !type.frame.isEmpty)
-                precondition(!note.frame.intersects(type.frame), "Note and Content Type must not overlap")
-                let panes = textViews(host).compactMap { $0.enclosingScrollView }.map { window.convertToScreen($0.convert($0.bounds, to: nil)) }
-                for control in tree where ["Params", "Headers", "Body", "Auth", "Note", "Content Type", "Format Body"].contains(control.name) {
-                    precondition(panes.contains { $0.minX <= control.frame.minX && $0.maxX >= control.frame.maxX }, "Clipped request control: \(control.name)")
-                }
+                interface.presentation(for: session).requestSection = .body
+                spin(0.3); flush(host)
             }
         }
         interface.responseOrientation = .right
@@ -379,12 +427,64 @@ final class ProbeWindow: NSWindow { override var canBecomeKey: Bool { true } }
         _ = model.sessions.split(tabID: session.id)
         interface.synchronizeSelection(model: model)
         if let copy = model.sessions.activeSession { interface.presentation(for: copy).requestSection = .body }
-        spin(); flush(host)
-        let panes = textViews(host).compactMap { $0.enclosingScrollView }.map { window.convertToScreen($0.convert($0.bounds, to: nil)) }
-        for control in elements(host) where ["Params", "Auth", "Note", "Content Type", "Format Body"].contains(control.name) {
-            precondition(panes.contains { $0.minX <= control.frame.minX && $0.maxX >= control.frame.maxX }, "Clipped split control: \(control.name)")
-        }
+        spin(0.3); flush(host)
+        // Both groups' section bars: their visible parts stay inside their own pane.
+        checkSectionBar(elements(host), selected: .body, context: "split", clipped: "Clipped split control")
         print("interface_regressions=passed")
+
+        /// The section tabs scroll inside a strip and the current section's actions are
+        /// pinned after it. Only the visible (strip-clipped) part of a tab may be on
+        /// screen; it must never overlap a pinned action, the selected tab must be fully
+        /// visible, and the strip and actions must fit inside the request pane.
+        func checkSectionBar(_ tree: [Element], selected: RequestPanelSection, context: String, clipped: String) {
+            // Report the failing layout, since optimized builds drop precondition messages.
+            func require(_ condition: Bool, _ message: @autoclosure () -> String) {
+                if !condition { fail(message()) }
+            }
+            func fail(_ message: String) -> Never {
+                FileHandle.standardError.write(Data("interface check failed: \(message)\n".utf8))
+                exit(1)
+            }
+            let panes = textViews(host).compactMap { $0.enclosingScrollView }.map { window.convertToScreen($0.convert($0.bounds, to: nil)) }
+            let sectionNames = Set(RequestPanelSection.allCases.map(\.rawValue))
+            let tabs = tree.filter { $0.role == "AXButton" && sectionNames.contains($0.name) && !$0.frame.isEmpty }
+            // Response tabs share some names; only request strips hold Params, Auth, Note or Settings.
+            let strips = tree.filter { $0.role == "AXScrollArea" && $0.frame.height < 60 && !$0.frame.isEmpty }.map(\.frame).filter { strip in
+                tabs.contains { ["Params", "Auth", "Note", "Settings"].contains($0.name) && $0.frame.intersects(strip) }
+            }
+            require(!strips.isEmpty, "Section tabs must scroll in their own strip (\(context))")
+            for strip in strips {
+                // The body editor spans the visible request pane; other sections are checked
+                // against their bar, whose width is the pane's when nothing is clipped.
+                let bar = tree.first { $0.name == "Request sections" && $0.frame.minY <= strip.midY && $0.frame.maxY >= strip.midY
+                    && $0.frame.minX <= strip.minX + 1 && $0.frame.maxX >= strip.maxX - 1 }?.frame
+                guard let pane = selected == .body
+                    ? panes.first(where: { $0.minX <= strip.minX + 1 && $0.maxX >= strip.maxX - 1 })
+                    : bar else {
+                    fail("\(clipped): section strip (\(context))")
+                }
+                if let bar { require(bar.minX >= pane.minX - 1 && bar.maxX <= pane.maxX + 1, "\(clipped): section bar (\(context))") }
+                let row = tree.filter { $0.frame.midY >= strip.minY && $0.frame.midY <= strip.maxY
+                    && $0.frame.maxX > pane.minX && $0.frame.minX < pane.maxX }
+                let rowTabs = row.filter { $0.role == "AXButton" && sectionNames.contains($0.name) }
+                guard let tab = rowTabs.first(where: { $0.name == selected.rawValue }) else {
+                    fail("Missing section tab \(selected.rawValue) (\(context))")
+                }
+                require(strip.insetBy(dx: -1, dy: -1).contains(tab.frame), "Selected section \(selected.rawValue) must be fully visible (\(context))")
+                let actions = row.filter { ["Content Type", "Auth Type", "Format Body", "Add Part", "Body Actions", "New Entry",
+                    "Section Actions", "More Sections"].contains($0.name) && $0.role != "AXScrollArea" && !$0.frame.isEmpty }
+                for action in actions {
+                    require(pane.minX <= action.frame.minX + 1 && pane.maxX >= action.frame.maxX - 1, "\(clipped): \(action.name) (\(context))")
+                    require(!strip.insetBy(dx: 0.5, dy: 0).intersects(action.frame), "\(action.name) must not overlap the section tabs (\(context))")
+                    for other in rowTabs {
+                        let visible = other.frame.intersection(strip)
+                        guard !visible.isNull, visible.width > 0.5 else { continue }
+                        require(!visible.insetBy(dx: 0.5, dy: 0).intersects(action.frame),
+                            "Visible part of \(other.name) overlaps \(action.name) (\(context))")
+                    }
+                }
+            }
+        }
     }
 
     static func proxyScreenshots(root: URL) throws {
@@ -478,6 +578,66 @@ final class ProbeWindow: NSWindow { override var canBecomeKey: Bool { true } }
         print("proxy_settings_interface=passed")
     }
 
+    /// Sidebar reordering through SwiftUI's AppKit drop destinations: a row being dragged
+    /// drops before or after another row, and text dragged from elsewhere is refused.
+    static func sidebarReorder(root: URL) throws {
+        let model = WireboltModel(runner: OfflineRunner(), history: HistoryRepository(root: root.appending(path: "history")), cookieJar: CookieJar())
+        let interface = WorkspaceUIState(defaults: fixtureDefaults)
+        let requests = (0..<6).map { RequestLocation(collectionID: "drag", order: $0, request: RequestDraft(id: "r\($0)", name: "Drag Request \($0)", url: "https://example.invalid/\($0)")) }
+        model.workspace.collections = [CollectionDraft(id: "drag", name: "Drag Fixture", requests: requests)]
+        let (window, host, _) = mount(ContentView(model: model, interface: interface, loadsWorkspace: false), height: 720)
+        defer { window.close() }
+        NSApp.accessibilitySetValue(true, forAttribute: NSAccessibility.Attribute(rawValue: "AXEnhancedUserInterface"))
+        spin(0.4); flush(host)
+        func rowFrame(_ index: Int) -> NSRect {
+            guard let row = elements(window).first(where: { $0.name == "GET request, Drag Request \(index)" }) else {
+                preconditionFailure("Sidebar row is missing from the accessibility tree")
+            }
+            return window.convertFromScreen(row.frame)
+        }
+        /// The AppKit views SwiftUI registers for drops, deepest last.
+        func destinations(at point: NSPoint) -> [NSView] {
+            func walk(_ view: NSView) -> [NSView] {
+                let own = !view.registeredDraggedTypes.isEmpty && view.convert(view.bounds, to: nil).contains(point) ? [view] : []
+                return own + view.subviews.flatMap(walk)
+            }
+            return window.contentView.map(walk) ?? []
+        }
+        func drag(_ payload: String, to point: NSPoint) -> (NSDragOperation, Bool) {
+            let pasteboard = NSPasteboard(name: NSPasteboard.Name("wirebolt-drag-\(UUID().uuidString)"))
+            defer { pasteboard.releaseGlobally() }
+            pasteboard.clearContents()
+            pasteboard.writeObjects([payload as NSString])
+            let info = FixtureDraggingInfo(window: window, location: point, pasteboard: pasteboard)
+            guard let target = destinations(at: point).last else { return ([], false) }
+            _ = target.draggingEntered(info)
+            let operation = target.draggingUpdated(info)
+            spin(0.05); flush(host)
+            guard operation != [] else { target.draggingExited(info); spin(0.05); return (operation, false) }
+            let performed = target.prepareForDragOperation(info) && target.performDragOperation(info)
+            target.concludeDragOperation(info)
+            spin(0.1); flush(host)
+            return (operation, performed)
+        }
+        let row = rowFrame(1)
+        // Text dragged from elsewhere is refused.
+        let foreign = drag("request|drag|r4", to: NSPoint(x: row.midX, y: row.maxY - 4))
+        precondition(foreign.0 == [] && !foreign.1, "Text dragged from elsewhere must not reorder the sidebar")
+        // A row dragged within the sidebar (onDrag records it) drops before another row...
+        interface.sidebarDragIdentifier = "request|drag|r4"
+        spin(0.05); flush(host)
+        let before = drag("request|drag|r4", to: NSPoint(x: row.midX, y: row.maxY - 4))
+        precondition(before.0 == .move && before.1, "Dropping on a row's upper half must be accepted")
+        precondition(interface.sidebarDragIdentifier == nil, "A completed drop must end the sidebar drag")
+        // ...or after it.
+        interface.sidebarDragIdentifier = "request|drag|r5"
+        spin(0.05); flush(host)
+        let after = drag("request|drag|r5", to: NSPoint(x: row.midX, y: row.minY + 4))
+        precondition(after.0 == .move && after.1, "Dropping on a row's lower half must be accepted")
+        precondition(interface.sidebarDragIdentifier == nil, "A completed drop must end the sidebar drag")
+        print("sidebar_reorder_drop=passed")
+    }
+
     static func requestClicks(root: URL, tabs: Bool = false, tabCount: Int = 2, noteBytes: Int = 0) throws {
         let model = WireboltModel(runner: OfflineRunner(), history: HistoryRepository(root: root.appending(path: "history")), cookieJar: CookieJar())
         let interface = WorkspaceUIState(defaults: fixtureDefaults)
@@ -485,7 +645,7 @@ final class ProbeWindow: NSWindow { override var canBecomeKey: Bool { true } }
         let requests = (0..<(tabs ? max(2, tabCount) : 20)).map { RequestLocation(collectionID: "clicks", request: RequestDraft(id: "r\($0)", name: "Click Request \($0)", url: "https://example.invalid/\($0)", note: note)) }
         model.workspace.collections = [CollectionDraft(id: "clicks", name: "Click Audit", requests: requests)]
         if tabs {
-            for request in requests { interface.activateSavedRequest(request, model: model) }
+            for request in requests { interface.activateSavedRequest(request, model: model, preview: false) }
         }
         interface.activateSavedRequest(requests[0], model: model)
         let (window, host, _) = mount(ContentView(model: model, interface: interface, loadsWorkspace: false), height: 720)
@@ -600,8 +760,10 @@ final class ProbeWindow: NSWindow { override var canBecomeKey: Bool { true } }
     }
 
     static func main() async throws {
-        windowFirstContentBudget = try JSONDecoder().decode(Budgets.self,
-            from: Data(contentsOf: URL(fileURLWithPath: "performance/budgets.json"))).nativeColdWindowFirstContentMilliseconds
+        let budgets = try JSONDecoder().decode(Budgets.self, from: Data(contentsOf: URL(fileURLWithPath: "performance/budgets.json")))
+        windowFirstContentBudget = budgets.nativeColdWindowFirstContentMilliseconds
+        rendererColdSwitchBudget = budgets.nativeResponseRendererColdSwitchMilliseconds
+        rendererSwitchBudget = budgets.nativeResponseRendererSwitchP95Milliseconds
         _ = NSApplication.shared
         NSApp.setActivationPolicy(.prohibited)
         defer { fixtureDefaults.removePersistentDomain(forName: defaultsName) }
@@ -630,6 +792,7 @@ final class ProbeWindow: NSWindow { override var canBecomeKey: Bool { true } }
             precondition(count == 0, "Hidden notes must never be parsed when switching requests")
         }
         else if mode=="request-click" { try requestClicks(root: root) }
+        else if mode=="sidebar-reorder" { try sidebarReorder(root: root) }
         else if mode=="proxy-screenshots" { try proxyScreenshots(root: root) }
         else if mode=="proxy-settings" { try proxySettings(root: root) }
         else if mode=="tab-click" { try requestClicks(root: root, tabs: true, tabCount: size) }
@@ -641,4 +804,38 @@ final class ProbeWindow: NSWindow { override var canBecomeKey: Bool { true } }
         try JSONSerialization.data(withJSONObject:output,options:[.prettyPrinted,.sortedKeys]).write(to:URL(fileURLWithPath:args[3]))
         if measurements.contains(where: { $0["over_budget"] as? Bool == true }) { exit(1) }
     }
+}
+
+/// A dragging session for the sidebar drop workload; SwiftUI reads the location and pasteboard.
+@MainActor
+final class FixtureDraggingInfo: NSObject, @MainActor NSDraggingInfo {
+    let window: NSWindow
+    let location: NSPoint
+    let pasteboard: NSPasteboard
+    init(window: NSWindow, location: NSPoint, pasteboard: NSPasteboard) {
+        self.window = window
+        self.location = location
+        self.pasteboard = pasteboard
+    }
+    var draggingDestinationWindow: NSWindow? { window }
+    var draggingSourceOperationMask: NSDragOperation { [.move, .copy, .generic] }
+    var draggingLocation: NSPoint { location }
+    var draggedImageLocation: NSPoint { location }
+    var draggedImage: NSImage? { nil }
+    var draggingPasteboard: NSPasteboard { pasteboard }
+    var draggingSource: Any? { nil }
+    var draggingSequenceNumber: Int { 1 }
+    func slideDraggedImage(to screenPoint: NSPoint) {}
+    var draggingFormation: NSDraggingFormation = .default
+    var animatesToDestination = false
+    var numberOfValidItemsForDrop = 1
+    func enumerateDraggingItems(options enumOpts: NSDraggingItemEnumerationOptions = [], for view: NSView?,
+                                classes classArray: [AnyClass], searchOptions: [NSPasteboard.ReadingOptionKey: Any] = [:],
+                                using block: @escaping (NSDraggingItem, Int, UnsafeMutablePointer<ObjCBool>) -> Void) {}
+    var springLoadingHighlight: NSSpringLoadingHighlight { .none }
+    func resetSpringLoading() {}
+    /// Read by SwiftUI; AppKit's own dragging info provides it.
+    private var lastOperation: UInt = 0
+    @objc func _lastDragDestinationOperation() -> UInt { lastOperation }
+    @objc func _setLastDragDestinationOperation(_ operation: UInt) { lastOperation = operation }
 }

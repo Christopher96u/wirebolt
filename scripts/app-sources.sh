@@ -3,9 +3,11 @@
 # shellcheck disable=SC2034
 wirebolt_app_inputs=(
   apple/Generated/wirebolt_ffi.swift
+  apple/Sources/WireboltKit/ResponseFormatting.swift
   apple/Sources/WireboltKit/ProxyConnectionTest.swift
   apple/Sources/WireboltKit/ProxySettings.swift
   apple/Sources/WireboltKit/MarkdownPreview.swift
+  apple/Sources/WireboltKit/SemanticPalette.swift
   apple/Sources/WireboltKit/Models.swift
   apple/Sources/WireboltKit/CurlExport.swift
   apple/Sources/WireboltKit/WebSocket.swift
@@ -22,6 +24,7 @@ wirebolt_app_inputs=(
   apple/Sources/WireboltKit/OAuth2Service.swift
   apple/Sources/WireboltKit/WireboltModel.swift
   apple/Sources/WireboltKit/SidebarSnapshot.swift
+  apple/Sources/WireboltKit/VariableTemplates.swift
   apple/WireboltApp/WorkspaceUIState.swift
   apple/WireboltApp/ContentView.swift
   apple/WireboltApp/WorkspaceActions.swift

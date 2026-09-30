@@ -4,21 +4,50 @@ Changes under **Unreleased** describe the source branch and may not be included 
 
 ## Unreleased
 
+### Breaking changes
+
+- The bundle identifier is now `io.github.christopher96u.wirebolt`. Preferences, the remembered workspace and Keychain items stored under `local.wirebolt.app` are not migrated: reopen the workspace and re-enter stored credentials.
+- Wirebolt runs one workspace window. **⌘N** creates a request; File → New Window is gone.
+- Deleting a request or an empty folder happens immediately and can be undone with **⌘Z**. Wirebolt asks first only when a deletion also removes other items or discards unsaved edits.
+- Environment and workspace settings sheets use **Cancel** and **Save** (Return). Esc cancels and asks before discarding edits; closing no longer saves.
+- Shortcuts: **⇧⌘N** is New Collection (it was New HTTP Request), next and previous tab are also **⇧⌘]** / **⇧⌘[**. See [keyboard shortcuts](docs/keyboard-shortcuts.md).
+
 ### Added
 
-- Local Markdown Edit/Preview for request notes.
-- Explicit New/Open Workspace and New Collection commands.
-- Reachable Git Collaboration commands and local in-app help.
-- User documentation, native screenshots and a local quick-start API example.
+- Undo and redo for creating, renaming, moving, reordering and deleting requests, folders and collections, including the files on disk.
+- Preview tabs: a single click in the sidebar reuses one italic tab until you edit, send or double-click it.
+- Unsaved-edit dots on tabs and the window close button; quitting or closing the window asks to save, discard or cancel.
+- Tabs, the active tab and each request's latest response are restored at launch.
+- `{{variable}}` highlighting, value tooltips and completion in the URL and key-value fields.
+- Keyboard access: full sidebar navigation (arrows, type-select, Return to rename), Move Up/Down (**⌥⌘↑** / **⌥⌘↓**) and Move To, Cancel Request (**⌘.**), request and response section commands (**⌥⌘1–6**, **⌃⌘1–5**), Focus Sidebar (**⌘0**) and Focus Response (**⌥⌘0**).
+- A welcome state with New Request, Import and Open Workspace for empty workspaces, and a New Request row in empty collections.
+- Open or drop cURL, HAR, Postman and Wirebolt JSON files on the app to import them. File → Open Recent lists workspaces.
+- Response pane: elapsed time and Cancel while sending, the previous response stays visible until the new one arrives, and failures explain the cause with Retry, Network Settings and View Request.
+- VoiceOver announcements for finished, failed and cancelled requests; clearer labels for credential, multipart and key-value fields, checkboxes and sidebar rows; help tags on icon-only buttons.
+- Local Markdown Edit/Preview for request notes, Git Collaboration commands, in-app help in its own window, user documentation and a local quick-start API example.
+
+### Changed
+
+- Native Send, Cancel, Connect and Disconnect buttons in title case; an unavailable Send or Connect looks disabled.
+- The URL bar keeps a fixed-width status that shows the response status, **Failed** or **Cancelled**, and collapses to icons in narrow split editors so the URL stays readable.
+- Method and status colors are adaptive and meet 4.5:1 contrast in light and dark appearances; each method has its own color.
+- Durations, sizes and status lines read naturally (“<0.1 ms”, “1.23 s”, “18.6 KB”, “302 Found”).
+- Invisible characters are hidden by default. JSON can decode Unicode escapes for display.
+- The Light, Dark and System appearance applies to every window, including Settings.
+- The Git sheet shows readable file statuses and disables Push without an upstream.
+- Save and open panels attach to the window as sheets; export failures explain the reason.
 
 ### Fixed
 
+- Quitting or closing the window no longer discards unsaved request edits silently.
+- Toolbar actions stay at the trailing edge, and the tab strip marks tabs cut off at its edges.
+- The unfocused sidebar selection stays visible in Dark Mode.
+- Faster launch and tab switching: history, cookies and the proxy monitor load off the launch path; image responses decode off the main thread.
+- The JSON tree keeps document key order; resizing large responses no longer re-wraps on every pixel.
 - Saving an open request after moving it across collections targets the new location.
 - Deleting a folder closes descendant request sessions.
 - Pending workspace transport edits persist after settings closes.
 - Wirebolt JSON export preserves API key and OAuth configuration through native metadata.
-- Export failures retain more useful error messages.
-- Ambiguous accessibility labels include more context.
 
 ### Clarified
 

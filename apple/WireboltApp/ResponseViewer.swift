@@ -1,33 +1,51 @@
 import AppKit
+import ImageIO
 import SwiftUI
 import WebKit
 
 struct ResponseViewer: View {
     @Bindable var interface: DocumentPresentationState
     @Bindable var session: DocumentSession
+    /// Re-sends this document's request. Actions that need it are hidden when nil.
+    var send: (() -> Void)?
+    /// Cancels this document's active run. The in-pane Cancel button is hidden when nil.
+    var cancel: (() -> Void)?
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         Group {
-            if session.isRunning {
-                VStack(spacing: 9) {
-                    ProgressView().controlSize(.small)
-                    Text("Sending…").font(.system(size: 12)).foregroundStyle(.secondary)
-                }.frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else if let failure = session.failure {
-                LightweightPlaceholder(
-                    title: failure.kind == "cancelled" ? "Cancelled" : "",
-                    systemImage: "exclamationmark.circle",
-                    description: failureDescription(failure)
-                )
-            } else if hasResponse {
+            if hasPresentation {
                 VStack(spacing: 0) {
-                    ResponseSectionBar(interface: interface, session: session)
-                    responseContent
+                    ResponseSectionBar(interface: interface, session: session, cancel: cancel)
+                    sectionContent
+                        // Fill the pane so short content (failure, empty states) keeps the section
+                        // bar pinned to the top instead of centering the whole stack.
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        // Keep the previous response (scroll, find, folding) until the new head arrives.
+                        .opacity(isAwaitingNewResponse ? 0.35 : 1)
+                        .allowsHitTesting(!isAwaitingNewResponse)
+                        .accessibilityHidden(isAwaitingNewResponse)
+                        // An overlay rather than a ZStack: the response content alone decides the
+                        // size, so laying out a large body is not measured twice.
+                        .overlay {
+                            if isAwaitingNewResponse, let startedAt = session.runStartedAt {
+                                RunProgressView(startedAt: startedAt, cancel: cancel)
+                                    .padding(.horizontal, 22).padding(.vertical, 16)
+                                    .background(.regularMaterial, in: .rect(cornerRadius: 10))
+                                    .overlay { RoundedRectangle(cornerRadius: 10).stroke(Color(nsColor: .separatorColor), lineWidth: 0.5) }
+                                    .transition(.opacity)
+                            }
+                        }
                 }
+            } else if session.isRunning, let startedAt = session.runStartedAt {
+                RunProgressView(startedAt: startedAt, cancel: cancel)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .transition(.opacity)
             } else {
-                NoResponsePlaceholder()
+                NoResponseState(session: session, canSend: send != nil) { send?() }
             }
         }
+        .animation(reduceMotion ? nil : .easeOut(duration: 0.18), value: phase)
         .background(WireboltTheme.paneBackground)
         .onChange(of: session.responseHead) {
             guard interface.usesAutomaticRenderer, let head = session.responseHead else { return }
@@ -37,6 +55,52 @@ struct ResponseViewer: View {
             else if mime.contains("xml") { interface.responseRenderer = .xml }
             else if mime.hasPrefix("image/") { interface.responseRenderer = .image }
             else { interface.responseRenderer = .raw }
+        }
+        .onChange(of: session.isRunning) { wasRunning, isRunning in
+            if wasRunning, !isRunning { announceOutcome() }
+        }
+    }
+
+    private enum Phase: Equatable {
+        case empty, sending, awaiting, response, failure
+    }
+
+    private var phase: Phase {
+        if isAwaitingNewResponse { return .awaiting }
+        if session.failure != nil { return .failure }
+        if hasPresentation { return .response }
+        return session.isRunning ? .sending : .empty
+    }
+
+    /// A response (possibly the previous one) or a failure is on screen.
+    private var hasPresentation: Bool {
+        session.failure != nil
+            || session.responseHead != nil
+            || session.responseText.isEmpty == false
+            || session.completion != nil
+    }
+
+    private var isAwaitingNewResponse: Bool {
+        session.isRunning && session.isAwaitingResponseHead
+    }
+
+    /// The presented body file is still being written. Renderers read the file,
+    /// so they mount (and load) only once it is complete.
+    private var isReceivingBody: Bool {
+        session.isRunning && !session.isAwaitingResponseHead
+    }
+
+    @ViewBuilder
+    private var sectionContent: some View {
+        if let failure = session.failure, interface.responseSection != .request {
+            ResponseFailureView(
+                message: RunFailureMessage(failure, host: RunFailureMessage.host(from: session.preparedRun?.url ?? session.draft.url)),
+                retry: send,
+                showNetworkSettings: { interface.requestSection = .settings },
+                viewRequest: session.preparedRun == nil ? nil : { interface.responseSection = .request }
+            )
+        } else {
+            responseContent
         }
     }
 
@@ -50,6 +114,7 @@ struct ResponseViewer: View {
                 previewData: session.responsePreviewData,
                 receivedBytes: session.responseBytes,
                 wasTruncated: session.responseWasTruncated,
+                isReceiving: isReceivingBody,
                 store: session.bodyStore,
                 snapshot: session.preparedRun
             )
@@ -59,17 +124,10 @@ struct ResponseViewer: View {
             ResponseCookiesTable(cookies: session.responseCookies)
         case .raw:
             ResponseSourceView(title: "Raw Response", text: rawResponseText, bodyStore: session.bodyStore,
-                byteCount: session.responseBytes, prefix: rawResponseHeaders)
+                byteCount: session.responseBytes, prefix: rawResponseHeaders, isReceiving: isReceivingBody)
         case .request:
             SentRequestViewer(snapshot: session.preparedRun)
         }
-    }
-
-    private var hasResponse: Bool {
-        session.isRunning
-            || session.responseHead != nil
-            || session.responseText.isEmpty == false
-            || session.completion != nil
     }
 
     private var rawResponseText: String {
@@ -78,19 +136,100 @@ struct ResponseViewer: View {
 
     private var rawResponseHeaders: String {
         guard let head = session.responseHead else { return "" }
-        let statusLine = "\(head.version) \(head.status)"
+        // HTTP/2 and later carry no reason phrase on the wire.
+        let statusLine = head.version.hasPrefix("HTTP/1") ? "\(head.version) \(ResponseFormatting.statusLine(head.status))" : "\(head.version) \(head.status)"
         let headers = head.headers.map { "\($0.name): \($0.value)" }.joined(separator: "\n")
         return [statusLine, headers, "", ""].joined(separator: "\n")
     }
 
-    private func failureDescription(_ failure: RunFailure) -> String {
-        if let issue = failure.issues.first {
-            return "\(issue.path): \(issue.kind.replacingOccurrences(of: "_", with: " "))"
+    private func announceOutcome() {
+        let text: String
+        if let failure = session.failure {
+            text = failure.kind == "cancelled" ? "Request cancelled" : "Request failed. " + RunFailureMessage(failure).title
+        } else if session.completion != nil || session.responseHead != nil {
+            text = ResponseFormatting.completionSummary(status: session.responseHead?.status,
+                totalTimeNS: session.completion?.totalTimeNS, bytes: session.responseBytes)
+        } else { return }
+        AccessibilityNotification.Announcement(text).post()
+    }
+}
+
+/// Indeterminate progress with a live elapsed time and an optional Cancel button.
+private struct RunProgressView: View {
+    let startedAt: Date
+    let cancel: (() -> Void)?
+
+    var body: some View {
+        VStack(spacing: 10) {
+            ProgressView().controlSize(.small)
+            Text("Sending Request…").font(.system(size: 13)).foregroundStyle(.secondary)
+            ElapsedTimeText(startedAt: startedAt)
+                .font(.system(size: 12).monospacedDigit())
+                .foregroundStyle(.tertiary)
+            if let cancel {
+                Button("Cancel", action: cancel)
+                    .controlSize(.small)
+                    .help("Cancel Request (⌘.)")
+            }
         }
-        if failure.kind == "connection" {
-            return "An error occurred while connecting to the server, please re-check your URL or connection and try again."
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Sending request")
+    }
+}
+
+private struct ElapsedTimeText: View {
+    let startedAt: Date
+
+    var body: some View {
+        TimelineView(.periodic(from: startedAt, by: 0.1)) { context in
+            Text(ResponseFormatting.elapsed(seconds: context.date.timeIntervalSince(startedAt)))
         }
-        return failure.kind.replacingOccurrences(of: "_", with: " ").capitalized
+        .accessibilityLabel("Elapsed time")
+    }
+}
+
+private struct ReceivingBodyView: View {
+    let byteCount: UInt64
+
+    var body: some View {
+        VStack(spacing: 8) {
+            ProgressView().controlSize(.small)
+            Text("Receiving Body…").font(.system(size: 13)).foregroundStyle(.secondary)
+            Text(ResponseFormatting.byteCount(byteCount)).font(.system(size: 12).monospacedDigit()).foregroundStyle(.tertiary)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .accessibilityElement(children: .combine)
+    }
+}
+
+private struct ResponseFailureView: View {
+    let message: RunFailureMessage
+    let retry: (() -> Void)?
+    let showNetworkSettings: () -> Void
+    let viewRequest: (() -> Void)?
+
+    var body: some View {
+        ContentUnavailableView {
+            Label(message.title, systemImage: message.systemImage)
+        } description: {
+            Text(message.message)
+        } actions: {
+            HStack(spacing: 8) {
+                if let retry {
+                    Button(message.category == .cancelled ? "Send Again" : "Retry", action: retry)
+                        .buttonStyle(.borderedProminent)
+                        .help("Send the request again (⌘↩)")
+                }
+                if message.suggestsNetworkSettings {
+                    Button("Network Settings", action: showNetworkSettings)
+                        .help("Show this request’s proxy, TLS and timeout settings")
+                }
+                if let viewRequest {
+                    Button("View Request", action: viewRequest)
+                        .help("Show the request exactly as it was sent")
+                }
+            }
+        }
     }
 }
 
@@ -100,6 +239,7 @@ private struct ResponseSourceView: View {
     var bodyStore: ResponseBodyStore?
     var byteCount: UInt64 = 0
     var prefix = ""
+    var isReceiving = false
     @State private var find = EditorFindState()
     @State private var loadedText: String?
     var body: some View {
@@ -109,6 +249,7 @@ private struct ResponseSourceView: View {
                 Spacer(minLength: 4)
                 Button("Find", systemImage: "magnifyingglass") { find.isVisible = true }
                     .labelStyle(.iconOnly).buttonStyle(.borderless)
+                    .help("Find (⌘F)")
                 Menu("Actions", systemImage: "ellipsis.circle") {
                     Button("Copy") {
                         Task {
@@ -124,10 +265,13 @@ private struct ResponseSourceView: View {
                     Divider()
                     EditorPreferencesMenu()
                 }.menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize().labelStyle(.iconOnly)
+                .help("Actions")
             }.font(.system(size: 13)).padding(.horizontal, 12).frame(height: 27)
                 .background(WireboltTheme.barBackground)
             Divider()
-            if let bodyStore, ResponseTextPresentation.usesIndex(byteCount: byteCount, preview: loadedText ?? text) {
+            if isReceiving {
+                ReceivingBodyView(byteCount: byteCount)
+            } else if let bodyStore, ResponseTextPresentation.usesIndex(byteCount: byteCount, preview: loadedText ?? text) {
                 IndexedResponseEditor(url: bodyStore.url, preview: text, language: .http, search: "", prefix: prefix, find: find)
             } else {
                 NativeCodeEditor(text: .constant(loadedText ?? text), editable: false, language: .http, label: title, find: find)
@@ -135,8 +279,9 @@ private struct ResponseSourceView: View {
                     .editorFindOverlay(find)
             }
         }
-        .task(id: bodyStore?.url) {
-            guard let bodyStore, byteCount <= 1024 * 1024 else { return }
+        .task(id: "\(bodyStore?.url.path ?? ""):\(isReceiving)") {
+            loadedText = nil
+            guard let bodyStore, !isReceiving, byteCount <= 1024 * 1024 else { return }
             let data = try? await bodyStore.viewport(length: Int(byteCount))
             guard !Task.isCancelled else { return }
             loadedText = prefix + String(decoding: data ?? Data(), as: UTF8.self)
@@ -146,46 +291,33 @@ private struct ResponseSourceView: View {
 
 struct EditorPreferencesMenu: View {
     @AppStorage("editor.wordWrap") private var wordWrap = true
-    @AppStorage("editor.showInvisibles") private var invisibles = true
+    @AppStorage("editor.showInvisibles") private var invisibles = false
     @AppStorage("editor.scrollBeyondLastLine") private var scrollBeyond = true
     var body: some View {
         Menu("UI Settings", systemImage: "slider.vertical.3") {
             Toggle("Word Wrap", systemImage: "text.word.spacing", isOn: $wordWrap)
             Divider()
-            Toggle("Show Invisibles Chars", systemImage: "a", isOn: $invisibles)
+            Toggle("Show Invisible Characters", systemImage: "a", isOn: $invisibles)
             Toggle("Scroll beyond Last Line", systemImage: "arrow.down.to.line", isOn: $scrollBeyond)
         }
-    }
-}
-
-private struct NoResponsePlaceholder: View {
-    var body: some View {
-        VStack(spacing: 10) {
-            Image(systemName: "paperplane")
-                .font(.system(size: 49, weight: .regular))
-            Text("No Response")
-                .font(.system(size: 20, weight: .regular))
-        }
-        .foregroundStyle(.tertiary)
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .accessibilityElement(children: .combine)
     }
 }
 
 private struct ResponseSectionBar: View {
     @Bindable var interface: DocumentPresentationState
     @Bindable var session: DocumentSession
+    let cancel: (() -> Void)?
 
     var body: some View {
         ViewThatFits(in: .horizontal) {
             HStack(spacing: 4) {
                 tabs
                 Spacer(minLength: 0)
-                ResponseTransferMetrics(session: session).padding(.trailing, 10)
+                ResponseTransferMetrics(session: session, cancel: cancel).equatable().padding(.trailing, 10)
             }.frame(height: 34)
             VStack(spacing: 0) {
                 tabs.frame(maxWidth: .infinity, alignment: .leading).frame(height: 34)
-                ResponseTransferMetrics(session: session)
+                ResponseTransferMetrics(session: session, cancel: cancel).equatable()
                     .padding(.horizontal, 10)
                     .frame(maxWidth: .infinity, alignment: .trailing).frame(height: 26)
             }
@@ -220,39 +352,104 @@ private struct ResponseSectionBar: View {
     }
 }
 
-private struct ResponseTransferMetrics: View {
+/// The empty response pane. Its own view: it reads the URL, so typing re-renders only this
+/// rather than the whole response viewer.
+private struct NoResponseState: View {
+    let session: DocumentSession
+    let canSend: Bool
+    let send: () -> Void
+
+    var body: some View {
+        let hasURL = !session.draft.url.isEmpty
+        ContentUnavailableView {
+            Label("No Response", systemImage: "paperplane")
+        } description: {
+            Text(hasURL ? "Send the request (⌘↩) to see the response here."
+                : "Enter a URL, then send the request (⌘↩) to see the response here.")
+        } actions: {
+            if canSend {
+                Button("Send Request", action: send)
+                    .disabled(!hasURL)
+                    .help("Send Request (⌘↩)")
+            }
+        }
+    }
+}
+
+/// The applications that open the body. Their own view, so the Launch Services lookup runs
+/// when the body file changes rather than every time the response bar updates (for
+/// example on each renderer switch).
+private struct OpenWithMenuItems: View {
+    let store: ResponseBodyStore?
+
+    var body: some View {
+        if let store {
+            ForEach(NSWorkspace.shared.urlsForApplications(toOpen: store.url), id: \.self) { application in
+                Button(application.deletingPathExtension().lastPathComponent) {
+                    NSWorkspace.shared.open([store.url], withApplicationAt: application,
+                        configuration: NSWorkspace.OpenConfiguration())
+                }
+            }
+        }
+        Button("Default Application") {
+            if let store { NSWorkspace.shared.open(store.url) }
+        }
+        .disabled(store == nil)
+    }
+}
+
+private struct ResponseTransferMetrics: View, @MainActor Equatable {
     @Bindable var session: DocumentSession
+    let cancel: (() -> Void)?
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    /// The cancel action always cancels this document's run, so a new closure is no change;
+    /// without this the metrics re-rendered (and re-formatted) on every renderer switch.
+    static func == (lhs: Self, rhs: Self) -> Bool {
+        lhs.session === rhs.session && (lhs.cancel == nil) == (rhs.cancel == nil)
+    }
 
     var body: some View {
         HStack(spacing: 10) {
-            if session.isRunning {
-                ProgressView()
-                    .controlSize(.small)
-                Text("Sending…")
-            } else {
-                Label(durationLabel, systemImage: "clock.fill")
-                Label(sizeLabel, systemImage: "arrow.down.circle.fill")
+            Group {
+                if session.isRunning, let startedAt = session.runStartedAt {
+                    Label {
+                        ElapsedTimeText(startedAt: startedAt).monospacedDigit()
+                    } icon: {
+                        ProgressView().controlSize(.mini)
+                    }
+                    if !session.isAwaitingResponseHead {
+                        Label(ResponseFormatting.byteCount(session.responseBytes), systemImage: "arrow.down.circle.fill")
+                            .monospacedDigit()
+                    }
+                } else {
+                    let duration = durationLabel
+                    let size = ResponseFormatting.byteCount(session.responseBytes)
+                    Label(duration, systemImage: "clock.fill")
+                        .contentTransition(reduceMotion ? .identity : .numericText())
+                        .accessibilityLabel("Time \(duration)")
+                    Label(size, systemImage: "arrow.down.circle.fill")
+                        .contentTransition(reduceMotion ? .identity : .numericText())
+                        .accessibilityLabel("Size \(size)")
+                }
+            }
+            .accessibilityElement(children: .combine)
+            if session.isRunning, !session.isAwaitingResponseHead, let cancel {
+                Button("Cancel Request", systemImage: "xmark.circle.fill", action: cancel)
+                    .labelStyle(.iconOnly)
+                    .buttonStyle(.borderless)
+                    .help("Cancel Request (⌘.)")
             }
         }
         .font(.system(size: 15))
         .foregroundStyle(.secondary)
         .fixedSize()
-        .accessibilityElement(children: .combine)
+        .animation(reduceMotion ? nil : .snappy(duration: 0.2), value: session.completion)
     }
 
     private var durationLabel: String {
         guard let completion = session.completion else { return "—" }
-        let milliseconds = completion.totalTimeNS / 1_000_000
-        if milliseconds < 1000 { return "\(milliseconds) ms" }
-        return "\(milliseconds / 1000) s \(milliseconds % 1000) ms"
-    }
-
-    private var sizeLabel: String {
-        let kilobytes = Double(session.responseBytes) / 1024
-        if kilobytes < 1024 { return kilobytes.formatted(.number.grouping(.never).precision(.significantDigits(1...3))) + " KB" }
-        let megabytes = kilobytes / 1024
-        if megabytes < 1024 { return megabytes.formatted(.number.grouping(.never).precision(.significantDigits(1...3))) + " MB" }
-        return (megabytes / 1024).formatted(.number.grouping(.never).precision(.significantDigits(1...3))) + " GB"
+        return ResponseFormatting.duration(nanoseconds: completion.totalTimeNS)
     }
 }
 
@@ -262,6 +459,7 @@ private struct ResponseBodyViewer: View {
     let previewData: Data
     let receivedBytes: UInt64
     let wasTruncated: Bool
+    let isReceiving: Bool
     let store: ResponseBodyStore?
     let snapshot: PreparedRunSnapshot?
 
@@ -274,7 +472,10 @@ private struct ResponseBodyViewer: View {
     @State private var loadedViewportData: Data?
     @State private var storeSize: UInt64 = 0
     @State private var jsonDocument: JSONResponseDocument?
-    @State private var formattedSource: URL?
+    /// The body file and escape mode `jsonDocument` was formatted for.
+    @State private var formattedSource: String?
+    @AppStorage("response.decodesUnicodeEscapes") private var decodesUnicodeEscapes = true
+    private var formattingKey: String? { store.map { "\($0.url.path)#\(decodesUnicodeEscapes)" } }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -314,18 +515,13 @@ private struct ResponseBodyViewer: View {
                     Divider()
                     Button("Export Body…", systemImage: "square.and.arrow.up", action: saveResponse).disabled(store == nil)
                     Divider()
+                    Toggle("Decode Unicode Escapes", systemImage: "textformat.characters", isOn: $decodesUnicodeEscapes)
+                        .disabled(interface.responseRenderer != .json)
+                        .help("Show \\uXXXX escapes as characters in the JSON view. Raw keeps the exact bytes.")
                     EditorPreferencesMenu()
                     Divider()
                     Menu("Open With", systemImage: "square.and.arrow.up") {
-                        if let store {
-                            ForEach(NSWorkspace.shared.urlsForApplications(toOpen: store.url), id: \.self) { application in
-                                Button(application.deletingPathExtension().lastPathComponent) {
-                                    NSWorkspace.shared.open([store.url], withApplicationAt: application,
-                                        configuration: NSWorkspace.OpenConfiguration())
-                                }
-                            }
-                        }
-                        Button("Default Application", action: openResponse).disabled(store == nil)
+                        OpenWithMenuItems(store: store)
                     }
                 }
                 .menuStyle(.borderlessButton)
@@ -334,6 +530,7 @@ private struct ResponseBodyViewer: View {
                 .foregroundStyle(.secondary)
                 .fixedSize()
                 .frame(width: 20)
+                .help("Response Actions")
                 }
                 .offset(y: -1)
             }
@@ -344,17 +541,26 @@ private struct ResponseBodyViewer: View {
             .background(WireboltTheme.barBackground)
             Divider()
 
-            if receivedBytes == 0 {
-                Text("No Body").font(.system(size: 16, weight: .semibold)).foregroundStyle(.secondary)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            if isReceiving {
+                ReceivingBodyView(byteCount: receivedBytes)
+            } else if receivedBytes == 0 {
+                ContentUnavailableView {
+                    Label("No Body", systemImage: "doc")
+                } description: {
+                    Text("The server sent an empty body. Status and headers describe the response.")
+                } actions: {
+                    Button("View Headers") { interface.responseSection = .headers }
+                }
             } else { rendererContent }
 
         }
-        .task(id: store?.url) {
+        // Keyed on completion too: a viewport read while the body streams would be stale.
+        .task(id: "\(store?.url.path ?? ""):\(isReceiving)") {
+            loadedViewportData = nil
+            guard !isReceiving else { return }
             let size = await store?.size() ?? UInt64(previewData.count)
             guard !Task.isCancelled else { return }
             storeSize = size
-            loadedViewportData = nil
             if let store, size <= 64 * 1024 {
                 let data = try? await store.viewport(offset: 0, length: Int(size))
                 guard !Task.isCancelled else { return }
@@ -370,21 +576,22 @@ private struct ResponseBodyViewer: View {
             }
         }
         .onChange(of: receivedBytes) { _, value in storeSize = max(storeSize, value) }
-        .task(id: interface.responseRenderer == .json ? store?.url : nil) {
-            guard interface.responseRenderer == .json, let store else {
+        // An open body store cannot be formatted yet (it reports nil), so wait for completion.
+        .task(id: interface.responseRenderer == .json && !isReceiving ? formattingKey : nil) {
+            guard interface.responseRenderer == .json, !isReceiving, let store, let key = formattingKey else {
                 return
             }
-            guard formattedSource != store.url else { return }
-            jsonDocument = nil
+            guard formattedSource != key else { return }
             do {
-                let document = try await store.formattedJSON()
+                let document = try await store.formattedJSON(decodingUnicodeEscapes: decodesUnicodeEscapes)
                 try Task.checkCancellation()
                 jsonDocument = document
-                formattedSource = store.url
+                formattedSource = key
             } catch is CancellationError {
             } catch {
                 guard !Task.isCancelled else { return }
-                formattedSource = store.url
+                jsonDocument = nil
+                formattedSource = key
             }
         }
         .alert("Response Action Failed", isPresented: Binding(
@@ -405,17 +612,13 @@ private struct ResponseBodyViewer: View {
         let panel = NSSavePanel()
         panel.nameFieldStringValue = "response.body"
         panel.canCreateDirectories = true
-        guard panel.runModal() == .OK, let destination = panel.url else { return }
         Task {
+            guard await present(panel, in: NSApp.keyWindow) == .OK, let destination = panel.url else { return }
             do { try await store.export(to: destination) }
             catch { actionError = error.localizedDescription }
         }
     }
 
-    private func openResponse() {
-        guard let store else { return }
-        NSWorkspace.shared.open(store.url)
-    }
 
     private func showInFinder() {
         guard let store else { return }
@@ -441,8 +644,10 @@ private struct ResponseBodyViewer: View {
     @ViewBuilder
     private var textRenderer: some View {
         let isJSON = interface.responseRenderer == .json
-        let formatted = formattedSource == store?.url ? jsonDocument : nil
-        let pending = isJSON && store != nil && formattedSource != store?.url
+        // While only the escape mode changes, keep showing the previous presentation of the same body.
+        let sameBody = store.map { formattedSource?.hasPrefix($0.url.path + "#") == true } ?? false
+        let formatted = sameBody ? jsonDocument : nil
+        let pending = isJSON && store != nil && !sameBody
         let showsOther = !isJSON || (!pending && formatted == nil)
         let language: SyntaxLanguage = switch interface.responseRenderer {
         case .json: showsOther ? .json : otherLanguage
@@ -468,11 +673,13 @@ private struct ResponseBodyViewer: View {
                 .accessibilityHidden(!isJSON)
             }
             if showsOther || hasShownOtherText {
+                // Decoded once per update rather than for each use.
+                let text = renderedText
                 Group {
-                    if let store, ResponseTextPresentation.usesIndex(byteCount: max(storeSize, receivedBytes), preview: renderedText) {
-                        IndexedResponseEditor(url: store.url, preview: renderedText, language: language, search: "", find: displayedOtherFind)
+                    if let store, ResponseTextPresentation.usesIndex(byteCount: max(storeSize, receivedBytes), preview: text) {
+                        IndexedResponseEditor(url: store.url, preview: text, language: language, search: "", find: displayedOtherFind)
                     } else {
-                        SyntaxTextView(text: renderedText, language: language, find: displayedOtherFind, storageKey: "Response body \(language)")
+                        SyntaxTextView(text: text, language: language, find: displayedOtherFind, storageKey: "Response body \(language)")
                             .id(language)
                     }
                 }
@@ -496,23 +703,57 @@ private extension UInt64 {
 private struct ResponseImageView: View {
     let url: URL?
     let data: Data
+    @Environment(\.displayScale) private var displayScale
+    @State private var image: DecodedImage?
+    @State private var isLoading = true
+
+    /// Bounds decoded memory for huge images; responses are previews, not editors.
+    private nonisolated static let maximumPixelSize = 4096
+
+    fileprivate struct DecodedImage: @unchecked Sendable {
+        let image: CGImage
+    }
 
     var body: some View {
-        if let image = url.flatMap({ NSImage(contentsOf: $0) }) ?? NSImage(data: data) {
-            ScrollView([.horizontal, .vertical]) {
-                Image(nsImage: image)
-                    .resizable()
-                    .interpolation(.high)
-                    .scaledToFit()
-                    .padding(20)
+        Group {
+            if let image {
+                ScrollView([.horizontal, .vertical]) {
+                    Image(decorative: image.image, scale: displayScale)
+                        .resizable()
+                        .interpolation(.high)
+                        .scaledToFit()
+                        // Never upscale small images beyond their natural size.
+                        .frame(maxWidth: Double(image.image.width) / displayScale, maxHeight: Double(image.image.height) / displayScale)
+                        .padding(20)
+                }
+            } else if isLoading {
+                ProgressView().controlSize(.small).frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else {
+                ContentUnavailableView("Can’t Preview Image", systemImage: "photo",
+                    description: Text("This response isn’t a supported image. Choose Raw or Hex to inspect it."))
             }
-        } else {
-            LightweightPlaceholder(
-                title: "Image Preview",
-                systemImage: "photo",
-                description: "This response is not a supported image."
-            )
         }
+        .task(id: url?.path ?? String(data.count)) {
+            isLoading = true
+            let url = url, data = data
+            let decoder = Task.detached(priority: .userInitiated) { Self.decode(url: url, data: data) }
+            let result = await withTaskCancellationHandler { await decoder.value } onCancel: { decoder.cancel() }
+            guard !Task.isCancelled else { return }
+            image = result
+            isLoading = false
+        }
+    }
+
+    private nonisolated static func decode(url: URL?, data: Data) -> DecodedImage? {
+        let source = url.flatMap { CGImageSourceCreateWithURL($0 as CFURL, nil) } ?? CGImageSourceCreateWithData(data as CFData, nil)
+        guard let source, CGImageSourceGetCount(source) > 0 else { return nil }
+        let options: [CFString: Any] = [
+            kCGImageSourceCreateThumbnailFromImageAlways: true,
+            kCGImageSourceCreateThumbnailWithTransform: true,
+            kCGImageSourceShouldCacheImmediately: true,
+            kCGImageSourceThumbnailMaxPixelSize: maximumPixelSize,
+        ]
+        return CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary).map(DecodedImage.init)
     }
 }
 
@@ -592,10 +833,12 @@ private struct ResponseKeyValueTable: View {
                 if isSearching { TextField("Find", text: $search).frame(width: 140) }
                 Button("Find", systemImage: "magnifyingglass") { isSearching.toggle() }
                     .labelStyle(.iconOnly).buttonStyle(.borderless)
-                Button("Copy", systemImage: "doc.on.doc") {
+                    .help(isSearching ? "Hide Find" : "Find")
+                Button("Copy All", systemImage: "doc.on.doc") {
                     NSPasteboard.general.clearContents()
                     NSPasteboard.general.setString(rows.map { "\($0.0): \($0.1)" }.joined(separator: "\n"), forType: .string)
                 }.labelStyle(.iconOnly).buttonStyle(.borderless)
+                .help("Copy All")
             }.font(.system(size: 13)).padding(.horizontal, 12).frame(height: 27)
                 .background(WireboltTheme.barBackground)
             Divider()
@@ -627,6 +870,15 @@ private struct SentRequestViewer: View {
     let snapshot: PreparedRunSnapshot?
 
     var body: some View {
+        if snapshot == nil {
+            ContentUnavailableView("No Request Sent", systemImage: "paperplane",
+                description: Text("Send the request (⌘↩) to see exactly what was transmitted."))
+        } else {
+            sentRequest
+        }
+    }
+
+    private var sentRequest: some View {
         VStack(spacing: 0) {
             if let proxy = snapshot?.proxy {
                 HStack {
@@ -686,9 +938,20 @@ private struct JSONResponseTree: View {
     let preview: Data
     @State private var nodes: [JSONNode] = []
     @State private var revision = 0
+    @State private var isParsing = true
     var body: some View {
         JSONTreeView(nodes: nodes, revision: revision)
+            .opacity(nodes.isEmpty ? 0 : 1)
+            .overlay {
+                if isParsing {
+                    ProgressView().controlSize(.small)
+                } else if nodes.isEmpty {
+                    ContentUnavailableView("Not JSON", systemImage: "curlybraces",
+                        description: Text("The response body isn’t valid JSON. Choose Raw to read it as text."))
+                }
+            }
             .task(id: url) {
+                isParsing = true
                 let url = url, preview = preview
                 let parse = Task.detached(priority: .userInitiated) {
                     let data = try url.map { try Data(contentsOf: $0, options: .mappedIfSafe) } ?? preview
@@ -699,6 +962,7 @@ private struct JSONResponseTree: View {
                 guard !Task.isCancelled else { return }
                 nodes = result ?? []
                 revision += 1
+                isParsing = false
             }
     }
 }
@@ -819,6 +1083,7 @@ private struct NativeRendererPicker: NSViewRepresentable {
         button.target = context.coordinator
         button.action = #selector(Coordinator.changed(_:))
         button.selectItem(withTitle: selection.rawValue)
+        button.setAccessibilityLabel("Response renderer")
         return button
     }
 

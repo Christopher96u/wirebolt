@@ -7,7 +7,7 @@
 1. Open the environment menu in the toolbar and choose **Configure Environments**.
 2. Select **Global Environment**, or create a named environment with **New Environment**.
 3. Add a key and value. Keep the row checked to enable it.
-4. Click **Close** to save.
+4. Click **Save** (or press Return). **Cancel** (Esc) discards your edits, including deleted environments, after confirmation.
 5. Select the desired environment in the toolbar.
 
 ![Environment variables for the local demo API](assets/screenshots/environments.png)
@@ -32,7 +32,7 @@ The environment editor currently edits literal values and existing secret-refere
 
 For a manually provisioned reference, use **Keychain Access → File → New Password Item** in the login keychain:
 
-- **Keychain Item Name:** `local.wirebolt.app` (the service).
+- **Keychain Item Name:** `io.github.christopher96u.wirebolt` (the service).
 - **Account Name:** the exact reference, for example `demo.api-key`.
 - **Password:** the credential value.
 

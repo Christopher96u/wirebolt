@@ -5,6 +5,8 @@ struct EnvironmentEditor: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
     @State private var environments: [EnvironmentDraft]
+    /// The state the sheet opened with; Cancel returns to it without touching the workspace.
+    private let original: [EnvironmentDraft]
     @State private var selectedID: String
     @State private var newKey = ""
     @State private var newValue = ""
@@ -14,6 +16,7 @@ struct EnvironmentEditor: View {
     @FocusState private var environmentListFocused: Bool
     @State private var isSaving = false
     @State private var validationMessage: String?
+    @State private var isConfirmingDiscard = false
 
     init(model: WireboltModel) {
         self.model = model
@@ -22,6 +25,7 @@ struct EnvironmentEditor: View {
             values.insert(EnvironmentDraft(id: WorkspaceDraft.globalEnvironmentID, name: "Global Environment"), at: 0)
         }
         _environments = State(initialValue: values)
+        original = values
         _selectedID = State(initialValue: model.selectedEnvironmentID ?? WorkspaceDraft.globalEnvironmentID)
     }
 
@@ -50,7 +54,7 @@ struct EnvironmentEditor: View {
                             .padding(.horizontal, 6)
                             .frame(height: 24)
                             .foregroundStyle(selectedID == environment.id ? Color.white : Color.primary)
-                            .background(selectedID == environment.id ? WireboltTheme.primaryAccent : .clear, in: .rect(cornerRadius: 5))
+                            .background(selectedID == environment.id ? WireboltTheme.primaryAccent : .clear, in: .rect(cornerRadius: WireboltTheme.Radius.row))
                             .contentShape(.rect)
                             .simultaneousGesture(TapGesture(count: 2).onEnded {
                                 selectedID = environment.id
@@ -93,11 +97,14 @@ struct EnvironmentEditor: View {
                         Spacer()
                         Button("New Entry", systemImage: "plus", action: addRow)
                             .labelStyle(.iconOnly).buttonStyle(.borderless)
-                            .keyboardShortcut("k", modifiers: .command)
+                            // Same shortcut as Request ▸ Add Key.
+                            .keyboardShortcut("k", modifiers: [.command, .shift])
+                            .help("New Entry (⇧⌘K)")
                         Menu("Variable Actions", systemImage: "ellipsis.circle") {
                             Button("New Entry", action: addRow)
                             Button("Clear All") { selected.variables.wrappedValue = [] }
                         }.menuStyle(.borderlessButton).menuIndicator(.hidden).labelStyle(.iconOnly)
+                        .help("Variable Actions")
                     }.padding(.leading, 12).frame(height: 31)
                     Divider()
                     HStack(spacing: 0) {
@@ -131,7 +138,7 @@ struct EnvironmentEditor: View {
                             }
                             HStack(spacing: 0) {
                                 Color.clear.frame(width: 28)
-                                FieldTextInput("New Key (⌘K)", text: $newKey, height: newFieldHeight).frame(width: 175).padding(.horizontal, 4)
+                                FieldTextInput("New Key", text: $newKey, height: newFieldHeight).frame(width: 175).padding(.horizontal, 4)
                                     .focused($newKeyFocused).onSubmit { commitNewRow(); newKeyFocused = true }
                                 Color.clear.frame(width: 1)
                                 FieldTextInput("New Value", text: $newValue, height: newFieldHeight).padding(.horizontal, 4).padding(.trailing, 5).onSubmit { commitNewRow(); newKeyFocused = true }
@@ -148,18 +155,29 @@ struct EnvironmentEditor: View {
                     editingNameID = environment.id
                 }
                 Spacer()
-                Button { Task { await saveAndClose() } } label: { Text("Close").frame(width: 66) }
-                    .accessibilityLabel("Save environments and close")
+                if isSaving { ProgressView().controlSize(.small) }
+                Button { cancel() } label: { Text("Cancel").frame(minWidth: 66) }
                     .keyboardShortcut(.cancelAction)
+                Button { Task { await saveAndClose() } } label: { Text("Save").frame(minWidth: 66) }
+                    .keyboardShortcut(.defaultAction)
                     .disabled(isSaving)
             }.controlSize(.regular).frame(height: 24)
         }
-        .font(.system(size: 13)).padding(.horizontal, 20).padding(.top, 20).padding(.bottom, 8).frame(width: 857, height: 480)
+        .font(WireboltTheme.Typography.body)
+        .padding(.horizontal, WireboltTheme.Spacing.xxLarge).padding(.top, WireboltTheme.Spacing.xxLarge)
+        .padding(.bottom, WireboltTheme.Spacing.large)
+        .frame(width: 857, height: 480)
         .onChange(of: selectedID) { previous, _ in commitNewRow(environmentID: previous) }
         .interactiveDismissDisabled()
         .alert("Environment could not be saved", isPresented: Binding(
             get: { validationMessage != nil }, set: { if !$0 { validationMessage = nil } }
         )) { Button("OK", role: .cancel) {} } message: { Text(validationMessage ?? "") }
+        .alert("Discard changes?", isPresented: $isConfirmingDiscard) {
+            Button("Discard Changes", role: .destructive) { dismiss() }
+            Button("Keep Editing", role: .cancel) {}
+        } message: {
+            Text("Your edits to environments and variables haven’t been saved.")
+        }
     }
 
     private var newFieldHeight: Double { FieldEditorMetrics.height(key: newKey, value: newValue, valueWidth: 392) }
@@ -172,6 +190,16 @@ struct EnvironmentEditor: View {
                 environments[index] = value
             }
         )
+    }
+
+    private var hasChanges: Bool {
+        environments != original || !deletedIDs.isEmpty
+            || !newKey.trimmingCharacters(in: .whitespaces).isEmpty || !newValue.isEmpty
+    }
+
+    /// Staged edits and deletions are only written by Save.
+    private func cancel() {
+        if hasChanges { isConfirmingDiscard = true } else { dismiss() }
     }
 
     private func addRow() {
@@ -216,7 +244,7 @@ struct EnvironmentEditor: View {
             guard await model.deleteEnvironment(id: id) else { validationMessage = "The environment could not be deleted."; return }
             deletedIDs.remove(id)
         }
-        for environment in environments {
+        for environment in environments where !original.contains(environment) {
             guard await model.saveEnvironment(environment) else { validationMessage = "The workspace could not be saved. Your edits are still open."; return }
         }
         model.selectedEnvironmentID = selectedID == WorkspaceDraft.globalEnvironmentID ? nil : selectedID

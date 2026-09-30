@@ -112,7 +112,7 @@ fn rejects_overlapping_manual_proxy_routes() {
 #[test]
 fn reports_a_missing_apple_keychain_secret_without_modifying_keychain() {
     let resolver = KeychainSecretResolver::new(format!(
-        "local.wirebolt.tests.missing.{}",
+        "io.github.christopher96u.wirebolt.tests.missing.{}",
         std::process::id()
     ));
     let name = SecretName::new("does-not-exist").expect("secret name");

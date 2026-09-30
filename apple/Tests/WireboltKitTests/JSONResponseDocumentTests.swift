@@ -76,6 +76,46 @@ struct JSONResponseDocumentTests {
         }
     }
 
+    @Test("Display decoding turns printable \\u escapes into characters and keeps unsafe ones escaped")
+    func decodesUnicodeEscapes() async throws {
+        let raw = #"{"name":"caf\u00e9","rocket":"\ud83d\ude80","quote":"\u0022\u005c","control":"\u0000\u202e","lone":"\ud800x","mixed":"\ud83d\n"}"#
+        let store = try await makeStore(Data(raw.utf8))
+        let decoded = try #require(try await store.formattedJSON(decodingUnicodeEscapes: true))
+        #expect(decoded.containsUnicodeEscapes)
+        #expect(decoded.preview == #"""
+        {
+          "name": "café",
+          "rocket": "🚀",
+          "quote": "\u0022\u005c",
+          "control": "\u0000\u202e",
+          "lone": "\ud800x",
+          "mixed": "\ud83d\n"
+        }
+        """#)
+        let exact = try #require(try await store.formattedJSON())
+        #expect(exact.preview.contains(#""caf\u00e9""#))
+        #expect(try await store.viewport(length: raw.utf8.count) == Data(raw.utf8))
+    }
+
+    @Test("Responses without escapes are formatted once for both presentations")
+    func sharesPresentationWithoutEscapes() async throws {
+        let store = try await makeStore(Data(#"{"a":"café"}"#.utf8))
+        let decoded = try #require(try await store.formattedJSON(decodingUnicodeEscapes: true))
+        #expect(!decoded.containsUnicodeEscapes)
+        #expect(try await store.formattedJSON() === decoded)
+    }
+
+    @Test("A streaming body is only formatted once complete, then in both escape modes")
+    func formatsOnlyCompleteBodies() async throws {
+        let store = try ResponseBodyStore(runID: RunID())
+        try await store.append(Data(#"{"a":"caf"#.utf8))
+        #expect(try await store.formattedJSON(decodingUnicodeEscapes: true) == nil)
+        try await store.append(Data(#"\u00e9"}"#.utf8))
+        try await store.finish()
+        #expect(try await store.formattedJSON(decodingUnicodeEscapes: true)?.preview == "{\n  \"a\": \"café\"\n}")
+        #expect(try await store.formattedJSON()?.preview == "{\n  \"a\": \"caf\\u00e9\"\n}")
+    }
+
     private func makeStore(_ data: Data) async throws -> ResponseBodyStore {
         let store = try ResponseBodyStore(runID: RunID())
         try await store.append(data)

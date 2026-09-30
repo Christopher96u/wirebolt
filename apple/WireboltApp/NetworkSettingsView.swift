@@ -12,19 +12,23 @@ struct WorkspaceNetworkSettings: View {
                     Text(model.workspace.name + " · Network").font(.caption).foregroundStyle(.secondary)
                 }
                 Spacer()
-                Button("Done") { dismiss() }.keyboardShortcut(.cancelAction)
-            }.padding(20)
+            }.padding(WireboltTheme.Spacing.xxLarge)
             Divider()
-            NetworkSettingsPage(model: model, scope: .workspace)
-        }.frame(width: 590, height: 580).background(Color(nsColor: .windowBackgroundColor))
+            NetworkSettingsPage(model: model, scope: .workspace, onClose: { dismiss() })
+        }
+        .frame(width: 590, height: 580).background(Color(nsColor: .windowBackgroundColor))
+        .interactiveDismissDisabled()
     }
 }
 
 /// Local edits are applied explicitly; a request editor never writes its parent policy.
+/// In a sheet (`onClose` set) every edit, including transport settings, is staged
+/// until Save; Cancel discards them after confirmation.
 struct NetworkSettingsPage: View {
     @Bindable var model: WireboltModel
     let scope: ProxyScope
     var session: DocumentSession?
+    var onClose: (() -> Void)?
     @Environment(\.openSettings) private var openSettings
     @State private var form: ProxyFormDraft
     @State private var baseline: ProxyFormDraft
@@ -35,9 +39,14 @@ struct NetworkSettingsPage: View {
     @State private var test: ProxyConnectionTest
     @State private var testURL = ""
     @State private var showsTest = false
+    @State private var transport: TransportSettings
+    @State private var transportBaseline: TransportSettings
+    @State private var isConfirmingDiscard = false
 
-    init(model: WireboltModel, scope: ProxyScope, session: DocumentSession? = nil) {
-        self.model = model; self.scope = scope; self.session = session
+    init(model: WireboltModel, scope: ProxyScope, session: DocumentSession? = nil, onClose: (() -> Void)? = nil) {
+        self.model = model; self.scope = scope; self.session = session; self.onClose = onClose
+        _transport = State(initialValue: model.workspace.transport)
+        _transportBaseline = State(initialValue: model.workspace.transport)
         _test = State(initialValue: model.makeProxyConnectionTest())
         let configuration: ProxyDocument? = switch scope {
         case .app: model.proxyPreferences.configuration
@@ -57,6 +66,10 @@ struct NetworkSettingsPage: View {
         }
     }
     private var changed: Bool { form != baseline }
+    private var isSheet: Bool { onClose != nil }
+    /// Only the workspace sheet stages transport edits; elsewhere they apply directly.
+    private var stagesTransport: Bool { isSheet && scope == .workspace }
+    private var transportChanged: Bool { stagesTransport && transport != transportBaseline }
     private var validation: String? {
         do { _ = try form.document(); return nil }
         catch { return error.localizedDescription }
@@ -100,7 +113,7 @@ struct NetworkSettingsPage: View {
                             if route.id != form.routes.last?.id { Divider().padding(.vertical, 4) }
                         }
                         if form.routes.count < 2 {
-                            Button("Add separate route", systemImage: "plus") {
+                            Button("Add Separate Route", systemImage: "plus") {
                                 if form.routes.first?.destination == "all" { form.routes[0].destination = "http" }
                                 var route = ProxyRouteDraft(); route.destination = "https"
                                 form.routes.append(route)
@@ -111,7 +124,7 @@ struct NetworkSettingsPage: View {
                     .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(.quaternary))
 
                 if let validation {
-                    Label(validation, systemImage: "exclamationmark.circle").font(.callout).foregroundStyle(.red)
+                    Label(validation, systemImage: "exclamationmark.circle").font(.callout).foregroundStyle(WireboltTheme.danger)
                         .fixedSize(horizontal: false, vertical: true)
                 } else {
                     VStack(alignment: .leading, spacing: 9) {
@@ -132,7 +145,7 @@ struct NetworkSettingsPage: View {
                     }.padding(16).frame(maxWidth: .infinity, alignment: .leading)
                         .background(Color.accentColor.opacity(0.055), in: RoundedRectangle(cornerRadius: 10))
                 }
-                if let saveError { Label(saveError, systemImage: "exclamationmark.circle").font(.caption).foregroundStyle(.red) }
+                if let saveError { Label(saveError, systemImage: "exclamationmark.circle").font(.caption).foregroundStyle(WireboltTheme.danger) }
                 if let session, session.kind == .webSocket, session.socket.status != .disconnected {
                     Label("Reconnect to apply changes to this WebSocket.", systemImage: "arrow.triangle.2.circlepath")
                         .font(.caption).foregroundStyle(.secondary)
@@ -163,7 +176,7 @@ struct NetworkSettingsPage: View {
                         }
                         if let message = test.message {
                             Label(message, systemImage: test.succeeded ? "checkmark.circle" : "info.circle")
-                                .font(.caption).foregroundStyle(test.succeeded ? Color.green : Color.secondary)
+                                .font(.caption).foregroundStyle(test.succeeded ? WireboltTheme.success : Color.secondary)
                                 .fixedSize(horizontal: false, vertical: true)
                         }
                     }.padding(.top, 10)
@@ -171,23 +184,14 @@ struct NetworkSettingsPage: View {
                 if scope != .app {
                     Divider()
                     DisclosureGroup("Timeouts, redirects & TLS", isExpanded: $showsTransport) {
-                        TransportSettingsFields(model: model, session: session).padding(.top, 12)
+                        TransportSettingsFields(model: model, session: session, staged: stagesTransport ? $transport : nil).padding(.top, 12)
                     }.font(.callout.weight(.medium))
                 }
             }.padding(20).frame(maxWidth: 670, alignment: .leading).frame(maxWidth: .infinity)
                 .background(NetworkScrollStyle())
         }
         Divider()
-                HStack {
-                    if saving { ProgressView().controlSize(.small) }
-                    else if changed { Text("Unapplied changes").font(.caption).foregroundStyle(.secondary) }
-                    else if let status { Label(status, systemImage: "checkmark.circle.fill").font(.caption).foregroundStyle(.secondary) }
-                    Spacer()
-                    if changed { Button("Reset") { form = baseline; saveError = nil } }
-                    Button(scope == .request ? "Apply to request" : "Save") { Task { await save() } }
-                        .buttonStyle(.borderedProminent).disabled(!changed || validation != nil || saving)
-                }
-                    .padding(.horizontal, 20).padding(.vertical, 12)
+        if isSheet { sheetFooter } else { inlineFooter }
         }
         .background(Color(nsColor: .windowBackgroundColor))
         .onChange(of: currentConfiguration) {
@@ -197,6 +201,50 @@ struct NetworkSettingsPage: View {
         .onChange(of: effective.configuration) { test.reset() }
         .onChange(of: testURL) { test.reset() }
         .onDisappear { test.cancel() }
+        .alert("Discard changes?", isPresented: $isConfirmingDiscard) {
+            Button("Discard Changes", role: .destructive) { onClose?() }
+            Button("Keep Editing", role: .cancel) {}
+        } message: {
+            Text("Your network settings changes haven’t been saved.")
+        }
+    }
+
+    private var inlineFooter: some View {
+        HStack {
+            if saving { ProgressView().controlSize(.small) }
+            else if changed { Text("Unapplied changes").font(.caption).foregroundStyle(.secondary) }
+            else if let status { Label(status, systemImage: "checkmark.circle.fill").font(.caption).foregroundStyle(.secondary) }
+            Spacer()
+            if changed { Button("Reset") { form = baseline; saveError = nil } }
+            Button(scope == .request ? "Apply to request" : "Save") { Task { await save() } }
+                .buttonStyle(.borderedProminent).disabled(!changed || validation != nil || saving)
+        }
+        .padding(.horizontal, WireboltTheme.Spacing.xxLarge).padding(.vertical, WireboltTheme.Spacing.large)
+    }
+
+    private var sheetFooter: some View {
+        HStack {
+            if saving { ProgressView().controlSize(.small) }
+            Spacer()
+            Button("Cancel") {
+                if changed || transportChanged { isConfirmingDiscard = true } else { onClose?() }
+            }
+            .keyboardShortcut(.cancelAction)
+            Button("Save") { Task { await saveAndClose() } }
+                .keyboardShortcut(.defaultAction)
+                .disabled(validation != nil || saving)
+        }
+        .controlSize(.regular)
+        .padding(.horizontal, WireboltTheme.Spacing.xxLarge).padding(.vertical, WireboltTheme.Spacing.large)
+    }
+
+    private func saveAndClose() async {
+        if changed {
+            await save()
+            guard saveError == nil else { return }
+        }
+        if transportChanged { model.updateWorkspaceTransport(transport) }
+        onClose?()
     }
 
     private var scopeDescription: String {
@@ -245,7 +293,7 @@ private struct ProxyRouteFields: View {
                     Text("HTTP only").tag("http")
                     Text("HTTPS only").tag("https")
                 }
-                if canRemove { Button("Remove route", systemImage: "minus.circle", action: remove).labelStyle(.iconOnly) }
+                if canRemove { Button("Remove Route", systemImage: "minus.circle", action: remove).labelStyle(.iconOnly).help("Remove Route") }
             }
             HStack(alignment: .top, spacing: 10) {
                 VStack(alignment: .leading, spacing: 5) {
@@ -285,6 +333,8 @@ private struct ProxyRouteFields: View {
 struct ProxyConnectionIndicator: View {
     @Bindable var model: WireboltModel
     let session: DocumentSession
+    /// Icon only, for narrow URL bars; the mode stays in the help tag and accessibility label.
+    var compact = false
     let openRequestSettings: () -> Void
     @State private var showsDetails = false
     @Environment(\.openSettings) private var openSettings
@@ -299,11 +349,16 @@ struct ProxyConnectionIndicator: View {
     }
     var body: some View {
         Button { showsDetails.toggle() } label: {
-            Label(label, systemImage: "network").font(.system(size: 10, weight: .medium)).lineLimit(1)
-                .frame(width: 68, height: 24)
+            Group {
+                if compact { Image(systemName: "network") } else { Label(label, systemImage: "network") }
+            }
+                .font(.system(size: 10, weight: .medium)).lineLimit(1)
+                .frame(width: compact ? 26 : 68, height: 24)
                 .background(.quaternary.opacity(0.4), in: Capsule())
         }.buttonStyle(.plain).accessibilityLabel("Proxy connection: \(label)")
-            .help(effective.summary(for: session.draft.url) + " · " + effective.source.title)
+            .help("\(label): " + effective.summary(for: session.draft.url) + " · " + effective.source.title)
+            // The URL bar stays mounted across tab switches; close the previous document's details.
+            .onChange(of: session.id) { if showsDetails { showsDetails = false } }
             .popover(isPresented: $showsDetails) {
                 VStack(alignment: .leading, spacing: 12) {
                     Text("Effective connection").font(.headline)
@@ -327,9 +382,12 @@ struct ProxyConnectionIndicator: View {
 struct TransportSettingsFields: View {
     @Bindable var model: WireboltModel
     var session: DocumentSession?
+    /// Edits a staged copy instead of the request or workspace.
+    var staged: Binding<TransportSettings>?
     private var inherited: Bool { session?.draft.inheritsWorkspaceTransport == true }
     private var transport: Binding<TransportSettings> {
-        Binding(get: { session.map { $0.draft.inheritsWorkspaceTransport ? model.workspace.transport : $0.draft.transport } ?? model.workspace.transport },
+        if let staged { return staged }
+        return Binding(get: { session.map { $0.draft.inheritsWorkspaceTransport ? model.workspace.transport : $0.draft.transport } ?? model.workspace.transport },
                 set: { value in
                     if let session { session.draft.transport = value }
                     else { model.updateWorkspaceTransport(value) }
@@ -387,14 +445,14 @@ struct WireboltSettingsView: View {
             Tab("General", systemImage: "gearshape", value: "general") {
                 Grid(alignment: .leading, horizontalSpacing: 10, verticalSpacing: 13) {
                     GridRow(alignment: .top) {
-                        Text("Font Size:")
+                        Text("Font Size:").gridColumnAlignment(.trailing)
                         VStack(alignment: .leading, spacing: 6) {
                             Picker("Font Size", selection: $fontSize) {
                                 ForEach(Array(10...20) + [24, 28], id: \.self) { size in
                                     Text(String(size)).tag(Double(size))
                                 }
                             }.labelsHidden().frame(width: 60)
-                            Text("Only Apply to the Body Tab.").font(.system(size: 11)).foregroundStyle(.secondary)
+                            Text("Applies only to the Body tab.").font(WireboltTheme.Typography.detail).foregroundStyle(.secondary)
                         }
                     }
                     GridRow {
@@ -406,14 +464,17 @@ struct WireboltSettingsView: View {
                         }.labelsHidden().frame(width: 80)
                     }
                 }
-                .font(.system(size: 13)).controlSize(.regular)
-                .padding(.leading, 44).padding(.trailing, 20).padding(.vertical, 20)
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+                .font(WireboltTheme.Typography.body).controlSize(.regular)
+                .padding(WireboltTheme.Spacing.xxLarge)
+                // The Settings window sizes itself to each tab's content.
+                .frame(width: 440, alignment: .top)
+                .fixedSize(horizontal: false, vertical: true)
             }
             Tab("Network", systemImage: "network", value: "network") {
                 NetworkSettingsPage(model: model, scope: .app)
+                    .frame(width: 600, height: 540)
             }
-            Tab("Privacy", systemImage: "person.fill", value: "privacy") {
+            Tab("Privacy", systemImage: "hand.raised", value: "privacy") {
                 Grid(alignment: .leading, horizontalSpacing: 10, verticalSpacing: 18) {
                     GridRow(alignment: .top) {
                         Text("Analytics:").frame(width: 104, alignment: .trailing)
@@ -442,9 +503,10 @@ struct WireboltSettingsView: View {
                         }
                     }
                 }
-                .font(.system(size: 13)).controlSize(.regular)
-                .padding(.leading, 44).padding(.trailing, 18).padding(.top, 20)
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+                .font(WireboltTheme.Typography.body).controlSize(.regular)
+                .padding(WireboltTheme.Spacing.xxLarge).padding(.trailing, WireboltTheme.Spacing.xSmall)
+                .frame(width: 580, alignment: .top)
+                .fixedSize(horizontal: false, vertical: true)
                 .sheet(isPresented: $showingPrivacyPolicy) {
                     VStack(alignment: .leading, spacing: 16) {
                         Text("Privacy Policy").font(.title2.weight(.semibold))
@@ -456,8 +518,6 @@ struct WireboltSettingsView: View {
                 }
             }
         }
-        .frame(width: 620, height: 570)
-
     }
 
 }
