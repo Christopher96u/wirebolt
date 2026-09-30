@@ -1591,8 +1591,12 @@ public extension ImportFormat {
 
     /// Infers the importer for a file opened from Finder or dropped on the window.
     static func detect(fileExtension: String, contents: String) -> ImportFormat? {
-        let trimmed = contents.trimmingCharacters(in: .whitespacesAndNewlines)
-        if trimmed.hasPrefix("curl ") || trimmed.hasPrefix("curl\t") { return .curl }
+                let trimmed = contents.trimmingCharacters(in: .whitespacesAndNewlines)
+        // Shell files may start with comments before the first command.
+        let command = trimmed.split(whereSeparator: \.isNewline)
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .first { !$0.isEmpty && !$0.hasPrefix("#") } ?? ""
+        if command.hasPrefix("curl ") || command.hasPrefix("curl\t") { return .curl }
         guard let data = trimmed.data(using: .utf8),
               let root = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
         else { return nil }

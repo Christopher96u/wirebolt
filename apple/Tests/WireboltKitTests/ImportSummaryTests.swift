@@ -52,6 +52,12 @@ struct ImportSummaryTests {
         #expect(other.contains("Postman Collection v2"))
     }
 
+        @Test("Shell files with leading comments are detected as cURL")
+    func detectsCommentedCurlFiles() {
+        #expect(ImportFormat.detect(fileExtension: "sh", contents: "#!/bin/sh\n# Seed data\ncurl https://api.example.test") == .curl)
+        #expect(ImportFormat.detect(fileExtension: "sh", contents: "# only a comment") == nil)
+    }
+
     @Test("A successful import publishes its summary and selects the environment it created")
     @MainActor func successfulImportPublishesSummary() async {
         let persistence = ImportPersistence(outcome: .success)
