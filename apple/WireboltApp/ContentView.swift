@@ -826,6 +826,24 @@ private struct SidebarReorderTarget: ViewModifier {
                         }
                     }
                 }
+                .background { SidebarDropZone(row: row, model: model, interface: interface, position: $position) }
+        }
+    }
+}
+
+/// A row's drop target. Rows only accept drags that started in the sidebar, so the target
+/// (an AppKit view per row) exists only while one is in progress; creating it for every row
+/// made opening and filtering the sidebar markedly slower.
+private struct SidebarDropZone: View {
+    let row: SidebarSnapshot.Row
+    let model: WireboltModel
+    let interface: WorkspaceUIState
+    @Binding var position: SidebarDropPosition?
+
+    var body: some View {
+        if interface.sidebarDragIdentifier != nil {
+            Color.clear
+                .contentShape(.rect)
                 .onDrop(of: [UTType.text], delegate: SidebarReorderDrop(
                     row: row, model: model, interface: interface, position: $position))
         }

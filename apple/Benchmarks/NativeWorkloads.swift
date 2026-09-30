@@ -1,4 +1,5 @@
 import AppKit
+import UniformTypeIdentifiers
 import Foundation
 import Observation
 import SwiftUI
@@ -577,6 +578,66 @@ final class ProbeWindow: NSWindow { override var canBecomeKey: Bool { true } }
         print("proxy_settings_interface=passed")
     }
 
+    /// Sidebar reordering through SwiftUI's AppKit drop destinations: a row being dragged
+    /// drops before or after another row, and text dragged from elsewhere is refused.
+    static func sidebarReorder(root: URL) throws {
+        let model = WireboltModel(runner: OfflineRunner(), history: HistoryRepository(root: root.appending(path: "history")), cookieJar: CookieJar())
+        let interface = WorkspaceUIState(defaults: fixtureDefaults)
+        let requests = (0..<6).map { RequestLocation(collectionID: "drag", order: $0, request: RequestDraft(id: "r\($0)", name: "Drag Request \($0)", url: "https://example.invalid/\($0)")) }
+        model.workspace.collections = [CollectionDraft(id: "drag", name: "Drag Fixture", requests: requests)]
+        let (window, host, _) = mount(ContentView(model: model, interface: interface, loadsWorkspace: false), height: 720)
+        defer { window.close() }
+        NSApp.accessibilitySetValue(true, forAttribute: NSAccessibility.Attribute(rawValue: "AXEnhancedUserInterface"))
+        spin(0.4); flush(host)
+        func rowFrame(_ index: Int) -> NSRect {
+            guard let row = elements(window).first(where: { $0.name == "GET request, Drag Request \(index)" }) else {
+                preconditionFailure("Sidebar row is missing from the accessibility tree")
+            }
+            return window.convertFromScreen(row.frame)
+        }
+        /// The AppKit views SwiftUI registers for drops, deepest last.
+        func destinations(at point: NSPoint) -> [NSView] {
+            func walk(_ view: NSView) -> [NSView] {
+                let own = !view.registeredDraggedTypes.isEmpty && view.convert(view.bounds, to: nil).contains(point) ? [view] : []
+                return own + view.subviews.flatMap(walk)
+            }
+            return window.contentView.map(walk) ?? []
+        }
+        func drag(_ payload: String, to point: NSPoint) -> (NSDragOperation, Bool) {
+            let pasteboard = NSPasteboard(name: NSPasteboard.Name("wirebolt-drag-\(UUID().uuidString)"))
+            defer { pasteboard.releaseGlobally() }
+            pasteboard.clearContents()
+            pasteboard.writeObjects([payload as NSString])
+            let info = FixtureDraggingInfo(window: window, location: point, pasteboard: pasteboard)
+            guard let target = destinations(at: point).last else { return ([], false) }
+            _ = target.draggingEntered(info)
+            let operation = target.draggingUpdated(info)
+            spin(0.05); flush(host)
+            guard operation != [] else { target.draggingExited(info); spin(0.05); return (operation, false) }
+            let performed = target.prepareForDragOperation(info) && target.performDragOperation(info)
+            target.concludeDragOperation(info)
+            spin(0.1); flush(host)
+            return (operation, performed)
+        }
+        let row = rowFrame(1)
+        // Text dragged from elsewhere is refused.
+        let foreign = drag("request|drag|r4", to: NSPoint(x: row.midX, y: row.maxY - 4))
+        precondition(foreign.0 == [] && !foreign.1, "Text dragged from elsewhere must not reorder the sidebar")
+        // A row dragged within the sidebar (onDrag records it) drops before another row...
+        interface.sidebarDragIdentifier = "request|drag|r4"
+        spin(0.05); flush(host)
+        let before = drag("request|drag|r4", to: NSPoint(x: row.midX, y: row.maxY - 4))
+        precondition(before.0 == .move && before.1, "Dropping on a row's upper half must be accepted")
+        precondition(interface.sidebarDragIdentifier == nil, "A completed drop must end the sidebar drag")
+        // ...or after it.
+        interface.sidebarDragIdentifier = "request|drag|r5"
+        spin(0.05); flush(host)
+        let after = drag("request|drag|r5", to: NSPoint(x: row.midX, y: row.minY + 4))
+        precondition(after.0 == .move && after.1, "Dropping on a row's lower half must be accepted")
+        precondition(interface.sidebarDragIdentifier == nil, "A completed drop must end the sidebar drag")
+        print("sidebar_reorder_drop=passed")
+    }
+
     static func requestClicks(root: URL, tabs: Bool = false, tabCount: Int = 2, noteBytes: Int = 0) throws {
         let model = WireboltModel(runner: OfflineRunner(), history: HistoryRepository(root: root.appending(path: "history")), cookieJar: CookieJar())
         let interface = WorkspaceUIState(defaults: fixtureDefaults)
@@ -731,6 +792,7 @@ final class ProbeWindow: NSWindow { override var canBecomeKey: Bool { true } }
             precondition(count == 0, "Hidden notes must never be parsed when switching requests")
         }
         else if mode=="request-click" { try requestClicks(root: root) }
+        else if mode=="sidebar-reorder" { try sidebarReorder(root: root) }
         else if mode=="proxy-screenshots" { try proxyScreenshots(root: root) }
         else if mode=="proxy-settings" { try proxySettings(root: root) }
         else if mode=="tab-click" { try requestClicks(root: root, tabs: true, tabCount: size) }
@@ -742,4 +804,38 @@ final class ProbeWindow: NSWindow { override var canBecomeKey: Bool { true } }
         try JSONSerialization.data(withJSONObject:output,options:[.prettyPrinted,.sortedKeys]).write(to:URL(fileURLWithPath:args[3]))
         if measurements.contains(where: { $0["over_budget"] as? Bool == true }) { exit(1) }
     }
+}
+
+/// A dragging session for the sidebar drop workload; SwiftUI reads the location and pasteboard.
+@MainActor
+final class FixtureDraggingInfo: NSObject, @MainActor NSDraggingInfo {
+    let window: NSWindow
+    let location: NSPoint
+    let pasteboard: NSPasteboard
+    init(window: NSWindow, location: NSPoint, pasteboard: NSPasteboard) {
+        self.window = window
+        self.location = location
+        self.pasteboard = pasteboard
+    }
+    var draggingDestinationWindow: NSWindow? { window }
+    var draggingSourceOperationMask: NSDragOperation { [.move, .copy, .generic] }
+    var draggingLocation: NSPoint { location }
+    var draggedImageLocation: NSPoint { location }
+    var draggedImage: NSImage? { nil }
+    var draggingPasteboard: NSPasteboard { pasteboard }
+    var draggingSource: Any? { nil }
+    var draggingSequenceNumber: Int { 1 }
+    func slideDraggedImage(to screenPoint: NSPoint) {}
+    var draggingFormation: NSDraggingFormation = .default
+    var animatesToDestination = false
+    var numberOfValidItemsForDrop = 1
+    func enumerateDraggingItems(options enumOpts: NSDraggingItemEnumerationOptions = [], for view: NSView?,
+                                classes classArray: [AnyClass], searchOptions: [NSPasteboard.ReadingOptionKey: Any] = [:],
+                                using block: @escaping (NSDraggingItem, Int, UnsafeMutablePointer<ObjCBool>) -> Void) {}
+    var springLoadingHighlight: NSSpringLoadingHighlight { .none }
+    func resetSpringLoading() {}
+    /// Read by SwiftUI; AppKit's own dragging info provides it.
+    private var lastOperation: UInt = 0
+    @objc func _lastDragDestinationOperation() -> UInt { lastOperation }
+    @objc func _setLastDragDestinationOperation(_ operation: UInt) { lastOperation = operation }
 }
