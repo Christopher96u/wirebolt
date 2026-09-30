@@ -1,10 +1,16 @@
 use crate::{
-    Collection, DocumentId, MultipartPartKind, Request, RequestAuthentication, RequestBody,
+    Collection, DocumentId, EnvironmentVariable, MultipartPartKind, ProxyMode, Request,
+    RequestAuthentication, RequestBody, RequestHeader, RequestValueField, TransportSettings,
     ValueSource, WorkspaceSnapshot,
 };
 use base64::{Engine as _, engine::general_purpose::STANDARD};
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use std::{collections::BTreeMap, error::Error, fmt, fs, time::SystemTime};
+use std::{collections::BTreeMap, error::Error, fmt, path::Path, time::SystemTime};
+
+/// Identifier of the environment whose variables apply to every request
+/// (`WorkspaceDraft.globalEnvironmentID` in `WireboltKit`).
+pub const GLOBAL_ENVIRONMENT_ID: &str = "global";
 
 #[derive(Debug)]
 pub struct ExportError(&'static str);
@@ -15,10 +21,46 @@ impl fmt::Display for ExportError {
 }
 impl Error for ExportError {}
 
+/// The `wirebolt` block of an exported request node.
+///
+/// The portable legacy fields cannot carry secret references, sensitive flags,
+/// content types, upload paths, proxy or transport, so Wirebolt writes its own
+/// typed definition beside them and prefers it on re-import. It holds secret
+/// reference names only, never secret material.
+#[derive(Debug, Deserialize, Serialize)]
+pub(crate) struct NativeRequest {
+    pub(crate) authentication: RequestAuthentication,
+    /// Absent in exports written before the complete definition was included.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) request: Option<NativeDefinition>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub(crate) struct NativeDefinition {
+    pub(crate) headers: Vec<RequestHeader>,
+    pub(crate) query: Vec<RequestValueField>,
+    pub(crate) body: RequestBody,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) proxy_override: Option<ProxyMode>,
+    pub(crate) transport: TransportSettings,
+    pub(crate) inherits_workspace_transport: bool,
+}
+
+/// An exported environment: literal values and secret reference names only.
+#[derive(Debug, Deserialize, Serialize)]
+pub(crate) struct NativeEnvironment {
+    pub(crate) name: String,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub(crate) global: bool,
+    pub(crate) variables: Vec<EnvironmentVariable>,
+}
+
 /// Encodes legacy collection v1 without resolving credential references or exporting response history.
 ///
+/// Upload files are exported as path references and are never read.
+///
 /// # Errors
-/// Returns an error for unreadable multipart files or an invalid hierarchy.
+/// Returns an error for an invalid hierarchy.
 pub fn export_legacy_v1_collection(
     collection: &Collection,
     requests: &[Request],
@@ -27,13 +69,14 @@ pub fn export_legacy_v1_collection(
         .duration_since(SystemTime::UNIX_EPOCH)
         .unwrap_or_default();
     let nodes = collection_nodes(collection, requests, now.as_nanos(), false)?;
-    encode_document(&collection.name, &nodes, now.as_secs_f64())
+    encode_document(&collection.name, &nodes, None, now.as_secs_f64())
 }
 
-/// Exports every collection and root request without resolving secret references.
+/// Exports every collection, root request and environment without resolving
+/// secret references.
 ///
 /// # Errors
-/// Returns an error for unreadable multipart files or an invalid hierarchy.
+/// Returns an error for an invalid hierarchy.
 pub fn export_legacy_v1_workspace(snapshot: &WorkspaceSnapshot) -> Result<String, ExportError> {
     let now = SystemTime::now()
         .duration_since(SystemTime::UNIX_EPOCH)
@@ -50,24 +93,47 @@ pub fn export_legacy_v1_workspace(snapshot: &WorkspaceSnapshot) -> Result<String
         seed =
             seed.wrapping_add((entry.collection.groups.len() + entry.requests.len() + 1) as u128);
     }
-    encode_document(&snapshot.workspace.name, &nodes, now.as_secs_f64())
+    let environments: Vec<_> = snapshot
+        .environments
+        .iter()
+        .map(|environment| NativeEnvironment {
+            name: environment.name.clone(),
+            global: environment.id.as_str() == GLOBAL_ENVIRONMENT_ID,
+            variables: environment.variables.clone(),
+        })
+        .collect();
+    encode_document(
+        &snapshot.workspace.name,
+        &nodes,
+        Some(&environments),
+        now.as_secs_f64(),
+    )
 }
 
 /// Exports a single request without adding a synthetic folder.
 ///
 /// # Errors
-/// Returns an error for unreadable multipart files or unsupported authentication.
+/// Returns an error if the request cannot be encoded.
 pub fn export_legacy_v1_request(request: &Request) -> Result<String, ExportError> {
     let now = SystemTime::now()
         .duration_since(SystemTime::UNIX_EPOCH)
         .unwrap_or_default();
     let node = request_node(request, &node_id(now.as_nanos()), "")?;
-    encode_document(&request.name, &[node], now.as_secs_f64())
+    encode_document(&request.name, &[node], None, now.as_secs_f64())
 }
 
-fn encode_document(name: &str, nodes: &[Value], time: f64) -> Result<String, ExportError> {
-    serde_json::to_string_pretty(&json!({"version":1,"appVersion":env!("CARGO_PKG_VERSION"),"workspaceName":name,
-        "exportDate":time-978_307_200.0,"nodes":nodes,"historyItems":{},"historyFlows":{},"responseBodies":{}}))
+fn encode_document(
+    name: &str,
+    nodes: &[Value],
+    environments: Option<&[NativeEnvironment]>,
+    time: f64,
+) -> Result<String, ExportError> {
+    let mut document = json!({"version":1,"appVersion":env!("CARGO_PKG_VERSION"),"workspaceName":name,
+        "exportDate":time-978_307_200.0,"nodes":nodes,"historyItems":{},"historyFlows":{},"responseBodies":{}});
+    if let Some(environments) = environments {
+        document["wirebolt"] = json!({ "environments": environments });
+    }
+    serde_json::to_string_pretty(&document)
         .map_err(|_| ExportError("collection could not be encoded"))
 }
 
@@ -155,12 +221,15 @@ fn collection_nodes(
     let mut nodes = if root {
         Vec::new()
     } else {
-        vec![folder(
+        let mut collection_folder = folder(
             &root_id,
             &collection.name,
             format!("/{root_id}"),
             children(None),
-        )]
+        );
+        // Tells Wirebolt to re-import this folder as a collection, not a folder.
+        collection_folder["wirebolt"] = json!({"collection": true});
+        vec![collection_folder]
     };
     for group in &collection.groups {
         nodes.push(folder(
@@ -206,9 +275,20 @@ fn request_node(request: &Request, id: &str, parent_path: &str) -> Result<Value,
     } else {
         json!({"custom":{"_0":request.method}})
     };
+    let native = NativeRequest {
+        authentication: request.authentication.clone(),
+        request: Some(NativeDefinition {
+            headers: request.headers.clone(),
+            query: request.query.clone(),
+            body: request.body.clone(),
+            proxy_override: request.proxy_override.clone(),
+            transport: request.transport.clone(),
+            inherits_workspace_transport: request.inherits_workspace_transport,
+        }),
+    };
     Ok(json!({
         "uuid":id,"name":request.name,"note":request.note,"path":format!("{}/{id}.request",parent_path),
-        "wirebolt":{"authentication":request.authentication},
+        "wirebolt":native,
         "kind":if request.web_socket {"websocketRequest"} else {"request"},
         "folderMetadata":null,"responseDisplayMode":null,"historyManager":{"historyItems":[]},
         "flow":{"type":{"request":{}},"error":null,"response":null,"events":[],"request":{
@@ -220,6 +300,8 @@ fn request_node(request: &Request, id: &str, parent_path: &str) -> Result<Value,
     }))
 }
 
+/// Portable spelling of a value. Secret references become `{{name}}` so other
+/// readers see a placeholder; the `wirebolt` block keeps the typed reference.
 fn source(value: &ValueSource) -> String {
     match value {
         ValueSource::Literal(value) => value.clone(),
@@ -259,10 +341,14 @@ fn body(body: &RequestBody) -> Result<Value, ExportError> {
                 let bytes = match part.kind {
                     MultipartPartKind::Text => source(&part.value).into_bytes(),
                     MultipartPartKind::Binary => STANDARD.decode(source(&part.value)).map_err(|_| ExportError("multipart bytes are invalid"))?,
-                    MultipartPartKind::File => fs::read(part.file_path.as_deref().ok_or(ExportError("multipart file is missing"))?).map_err(|_| ExportError("multipart file could not be read"))?,
+                    // Upload files stay on disk: only their path is exported, in the `wirebolt` block.
+                    MultipartPartKind::File => Vec::new(),
                 };
+                let file_name = part.file_name.clone().or_else(|| {
+                    part.file_path.as_deref().and_then(|path| Path::new(path).file_name()).map(|name| name.to_string_lossy().into_owned())
+                });
                 Ok(json!({"id":part.id,"part":part.name,"value":STANDARD.encode(bytes),"contentType":part.content_type.as_deref().unwrap_or(""),
-                    "fileName":part.file_name.as_deref().unwrap_or(""),"isEnabled":part.enabled}))
+                    "fileName":file_name.unwrap_or_default(),"isEnabled":part.enabled}))
             }).collect();
             json!({"multipartFormData":{"_0":{"parts":parts?}}})
         }
