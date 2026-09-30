@@ -823,17 +823,24 @@ public final class WireboltModel {
         }
         do {
             try await flushSecrets()
+            // Resolving validates the draft exactly as a send would. Secret values are read only
+            // to choose how the shell decodes them; the command references Keychain instead.
             let sources = draft.curlValueSources
-            let values = try await runner.resolveValues(sources, variables: variables)
-            guard sources.count == values.count else { throw RunFailure(kind: "export", issues: []) }
-            let resolved = Dictionary(zip(sources, values), uniquingKeysWith: { first, _ in first })
-            let url = resolved[.literal(draft.url)]!
-            var credentials: [String] = []
+            var secretNames = draft.curlSecretNames(variables: variables)
+            let values = try await runner.resolveValues(sources + secretNames.map { .secret($0) }, variables: variables)
+            guard values.count == sources.count + secretNames.count else { throw RunFailure(kind: "export", issues: []) }
+            let url = values[0]
+            var secretValues = Array(values.suffix(secretNames.count))
             if let references = proxy.curlRoute(for: url)?.credentials {
-                credentials = try await runner.resolveValues([.secret(references.username), .secret(references.password)], variables: variables)
+                let names = [references.username, references.password]
+                let credentials = try await runner.resolveValues(names.map { .secret($0) }, variables: variables)
                 guard credentials.count == 2 else { throw RunFailure(kind: "export", issues: []) }
+                secretNames += names
+                secretValues += credentials
             }
-            return draft.curlCommand { resolved[$0]! } + proxy.curlArguments(for: url, credentials: credentials)
+            let hexEncoded = zip(secretNames, secretValues).filter { CurlSecretReferences.printsAsHex($1) }.map(\.0)
+            let secrets = CurlSecretReferences(variables: variables, hexEncoded: Set(hexEncoded))
+            return draft.curlCommand(secrets: secrets) + proxy.curlArguments(for: url, secrets: secrets)
         } catch {
             operationFailure = (error as? RunFailure) ?? RunFailure(kind: "export", issues: [])
             return nil

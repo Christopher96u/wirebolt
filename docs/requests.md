@@ -47,4 +47,4 @@ Open multiple requests in tabs. **Navigate → Split Right** (**⇧⌘D**) creat
 
 For HTTP requests, use **Request History** beside the request controls to inspect available prior runs. History is local runtime data, subject to storage limits, and is not included in workspace exports or Git commits.
 
-Use **Request → Copy cURL** to copy a command representation. Review the clipboard content before sharing: URLs, bodies and manually entered values can contain sensitive information even when credential fields are redacted.
+Use **Request → Copy cURL** to copy a command representation. Keychain-backed values, including secret variables and proxy credentials, aren't copied: the command reads them with `security find-generic-password` when it runs, so macOS may ask to allow access, and it works only on a Mac that has those Keychain items. Review the clipboard content before sharing: URLs, bodies and other text you typed are copied as is.
