@@ -103,28 +103,43 @@ public struct SidebarSnapshot: Sendable {
         let query = Self.normalize(query.trimmingCharacters(in: .whitespacesAndNewlines))
         if !query.isEmpty {
             var included = Array(repeating: false, count: rows.count)
-            var matching = Set<Int>()
+            var matching = Array(repeating: false, count: rows.count)
+            var utf8Query = query
+            let finder = utf8Query.withUTF8 { SubstringPrefilter(query: Array($0)) }
             for (index, row) in rows.enumerated() {
-                if row.search.contains(query) || row.ancestors.contains(where: { matching.contains($0) }) {
-                    matching.insert(index)
+                if Self.matches(row.search, query: query, finder: finder) || row.ancestors.contains(where: { matching[$0] }) {
+                    matching[index] = true
                     included[index] = true
                     for parent in row.ancestors { included[parent] = true }
                 }
             }
-            return rows.enumerated().compactMap { included[$0.offset] ? $0.element : nil }
+            var result: [Row] = []
+            for index in rows.indices where included[index] { result.append(rows[index]) }
+            return result
         }
-        var hidden = Set<Int>()
+        var hidden = Array(repeating: false, count: rows.count)
         var result: [Row] = []
         for (index, row) in rows.enumerated() {
-            if row.ancestors.contains(where: { hidden.contains($0) }) { continue }
+            if row.ancestors.contains(where: { hidden[$0] }) { continue }
             result.append(row)
             switch row.content {
-            case .collection(let collection): if collapsedCollections.contains(collection.id) { hidden.insert(index) }
-            case .group(let collection, let group): if !expandedGroups.contains(collection.id + ":" + group.id) { hidden.insert(index) }
+            case .collection(let collection): if collapsedCollections.contains(collection.id) { hidden[index] = true }
+            case .group(let collection, let group): if !expandedGroups.contains(collection.id + ":" + group.id) { hidden[index] = true }
             case .request: break
             }
         }
         return result
+    }
+
+    /// `search.contains(query)`, with a byte scan that rules out most rows first. Row search
+    /// text is in canonical composed form, so for an ASCII query a row can only match if its
+    /// UTF-8 contains the query's bytes; `contains` still decides the rows that do.
+    static func matches(_ search: String, query: String, finder: SubstringPrefilter?) -> Bool {
+        if let finder {
+            var search = search
+            guard search.withUTF8({ finder.mayContain($0) }) else { return false }
+        }
+        return search.contains(query)
     }
 
     /// The neighbor `delta` (±1) places away among the row's siblings, skipping descendants;
@@ -145,8 +160,41 @@ public struct SidebarSnapshot: Sendable {
         return nil
     }
 
+    /// Case- and diacritic-folded, in canonical composed form and native UTF-8, so filtering
+    /// can scan the bytes without bridging.
     static func normalize(_ text: String) -> String {
-        text.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: Locale(identifier: "en_US_POSIX"))
+        var folded = text.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: Locale(identifier: "en_US_POSIX"))
+            .precomposedStringWithCanonicalMapping
+        folded.makeContiguousUTF8()
+        return folded
+    }
+}
+
+/// A byte-level substring test for ASCII queries, used to skip rows before the exact
+/// (canonical-equivalence) `String.contains` check.
+struct SubstringPrefilter: Sendable {
+    let query: [UInt8]
+
+    /// Nil when the query has non-ASCII bytes, which need the exact check for every row.
+    init?(query: [UInt8]) {
+        guard !query.isEmpty, query.allSatisfy({ $0 < 0x80 }) else { return nil }
+        self.query = query
+    }
+
+    func mayContain(_ text: UnsafeBufferPointer<UInt8>) -> Bool {
+        let count = query.count
+        guard text.count >= count, let first = query.first else { return false }
+        var index = 0
+        let last = text.count - count
+        while index <= last {
+            if text[index] == first {
+                var offset = 1
+                while offset < count && text[index + offset] == query[offset] { offset += 1 }
+                if offset == count { return true }
+            }
+            index += 1
+        }
+        return false
     }
 }
 

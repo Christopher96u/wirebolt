@@ -86,17 +86,22 @@ public final class WireboltModel {
     public static let previewByteLimit = DocumentSession.previewByteLimit
 
     public var workspace = WorkspaceDraft(name: "Wirebolt") {
-        didSet { sidebarSnapshot = nil; sidebarVisibleCache = nil }
+        didSet { sidebarSnapshot = nil; sidebarVisibleCache = nil; sidebarUnfilteredCache = nil }
     }
     @ObservationIgnored private var sidebarSnapshot: SidebarSnapshot?
     @ObservationIgnored private var sidebarVisibleCache: (query: String, collapsed: Set<String>, expanded: Set<String>, rows: [SidebarSnapshot.Row])?
+    /// The unfiltered outline, kept apart from the last filter's rows so clearing a filter
+    /// (or deleting its last character) shows the outline without recomputing it.
+    @ObservationIgnored private var sidebarUnfilteredCache: (collapsed: Set<String>, expanded: Set<String>, rows: [SidebarSnapshot.Row])?
 
     public func sidebarRows(query: String, collapsed: Set<String>, expanded: Set<String>) -> [SidebarSnapshot.Row] {
         let collections = workspace.collections
-        if let cache = sidebarVisibleCache, cache.query == query, cache.collapsed == collapsed, cache.expanded == expanded { return cache.rows }
+        let filtering = !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        if filtering, let cache = sidebarVisibleCache, cache.query == query, cache.collapsed == collapsed, cache.expanded == expanded { return cache.rows }
+        if !filtering, let cache = sidebarUnfilteredCache, cache.collapsed == collapsed, cache.expanded == expanded { return cache.rows }
         if sidebarSnapshot == nil { sidebarSnapshot = SidebarSnapshot(collections: collections) }
         let rows = sidebarSnapshot!.visible(query: query, collapsedCollections: collapsed, expandedGroups: expanded)
-        sidebarVisibleCache = (query, collapsed, expanded, rows)
+        if filtering { sidebarVisibleCache = (query, collapsed, expanded, rows) } else { sidebarUnfilteredCache = (collapsed, expanded, rows) }
         return rows
     }
     public var selectedEnvironmentID: String?

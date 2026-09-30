@@ -29,6 +29,25 @@ import Testing
         #expect(snapshot.visible(query: "", collapsedCollections: ["c"], expandedGroups: []).count == 1)
     }
 
+    /// The byte prefilter must never change what the exact, canonical-equivalence match finds.
+    @Test func filteringMatchesExactStringSearch() {
+        let names = ["Café 東京", "Cafe\u{301} decomposed", "Kelvin \u{212A}", "Greek\u{037E}question", "a\u{20DD} circled",
+                     "👨‍👩‍👧 family", "🇺🇸 flag", "Plain GET", "ÅNGSTRÖM", "naïve"]
+        // A collection name no query matches, so only direct request matches are visible.
+        let collection = CollectionDraft(id: "c", name: "§", requests: names.enumerated().map { index, name in
+            RequestLocation(collectionID: "c", request: RequestDraft(id: "r\(index)", name: name, url: "https://example.invalid/\(index)"))
+        })
+        let snapshot = SidebarSnapshot(collections: [collection])
+        for query in ["cafe", "café", "e", "k", "K", ";", "a", "👨", "🇺", "get", "angstrom", "naive", "ï", "東京", "example.invalid/3",
+                      "missing", " cafe ", "\u{212A}", "\u{037E}"] {
+            let normalized = SidebarSnapshot.normalize(query.trimmingCharacters(in: .whitespacesAndNewlines))
+            let expected = snapshot.rows.filter { !$0.isContainer && $0.search.contains(normalized) }.map(\.id)
+            let visible = snapshot.visible(query: query, collapsedCollections: [], expandedGroups: [])
+            let requestIDs = visible.filter { !$0.isContainer }.map(\.id)
+            #expect(requestIDs == expected, "query \(query)")
+        }
+    }
+
     @Test func tiedOrderIsDeterministicAndRootCollectionHasNoHeader() {
         var collection = fixture()
         collection.id = WorkspaceDraft.rootCollectionID
