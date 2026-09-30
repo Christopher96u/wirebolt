@@ -679,6 +679,12 @@ public enum ImportFormat: String, Codable, CaseIterable, Sendable {
     case har
     case legacyWorkspaceV1 = "legacy_workspace_v1"
     case postmanV2 = "postman_v2"
+    /// Insomnia v4 export (JSON or YAML) or v5 YAML collection.
+    case insomnia
+    /// Bruno "Export collection" JSON.
+    case bruno
+    /// A Bruno collection folder or `.bru` file, bundled by `BrunoCollectionSource`.
+    case brunoFolder = "bruno_folder"
 }
 
 public struct ImportPreview: Codable, Equatable, Identifiable, Sendable {

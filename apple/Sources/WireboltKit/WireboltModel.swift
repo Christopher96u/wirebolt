@@ -792,6 +792,24 @@ public final class WireboltModel {
         await commitDocument(source: source, format: format)
     }
 
+    /// Imports a Bruno collection folder, or a single `.bru` request file.
+    public func importBrunoCollection(at url: URL) async {
+        guard !isImporting, persistence != nil else { return }
+        isImporting = true
+        importFailureMessage = nil
+        defer { isImporting = false }
+        do {
+            let source = try await Task.detached(priority: .userInitiated) {
+                try BrunoCollectionSource.bundle(at: url)
+            }.value
+            await commitDocument(source: source, format: .brunoFolder, fileName: url.deletingPathExtension().lastPathComponent)
+        } catch BrunoCollectionSource.ReadError.tooLarge {
+            importFailureMessage = "The Bruno collection is too large to import."
+        } catch {
+            importFailureMessage = "The selected folder isn’t a Bruno collection or couldn’t be read."
+        }
+    }
+
     private func commitDocument(source: String, format: ImportFormat, fileName: String? = nil) async {
         guard let persistence else { return }
         await flushWorkspaceTransport()
@@ -1497,12 +1515,15 @@ public extension ImportFormat {
         if trimmed.hasPrefix("curl ") || trimmed.hasPrefix("curl\t") { return .curl }
         guard let data = trimmed.data(using: .utf8),
               let root = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
-        else { return nil }
+        else { return detectCollectionExport(fileExtension: fileExtension, contents: trimmed, root: nil) }
         if let log = root["log"] as? [String: Any], log["entries"] is [Any] { return .har }
         if let info = root["info"] as? [String: Any], info["schema"] != nil || info["_postman_id"] != nil {
             return .postmanV2
         }
         if root["version"] as? Int == 1, root["nodes"] is [Any] { return .legacyWorkspaceV1 }
+        if let format = detectCollectionExport(fileExtension: fileExtension, contents: trimmed, root: root) {
+            return format
+        }
         return fileExtension.lowercased() == "har" ? .har : nil
     }
 }

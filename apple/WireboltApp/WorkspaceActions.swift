@@ -205,11 +205,20 @@ final class ExternalFileQueue {
 /// Imports a file with the importer that matches its contents.
 @MainActor
 func importExternalFile(_ url: URL, model: WireboltModel) async {
+    let isDirectory = (try? url.resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory == true
+    if isDirectory || url.pathExtension.lowercased() == "bru" {
+        guard !isDirectory || BrunoCollectionSource.isCollection(url) else {
+            model.importFailureMessage = "“\(url.lastPathComponent)” isn’t a Bruno collection folder."
+            return
+        }
+        await model.importBrunoCollection(at: url)
+        return
+    }
     let source = await Task.detached(priority: .userInitiated) {
         try? String(contentsOf: url, encoding: .utf8)
     }.value
     guard let source, let format = ImportFormat.detect(fileExtension: url.pathExtension, contents: source) else {
-        model.importFailureMessage = "“\(url.lastPathComponent)” isn’t a cURL command, HAR file, Postman Collection v2 or Wirebolt collection."
+        model.importFailureMessage = "“\(url.lastPathComponent)” isn’t a cURL command, HAR file, Postman Collection v2, Insomnia or Bruno export, or Wirebolt collection."
         return
     }
     if format == .curl {
@@ -226,7 +235,7 @@ struct WireboltHelpView: View {
         ("Requests & tabs", "Choose an HTTP method and URL, then Send (⌘Return). Params, Headers, Body and Auth configure the request. Cancel stops an active send. Use Navigate → Split Right to compare requests. Closing a dirty tab asks before discarding changes."),
         ("Variables & secrets", "Open the environment menu → Configure Environments. Global variables apply to every request; the selected environment overrides matching names. Use {{name}} in URLs and fields. Disable a row to omit it. Secret references resolve from this Mac’s Keychain; sharing a collection does not share those credentials."),
         ("Proxy & transport", "Settings → Network sets the app default. Workspace Settings overrides it for a workspace; a request’s Settings tab can override that again. Inherit follows the parent, Direct bypasses proxies, System uses macOS settings, Manual uses your routes. Save or Apply proxy edits. Test connection sends a HEAD request without request headers, body or cookies. Transport edits save automatically at workspace scope; request edits require ⌘S. Reconnect WebSockets after changing settings."),
-        ("Import & export", "The + menu imports cURL, HAR, Postman v2 and Wirebolt / Legacy Collection v1 JSON. Export writes saved requests, so save edits first. API Key and OAuth use Wirebolt-specific authentication metadata: reimport with Wirebolt to preserve it. Other clients may not support these extensions. Referenced credentials must be configured on the destination Mac; response history is not exported."),
+        ("Import & export", "The + menu imports cURL, HAR, Postman v2, Insomnia (v4 JSON or v5 YAML), Bruno (a collection folder or exported JSON) and Wirebolt / Legacy Collection v1 JSON. Insomnia and Bruno environments become Wirebolt environments; scripts and tests aren’t imported. Export writes saved requests, so save edits first. API Key and OAuth use Wirebolt-specific authentication metadata: reimport with Wirebolt to preserve it. Other clients may not support these extensions. Referenced credentials must be configured on the destination Mac; response history is not exported."),
         ("WebSocket", "Create a WebSocket request, enter ws:// or wss:// and Connect. Choose Text, JSON, Binary (Hex/Base64) or File for messages. Send transmits the selected representation. Disconnect ends the connection; reconnect applies updated settings."),
         ("Notes", "Write Markdown in Note → Edit. Preview renders headings, lists, emphasis, links and code locally when opened. Save with ⌘S. Images show alternative text; previews do not fetch remote content."),
         ("Git collaboration", "Workspace → Git Collaboration opens status, commit, pull and push. The workspace must already be in a Git repository. Configure its remote/upstream and authentication with Git first. Only saved workspace documents are committed. Save or discard edits before pulling; conflicts require explicit resolution. Wirebolt does not sync in the background."),
