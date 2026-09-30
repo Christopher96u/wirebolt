@@ -390,6 +390,8 @@ public final class WireboltModel {
         oauthFailureMessage = nil
         defer { isOAuthBusy = false }
         do {
+            // A client secret typed in the editor must reach Keychain before the token request reads it.
+            try await flushSecrets()
             let (token, receipt) = try await oauth2.acquireToken(configuration: configuration)
             try await persistence.saveSecret(name: configuration.accessTokenReference, value: token)
             oauthReceipts[session.id] = receipt
