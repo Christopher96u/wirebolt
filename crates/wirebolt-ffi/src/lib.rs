@@ -541,9 +541,9 @@ impl WorkspaceBridge {
     ) -> Result<String, WorkspaceBridgeError> {
         let format = ImportFormat::parse(format)
             .map_err(|_| WorkspaceBridgeError::operation("unsupported import format"))?;
-        let imported = ImportEngine::parse_file(format, source, name)
+        let imported = ImportEngine::parse_workspace_file(format, source, name)
             .map_err(|_| WorkspaceBridgeError::operation("import could not be parsed"))?;
-        self.commit_imported(imported)
+        self.commit_imported_workspace(imported)
     }
 
     /// Reads a credential only for the authentication editor, never diagnostics.
@@ -639,6 +639,56 @@ impl WorkspaceBridge {
 }
 
 impl WorkspaceBridge {
+    /// Creates the imported environments, then each collection; any failure
+    /// removes everything this import created.
+    fn commit_imported_workspace(
+        &self,
+        imported: wirebolt_core::ImportedWorkspace,
+    ) -> Result<String, WorkspaceBridgeError> {
+        let timestamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_err(|_| WorkspaceBridgeError::operation("import identifier could not be created"))?
+            .as_nanos();
+        let prefix = format!("import-env-{timestamp:x}-{:x}", std::process::id());
+        let mut environments = Vec::new();
+        let mut collections = Vec::new();
+        let result = (|| {
+            for (index, imported) in imported.environments.into_iter().enumerate() {
+                let environment = Environment::from_rows(
+                    document_id(format!("{prefix}-{index}"))?,
+                    imported.name,
+                    imported.variables,
+                );
+                environments.push(environment.id.clone());
+                self.store
+                    .save(&WorkspaceDocument::Environment(environment))
+                    .map_err(|_| {
+                        WorkspaceBridgeError::operation("import environment could not be saved")
+                    })?;
+            }
+            let mut delta = None;
+            for collection in imported.collections {
+                let encoded = self.commit_imported(collection)?;
+                let document: serde_json::Value = serde_json::from_str(&encoded)
+                    .map_err(|_| WorkspaceBridgeError::operation("import delta is invalid"))?;
+                if let Some(id) = document["affected_ids"][0].as_str() {
+                    collections.push(document_id(id.to_owned())?);
+                }
+                delta = Some(encoded);
+            }
+            delta.ok_or_else(|| WorkspaceBridgeError::operation("import has no collections"))
+        })();
+        if result.is_err() {
+            for id in &collections {
+                let _ = self.store.delete_collection(id);
+            }
+            for id in &environments {
+                let _ = self.store.delete_environment(id);
+            }
+        }
+        result
+    }
+
     fn commit_imported(
         &self,
         imported: wirebolt_core::ImportedCollection,
@@ -1905,6 +1955,11 @@ fn secure_import_authentication(
         let ValueSource::Literal(material) = source else {
             return Ok(());
         };
+        // `{{token}}` names a variable rather than holding secret material, and
+        // Keychain values are not expanded, so keep variable references as written.
+        if material.contains("{{") {
+            return Ok(());
+        }
         let name = SecretName::new(format!("{prefix}-{label}"))
             .map_err(|_| WorkspaceBridgeError::operation("import credential name is invalid"))?;
         save_import_credential(&name, material)?;
@@ -2566,6 +2621,45 @@ mod tests {
             serde_json::from_str::<serde_json::Value>(&reopened.snapshot_json().unwrap()).unwrap(),
             snapshot
         );
+    }
+
+    #[test]
+    fn bruno_file_import_creates_environments_and_keeps_variable_credentials() {
+        let directory = tempfile::tempdir().unwrap();
+        let bridge = WorkspaceBridge::open_or_create(
+            directory.path().to_string_lossy().into_owned(),
+            "Fixture".into(),
+        )
+        .unwrap();
+        let source = r#"{
+          "name": "Demo", "version": "1",
+          "items": [{"type": "http", "name": "Me", "seq": 1, "request": {
+            "url": "{{baseUrl}}/me", "method": "GET",
+            "auth": {"mode": "bearer", "bearer": {"token": "{{token}}"}}
+          }}],
+          "environments": [{"name": "Local", "variables": [
+            {"name": "baseUrl", "value": "http://127.0.0.1:18990", "enabled": true, "secret": false},
+            {"name": "token", "value": "", "enabled": true, "secret": true}
+          ]}]
+        }"#;
+        bridge.commit_import_file("bruno", source, "Demo").unwrap();
+        let snapshot: serde_json::Value =
+            serde_json::from_str(&bridge.snapshot_json().unwrap()).unwrap();
+        assert_eq!(snapshot["collections"].as_array().unwrap().len(), 1);
+        let environments = snapshot["environments"].as_array().unwrap();
+        let local = environments
+            .iter()
+            .find(|environment| environment["name"] == "Demo – Local")
+            .expect("imported environment");
+        let serialized = local.to_string();
+        assert!(serialized.contains("http://127.0.0.1:18990"));
+        assert!(serialized.contains("demo.local.token"));
+        // A templated credential stays a variable reference instead of a Keychain copy.
+        assert!(snapshot["collections"].to_string().contains("{{token}}"));
+        assert!(bridge.commit_import_file("bruno", "{}", "Broken").is_err());
+        let after: serde_json::Value =
+            serde_json::from_str(&bridge.snapshot_json().unwrap()).unwrap();
+        assert_eq!(after["environments"], snapshot["environments"]);
     }
 
     #[test]
