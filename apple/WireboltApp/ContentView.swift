@@ -266,23 +266,7 @@ struct ContentView: View {
                 .labelStyle(.iconOnly).buttonStyle(.borderless).help("Workspace Settings")
         }
         ToolbarItem(id: "response-placement", placement: .primaryAction) {
-            // Below the split's minimum width every group stacks the response under the
-            // request, so the toggle would have no visible effect.
-            let fitsRight = interface.fitsResponseOnRight(groupIDs: model.sessions.groups.map(\.id))
-            Button {
-                interface.responseOrientation = interface.responseOrientation == .bottom ? .right : .bottom
-            } label: {
-                // Shows the current layout, like Xcode's area toggles.
-                Image(systemName: interface.responseOrientation == .right && fitsRight
-                    ? "rectangle.righthalf.inset.filled" : "rectangle.bottomthird.inset.filled")
-            }
-            .accessibilityLabel(interface.responseOrientation == .bottom ? "Place Response on Right" : "Place Response on Bottom")
-            .buttonStyle(.borderless)
-            .frame(width: 30, height: 30)
-            .disabled(!fitsRight)
-            .help(fitsRight
-                ? (interface.responseOrientation == .bottom ? "Place Response on Right" : "Place Response on Bottom")
-                : "Widen the editor to place the response on the right")
+            ResponsePlacementButton(model: model, interface: interface)
         }
     }
 
@@ -310,6 +294,34 @@ struct ContentView: View {
                 model.importFailureMessage = "The file couldn’t be opened. \(error.localizedDescription)"
             }
         }
+    }
+}
+
+/// Toggles the response between bottom and right. Its own view: it reads the editor groups,
+/// and reading them in the workspace's toolbar re-rendered the whole window on every tab
+/// switch.
+private struct ResponsePlacementButton: View {
+    let model: WireboltModel
+    let interface: WorkspaceUIState
+
+    var body: some View {
+        // Below the split's minimum width every group stacks the response under the
+        // request, so the toggle would have no visible effect.
+        let fitsRight = interface.fitsResponseOnRight(groupIDs: model.sessions.groups.map(\.id))
+        Button {
+            interface.responseOrientation = interface.responseOrientation == .bottom ? .right : .bottom
+        } label: {
+            // Shows the current layout, like Xcode's area toggles.
+            Image(systemName: interface.responseOrientation == .right && fitsRight
+                ? "rectangle.righthalf.inset.filled" : "rectangle.bottomthird.inset.filled")
+        }
+        .accessibilityLabel(interface.responseOrientation == .bottom ? "Place Response on Right" : "Place Response on Bottom")
+        .buttonStyle(.borderless)
+        .frame(width: 30, height: 30)
+        .disabled(!fitsRight)
+        .help(fitsRight
+            ? (interface.responseOrientation == .bottom ? "Place Response on Right" : "Place Response on Bottom")
+            : "Widen the editor to place the response on the right")
     }
 }
 
