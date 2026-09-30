@@ -49,6 +49,9 @@ if start is None:
     raise SystemExit(f"error: CHANGELOG.md has no '## {version}' section")
 end = next((i for i in range(start + 1, len(lines)) if lines[i].startswith("## ")), len(lines))
 notes = "\n".join(lines[start + 1:end]).strip()
+# Relative changelog links would break on the release page.
+base = f"https://github.com/Christopher96u/wirebolt/blob/v{version}/"
+notes = re.sub(r"\]\((?!https?://|#)([^)]+)\)", lambda m: f"]({base}{m.group(1)})", notes)
 if not notes:
     raise SystemExit(f"error: the CHANGELOG.md section for {version} is empty")
 print(notes)
