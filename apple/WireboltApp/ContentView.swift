@@ -1004,29 +1004,10 @@ private struct SavedRequestRow: View {
     let location: RequestLocation
     let depth: Int
 
+    // Only decides the selection; the row builds its actions itself, so this stays cheap.
     var body: some View {
         SidebarRequestButton(model: model, interface: interface, location: location, depth: depth,
-            isSelected: model.selectedRequestID == location.id && interface.sidebarCursor == nil,
-            action: {
-                interface.sidebarCursor = nil
-                interface.activateSavedRequest(location, model: model)
-                interface.focusSidebarTrigger += 1
-            },
-            onSplit: {
-                interface.activateSavedRequest(location, model: model)
-                if let tabID = model.sessions.activeSession?.id { interface.openInNewSplit(tabID: tabID, model: model) }
-            },
-            onRename: { name in Task { await model.renameRequest(collectionID: location.collectionID, requestID: location.request.id, name: name) } },
-            onDuplicate: { Task { await model.duplicateRequest(collectionID: location.collectionID, requestID: location.request.id) } },
-            onExport: { Task {
-                if let document = await model.exportRequest(collectionID: location.collectionID, id: location.request.id) {
-                    saveExportedDocument(named: location.request.name, content: document)
-                }
-            } },
-            onDelete: {
-                interface.requestDelete(.request(collectionID: location.collectionID, id: location.request.id),
-                                        title: location.request.name, model: model)
-            }
+            isSelected: interface.sidebarCursor == nil && model.isSelectedRequest(location)
         ).equatable()
     }
 }
@@ -1333,12 +1314,41 @@ private struct SidebarRequestButton: View, @MainActor Equatable {
     let location: RequestLocation
     let depth: Int
     let isSelected: Bool
-    let action: () -> Void
-    let onSplit: () -> Void
-    let onRename: (String) -> Void
-    let onDuplicate: () -> Void
-    let onExport: () -> Void
-    let onDelete: () -> Void
+
+    private func action() {
+        interface.sidebarCursor = nil
+        interface.activateSavedRequest(location, model: model)
+        interface.focusSidebarTrigger += 1
+    }
+
+    private func onSplit() {
+        interface.activateSavedRequest(location, model: model)
+        if let tabID = model.sessions.activeSession?.id { interface.openInNewSplit(tabID: tabID, model: model) }
+    }
+
+    private func onRename(_ name: String) {
+        let (model, location) = (model, location)
+        Task { await model.renameRequest(collectionID: location.collectionID, requestID: location.request.id, name: name) }
+    }
+
+    private func onDuplicate() {
+        let (model, location) = (model, location)
+        Task { await model.duplicateRequest(collectionID: location.collectionID, requestID: location.request.id) }
+    }
+
+    private func onExport() {
+        let (model, location) = (model, location)
+        Task {
+            if let document = await model.exportRequest(collectionID: location.collectionID, id: location.request.id) {
+                saveExportedDocument(named: location.request.name, content: document)
+            }
+        }
+    }
+
+    private func onDelete() {
+        interface.requestDelete(.request(collectionID: location.collectionID, id: location.request.id),
+                                title: location.request.name, model: model)
+    }
 
     private var isRenaming: Bool { interface.renamingRequestID == location.id }
     private var identifier: String { "request|\(location.collectionID)|\(location.request.id)" }

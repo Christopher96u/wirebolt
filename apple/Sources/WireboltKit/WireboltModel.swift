@@ -236,6 +236,12 @@ public final class WireboltModel {
         return "\(collectionID)/\(session.requestID)"
     }
 
+    /// Whether `location` is the active document's saved request. Observes only that
+    /// request, so a selection change re-renders two sidebar rows rather than every row.
+    public func isSelectedRequest(_ location: RequestLocation) -> Bool {
+        sessions.isActiveRequest(collectionID: location.collectionID, requestID: location.request.id)
+    }
+
     public var draft: RequestDraft {
         get { sessions.activeSession?.draft ?? RequestDraft() }
         set {
@@ -1685,6 +1691,7 @@ extension WireboltModel {
                 for session in sessions.sessions.values where session.collectionID == fromCollectionID && session.requestID == id {
                     session.relocate(to: toCollectionID)
                 }
+                sessions.refreshActiveRequest()
                 rebuildRequestSearchIndex()
                 return .moveRequest(fromCollectionID: toCollectionID, id: id, toCollectionID: fromCollectionID,
                                     groupID: source.groupID, order: source.order)
