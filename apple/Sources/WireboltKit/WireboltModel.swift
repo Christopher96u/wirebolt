@@ -33,9 +33,12 @@ public protocol WorkspacePersistence: Sendable {
     func exportCollection(id: String) async throws -> String
     func exportWorkspace() async throws -> String
     func exportRequest(collectionID: String, id: String) async throws -> String
+    /// The workspace folder, used to key local runtime storage such as cookies.
+    var location: URL? { get }
 }
 
 public extension WorkspacePersistence {
+    var location: URL? { nil }
     func readSecret(name _: String) async throws -> String? { nil }
     func apply(_ command: WorkspaceCommand) async throws -> WorkspaceDelta {
         switch command {
@@ -124,6 +127,10 @@ public final class WireboltModel {
     public private(set) var oauthFailureMessage: String?
     public private(set) var isOAuthBusy = false
     public var isShowingGitCollaboration = false
+    /// The open workspace folder, when the persistence has one.
+    public private(set) var workspaceLocation: URL?
+    /// Increases whenever the active cookie jar changes, so a cookie list can refresh.
+    public private(set) var cookieRevision = 0
     public var isShowingWorkspaceSettings = false
     public var settingsTab = "general"
 
@@ -132,7 +139,10 @@ public final class WireboltModel {
     @ObservationIgnored private var persistence: (any WorkspacePersistence)?
     @ObservationIgnored private var gitCollaboration: (any GitCollaboration)?
     @ObservationIgnored private let history: HistoryRepository
-    @ObservationIgnored private let cookieJar: CookieJar
+    @ObservationIgnored private var cookieJar: CookieJar
+    /// Used while no workspace folder is known, for example in tests and previews.
+    @ObservationIgnored private let defaultCookieJar: CookieJar
+    @ObservationIgnored private let cookieDirectory: URL?
     @ObservationIgnored private let oauth2: any OAuth2Authorizing
     @ObservationIgnored private var requestSearchIndex: [String: String] = [:]
     @ObservationIgnored private var rootCreation: Task<Void, any Error>?
@@ -145,6 +155,11 @@ public final class WireboltModel {
     /// Undo and redo run one at a time so each inverse sees the state its predecessor left.
     @ObservationIgnored var undoWork: Task<Void, Never>?
 
+    public nonisolated static var defaultCookieDirectory: URL {
+        FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            .appending(path: "Wirebolt/Cookies", directoryHint: .isDirectory)
+    }
+
     public init(
         runner: any RequestRunner,
         socketConnector: (any WebSocketConnecting)? = nil,
@@ -152,10 +167,8 @@ public final class WireboltModel {
         gitCollaboration: (any GitCollaboration)? = nil,
         sessions: DocumentSessionStore? = nil,
         history: HistoryRepository = HistoryRepository(),
-        cookieJar: CookieJar = CookieJar(
-            storageURL: FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-                .appending(path: "Wirebolt/Cookies/cookies.json")
-        ),
+        cookieJar: CookieJar = CookieJar(),
+        cookieDirectory: URL? = WireboltModel.defaultCookieDirectory,
         oauth2: (any OAuth2Authorizing)? = nil,
         proxyPreferences: ProxyPreferences? = nil
     ) {
@@ -167,6 +180,8 @@ public final class WireboltModel {
         self.sessions = sessions ?? DocumentSessionStore()
         self.history = history
         self.cookieJar = cookieJar
+        defaultCookieJar = cookieJar
+        self.cookieDirectory = cookieDirectory
         self.oauth2 = oauth2 ?? OAuth2Service()
     }
 
@@ -178,6 +193,16 @@ public final class WireboltModel {
         self.gitCollaboration = gitCollaboration
         editedSecrets = [:]
         dirtySecrets = []
+        workspaceLocation = persistence.location
+        // Each workspace keeps its own cookies, as a browser profile would.
+        if let cookieDirectory, let location = persistence.location {
+            cookieJar = CookieJar(storageURL: CookieJar.storageURL(forWorkspaceAt: location, in: cookieDirectory))
+            // Earlier versions shared one jar between all workspaces and kept session cookies.
+            try? FileManager.default.removeItem(at: cookieDirectory.appending(path: "cookies.json"))
+        } else {
+            cookieJar = defaultCookieJar
+        }
+        cookieRevision += 1
     }
 
     public var selectedRequestID: String? {
@@ -342,6 +367,7 @@ public final class WireboltModel {
                 }
                 if case let .cookies(update) = event, let url = URL(string: update.url) {
                     let received = await cookieJar.store(headers: update.headers, requestURL: url)
+                    if !received.isEmpty { cookieRevision += 1 }
                     guard session.activeRunID == runID else { return }
                     session.appendResponseCookies(received)
                 }
@@ -580,6 +606,23 @@ public final class WireboltModel {
             operationFailure = RunFailure(kind: "workspace", issues: [])
             return false
         }
+    }
+
+    // MARK: Cookies
+
+    /// The active workspace's cookies, most specific domain first.
+    public func cookies() async -> [CookieSnapshot] {
+        await cookieJar.all().sorted { ($0.domain, $0.path, $0.name) < ($1.domain, $1.path, $1.name) }
+    }
+
+    public func deleteCookie(id: CookieSnapshot.ID) async {
+        await cookieJar.delete(id: id)
+        cookieRevision += 1
+    }
+
+    public func clearCookies() async {
+        await cookieJar.removeAll()
+        cookieRevision += 1
     }
 
     /// Opens a saved request. `preview` reuses the group's preview tab instead of adding a tab.

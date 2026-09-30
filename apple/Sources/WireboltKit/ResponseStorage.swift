@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 
 public actor ResponseBodyStore {
@@ -224,6 +225,8 @@ public struct CookieSnapshot: Codable, Equatable, Identifiable, Sendable {
     public let expiresAt: Date?
 }
 
+/// Cookies received by one workspace's requests. Cookies with an expiry persist to
+/// `storageURL`; session cookies (no Expires or Max-Age) live only until the app quits.
 public actor CookieJar {
     private var loadedCookies: [CookieSnapshot]?
     private let storageURL: URL?
@@ -233,12 +236,21 @@ public actor CookieJar {
         self.storageURL = storageURL
     }
 
+    /// Runtime storage for the workspace at `workspaceURL`, outside the workspace folder
+    /// so cookies never reach Git. The file name is derived from the folder path.
+    public nonisolated static func storageURL(forWorkspaceAt workspaceURL: URL, in directory: URL) -> URL {
+        let path = workspaceURL.standardizedFileURL.resolvingSymlinksInPath().path
+        let digest = SHA256.hash(data: Data(path.utf8)).prefix(16).map { String(format: "%02x", $0) }.joined()
+        return directory.appending(path: "\(digest).json")
+    }
+
     private var cookies: [CookieSnapshot] {
         get {
             if let loadedCookies { return loadedCookies }
-            let saved = storageURL
+            let saved = (storageURL
                 .flatMap { try? Data(contentsOf: $0) }
-                .flatMap { try? JSONDecoder().decode([CookieSnapshot].self, from: $0) } ?? []
+                .flatMap { try? JSONDecoder().decode([CookieSnapshot].self, from: $0) } ?? [])
+                .filter { $0.expiresAt != nil }
             loadedCookies = saved
             return saved
         }
@@ -276,6 +288,16 @@ public actor CookieJar {
     public func all() -> [CookieSnapshot] {
         removeExpired()
         return cookies
+    }
+
+    public func delete(id: CookieSnapshot.ID) {
+        cookies.removeAll { $0.id == id }
+        persist()
+    }
+
+    public func removeAll() {
+        cookies = []
+        persist()
     }
 
     private func removeExpired() {
@@ -365,7 +387,9 @@ public actor CookieJar {
                 at: storageURL.deletingLastPathComponent(),
                 withIntermediateDirectories: true
             )
-            try JSONEncoder().encode(cookies).write(to: storageURL, options: .atomic)
+            // Session cookies end with the app, as in a browser.
+            try JSONEncoder().encode(cookies.filter { $0.expiresAt != nil })
+                .write(to: storageURL, options: .atomic)
         } catch {
             // Cookie persistence is best effort; a failed cache write must never fail a request.
         }

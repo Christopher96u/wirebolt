@@ -32,6 +32,7 @@ wirebolt_app_inputs=(
   apple/WireboltApp/NotesEditor.swift
   apple/WireboltApp/EnvironmentEditor.swift
   apple/WireboltApp/GitCollaborationView.swift
+  apple/WireboltApp/CookiesView.swift
   apple/WireboltApp/PerformanceProbe.swift
   apple/WireboltApp/ResponseViewer.swift
   apple/WireboltApp/ResponseHexView.swift

@@ -2,6 +2,7 @@ import Foundation
 
 struct RustWorkspacePersistence: WorkspacePersistence, GitCollaboration {
     private let bridge: WorkspaceBridge
+    let location: URL?
 
     init(
         path: URL = Self.defaultWorkspaceURL,
@@ -20,6 +21,7 @@ struct RustWorkspacePersistence: WorkspacePersistence, GitCollaboration {
         // A new workspace starts empty; the first request creates the top-level list, so the
         // sidebar never opens on an empty placeholder collection. Its name follows the folder.
         bridge = try WorkspaceBridge.openOrCreate(path: path.path, name: Self.defaultName(for: path))
+        location = path
     }
 
     /// The folder name, except for the built-in workspace in Application Support.
