@@ -1017,6 +1017,29 @@ public final class WireboltModel {
         importFailureMessage = await commitDocument(source: source, format: format)
     }
 
+    /// Imports a Bruno collection folder, or a single `.bru` request file.
+    public func importBrunoCollection(at url: URL) async {
+        guard !isImporting, persistence != nil else { return }
+        isImporting = true
+        importFailureMessage = nil
+        defer { isImporting = false }
+        do {
+            let source = try await Task.detached(priority: .userInitiated) {
+                try BrunoCollectionSource.bundle(at: url)
+            }.value
+            importFailureMessage = await commitDocument(
+                source: source,
+                format: .brunoFolder,
+                fileName: url.deletingPathExtension().lastPathComponent,
+                displayName: url.lastPathComponent
+            )
+        } catch BrunoCollectionSource.ReadError.tooLarge {
+            importFailureMessage = "“\(url.lastPathComponent)” is too large to import."
+        } catch {
+            importFailureMessage = "“\(url.lastPathComponent)” isn’t a Bruno collection or couldn’t be read."
+        }
+    }
+
     /// Imports pasted text and returns why it failed instead of raising the window alert,
     /// so a sheet can show the reason in place.
     public func importPastedDocument(source: String, format: ImportFormat) async -> String? {
@@ -1774,6 +1797,9 @@ public extension ImportFormat {
         case .har: "HAR"
         case .legacyWorkspaceV1: "Wirebolt JSON"
         case .postmanV2: "Postman Collection v2"
+        case .insomnia: "Insomnia"
+        case .bruno: "Bruno collection"
+        case .brunoFolder: "Bruno collection folder"
         }
     }
 
@@ -1795,7 +1821,7 @@ public extension ImportFormat {
         if isOpenAPI(contents) {
             return "“\(fileName)” is an OpenAPI or Swagger document. OpenAPI import isn’t supported yet."
         }
-        let formats = ListFormatter.localizedString(byJoining: allCases.map(\.displayName))
+        let formats = ListFormatter.localizedString(byJoining: allCases.filter { $0 != .brunoFolder }.map(\.displayName))
         return "“\(fileName)” isn’t a format Wirebolt can import. Supported formats: \(formats)."
     }
 
@@ -1817,7 +1843,7 @@ public extension ImportFormat {
 
     /// Infers the importer for a file opened from Finder or dropped on the window.
     static func detect(fileExtension: String, contents: String) -> ImportFormat? {
-                let trimmed = contents.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmed = contents.trimmingCharacters(in: .whitespacesAndNewlines)
         // Shell files may start with comments before the first command.
         let command = trimmed.split(whereSeparator: \.isNewline)
             .map { $0.trimmingCharacters(in: .whitespaces) }
@@ -1825,12 +1851,15 @@ public extension ImportFormat {
         if command.hasPrefix("curl ") || command.hasPrefix("curl\t") { return .curl }
         guard let data = trimmed.data(using: .utf8),
               let root = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
-        else { return nil }
+        else { return detectCollectionExport(fileExtension: fileExtension, contents: trimmed, root: nil) }
         if let log = root["log"] as? [String: Any], log["entries"] is [Any] { return .har }
         if let info = root["info"] as? [String: Any], info["schema"] != nil || info["_postman_id"] != nil {
             return .postmanV2
         }
         if root["version"] as? Int == 1, root["nodes"] is [Any] { return .legacyWorkspaceV1 }
+        if let format = detectCollectionExport(fileExtension: fileExtension, contents: trimmed, root: root) {
+            return format
+        }
         return fileExtension.lowercased() == "har" ? .har : nil
     }
 }

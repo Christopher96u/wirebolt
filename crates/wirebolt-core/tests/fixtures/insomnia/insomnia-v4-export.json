@@ -1,0 +1,278 @@
+{
+  "_type": "export",
+  "__export_format": 4,
+  "__export_date": "2026-09-12T08:41:27.310Z",
+  "__export_source": "insomnia.desktop.app:v2023.5.8",
+  "resources": [
+    {
+      "_id": "req_a1f0c2d4e6b84a0f9d1e2c3b4a5f6071",
+      "parentId": "fld_7c1e5b0a2d3f4e6a8b9c0d1e2f3a4b5c",
+      "modified": 1726130400000,
+      "created": 1726130000000,
+      "url": "{{ _.base_url }}/v1/orders",
+      "name": "Create order",
+      "description": "Creates an order for the **current** customer.",
+      "method": "POST",
+      "body": {
+        "mimeType": "application/json",
+        "text": "{\n  \"sku\": \"LAMP-01\",\n  \"quantity\": {{ _.quantity }},\n  \"note\": \"{% uuid 'v4' %}\"\n}"
+      },
+      "parameters": [
+        { "id": "pair_1", "name": "dry_run", "value": "false", "disabled": false },
+        { "id": "pair_2", "name": "trace", "value": "1", "disabled": true }
+      ],
+      "headers": [
+        { "name": "Content-Type", "value": "application/json" },
+        { "name": "X-Request-Source", "value": "insomnia", "disabled": true }
+      ],
+      "authentication": {},
+      "metaSortKey": -1726130000000,
+      "isPrivate": false,
+      "pathParameters": [],
+      "settingStoreCookies": true,
+      "settingSendCookies": true,
+      "settingDisableRenderRequestBody": false,
+      "settingEncodeUrl": true,
+      "settingRebuildPath": true,
+      "settingFollowRedirects": "global",
+      "preRequestScript": "insomnia.environment.set('stamp', Date.now());",
+      "afterResponseScript": "",
+      "_type": "request"
+    },
+    {
+      "_id": "fld_7c1e5b0a2d3f4e6a8b9c0d1e2f3a4b5c",
+      "parentId": "wrk_3b0f6d2e9c8a4f1b8e7d6c5b4a392817",
+      "modified": 1726130400000,
+      "created": 1726129000000,
+      "name": "Orders",
+      "description": "Order management endpoints.",
+      "environment": { "page_size": 50 },
+      "environmentPropertyOrder": { "&": ["page_size"] },
+      "metaSortKey": -1726129000000,
+      "headers": [{ "name": "X-Tenant", "value": "{{ _.tenant }}" }],
+      "authentication": { "type": "bearer", "token": "{{ _.access_token }}", "prefix": "" },
+      "preRequestScript": "",
+      "_type": "request_group"
+    },
+    {
+      "_id": "wrk_3b0f6d2e9c8a4f1b8e7d6c5b4a392817",
+      "parentId": null,
+      "modified": 1726128000000,
+      "created": 1726128000000,
+      "name": "Storefront API",
+      "description": "",
+      "scope": "collection",
+      "_type": "workspace"
+    },
+    {
+      "_id": "req_b2e1d3c5f7a94b1e8c2d3e4f5a6b7c80",
+      "parentId": "fld_7c1e5b0a2d3f4e6a8b9c0d1e2f3a4b5c",
+      "url": "{{ _.base_url }}/v1/orders/:orderId",
+      "name": "Get order",
+      "description": "",
+      "method": "GET",
+      "body": {},
+      "parameters": [],
+      "headers": [],
+      "authentication": { "type": "none" },
+      "metaSortKey": -1726129500000,
+      "pathParameters": [{ "name": "orderId", "value": "{{ _.last_order_id }}" }],
+      "_type": "request"
+    },
+    {
+      "_id": "fld_9d2f6c1b3e4a5f7b9c0d1e2f3a4b5c6d",
+      "parentId": "fld_7c1e5b0a2d3f4e6a8b9c0d1e2f3a4b5c",
+      "name": "Fulfilment",
+      "description": "",
+      "environment": {},
+      "metaSortKey": -1726128000000,
+      "authentication": { "type": "basic", "username": "warehouse", "password": "demo-password", "useISO88591": false, "disabled": false },
+      "_type": "request_group"
+    },
+    {
+      "_id": "req_c3f2e4d6a8b05c2f9d3e4f5a6b7c8d91",
+      "parentId": "fld_9d2f6c1b3e4a5f7b9c0d1e2f3a4b5c6d",
+      "url": "{{ _.base_url }}/v1/shipments",
+      "name": "Book shipment",
+      "method": "POST",
+      "body": {
+        "mimeType": "application/x-www-form-urlencoded",
+        "params": [
+          { "id": "pair_3", "name": "carrier", "value": "dhl" },
+          { "id": "pair_4", "name": "express", "value": "true", "disabled": true },
+          { "id": "pair_5", "name": "weight_kg", "value": "{{ _.parcel.weight }}" }
+        ]
+      },
+      "parameters": [],
+      "headers": [{ "name": "Content-Type", "value": "application/x-www-form-urlencoded" }],
+      "authentication": {},
+      "metaSortKey": -1726127000000,
+      "_type": "request"
+    },
+    {
+      "_id": "req_d4a3f5e7b9c16d3a0e4f5a6b7c8d9ea2",
+      "parentId": "wrk_3b0f6d2e9c8a4f1b8e7d6c5b4a392817",
+      "url": "{{ _.base_url }}/v1/catalog/images",
+      "name": "Upload product image",
+      "method": "PUT",
+      "body": {
+        "mimeType": "multipart/form-data",
+        "params": [
+          { "id": "pair_6", "name": "sku", "value": "LAMP-01" },
+          { "id": "pair_7", "name": "image", "type": "file", "fileName": "/Users/demo/Pictures/lamp.png" },
+          { "id": "pair_8", "name": "alt", "value": "Desk lamp", "disabled": true }
+        ]
+      },
+      "parameters": [],
+      "headers": [{ "name": "Content-Type", "value": "multipart/form-data" }],
+      "authentication": { "type": "apikey", "key": "api_key", "value": "demo-api-key", "addTo": "queryParams", "disabled": false },
+      "metaSortKey": -1726126000000,
+      "_type": "request"
+    },
+    {
+      "_id": "req_e5b4a6f8c0d27e4b1f5a6b7c8d9eafb3",
+      "parentId": "wrk_3b0f6d2e9c8a4f1b8e7d6c5b4a392817",
+      "url": "{{ _.base_url }}/graphql",
+      "name": "Search products",
+      "method": "POST",
+      "body": {
+        "mimeType": "application/graphql",
+        "text": "{\"query\":\"query Search($term: String!) { products(term: $term) { id name } }\",\"variables\":{\"term\":\"lamp\"}}"
+      },
+      "parameters": [],
+      "headers": [{ "name": "Content-Type", "value": "application/json" }],
+      "authentication": {
+        "type": "oauth2",
+        "grantType": "client_credentials",
+        "accessTokenUrl": "https://auth.example.test/oauth/token",
+        "clientId": "storefront-cli",
+        "clientSecret": "demo-client-secret",
+        "scope": "catalog:read",
+        "audience": "https://api.example.test",
+        "credentialsInBody": false
+      },
+      "metaSortKey": -1726125000000,
+      "_type": "request"
+    },
+    {
+      "_id": "req_f6c5b7a9d1e38f5c2a6b7c8d9eafb0c4",
+      "parentId": "wrk_3b0f6d2e9c8a4f1b8e7d6c5b4a392817",
+      "url": "{{ _.base_url }}/v1/imports/catalog",
+      "name": "Import catalog file",
+      "method": "POST",
+      "body": { "mimeType": "application/octet-stream", "fileName": "/Users/demo/Documents/catalog.csv" },
+      "parameters": [],
+      "headers": [],
+      "authentication": { "type": "digest", "username": "admin", "password": "demo" },
+      "metaSortKey": -1726124000000,
+      "_type": "request"
+    },
+    {
+      "_id": "req_a7d6c8b0e2f49a6d3b7c8d9eafb0c1d5",
+      "parentId": "wrk_3b0f6d2e9c8a4f1b8e7d6c5b4a392817",
+      "url": "{{ _.legacy_url }}/soap/inventory",
+      "name": "Legacy inventory (SOAP)",
+      "method": "POST",
+      "body": {
+        "mimeType": "text/xml",
+        "text": "<?xml version=\"1.0\"?>\n<Envelope><Body><GetStock sku=\"LAMP-01\"/></Body></Envelope>"
+      },
+      "parameters": [],
+      "headers": [
+        { "name": "Authorization", "value": "Bearer {% response 'body', 'req_e5b4a6f8c0d27e4b1f5a6b7c8d9eafb3', 'b64::JC5hY2Nlc3NfdG9rZW4=::46b', 'never', 60 %}" }
+      ],
+      "authentication": { "type": "none" },
+      "metaSortKey": -1726123000000,
+      "_type": "request"
+    },
+    {
+      "_id": "ws-req_0b1c2d3e4f5a6b7c8d9e0f1a2b3c4d5e",
+      "parentId": "wrk_3b0f6d2e9c8a4f1b8e7d6c5b4a392817",
+      "name": "Order events",
+      "url": "wss://stream.example.test/orders",
+      "metaSortKey": -1726122000000,
+      "headers": [{ "name": "X-Client", "value": "insomnia" }],
+      "parameters": [{ "name": "since", "value": "now" }],
+      "authentication": { "type": "bearer", "token": "{{ _.access_token }}" },
+      "_type": "websocket_request"
+    },
+    {
+      "_id": "ws-payload_1c2d3e4f5a6b7c8d9e0f1a2b3c4d5e6f",
+      "parentId": "ws-req_0b1c2d3e4f5a6b7c8d9e0f1a2b3c4d5e",
+      "name": "subscribe",
+      "value": "{\"type\":\"subscribe\"}",
+      "mode": "application/json",
+      "_type": "websocket_payload"
+    },
+    {
+      "_id": "greq_2d3e4f5a6b7c8d9e0f1a2b3c4d5e6f70",
+      "parentId": "wrk_3b0f6d2e9c8a4f1b8e7d6c5b4a392817",
+      "name": "Inventory stream (gRPC)",
+      "url": "grpc.example.test:443",
+      "protoMethodName": "/inventory.Inventory/Watch",
+      "metaSortKey": -1726121000000,
+      "_type": "grpc_request"
+    },
+    {
+      "_id": "env_4e5f6a7b8c9d0e1f2a3b4c5d6e7f8091",
+      "parentId": "wrk_3b0f6d2e9c8a4f1b8e7d6c5b4a392817",
+      "name": "Base Environment",
+      "data": {
+        "base_url": "https://api.example.test",
+        "legacy_url": "{{ _.base_url }}/legacy",
+        "quantity": 1,
+        "parcel": { "weight": "2.5" },
+        "tenant": "demo"
+      },
+      "dataPropertyOrder": { "&": ["base_url", "legacy_url", "quantity", "parcel", "tenant"], "&~|parcel": ["weight"] },
+      "color": null,
+      "isPrivate": false,
+      "metaSortKey": 1726128000000,
+      "_type": "environment"
+    },
+    {
+      "_id": "env_5f6a7b8c9d0e1f2a3b4c5d6e7f809102",
+      "parentId": "env_4e5f6a7b8c9d0e1f2a3b4c5d6e7f8091",
+      "name": "Staging",
+      "data": { "base_url": "https://staging.example.test", "access_token": "{{ _.staging_token }}", "last_order_id": "ord_1001" },
+      "dataPropertyOrder": { "&": ["base_url", "access_token", "last_order_id"] },
+      "color": "#7d69cb",
+      "isPrivate": false,
+      "metaSortKey": 1726128100000,
+      "_type": "environment"
+    },
+    {
+      "_id": "env_6a7b8c9d0e1f2a3b4c5d6e7f80910213",
+      "parentId": "env_4e5f6a7b8c9d0e1f2a3b4c5d6e7f8091",
+      "name": "Production",
+      "data": { "base_url": "https://api.example.test", "access_token": "" },
+      "dataPropertyOrder": { "&": ["base_url", "access_token"] },
+      "environmentType": "kv",
+      "kvPairData": [
+        { "id": "envPair_1", "name": "base_url", "value": "https://api.example.test", "type": "str", "enabled": true },
+        { "id": "envPair_2", "name": "debug", "value": "true", "type": "str", "enabled": false },
+        { "id": "envPair_3", "name": "access_token", "value": "", "type": "secret", "enabled": true }
+      ],
+      "color": "#ff5733",
+      "isPrivate": false,
+      "metaSortKey": 1726128200000,
+      "_type": "environment"
+    },
+    {
+      "_id": "jar_7b8c9d0e1f2a3b4c5d6e7f8091021324",
+      "parentId": "wrk_3b0f6d2e9c8a4f1b8e7d6c5b4a392817",
+      "name": "Default Jar",
+      "cookies": [
+        { "key": "session", "value": "demo-session", "domain": "api.example.test", "path": "/", "hostOnly": true }
+      ],
+      "_type": "cookie_jar"
+    },
+    {
+      "_id": "uts_8c9d0e1f2a3b4c5d6e7f809102132435",
+      "parentId": "wrk_3b0f6d2e9c8a4f1b8e7d6c5b4a392817",
+      "name": "Smoke tests",
+      "metaSortKey": -1726120000000,
+      "_type": "unit_test_suite"
+    }
+  ]
+}

@@ -75,7 +75,7 @@ The [quick start](docs/quick-start.md) includes a local demo server and copyable
 | [WebSockets](docs/websockets.md) | Connect, send text or binary messages, inspect replies and disconnect |
 | [Markdown notes](docs/notes.md) | Request documentation with local Edit/Preview modes |
 | [Git collaboration](docs/git-collaboration.md) | Review status and explicitly commit, pull or push workspace documents |
-| [Import and export](docs/import-export.md) | cURL, HAR, Postman v2 and Wirebolt JSON import; Wirebolt JSON export |
+| [Import and export](docs/import-export.md) | cURL, HAR, Postman v2, Insomnia, Bruno and Wirebolt JSON import; Wirebolt JSON export |
 
 ### Configure once, reuse across requests
 

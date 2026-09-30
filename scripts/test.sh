@@ -35,6 +35,7 @@ swiftc \
   apple/Sources/WireboltKit/ResponseStorage.swift \
   apple/Sources/WireboltKit/JSONResponseDocument.swift \
   apple/Sources/WireboltKit/OAuth2Service.swift \
+  apple/Sources/WireboltKit/CollectionImportSources.swift \
   apple/Sources/WireboltKit/WireboltModel.swift \
   apple/Sources/WireboltKit/SidebarSnapshot.swift \
   apple/Tests/BridgeSmoke.swift \

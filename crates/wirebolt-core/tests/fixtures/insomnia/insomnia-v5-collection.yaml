@@ -1,0 +1,201 @@
+type: collection.insomnia.rest/5.0
+schema_version: "5.1"
+name: Payments API
+meta:
+  id: wrk_5d2b8e1f0a3c4d6e9f7a8b1c2d3e4f50
+  created: 1726300000000
+  modified: 1726301000000
+  description: Payments service collection
+collection:
+  - name: Customers
+    meta:
+      id: fld_1a2b3c4d5e6f708192a3b4c5d6e7f809
+      created: 1726300100000
+      modified: 1726300100000
+      sortKey: -1726300100000
+      description: Customer endpoints
+    children:
+      - url: "{{ _.baseUrl }}/customers/:customerId/cards"
+        name: List cards
+        meta:
+          id: req_2b3c4d5e6f708192a3b4c5d6e7f8091a
+          created: 1726300200000
+          modified: 1726300200000
+          isPrivate: false
+          description: Lists the saved cards for a customer.
+          sortKey: -1726300200000
+        method: GET
+        parameters:
+          - name: limit
+            value: "20"
+            disabled: false
+          - name: expand
+            value: brand
+            disabled: true
+        headers:
+          - name: Accept
+            value: application/json
+        authentication: {}
+        pathParameters:
+          - name: customerId
+            value: cus_42
+        settings:
+          renderRequestBody: true
+          encodeUrl: true
+          followRedirects: global
+          cookies:
+            send: true
+            store: true
+          rebuildPath: true
+      - url: "{{ _.baseUrl }}/customers"
+        name: Create customer
+        meta:
+          id: req_3c4d5e6f708192a3b4c5d6e7f8091a2b
+          created: 1726300300000
+          modified: 1726300300000
+          isPrivate: false
+          sortKey: -1726300300000
+        method: POST
+        body:
+          mimeType: application/json
+          text: |-
+            {
+              "email": "ada@example.test",
+              "name": "{{ _.customer.name }}"
+            }
+        headers:
+          - name: Content-Type
+            value: application/json
+        authentication:
+          type: basic
+          username: "{{ _.api_user }}"
+          password: demo-password
+        scripts:
+          afterResponse: insomnia.test('created', () => {});
+        settings:
+          renderRequestBody: true
+          encodeUrl: true
+          followRedirects: global
+          cookies:
+            send: true
+            store: true
+          rebuildPath: true
+    authentication:
+      type: apikey
+      key: X-Api-Key
+      value: "{{ _.api_key }}"
+      addTo: header
+    headers:
+      - name: X-Api-Version
+        value: "2026-01-01"
+  - url: "{{ _.baseUrl }}/oauth/authorize-test"
+    name: Authorize with PKCE
+    meta:
+      id: req_4d5e6f708192a3b4c5d6e7f8091a2b3c
+      created: 1726300400000
+      modified: 1726300400000
+      isPrivate: false
+      sortKey: -1726300400000
+    method: GET
+    authentication:
+      type: oauth2
+      grantType: authorization_code
+      authorizationUrl: https://auth.example.test/authorize
+      accessTokenUrl: https://auth.example.test/token
+      clientId: payments-desktop
+      clientSecret: ""
+      scope: payments:read offline_access
+      redirectUrl: http://127.0.0.1:8765/callback
+      usePkce: true
+    settings:
+      renderRequestBody: true
+      encodeUrl: true
+      followRedirects: global
+      cookies:
+        send: true
+        store: true
+      rebuildPath: true
+  - url: "{{ _.baseUrl }}/payments/{% uuid 'v4' %}"
+    name: Refund payment
+    meta:
+      id: req_5e6f708192a3b4c5d6e7f8091a2b3c4d
+      created: 1726300500000
+      modified: 1726300500000
+      isPrivate: false
+      sortKey: -1726300500000
+    method: DELETE
+    body:
+      mimeType: text/plain
+      text: duplicate charge
+    settings:
+      renderRequestBody: true
+      encodeUrl: true
+      followRedirects: global
+      cookies:
+        send: true
+        store: true
+      rebuildPath: true
+  - url: wss://events.example.test/payments
+    name: Payment events
+    meta:
+      id: ws-req_6f708192a3b4c5d6e7f8091a2b3c4d5e
+      created: 1726300600000
+      modified: 1726300600000
+      sortKey: -1726300600000
+    settings:
+      encodeUrl: true
+      followRedirects: global
+      cookies:
+        send: true
+        store: true
+    headers:
+      - name: X-Client
+        value: insomnia
+    authentication:
+      type: bearer
+      token: "{{ _.token }}"
+cookieJar:
+  name: Default Jar
+  meta:
+    id: jar_708192a3b4c5d6e7f8091a2b3c4d5e6f
+    created: 1726300000000
+    modified: 1726300000000
+  cookies:
+    - key: region
+      value: eu
+      domain: payments.example.test
+      path: /
+      hostOnly: true
+environments:
+  name: Base Environment
+  meta:
+    id: env_8192a3b4c5d6e7f8091a2b3c4d5e6f70
+    created: 1726300000000
+    modified: 1726300000000
+    isPrivate: false
+  data:
+    baseUrl: https://payments.example.test
+    api_user: demo-user
+    customer:
+      name: Ada Lovelace
+  subEnvironments:
+    - name: Local
+      meta:
+        id: env_92a3b4c5d6e7f8091a2b3c4d5e6f7081
+        created: 1726300010000
+        modified: 1726300010000
+        isPrivate: false
+        sortKey: 1726300010000
+      data:
+        baseUrl: http://127.0.0.1:18990
+        token: local-demo-token
+      color: "#00a3e0"
+    - name: Production
+      meta:
+        id: env_a3b4c5d6e7f8091a2b3c4d5e6f708192
+        created: 1726300020000
+        modified: 1726300020000
+        isPrivate: false
+        sortKey: 1726300020000
+      data:
+        token: "{{ _.prod_token | trim }}"

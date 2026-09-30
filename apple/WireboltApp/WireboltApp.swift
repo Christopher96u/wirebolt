@@ -99,11 +99,12 @@ final class WireboltAppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func application(_: NSApplication, open urls: [URL]) {
-        // Only regular files are imports; folders (such as a workspace dropped on the Dock
-        // icon) are ignored.
+        // Regular files and Bruno collection folders are imports; other folders (such as a
+        // workspace dropped on the Dock icon) are ignored.
         let files = urls.filter { url in
             var isDirectory: ObjCBool = false
-            return FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory) && isDirectory.boolValue == false
+            guard FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory) else { return false }
+            return isDirectory.boolValue == false || BrunoCollectionSource.isCollection(url)
         }
         ExternalFileQueue.shared.enqueue(files)
     }

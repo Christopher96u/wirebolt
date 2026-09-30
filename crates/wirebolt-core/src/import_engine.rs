@@ -6,11 +6,16 @@ use std::{
 
 use serde_json::Value;
 
+mod bru;
+mod bruno;
 mod curl;
 mod har;
+mod insomnia;
 mod legacy_v1;
 mod postman;
+mod support;
 mod workspace;
+mod yaml;
 
 pub use workspace::{ImportedEnvironment, ImportedRequestSettings, ImportedWorkspace};
 
@@ -27,6 +32,12 @@ pub enum ImportFormat {
     Har,
     LegacyWorkspaceV1,
     PostmanV2,
+    /// Insomnia v4 export (JSON or YAML) or Insomnia v5 YAML collection.
+    Insomnia,
+    /// Bruno "Export collection" JSON document.
+    Bruno,
+    /// A Bruno collection folder, bundled by [`ImportEngine::bruno_folder_source`].
+    BrunoFolder,
 }
 
 impl ImportFormat {
@@ -41,6 +52,9 @@ impl ImportFormat {
             "har" => Ok(Self::Har),
             "legacy_workspace_v1" => Ok(Self::LegacyWorkspaceV1),
             "postman_v2" => Ok(Self::PostmanV2),
+            "insomnia" => Ok(Self::Insomnia),
+            "bruno" => Ok(Self::Bruno),
+            "bruno_folder" => Ok(Self::BrunoFolder),
             _ => Err(ImportError::new("This import format isn't supported.")),
         }
     }
@@ -279,6 +293,9 @@ impl ImportEngine {
             ImportFormat::Curl => curl::parse(source, file_name),
             ImportFormat::Har => har::parse(source, file_name).map(ParsedImport::from),
             ImportFormat::PostmanV2 => postman::parse(source),
+            ImportFormat::Insomnia => insomnia::parse(source, file_name),
+            ImportFormat::Bruno => bruno::parse_export(source),
+            ImportFormat::BrunoFolder => bruno::parse_folder(source, file_name),
             ImportFormat::LegacyWorkspaceV1 => {
                 match (file_name, serde_json::from_str::<Value>(source)) {
                     (Some(name), Ok(root)) if root.get("nodes").is_some() => {
@@ -337,6 +354,14 @@ impl ImportEngine {
     /// Returns [`ImportError`] without including source contents.
     pub fn parse(format: ImportFormat, source: &str) -> Result<ImportedCollection, ImportError> {
         first_collection(Self::parse_import(format, source, None)?)
+    }
+
+    /// Bundles the text files of a Bruno collection folder into the source
+    /// accepted by [`ImportFormat::BrunoFolder`]. `files` holds paths relative
+    /// to `root` (using `/`) with their UTF-8 contents.
+    #[must_use]
+    pub fn bruno_folder_source(root: &str, files: &[(String, String)]) -> String {
+        bruno::folder_source(root, files)
     }
 }
 

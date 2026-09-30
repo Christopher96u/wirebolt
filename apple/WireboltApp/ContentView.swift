@@ -110,7 +110,8 @@ struct ContentView: View {
         }
         .fileImporter(
             isPresented: $interface.isShowingImporter,
-            allowedContentTypes: [.json, .data],
+            // Bruno collections are folders; every other importer reads a file.
+            allowedContentTypes: interface.importFormat == .bruno ? [.folder, .json] : [.json, .data],
             allowsMultipleSelection: false,
             onCompletion: handleImport
         )
@@ -758,6 +759,8 @@ private struct WorkspaceImportMenu: View {
             Divider()
             Button("Wirebolt / Legacy Collection v1 JSON") { open(.legacyWorkspaceV1) }
             Button("Postman Collection v2") { open(.postmanV2) }
+            Button("Insomnia (v4 JSON or v5 YAML)") { open(.insomnia) }
+            Button("Bruno Collection (Folder or JSON)") { open(.bruno) }
         }
     }
     private func open(_ format: ImportFormat) {
@@ -4281,7 +4284,7 @@ private struct NoOpenRequestPlaceholder: View {
             ContentUnavailableView {
                 Label("Start Your Workspace", systemImage: "paperplane")
             } description: {
-                Text("Create a request, or import a cURL command, HAR file, Postman collection or Wirebolt JSON. You can also drop one of those files on this window.")
+                Text("Create a request, or import a cURL command, HAR file, Postman, Insomnia or Bruno collection or Wirebolt JSON. You can also drop one of those files, or a Bruno collection folder, on this window.")
             } actions: {
                 Button("New Request") { interface.makeNewRequest(model: model) }
                     .buttonStyle(.borderedProminent)

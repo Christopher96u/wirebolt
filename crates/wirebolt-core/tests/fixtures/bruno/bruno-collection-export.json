@@ -1,0 +1,185 @@
+{
+  "name": "Weather Service",
+  "version": "1",
+  "items": [
+    {
+      "type": "folder",
+      "name": "Forecasts",
+      "filename": "Forecasts",
+      "seq": 1,
+      "root": {
+        "request": {
+          "auth": { "mode": "apikey", "apikey": { "key": "appid", "value": "{{owmKey}}", "placement": "queryparams" } },
+          "headers": [{ "name": "Accept-Language", "value": "en", "enabled": true }],
+          "vars": { "req": [{ "name": "units", "value": "metric", "enabled": true }] }
+        },
+        "meta": { "name": "Forecasts", "seq": 1 },
+        "docs": "Forecast endpoints."
+      },
+      "items": [
+        {
+          "type": "http",
+          "name": "Daily forecast",
+          "filename": "Daily forecast.bru",
+          "seq": 2,
+          "settings": { "encodeUrl": true, "timeout": 0 },
+          "tags": [],
+          "examples": [],
+          "request": {
+            "url": "{{baseUrl}}/forecast/:city?days=7",
+            "method": "GET",
+            "headers": [
+              { "name": "Accept", "value": "application/json", "enabled": true },
+              { "name": "X-Debug", "value": "1", "enabled": false }
+            ],
+            "params": [
+              { "name": "days", "value": "7", "type": "query", "enabled": true },
+              { "name": "hourly", "value": "true", "type": "query", "enabled": false },
+              { "name": "city", "value": "lisbon", "type": "path", "enabled": true }
+            ],
+            "body": {
+              "mode": "none",
+              "formUrlEncoded": [],
+              "multipartForm": [],
+              "file": []
+            },
+            "script": { "req": "", "res": "" },
+            "vars": { "req": [], "res": [] },
+            "assertions": [],
+            "tests": "",
+            "docs": "Seven-day forecast for a city.",
+            "auth": { "mode": "inherit" }
+          }
+        },
+        {
+          "type": "http",
+          "name": "Current conditions",
+          "filename": "Current conditions.bru",
+          "seq": 1,
+          "request": {
+            "url": "{{baseUrl}}/current",
+            "method": "GET",
+            "headers": [],
+            "params": [],
+            "body": { "mode": "none", "formUrlEncoded": [], "multipartForm": [], "file": [] },
+            "script": { "req": "", "res": "bru.setVar('temp', res.body.temp);" },
+            "vars": { "req": [], "res": [{ "name": "lastTemp", "value": "res.body.temp", "enabled": true, "local": false }] },
+            "assertions": [{ "name": "res.status", "value": "eq 200", "enabled": true }],
+            "tests": "",
+            "docs": "",
+            "auth": { "mode": "bearer", "bearer": { "token": "{{weatherToken}}" } }
+          }
+        }
+      ]
+    },
+    {
+      "type": "http",
+      "name": "Report observation",
+      "filename": "Report observation.bru",
+      "seq": 1,
+      "request": {
+        "url": "{{baseUrl}}/observations",
+        "method": "POST",
+        "headers": [{ "name": "Content-Type", "value": "application/json", "enabled": true }],
+        "params": [],
+        "body": {
+          "mode": "json",
+          "json": "{\n  \"station\": \"LIS-01\",\n  \"tempC\": {{temperature}}\n}",
+          "formUrlEncoded": [],
+          "multipartForm": [
+            { "type": "file", "name": "photo", "value": ["photos/sky.jpg", "/Users/demo/sky-2.jpg"], "contentType": "image/jpeg", "enabled": true }
+          ],
+          "file": []
+        },
+        "script": { "req": "", "res": "" },
+        "vars": { "req": [], "res": [] },
+        "assertions": [],
+        "tests": "",
+        "docs": "",
+        "auth": {
+          "mode": "oauth2",
+          "oauth2": {
+            "grantType": "authorization_code",
+            "callbackUrl": "https://oauth.example.test/callback",
+            "authorizationUrl": "https://auth.example.test/authorize",
+            "accessTokenUrl": "https://auth.example.test/token",
+            "clientId": "weather-app",
+            "clientSecret": "",
+            "scope": "observations:write",
+            "pkce": true
+          }
+        }
+      }
+    },
+    {
+      "type": "http",
+      "name": "Upload station photos",
+      "filename": "Upload station photos.bru",
+      "seq": 3,
+      "request": {
+        "url": "{{baseUrl}}/stations/photos",
+        "method": "POST",
+        "headers": [],
+        "params": [],
+        "body": {
+          "mode": "multipartForm",
+          "formUrlEncoded": [],
+          "multipartForm": [
+            { "type": "text", "name": "station", "value": "LIS-01", "enabled": true },
+            { "type": "file", "name": "photo", "value": ["photos/sky.jpg", "/Users/demo/sky-2.jpg"], "contentType": "image/jpeg", "enabled": true }
+          ],
+          "file": []
+        },
+        "auth": { "mode": "none" }
+      }
+    },
+    {
+      "type": "graphql",
+      "name": "Alerts query",
+      "filename": "Alerts query.bru",
+      "seq": 2,
+      "request": {
+        "url": "{{baseUrl}}/graphql",
+        "method": "POST",
+        "headers": [],
+        "params": [],
+        "body": {
+          "mode": "graphql",
+          "graphql": { "query": "query { alerts { id level } }", "variables": "" },
+          "formUrlEncoded": [],
+          "multipartForm": [],
+          "file": []
+        },
+        "auth": { "mode": "awsv4", "awsv4": { "accessKeyId": "", "secretAccessKey": "", "service": "", "region": "" } }
+      }
+    }
+  ],
+  "activeEnvironmentUid": "envUid001",
+  "environments": [
+    {
+      "name": "Staging",
+      "variables": [
+        { "name": "baseUrl", "value": "https://staging.weather.example.test", "enabled": true, "secret": false, "type": "text" },
+        { "name": "owmKey", "value": "", "enabled": true, "secret": true, "type": "text" },
+        { "name": "units", "value": "imperial", "enabled": false, "secret": false, "type": "text" }
+      ]
+    }
+  ],
+  "root": {
+    "request": {
+      "headers": [{ "name": "User-Agent", "value": "bruno-demo", "enabled": true }],
+      "auth": { "mode": "none" },
+      "vars": { "req": [{ "name": "baseUrl", "value": "https://weather.example.test", "enabled": true }] },
+      "tests": "test('ok', () => {});"
+    },
+    "docs": ""
+  },
+  "brunoConfig": {
+    "version": "1",
+    "name": "Weather Service",
+    "type": "collection",
+    "ignore": ["node_modules", ".git"]
+  },
+  "exportedAt": "2026-09-20T10:15:00.000Z",
+  "exportedUsing": "Bruno/v2.12.0"
+}

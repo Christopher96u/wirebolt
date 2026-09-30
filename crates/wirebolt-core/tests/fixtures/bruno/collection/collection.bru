@@ -1,0 +1,25 @@
+headers {
+  X-Client: wirebolt-import-test
+}
+
+auth {
+  mode: bearer
+}
+
+auth:bearer {
+  token: {{accessToken}}
+}
+
+vars:pre-request {
+  apiVersion: v2
+  ~legacyFlag: true
+}
+
+script:pre-request {
+  bru.setVar("startedAt", Date.now());
+}
+
+docs {
+  # Library API
+  Shared collection for the demo library service.
+}

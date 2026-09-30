@@ -2942,6 +2942,51 @@ mod tests {
     }
 
     #[test]
+    fn bruno_file_import_reports_warnings_and_keeps_variable_credentials() {
+        let directory = tempfile::tempdir().unwrap();
+        let bridge = WorkspaceBridge::open_or_create(
+            directory.path().to_string_lossy().into_owned(),
+            "Fixture".into(),
+        )
+        .unwrap();
+        let source = r#"{
+          "name": "Demo", "version": "1",
+          "items": [{"type": "http", "name": "Me", "seq": 1, "request": {
+            "url": "{{baseUrl}}/me", "method": "GET",
+            "auth": {"mode": "bearer", "bearer": {"token": "{{token}}"}}
+          }}],
+          "environments": [{"name": "Local", "variables": [
+            {"name": "baseUrl", "value": "http://127.0.0.1:18990", "enabled": true, "secret": false},
+            {"name": "token", "value": "", "enabled": true, "secret": true}
+          ]}]
+        }"#;
+        let committed: serde_json::Value =
+            serde_json::from_str(&bridge.commit_import_file("bruno", source, "Demo").unwrap())
+                .unwrap();
+        let summary = &committed["summary"];
+        assert_eq!(summary["collection_names"], serde_json::json!(["Demo"]));
+        assert_eq!(summary["environments"][0]["name"], "Demo \u{2013} Local");
+        assert!(
+            summary["warnings"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|warning| warning.as_str().unwrap().contains("secret values"))
+        );
+        let snapshot: serde_json::Value =
+            serde_json::from_str(&bridge.snapshot_json().unwrap()).unwrap();
+        let serialized = snapshot["environments"].to_string();
+        assert!(serialized.contains("http://127.0.0.1:18990"));
+        assert!(serialized.contains("demo.local.token"));
+        // A templated credential stays a variable reference instead of a Keychain copy.
+        assert!(snapshot["collections"].to_string().contains("{{token}}"));
+        assert!(bridge.commit_import_file("bruno", "{}", "Broken").is_err());
+        let after: serde_json::Value =
+            serde_json::from_str(&bridge.snapshot_json().unwrap()).unwrap();
+        assert_eq!(after["environments"], snapshot["environments"]);
+    }
+
+    #[test]
     fn committed_imports_return_a_summary_and_create_their_environment() {
         let directory = tempfile::tempdir().unwrap();
         let bridge = WorkspaceBridge::open_or_create(
