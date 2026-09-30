@@ -25,9 +25,8 @@ print('''cask "wirebolt" do
   app "Wirebolt.app"
 
   # The app is ad-hoc signed and not notarized, so Gatekeeper would block the first launch.
-  postflight do
-    system_command "/usr/bin/xattr",
-                   args: ["-dr", "com.apple.quarantine", "#{appdir}/Wirebolt.app"]
+  postflight_steps do
+    run "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "{{appdir}}/Wirebolt.app"]
   end
 
   # Workspaces under Application Support/Wirebolt/Workspaces are user documents and are kept.
