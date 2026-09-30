@@ -1,4 +1,5 @@
 import Foundation
+import Synchronization
 
 /// Human-readable response metrics shared by the response pane, status line and announcements.
 public enum ResponseFormatting {
@@ -29,8 +30,19 @@ public enum ResponseFormatting {
 
     /// File-style byte counts ("468 bytes", "18.6 KB", "4.2 MB") that never spell out zero.
     public static func byteCount(_ bytes: UInt64, locale: Locale = .autoupdatingCurrent) -> String {
-        Int64(clamping: bytes).formatted(.byteCount(style: .file, spellsOutZero: false).locale(locale))
+        // The response bar formats the same size on every update; formatting is not cheap.
+        let key = ByteCountKey(bytes: bytes, locale: locale.identifier)
+        if let cached = lastByteCount.withLock({ $0?.key == key ? $0?.text : nil }) { return cached }
+        let text = Int64(clamping: bytes).formatted(.byteCount(style: .file, spellsOutZero: false).locale(locale))
+        lastByteCount.withLock { $0 = (key, text) }
+        return text
     }
+
+    private struct ByteCountKey: Equatable {
+        let bytes: UInt64
+        let locale: String
+    }
+    private static let lastByteCount = Mutex<(key: ByteCountKey, text: String)?>(nil)
 
     /// "302 Found"; unknown codes fall back to their class ("599 Server Error").
     public static func statusLine(_ status: UInt16) -> String {

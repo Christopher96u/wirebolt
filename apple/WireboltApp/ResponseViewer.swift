@@ -17,20 +17,22 @@ struct ResponseViewer: View {
             if hasPresentation {
                 VStack(spacing: 0) {
                     ResponseSectionBar(interface: interface, session: session, cancel: cancel)
-                    ZStack {
-                        sectionContent
-                            // Keep the previous response (scroll, find, folding) until the new head arrives.
-                            .opacity(isAwaitingNewResponse ? 0.35 : 1)
-                            .allowsHitTesting(!isAwaitingNewResponse)
-                            .accessibilityHidden(isAwaitingNewResponse)
-                        if isAwaitingNewResponse, let startedAt = session.runStartedAt {
-                            RunProgressView(startedAt: startedAt, cancel: cancel)
-                                .padding(.horizontal, 22).padding(.vertical, 16)
-                                .background(.regularMaterial, in: .rect(cornerRadius: 10))
-                                .overlay { RoundedRectangle(cornerRadius: 10).stroke(Color(nsColor: .separatorColor), lineWidth: 0.5) }
-                                .transition(.opacity)
+                    sectionContent
+                        // Keep the previous response (scroll, find, folding) until the new head arrives.
+                        .opacity(isAwaitingNewResponse ? 0.35 : 1)
+                        .allowsHitTesting(!isAwaitingNewResponse)
+                        .accessibilityHidden(isAwaitingNewResponse)
+                        // An overlay rather than a ZStack: the response content alone decides the
+                        // size, so laying out a large body is not measured twice.
+                        .overlay {
+                            if isAwaitingNewResponse, let startedAt = session.runStartedAt {
+                                RunProgressView(startedAt: startedAt, cancel: cancel)
+                                    .padding(.horizontal, 22).padding(.vertical, 16)
+                                    .background(.regularMaterial, in: .rect(cornerRadius: 10))
+                                    .overlay { RoundedRectangle(cornerRadius: 10).stroke(Color(nsColor: .separatorColor), lineWidth: 0.5) }
+                                    .transition(.opacity)
+                            }
                         }
-                    }
                 }
             } else if session.isRunning, let startedAt = session.runStartedAt {
                 RunProgressView(startedAt: startedAt, cancel: cancel)
@@ -319,11 +321,11 @@ private struct ResponseSectionBar: View {
             HStack(spacing: 4) {
                 tabs
                 Spacer(minLength: 0)
-                ResponseTransferMetrics(session: session, cancel: cancel).padding(.trailing, 10)
+                ResponseTransferMetrics(session: session, cancel: cancel).equatable().padding(.trailing, 10)
             }.frame(height: 34)
             VStack(spacing: 0) {
                 tabs.frame(maxWidth: .infinity, alignment: .leading).frame(height: 34)
-                ResponseTransferMetrics(session: session, cancel: cancel)
+                ResponseTransferMetrics(session: session, cancel: cancel).equatable()
                     .padding(.horizontal, 10)
                     .frame(maxWidth: .infinity, alignment: .trailing).frame(height: 26)
             }
@@ -358,10 +360,38 @@ private struct ResponseSectionBar: View {
     }
 }
 
-private struct ResponseTransferMetrics: View {
+/// The applications that open the body. Their own view, so the Launch Services lookup runs
+/// when the body file changes rather than every time the response bar updates (for
+/// example on each renderer switch).
+private struct OpenWithMenuItems: View {
+    let store: ResponseBodyStore?
+
+    var body: some View {
+        if let store {
+            ForEach(NSWorkspace.shared.urlsForApplications(toOpen: store.url), id: \.self) { application in
+                Button(application.deletingPathExtension().lastPathComponent) {
+                    NSWorkspace.shared.open([store.url], withApplicationAt: application,
+                        configuration: NSWorkspace.OpenConfiguration())
+                }
+            }
+        }
+        Button("Default Application") {
+            if let store { NSWorkspace.shared.open(store.url) }
+        }
+        .disabled(store == nil)
+    }
+}
+
+private struct ResponseTransferMetrics: View, @MainActor Equatable {
     @Bindable var session: DocumentSession
     let cancel: (() -> Void)?
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    /// The cancel action always cancels this document's run, so a new closure is no change;
+    /// without this the metrics re-rendered (and re-formatted) on every renderer switch.
+    static func == (lhs: Self, rhs: Self) -> Bool {
+        lhs.session === rhs.session && (lhs.cancel == nil) == (rhs.cancel == nil)
+    }
 
     var body: some View {
         HStack(spacing: 10) {
@@ -377,12 +407,14 @@ private struct ResponseTransferMetrics: View {
                             .monospacedDigit()
                     }
                 } else {
-                    Label(durationLabel, systemImage: "clock.fill")
+                    let duration = durationLabel
+                    let size = ResponseFormatting.byteCount(session.responseBytes)
+                    Label(duration, systemImage: "clock.fill")
                         .contentTransition(reduceMotion ? .identity : .numericText())
-                        .accessibilityLabel("Time \(durationLabel)")
-                    Label(ResponseFormatting.byteCount(session.responseBytes), systemImage: "arrow.down.circle.fill")
+                        .accessibilityLabel("Time \(duration)")
+                    Label(size, systemImage: "arrow.down.circle.fill")
                         .contentTransition(reduceMotion ? .identity : .numericText())
-                        .accessibilityLabel("Size \(ResponseFormatting.byteCount(session.responseBytes))")
+                        .accessibilityLabel("Size \(size)")
                 }
             }
             .accessibilityElement(children: .combine)
@@ -473,15 +505,7 @@ private struct ResponseBodyViewer: View {
                     EditorPreferencesMenu()
                     Divider()
                     Menu("Open With", systemImage: "square.and.arrow.up") {
-                        if let store {
-                            ForEach(NSWorkspace.shared.urlsForApplications(toOpen: store.url), id: \.self) { application in
-                                Button(application.deletingPathExtension().lastPathComponent) {
-                                    NSWorkspace.shared.open([store.url], withApplicationAt: application,
-                                        configuration: NSWorkspace.OpenConfiguration())
-                                }
-                            }
-                        }
-                        Button("Default Application", action: openResponse).disabled(store == nil)
+                        OpenWithMenuItems(store: store)
                     }
                 }
                 .menuStyle(.borderlessButton)
@@ -579,10 +603,6 @@ private struct ResponseBodyViewer: View {
         }
     }
 
-    private func openResponse() {
-        guard let store else { return }
-        NSWorkspace.shared.open(store.url)
-    }
 
     private func showInFinder() {
         guard let store else { return }
@@ -637,11 +657,13 @@ private struct ResponseBodyViewer: View {
                 .accessibilityHidden(!isJSON)
             }
             if showsOther || hasShownOtherText {
+                // Decoded once per update rather than for each use.
+                let text = renderedText
                 Group {
-                    if let store, ResponseTextPresentation.usesIndex(byteCount: max(storeSize, receivedBytes), preview: renderedText) {
-                        IndexedResponseEditor(url: store.url, preview: renderedText, language: language, search: "", find: displayedOtherFind)
+                    if let store, ResponseTextPresentation.usesIndex(byteCount: max(storeSize, receivedBytes), preview: text) {
+                        IndexedResponseEditor(url: store.url, preview: text, language: language, search: "", find: displayedOtherFind)
                     } else {
-                        SyntaxTextView(text: renderedText, language: language, find: displayedOtherFind, storageKey: "Response body \(language)")
+                        SyntaxTextView(text: text, language: language, find: displayedOtherFind, storageKey: "Response body \(language)")
                             .id(language)
                     }
                 }
