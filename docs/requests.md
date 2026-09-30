@@ -10,7 +10,7 @@ Create an HTTP request with **File → New Request** (**⌘N**), the toolbar **+
 | --- | --- |
 | Params | Query parameter rows; unchecked rows are omitted |
 | Headers | Request headers; unchecked rows are omitted |
-| Body | Empty, text, JSON, XML, HTML, raw, URL-encoded form, multipart or file content |
+| Body | No Body, JSON, Form URLEncoded, XML, HTML, Raw Text, Multipart or File |
 | Auth | Basic, Bearer, API key or OAuth configuration |
 | Note | Markdown documentation saved with the request |
 | Settings | Request proxy policy and transport overrides |

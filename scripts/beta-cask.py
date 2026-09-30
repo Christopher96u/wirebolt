@@ -16,7 +16,7 @@ print('''cask "wirebolt" do
 
   url "https://github.com/Christopher96u/homebrew-tap/releases/download/v#{version}/Wirebolt-#{version}-arm64.zip"
   name "Wirebolt"
-  homepage "https://github.com/Christopher96u/homebrew-tap"
+  homepage "https://github.com/Christopher96u/wirebolt"
 
   depends_on arch: :arm64
   depends_on macos: :sequoia

@@ -4,7 +4,7 @@
 
 ## Create variables
 
-1. Open the environment menu in the toolbar and choose **Configure Environments**.
+1. Open the environment menu in the toolbar and choose **Configure Environments…**.
 2. Select **Global Environment**, or create a named environment with **New Environment**.
 3. Add a key and value. Keep the row checked to enable it.
 4. Click **Save** (or press Return). **Cancel** (Esc) discards your edits, including deleted environments, after confirmation.

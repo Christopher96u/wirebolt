@@ -5,3 +5,7 @@
 /target/
 .DS_Store
 *.xcuserstate
+.swiftpm/
+xcuserdata/
+DerivedData/
+.env*

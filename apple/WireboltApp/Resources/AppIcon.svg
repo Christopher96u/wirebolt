@@ -1,4 +1,4 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 512 512" role="img" aria-labelledby="title"><title id="title">Wirebolt — Circuito, rayo y descarga eléctrica</title>
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 512 512" role="img" aria-labelledby="title"><title id="title">Wirebolt app icon</title>
 <defs>
   <linearGradient id="tile" x2=".8" y2="1"><stop stop-color="#123238"/><stop offset="1" stop-color="#081824"/></linearGradient>
   <radialGradient id="atmosphere" cx=".51" cy=".45" r=".65"><stop stop-color="#86F7EB" stop-opacity=".15"/><stop offset=".65" stop-color="#86F7EB" stop-opacity=".035"/><stop offset="1" stop-color="#86F7EB" stop-opacity="0"/></radialGradient>
