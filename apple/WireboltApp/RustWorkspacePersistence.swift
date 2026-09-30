@@ -180,6 +180,24 @@ struct RustWorkspacePersistence: WorkspacePersistence, GitCollaboration {
         }.value
     }
 
+    func abortMerge() async throws -> GitOperationSnapshot {
+        let bridge = bridge
+        return try await Task.detached(priority: .userInitiated) {
+            try Self.decodeGitDocument(GitOperationSnapshot.self) {
+                try bridge.gitAbortMergeJson()
+            }
+        }.value
+    }
+
+    func initializeRepository() async throws -> GitStatusSnapshot {
+        let bridge = bridge
+        return try await Task.detached(priority: .userInitiated) {
+            try Self.decodeGitDocument(GitStatusSnapshot.self) {
+                try bridge.gitInitializeJson()
+            }
+        }.value
+    }
+
     static var defaultWorkspaceURL: URL {
         let arguments = ProcessInfo.processInfo.arguments
         if let index = arguments.firstIndex(of: "--workspace"), arguments.indices.contains(index + 1) {

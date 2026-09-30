@@ -1,9 +1,11 @@
+import AppKit
 import SwiftUI
 
 struct GitCollaborationView: View {
     @Bindable var model: WireboltModel
     @Environment(\.dismiss) private var dismiss
     @State private var commitMessage = ""
+    @State private var isConfirmingAbort = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -17,6 +19,23 @@ struct GitCollaborationView: View {
         .task {
             await model.refreshGitStatus()
         }
+        .confirmationDialog("Abort the merge?", isPresented: $isConfirmingAbort) {
+            Button("Abort Merge", role: .destructive) { Task { await model.abortGitMerge() } }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("Workspace files return to your last commit and the pulled changes are set aside. You can pull again later.")
+        }
+    }
+
+    /// The merge a conflicted pull left behind, if any.
+    private var isMerging: Bool {
+        guard let status = model.gitStatus else { return false }
+        return status.merging || !status.conflictedChanges.isEmpty
+    }
+
+    private var repositoryProblem: GitRepositoryProblem? {
+        guard model.gitStatus == nil, let kind = model.gitFailure?.kind else { return nil }
+        return GitRepositoryProblem(kind: kind)
     }
 
     private var header: some View {
@@ -57,7 +76,9 @@ struct GitCollaborationView: View {
                 .accessibilityElement(children: .combine)
             }
 
-            if let failure = model.gitFailure {
+            if repositoryProblem != nil {
+                EmptyView()
+            } else if let failure = model.gitFailure {
                 Label(failure.reason, systemImage: "exclamationmark.triangle.fill")
                     .foregroundStyle(WireboltTheme.danger)
                     .textSelection(.enabled)
@@ -77,7 +98,102 @@ struct GitCollaborationView: View {
 
     @ViewBuilder
     private var changes: some View {
-        if let status = model.gitStatus, !status.changes.isEmpty {
+        if let problem = repositoryProblem {
+            repositoryProblemView(problem)
+        } else if let status = model.gitStatus, !status.changes.isEmpty {
+            VStack(spacing: 0) {
+                if isMerging { mergeBanner(status) }
+                changeList(status)
+            }
+        } else if let status = model.gitStatus, status.merging {
+            VStack(spacing: 0) {
+                mergeBanner(status)
+                Spacer()
+            }
+        } else if model.gitStatus != nil {
+            ContentUnavailableView(
+                "Working Tree Clean",
+                systemImage: "checkmark.circle",
+                description: Text("There are no local Git changes.")
+            )
+        } else {
+            ContentUnavailableView(
+                "Git Status Unavailable",
+                systemImage: "arrow.triangle.branch",
+                description: Text("Refresh to inspect this workspace.")
+            )
+        }
+    }
+
+    private func mergeBanner(_ status: GitStatusSnapshot) -> some View {
+        let conflicts = status.conflictedChanges
+        return VStack(alignment: .leading, spacing: 8) {
+            Label(
+                conflicts.isEmpty
+                    ? "A merge is in progress."
+                    : "Pull stopped with conflicts in \(conflicts.count == 1 ? "1 file" : "\(conflicts.count) files").",
+                systemImage: "exclamationmark.triangle.fill"
+            )
+            .font(.headline)
+            .foregroundStyle(WireboltTheme.danger)
+            Text("Resolve the conflicts in a text editor or Git tool and finish the merge there, or abort the merge to return to your last commit. Commit, Pull and Push are unavailable until then.")
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            HStack {
+                Button("Abort Merge…") { isConfirmingAbort = true }
+                    .disabled(model.isGitBusy)
+                    .help("Run git merge --abort and restore the workspace files.")
+                Button("Show in Finder") { revealInFinder(conflicts) }
+                    .disabled(model.workspaceLocation == nil)
+                    .help(conflicts.isEmpty ? "Show the workspace folder in Finder." : "Select the conflicted files in Finder.")
+            }
+        }
+        .padding(14)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(WireboltTheme.danger.opacity(0.08))
+    }
+
+    private func revealInFinder(_ changes: [GitChangeSnapshot]) {
+        guard let root = model.workspaceLocation else { return }
+        let files = changes.map { root.appending(path: $0.path) }
+            .filter { FileManager.default.fileExists(atPath: $0.path) }
+        NSWorkspace.shared.activateFileViewerSelecting(files.isEmpty ? [root] : files)
+    }
+
+    @ViewBuilder
+    private func repositoryProblemView(_ problem: GitRepositoryProblem) -> some View {
+        switch problem {
+        case .notRepository:
+            ContentUnavailableView {
+                Label("Not a Git Repository", systemImage: "arrow.triangle.branch")
+            } description: {
+                Text("This workspace folder isn’t a Git repository yet. Initialize one here, then add a remote with Git to share it.")
+            } actions: {
+                Button("Initialize Git Repository") { Task { await model.initializeGitRepository() } }
+                    .disabled(model.isGitBusy)
+                    .help("Run git init in the workspace folder.")
+            }
+        case .notRepositoryRoot:
+            ContentUnavailableView {
+                Label("Workspace Isn’t the Repository Root", systemImage: "folder.badge.questionmark")
+            } description: {
+                Text("This workspace is inside a Git repository but isn’t its top folder. Wirebolt works with Git only when the folder containing wirebolt.toml is the repository root. Open the repository root as the workspace, or move the workspace into its own repository.")
+            } actions: {
+                Button("Show in Finder") {
+                    if let root = model.workspaceLocation { NSWorkspace.shared.activateFileViewerSelecting([root]) }
+                }
+                .disabled(model.workspaceLocation == nil)
+            }
+        case .gitUnavailable:
+            ContentUnavailableView(
+                "Git Is Unavailable",
+                systemImage: "exclamationmark.triangle",
+                description: Text("Install the Xcode Command Line Tools (xcode-select --install) or Git, then refresh.")
+            )
+        }
+    }
+
+    private func changeList(_ status: GitStatusSnapshot) -> some View {
             List(status.changes) { change in
                 HStack(spacing: WireboltTheme.Spacing.medium) {
                     Label(change.kind.rawValue, systemImage: symbol(for: change.kind))
@@ -98,19 +214,6 @@ struct GitCollaborationView: View {
                 }
                 .accessibilityElement(children: .combine)
             }
-        } else if model.gitStatus != nil {
-            ContentUnavailableView(
-                "Working Tree Clean",
-                systemImage: "checkmark.circle",
-                description: Text("There are no local Git changes.")
-            )
-        } else {
-            ContentUnavailableView(
-                "Git Status Unavailable",
-                systemImage: "arrow.triangle.branch",
-                description: Text("Refresh to inspect this workspace.")
-            )
-        }
     }
 
     private var actions: some View {
@@ -126,13 +229,15 @@ struct GitCollaborationView: View {
                     .onSubmit(commit)
 
                 Button("Commit", action: commit)
-                    .disabled(model.isGitBusy || model.gitStatus == nil || trimmedCommitMessage.isEmpty)
+                    .disabled(model.isGitBusy || model.gitStatus == nil || trimmedCommitMessage.isEmpty || isMerging)
+                    .help(isMerging ? "Finish or abort the merge first." : "Commit saved workspace documents.")
 
                 Button("Pull") {
                     Task { await model.pullGit() }
                 }
-                .disabled(model.isGitBusy || model.gitStatus?.upstream == nil || model.hasUnsavedRequestChanges)
-                .help("Pull the configured upstream. Conflicts are never resolved automatically.")
+                .disabled(model.isGitBusy || model.gitStatus?.upstream == nil || model.hasUnsavedRequestChanges || isMerging)
+                .help(isMerging ? "Finish or abort the merge first."
+                    : "Pull the configured upstream. Conflicts are never resolved automatically.")
 
                 pushButton
 
@@ -154,8 +259,8 @@ struct GitCollaborationView: View {
         Button(title) {
             Task { await model.pushGit() }
         }
-        .disabled(model.isGitBusy || { if case .unavailable = availability { true } else { false } }())
-        .help(pushHelp(availability))
+        .disabled(model.isGitBusy || isMerging || { if case .unavailable = availability { true } else { false } }())
+        .help(isMerging ? "Finish or abort the merge first." : pushHelp(availability))
     }
 
     private func pushHelp(_ availability: GitPushAvailability) -> String {
@@ -229,6 +334,7 @@ struct GitCollaborationView: View {
         case .upToDate: "Already up to date"
         case .pushed: "Current branch pushed"
         case .conflicted: "Pull stopped with conflicts"
+        case .mergeAborted: "Merge aborted; workspace restored to the last commit"
         }
     }
 
@@ -236,3 +342,4 @@ struct GitCollaborationView: View {
         outcome == .conflicted ? "exclamationmark.triangle.fill" : "checkmark.circle"
     }
 }
+

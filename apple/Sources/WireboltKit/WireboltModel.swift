@@ -81,6 +81,18 @@ public protocol GitCollaboration: Sendable {
     func pull() async throws -> GitOperationSnapshot
     func commit(message: String) async throws -> GitOperationSnapshot
     func push() async throws -> GitOperationSnapshot
+    func abortMerge() async throws -> GitOperationSnapshot
+    func initializeRepository() async throws -> GitStatusSnapshot
+}
+
+public extension GitCollaboration {
+    func abortMerge() async throws -> GitOperationSnapshot {
+        throw GitFailure(kind: "unsupported", reason: "This workspace cannot abort a merge.")
+    }
+
+    func initializeRepository() async throws -> GitStatusSnapshot {
+        throw GitFailure(kind: "unsupported", reason: "This workspace cannot create a Git repository.")
+    }
 }
 
 @MainActor
@@ -588,6 +600,23 @@ public final class WireboltModel {
     public func pushGit() async {
         await performGitOperation { collaboration in
             self.apply(try await collaboration.push())
+        }
+    }
+
+    /// Abandons the merge a conflicted pull started and reloads the restored documents.
+    public func abortGitMerge() async {
+        await performGitOperation { collaboration in
+            self.apply(try await collaboration.abortMerge())
+            await self.reloadWorkspaceAfterGitUpdate()
+        }
+    }
+
+    /// Runs `git init` in the workspace folder so it becomes the repository root.
+    public func initializeGitRepository() async {
+        await performGitOperation { collaboration in
+            let status = try await collaboration.initializeRepository()
+            self.gitOperation = nil
+            self.gitStatus = status
         }
     }
 

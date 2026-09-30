@@ -884,19 +884,39 @@ public struct GitStatusSnapshot: Codable, Equatable, Sendable {
     public let ahead: UInt64
     public let behind: UInt64
     public let changes: [GitChangeSnapshot]
+    /// A pull stopped mid-merge; Abort Merge returns to the state before the pull.
+    public let merging: Bool
+
+    enum CodingKeys: String, CodingKey { case branch, upstream, ahead, behind, changes, merging }
 
     public init(
         branch: String?,
         upstream: String?,
         ahead: UInt64,
         behind: UInt64,
-        changes: [GitChangeSnapshot]
+        changes: [GitChangeSnapshot],
+        merging: Bool = false
     ) {
         self.branch = branch
         self.upstream = upstream
         self.ahead = ahead
         self.behind = behind
         self.changes = changes
+        self.merging = merging
+    }
+
+    public init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        branch = try container.decodeIfPresent(String.self, forKey: .branch)
+        upstream = try container.decodeIfPresent(String.self, forKey: .upstream)
+        ahead = try container.decode(UInt64.self, forKey: .ahead)
+        behind = try container.decode(UInt64.self, forKey: .behind)
+        changes = try container.decode([GitChangeSnapshot].self, forKey: .changes)
+        merging = try container.decodeIfPresent(Bool.self, forKey: .merging) ?? false
+    }
+
+    public var conflictedChanges: [GitChangeSnapshot] {
+        changes.filter { $0.kind == .conflicted }
     }
 }
 
@@ -907,6 +927,7 @@ public enum GitOperationOutcome: String, Codable, Equatable, Sendable {
     case upToDate = "up_to_date"
     case pushed
     case conflicted
+    case mergeAborted = "merge_aborted"
 }
 
 public struct GitOperationSnapshot: Codable, Equatable, Sendable {
@@ -922,6 +943,22 @@ public struct GitOperationSnapshot: Codable, Equatable, Sendable {
         self.outcome = outcome
         self.revision = revision
         self.status = status
+    }
+}
+
+/// Git failures that mean the workspace cannot use Git yet, each with its own guidance.
+public enum GitRepositoryProblem: Equatable, Sendable {
+    case notRepository
+    case notRepositoryRoot
+    case gitUnavailable
+
+    public init?(kind: String) {
+        switch kind {
+        case "not_repository": self = .notRepository
+        case "workspace_not_repository_root": self = .notRepositoryRoot
+        case "git_unavailable": self = .gitUnavailable
+        default: return nil
+        }
     }
 }
 
