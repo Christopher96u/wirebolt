@@ -2,19 +2,20 @@
 
 [Documentation](README.md)
 
-Wirebolt can show status and explicitly commit, pull or push a workspace. It does not automatically initialize repositories, configure hosting credentials or synchronize in the background.
+Wirebolt can show status and explicitly commit, pull or push a workspace. It does not configure hosting credentials or synchronize in the background.
 
 ## Prepare the workspace
 
-Use a dedicated Git repository for the workspace folder. Configure Git identity and authentication using your normal Git tools. For a new repository:
+The folder containing `wirebolt.toml` must be the **root** of its Git repository. A workspace inside a subfolder of a larger repository is not supported: Git Collaboration explains this and offers **Show in Finder**. Open the repository root as the workspace, or move the workspace into its own repository.
+
+If the workspace folder is not a repository yet, Git Collaboration shows **Initialize Git Repository**, which runs `git init` in the workspace folder. It does not initialize a folder that is already inside another repository. Then add a remote and configure Git identity and authentication with your normal Git tools:
 
 ```sh
 cd /path/to/your/workspace
-git init -b main
 git remote add origin <your-repository-url>
 ```
 
-Replace the path and remote placeholder with your own values. You can also clone an existing workspace repository and open the folder containing `wirebolt.toml`.
+Replace the path and remote placeholder with your own values. You can also clone an existing workspace repository and open the folder containing `wirebolt.toml`. The built-in workspace in Application Support works too, but a folder you choose with **File → New Workspace…** is easier to find and share.
 
 ## Review and share
 
@@ -32,6 +33,9 @@ Wirebolt commits its managed workspace documents. Unrelated files are not includ
 
 Save or discard request edits before pulling. Pull requires an upstream; first configure a remote and establish tracking, using Git if necessary. A first push can establish an upstream when the remote is configured.
 
-Conflicts are surfaced for explicit resolution. Resolve them using Git and a text editor, then reopen the workspace. Wirebolt does not silently choose a side or automatically resolve conflicts.
+When a pull stops with conflicts, Git Collaboration lists the conflicted files and disables Commit, Pull and Push until the merge is finished or aborted. Wirebolt does not silently choose a side or automatically resolve conflicts. You can:
+
+- Click **Abort Merge…** to run `git merge --abort`. The workspace files return to your last commit and Wirebolt reloads them. You can pull again later.
+- Click **Show in Finder** to select the conflicted files, resolve them in a text editor or Git tool, finish the merge there (`git add` and `git commit`), then reopen the workspace.
 
 Git authentication failures come from your Git/remote setup, which is separate from request authentication and API proxy settings.

@@ -6,8 +6,9 @@ A workspace is a folder containing request definitions, collections and environm
 
 ## Create or open
 
-- **File → New Workspace…** creates a new workspace folder.
+- **File → New Workspace…** creates a new workspace folder. The workspace takes the folder's name.
 - **File → Open Workspace…** (**⌘O**) opens a folder containing `wirebolt.toml`.
+- **Workspace → Rename Workspace…** changes the name shown in the window title. The name is saved in `wirebolt.toml`; the folder keeps its name.
 - **File → New Collection…** (**⇧⌘N**) creates a top-level collection; **File → New Folder** (**⌥⌘N**) creates a folder.
 - The **+** menu also exposes workspace and collection actions.
 
@@ -47,6 +48,12 @@ Files use versioned TOML. Stable IDs identify documents; ordering is stored expl
 
 Response bodies, local history, cookies and Keychain credentials are runtime data rather than workspace documents. Literal text you enter in a URL, body or variable **is** part of the saved definition. [Understand what is shared](environments-and-secrets.md#what-is-shared).
 
+## Cookies
+
+Each workspace has its own cookie jar, stored in `~/Library/Application Support/Wirebolt/Cookies` rather than in the workspace folder. Cookies set by a response are sent with later requests that match their domain, path and Secure attribute. Cookies with an expiry date are kept across launches; session cookies (no Expires or Max-Age) last until Wirebolt quits. A request that sets its own `Cookie` header does not receive jar cookies.
+
+**Workspace → Cookies…** lists the open workspace's cookies with their domain, path, expiry and flags. Values are hidden until you choose **Show Values**. Select cookies and click **Delete** (or press Delete), or use **Clear All…** to empty the jar. Other workspaces keep their own cookies.
+
 ## Collaborate
 
-Initialize a Git repository in the workspace folder and configure a remote, then use [Git Collaboration](git-collaboration.md). Export is another option when you want a [portable JSON document](import-export.md).
+Make the workspace folder the root of a Git repository (**Workspace → Git Collaboration…** offers **Initialize Git Repository**) and configure a remote, then use [Git Collaboration](git-collaboration.md). Export is another option when you want a [portable JSON document](import-export.md).
