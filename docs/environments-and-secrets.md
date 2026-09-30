@@ -6,7 +6,7 @@
 
 1. Open the environment menu in the toolbar and choose **Configure Environments…**.
 2. Select **Global Environment**, or create a named environment with **New Environment**.
-3. Add a key and value. Keep the row checked to enable it.
+3. Add a key and value. Keep the row checked to enable it. Click the lock button to make the value a secret.
 4. Click **Save** (or press Return). **Cancel** (Esc) discards your edits, including deleted environments, after confirmation.
 5. Select the desired environment in the toolbar.
 
@@ -26,17 +26,20 @@ Selecting an environment in the editor chooses what you edit; selecting it in th
 
 A literal value is stored in the workspace. A secret reference stores a name whose value resolves from this Mac's Keychain. A teammate receives the reference name, not its credential value.
 
-Basic and Bearer authentication fields integrate with Keychain. OAuth provides a dedicated client-secret storage action and stores acquired tokens in Keychain. Proxy credentials are also local. See [authentication](authentication.md) for exact controls.
+### Secret variables
 
-The environment editor currently edits literal values and existing secret-reference names; it does not provide a general secret creation or literal-to-secret toggle. Do not paste a real credential into an ordinary variable expecting it to become secret automatically.
+In **Configure Environments…**, click a variable's lock button (or choose **Make Secret** from its context menu) to store its value in Keychain:
 
-For a manually provisioned reference, use **Keychain Access → File → New Password Item** in the login keychain:
+- The value field is masked; use the eye button to show it.
+- **Save** writes the value to Keychain and saves only the reference in the environment file. **Cancel** discards it.
+- Requests use a secret variable like any other: `{{token}}`. Headers and bodies that use it are redacted in the sent-request view.
+- Click the lock again (**Store in Workspace File**) to turn it back into a literal; the value is then saved in the environment file.
 
-- **Keychain Item Name:** `io.github.christopher96u.wirebolt` (the service).
-- **Account Name:** the exact reference, for example `demo.api-key`.
-- **Password:** the credential value.
+Each secret variable has its own Keychain item for that environment, so renaming the key keeps its value. A teammate who pulls the workspace sees the variable with an empty value and enters their own.
 
-Approve access for Wirebolt when macOS asks. The API key **Value Secret** field expects that account/reference name. It does not store a pasted token as a new Keychain item.
+Basic, Bearer and API Key authentication fields and OAuth client secrets also store their values in Keychain, and OAuth stores acquired tokens there. Proxy credentials are also local. See [authentication](authentication.md) for exact controls.
+
+Items use the Keychain service `io.github.christopher96u.wirebolt`. Approve access for Wirebolt when macOS asks.
 
 ## What is shared
 
@@ -45,7 +48,7 @@ Approve access for Wirebolt when macOS asks. The API key **Value Secret** field 
 | Saved URLs, parameters, headers, bodies, notes | Included |
 | Literal environment values | Included |
 | Secret-reference names | Included |
-| Referenced Keychain credential values | Not resolved into the export |
+| Referenced Keychain credential values, including secret variables | Not resolved into the export |
 | Response history and cookies | Not included in the workspace document tree |
 | Paths to upload files | Can be included; file bytes are not bundled |
 

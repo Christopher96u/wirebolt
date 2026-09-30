@@ -47,6 +47,12 @@ struct WireboltApp: App {
         .defaultSize(width: 650, height: 590)
         .windowResizability(.contentMinSize)
 
+        Window("Cookies", id: CookiesView.windowID) {
+            CookiesView(model: appDelegate.model)
+        }
+        .defaultSize(width: 760, height: 420)
+        .windowResizability(.contentMinSize)
+
         Settings {
             WireboltSettingsView(model: appDelegate.model)
         }
@@ -316,6 +322,10 @@ struct WireboltCommands: Commands {
         }
         CommandMenu("Workspace") {
             Button("Workspace Settings…") { model.isShowingWorkspaceSettings = true }
+                .disabled(noWorkspace)
+            Button("Rename Workspace…") { promptToRenameWorkspace(model: model) }
+                .disabled(noWorkspace || workspaceActionsBusy)
+            Button("Cookies…") { openWindow(id: CookiesView.windowID) }
                 .disabled(noWorkspace)
             Button("Git Collaboration…") { model.isShowingGitCollaboration = true }
                 .keyboardShortcut("g", modifiers: [.command, .shift])

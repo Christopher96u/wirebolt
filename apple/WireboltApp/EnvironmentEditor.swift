@@ -17,6 +17,10 @@ struct EnvironmentEditor: View {
     @State private var isSaving = false
     @State private var validationMessage: String?
     @State private var isConfirmingDiscard = false
+    /// Secret values typed in this sheet, by Keychain name. Save writes them to Keychain;
+    /// Cancel drops them. The workspace stores only the names.
+    @State private var stagedSecrets: [String: String] = [:]
+    @State private var revealedSecretIDs: Set<String> = []
 
     init(model: WireboltModel) {
         self.model = model
@@ -113,27 +117,49 @@ struct EnvironmentEditor: View {
                         Text("Key").padding(.leading, 6).frame(width: 183, alignment: .leading)
                         Divider().frame(height: 14)
                         Text("Value").padding(.leading, 6).frame(maxWidth: .infinity, alignment: .leading)
+                        Divider().frame(height: 14)
+                        Image(systemName: "lock").frame(width: 52)
+                            .help("Secret values are stored in this Mac’s Keychain, not in the workspace.")
+                            .accessibilityLabel("Secret")
                     }.font(.system(size: 11)).frame(height: 27)
                     Divider()
                     ScrollView {
                         LazyVStack(spacing: 0) {
                             ForEach(selected.variables) { $variable in
-                                let height = FieldEditorMetrics.height(key: variable.key, value: variable.value.editableValue, valueWidth: 392)
+                                let height = FieldEditorMetrics.height(
+                                    key: variable.key,
+                                    value: variable.isSecret ? "" : variable.value.editableValue,
+                                    valueWidth: 340
+                                )
                                 HStack(alignment: .top, spacing: 0) {
                                     FieldCheckbox(isOn: $variable.enabled)
                                         .accessibilityLabel("Enable variable \(variable.key)")
                                     FieldTextInput("Key", text: $variable.key, height: height).frame(width: 175).padding(.horizontal, 4)
                                     Color.clear.frame(width: 1)
-                                    FieldTextInput("Value", text: Binding(
-                                        get: { variable.value.editableValue },
-                                        set: { value in
-                                            if case .secret = variable.value { variable.value = .secret(value) }
-                                            else { variable.value = .literal(value) }
-                                        }
-                                    ), height: height).padding(.horizontal, 4).padding(.trailing, 5).frame(maxWidth: .infinity)
+                                    valueField($variable, height: height)
+                                        .padding(.horizontal, 4).padding(.trailing, 5).frame(maxWidth: .infinity)
+                                    Toggle(isOn: Binding(
+                                        get: { variable.isSecret },
+                                        set: { setSecret($0, variable: $variable) }
+                                    )) {
+                                        Image(systemName: variable.isSecret ? "lock.fill" : "lock.open")
+                                    }
+                                    .toggleStyle(.button).buttonStyle(.borderless)
+                                    .frame(width: 52, height: 20)
+                                    .accessibilityLabel("Secret value for \(variable.key)")
+                                    .help(variable.isSecret
+                                        ? "Stored in Keychain. Click to store the value in the workspace file instead."
+                                        : "Store the value in this Mac’s Keychain instead of the workspace file.")
                                 }.frame(height: height).padding(.vertical, 4)
                                     .contextMenu {
+                                        Button(variable.isSecret ? "Store in Workspace File" : "Make Secret") {
+                                            setSecret(!variable.isSecret, variable: $variable)
+                                        }
+                                        Divider()
                                         Button("Delete") { selected.variables.wrappedValue.removeAll { $0.id == variable.id } }
+                                    }
+                                    .task(id: variable.value) {
+                                        if variable.isSecret { await model.loadSecret(variable.value) }
                                     }
                             }
                             HStack(spacing: 0) {
@@ -182,6 +208,56 @@ struct EnvironmentEditor: View {
 
     private var newFieldHeight: Double { FieldEditorMetrics.height(key: newKey, value: newValue, valueWidth: 392) }
 
+    @ViewBuilder
+    private func valueField(_ variable: Binding<EnvironmentVariableDraft>, height: Double) -> some View {
+        let row = variable.wrappedValue
+        if case let .secret(name) = row.value {
+            let material = Binding(
+                get: { stagedSecrets[name] ?? model.secretMaterial(for: row.value) },
+                set: { stagedSecrets[name] = $0 }
+            )
+            HStack(spacing: 2) {
+                Group {
+                    if revealedSecretIDs.contains(row.id) {
+                        TextField("Secret Value", text: material)
+                    } else {
+                        SecureField("Secret Value", text: material)
+                    }
+                }
+                .textFieldStyle(.plain)
+                .font(.system(size: 11, design: .monospaced))
+                .accessibilityLabel("Secret value for \(row.key)")
+                let revealed = revealedSecretIDs.contains(row.id)
+                Button(revealed ? "Hide Value" : "Show Value", systemImage: revealed ? "eye.slash" : "eye") {
+                    if revealed { revealedSecretIDs.remove(row.id) } else { revealedSecretIDs.insert(row.id) }
+                }
+                .labelStyle(.iconOnly).buttonStyle(.borderless)
+                .help(revealed ? "Hide Value" : "Show Value")
+            }
+            .frame(height: height, alignment: .top)
+        } else {
+            FieldTextInput("Value", text: Binding(
+                get: { row.value.editableValue },
+                set: { variable.wrappedValue.value = .literal($0) }
+            ), height: height)
+        }
+    }
+
+    /// Moves a value between the workspace file and Keychain. Nothing is written until Save.
+    private func setSecret(_ secret: Bool, variable: Binding<EnvironmentVariableDraft>) {
+        let row = variable.wrappedValue
+        guard secret != row.isSecret else { return }
+        if secret {
+            let name = row.secretReference(environmentID: selectedID)
+            stagedSecrets[name] = row.value.editableValue
+            variable.wrappedValue.value = .secret(name)
+        } else if case let .secret(name) = row.value {
+            variable.wrappedValue.value = .literal(stagedSecrets[name] ?? model.secretMaterial(for: row.value))
+            stagedSecrets.removeValue(forKey: name)
+            revealedSecretIDs.remove(row.id)
+        }
+    }
+
     private var selected: Binding<EnvironmentDraft> {
         Binding(
             get: { environments.first { $0.id == selectedID } ?? environments[0] },
@@ -193,7 +269,7 @@ struct EnvironmentEditor: View {
     }
 
     private var hasChanges: Bool {
-        environments != original || !deletedIDs.isEmpty
+        environments != original || !deletedIDs.isEmpty || !stagedSecrets.isEmpty
             || !newKey.trimmingCharacters(in: .whitespaces).isEmpty || !newValue.isEmpty
     }
 
@@ -240,6 +316,15 @@ struct EnvironmentEditor: View {
         }
         isSaving = true
         defer { isSaving = false }
+        // Values first: a saved reference must never point at a value that was not stored.
+        let referenced = Set(environments.flatMap(\.variables).compactMap { row -> String? in
+            if case let .secret(name) = row.value { name } else { nil }
+        })
+        guard await model.saveSecrets(stagedSecrets.filter { referenced.contains($0.key) }) else {
+            validationMessage = "The secret values could not be saved in Keychain. Your edits are still open."
+            return
+        }
+        stagedSecrets = [:]
         for id in deletedIDs {
             guard await model.deleteEnvironment(id: id) else { validationMessage = "The environment could not be deleted."; return }
             deletedIDs.remove(id)

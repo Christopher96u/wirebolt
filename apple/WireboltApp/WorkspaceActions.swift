@@ -74,6 +74,28 @@ private func openWorkspace(at url: URL, create: Bool, model: WireboltModel, inte
     }
 }
 
+/// Workspace ▸ Rename Workspace…: the name lives in wirebolt.toml; the folder keeps its name.
+@MainActor
+func promptToRenameWorkspace(model: WireboltModel) {
+    let window = NSApp.keyWindow
+    Task {
+        let alert = NSAlert()
+        alert.messageText = "Rename Workspace"
+        alert.informativeText = "The name is saved in the workspace and shown in the window title. The folder keeps its name."
+        let field = NSTextField(string: model.workspace.name)
+        field.frame = NSRect(x: 0, y: 0, width: 280, height: 24)
+        field.setAccessibilityLabel("Workspace name")
+        alert.accessoryView = field
+        alert.addButton(withTitle: "Rename")
+        alert.addButton(withTitle: "Cancel")
+        alert.window.initialFirstResponder = field
+        guard await present(alert, in: window) == .alertFirstButtonReturn else { return }
+        let name = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty else { NSSound.beep(); return }
+        await model.renameWorkspace(name)
+    }
+}
+
 /// Asks before unsaved request edits are lost. Returns true when the caller may
 /// continue: edits were saved, or the person chose Don't Save (edits are reverted).
 @MainActor
@@ -222,14 +244,14 @@ func importExternalFile(_ url: URL, model: WireboltModel) async {
 /// Shown in its own window so help can stay open beside the workspace.
 struct WireboltHelpView: View {
     private let topics: [(String, String)] = [
-        ("Workspaces & collections", "Use File → New Workspace or Open Workspace to choose where requests and environments are stored. New Collection creates a top-level container. The + menu creates requests and folders. Drag items to reorder siblings or move requests between folders and collections. Save edits with ⌘S."),
-        ("Requests & tabs", "Choose an HTTP method and URL, then Send (⌘Return). Params, Headers, Body and Auth configure the request. Cancel stops an active send. Use Navigate → Split Right to compare requests. Closing a dirty tab asks before discarding changes."),
-        ("Variables & secrets", "Open the environment menu → Configure Environments. Global variables apply to every request; the selected environment overrides matching names. Use {{name}} in URLs and fields. Disable a row to omit it. Secret references resolve from this Mac’s Keychain; sharing a collection does not share those credentials."),
+        ("Workspaces & collections", "Use File → New Workspace or Open Workspace to choose where requests and environments are stored. New Collection creates a top-level container. The + menu creates requests and folders. Drag items to reorder siblings or move requests between folders and collections. Save edits with ⌘S. Workspace → Rename Workspace changes the name in the window title. Workspace → Cookies lists this workspace’s cookies; session cookies last until Wirebolt quits."),
+        ("Requests & tabs", "Choose an HTTP method and URL, then Send (⌘Return). Params, Headers, Body and Auth configure the request; Auth supports Basic, Bearer Token, API Key and OAuth 2.0, with credentials stored in Keychain per request. Cancel stops an active send. Use Navigate → Split Right to compare requests. Closing a dirty tab asks before discarding changes."),
+        ("Variables & secrets", "Choose Configure Environments… from the environment menu. Global variables apply to every request; the selected environment overrides matching names. Use {{name}} in URLs and fields. Disable a row to omit it. Click a variable’s lock button to make it secret: Save stores the value in this Mac’s Keychain and the workspace keeps only a reference, so sharing or exporting does not share the value."),
         ("Proxy & transport", "Settings → Network sets the app default. Workspace Settings overrides it for a workspace; a request’s Settings tab can override that again. Inherit follows the parent, Direct bypasses proxies, System uses macOS settings, Manual uses your routes. Save or Apply proxy edits. Test connection sends a HEAD request without request headers, body or cookies. Transport edits save automatically at workspace scope; request edits require ⌘S. Reconnect WebSockets after changing settings."),
         ("Import & export", "The + menu imports cURL, HAR, Postman v2 and Wirebolt / Legacy Collection v1 JSON. Export writes saved requests, so save edits first. API Key and OAuth use Wirebolt-specific authentication metadata: reimport with Wirebolt to preserve it. Other clients may not support these extensions. Referenced credentials must be configured on the destination Mac; response history is not exported."),
         ("WebSocket", "Create a WebSocket request, enter ws:// or wss:// and Connect. Choose Text, JSON, Binary (Hex/Base64) or File for messages. Send transmits the selected representation. Disconnect ends the connection; reconnect applies updated settings."),
         ("Notes", "Write Markdown in Note → Edit. Preview renders headings, lists, emphasis, links and code locally when opened. Save with ⌘S. Images show alternative text; previews do not fetch remote content."),
-        ("Git collaboration", "Workspace → Git Collaboration opens status, commit, pull and push. The workspace must already be in a Git repository. Configure its remote/upstream and authentication with Git first. Only saved workspace documents are committed. Save or discard edits before pulling; conflicts require explicit resolution. Wirebolt does not sync in the background."),
+        ("Git collaboration", "Workspace → Git Collaboration opens status, commit, pull and push. The workspace folder must be the root of its Git repository; if it isn’t a repository yet, choose Initialize Git Repository. Configure its remote/upstream and authentication with Git. Only saved workspace documents are committed. Save or discard edits before pulling. After a conflicted pull, resolve the listed files with Git or choose Abort Merge to return to your last commit. Wirebolt does not sync in the background."),
         ("Keyboard shortcuts", "⌘N new request · ⌘T new tab · ⌥⌘N new folder · ⇧⌘N new collection · ⌘S save · ⌘W close tab · ⇧⌘W close window · ⌘Return send · ⌘. cancel request · ⌃⌘Return connect/disconnect · ⌘L edit URL · ⇧⌘K add key · ⇧⌘F filter requests · ⌘0 focus sidebar · ⌥⌘0 focus response · ⌥⌘1–6 request sections · ⌃⌘1–5 response sections · ⇧⌘D split right · ⇧⌘] / ⇧⌘[ or ⌃Tab / ⌃⇧Tab next / previous tab · ⌘1–9 select tab. The menus list every shortcut."),
     ]
     var body: some View {

@@ -145,11 +145,11 @@ public struct OAuth2Configuration: Codable, Equatable, Sendable {
         authorizationURL: String = "",
         tokenURL: String = "",
         clientID: String = "",
-        clientSecretReference: String = "oauth.client-secret",
+        clientSecretReference: String = CredentialReference.unique(role: "oauth-client-secret"),
         scopes: String = "",
         audience: String = "",
         redirectURI: String = "wirebolt://oauth/callback",
-        accessTokenReference: String = "oauth.access-token"
+        accessTokenReference: String = CredentialReference.unique(role: "oauth-access-token")
     ) {
         self.grant = grant
         self.authorizationURL = authorizationURL
@@ -226,6 +226,43 @@ public enum RequestAuthentication: Codable, Equatable, Sendable {
         case let .oauth2(configuration):
             try container.encode(Kind.oauth2, forKey: .kind)
             try container.encode(configuration, forKey: .configuration)
+        }
+    }
+}
+
+/// Keychain names for credentials a request stores. Every new credential gets its own
+/// name so two requests never read or overwrite each other's secret material.
+public enum CredentialReference {
+    public static func unique(role: String) -> String {
+        "auth.\(UUID().uuidString.lowercased()).\(role)"
+    }
+}
+
+public enum AuthenticationKind: CaseIterable, Sendable {
+    case none, basic, bearer, apiKey, oauth2
+}
+
+public extension RequestAuthentication {
+    var kind: AuthenticationKind {
+        switch self {
+        case .none: .none
+        case .basic: .basic
+        case .bearer: .bearer
+        case .apiKey: .apiKey
+        case .oauth2: .oauth2
+        }
+    }
+
+    /// An empty authentication of `kind` whose secrets use fresh Keychain names.
+    static func new(_ kind: AuthenticationKind) -> RequestAuthentication {
+        switch kind {
+        case .none: .none
+        case .basic: .basic(username: .literal(""), password: .secret(CredentialReference.unique(role: "password")))
+        case .bearer: .bearer(token: .secret(CredentialReference.unique(role: "token")))
+        case .apiKey:
+            .apiKey(placement: .header, name: "X-API-Key", value: .secret(CredentialReference.unique(role: "api-key")))
+        case .oauth2:
+            .oauth2(configuration: OAuth2Configuration())
         }
     }
 }
@@ -524,6 +561,20 @@ public struct EnvironmentVariableDraft: Identifiable, Codable, Equatable, Sendab
     }
 }
 
+public extension EnvironmentVariableDraft {
+    var isSecret: Bool {
+        if case .secret = value { true } else { false }
+    }
+
+    /// The Keychain name for this variable's secret value. It is unique per environment and
+    /// row, so renaming the variable keeps its value and two environments never share one.
+    func secretReference(environmentID: String) -> String {
+        let allowed = Set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789.-_")
+        let clean = { (text: String) in String(text.map { allowed.contains($0) ? $0 : "-" }) }
+        return String("env.\(clean(environmentID)).\(clean(id))".prefix(128))
+    }
+}
+
 public struct EnvironmentDraft: Identifiable, Codable, Equatable, Sendable {
     public var id: String
     public var name: String
@@ -636,6 +687,7 @@ public enum WorkspaceCommand: Equatable, Sendable {
     case reorderChildren(collectionID: String, parentID: String?, items: [String])
     case saveWorkspaceProxy(ProxyDocument?)
     case saveWorkspaceSettings(TransportSettings)
+    case renameWorkspace(name: String)
     case createCollection(CollectionDraft)
     case renameCollection(id: String, name: String)
     case deleteCollection(id: String)
@@ -832,19 +884,39 @@ public struct GitStatusSnapshot: Codable, Equatable, Sendable {
     public let ahead: UInt64
     public let behind: UInt64
     public let changes: [GitChangeSnapshot]
+    /// A pull stopped mid-merge; Abort Merge returns to the state before the pull.
+    public let merging: Bool
+
+    enum CodingKeys: String, CodingKey { case branch, upstream, ahead, behind, changes, merging }
 
     public init(
         branch: String?,
         upstream: String?,
         ahead: UInt64,
         behind: UInt64,
-        changes: [GitChangeSnapshot]
+        changes: [GitChangeSnapshot],
+        merging: Bool = false
     ) {
         self.branch = branch
         self.upstream = upstream
         self.ahead = ahead
         self.behind = behind
         self.changes = changes
+        self.merging = merging
+    }
+
+    public init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        branch = try container.decodeIfPresent(String.self, forKey: .branch)
+        upstream = try container.decodeIfPresent(String.self, forKey: .upstream)
+        ahead = try container.decode(UInt64.self, forKey: .ahead)
+        behind = try container.decode(UInt64.self, forKey: .behind)
+        changes = try container.decode([GitChangeSnapshot].self, forKey: .changes)
+        merging = try container.decodeIfPresent(Bool.self, forKey: .merging) ?? false
+    }
+
+    public var conflictedChanges: [GitChangeSnapshot] {
+        changes.filter { $0.kind == .conflicted }
     }
 }
 
@@ -855,6 +927,7 @@ public enum GitOperationOutcome: String, Codable, Equatable, Sendable {
     case upToDate = "up_to_date"
     case pushed
     case conflicted
+    case mergeAborted = "merge_aborted"
 }
 
 public struct GitOperationSnapshot: Codable, Equatable, Sendable {
@@ -870,6 +943,22 @@ public struct GitOperationSnapshot: Codable, Equatable, Sendable {
         self.outcome = outcome
         self.revision = revision
         self.status = status
+    }
+}
+
+/// Git failures that mean the workspace cannot use Git yet, each with its own guidance.
+public enum GitRepositoryProblem: Equatable, Sendable {
+    case notRepository
+    case notRepositoryRoot
+    case gitUnavailable
+
+    public init?(kind: String) {
+        switch kind {
+        case "not_repository": self = .notRepository
+        case "workspace_not_repository_root": self = .notRepositoryRoot
+        case "git_unavailable": self = .gitUnavailable
+        default: return nil
+        }
     }
 }
 

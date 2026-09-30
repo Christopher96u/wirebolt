@@ -3519,8 +3519,7 @@ private struct AuthenticationEditor: View {
     @Bindable var model: WireboltModel
     @Bindable var session: DocumentSession
     @Binding var authentication: RequestAuthentication
-    @State private var clientSecretMaterial = ""
-    @State private var revealsPassword = false
+    @State private var revealsSecret = false
 
     var body: some View {
         Group {
@@ -3538,20 +3537,7 @@ private struct AuthenticationEditor: View {
                     }
                     GridRow {
                         Text("Password")
-                        HStack(spacing: WireboltTheme.Spacing.xSmall) {
-                            Group {
-                                if revealsPassword {
-                                    TextField("Password", text: credential(password, role: "password"))
-                                } else {
-                                    SecureField("Password", text: credential(password, role: "password"))
-                                }
-                            }
-                            .labelsHidden()
-                            Button(revealsPassword ? "Hide Password" : "Show Password",
-                                   systemImage: revealsPassword ? "eye.slash" : "eye") { revealsPassword.toggle() }
-                                .labelStyle(.iconOnly).buttonStyle(.borderless)
-                                .help(revealsPassword ? "Hide Password" : "Show Password")
-                        }
+                        secretField("Password", text: credential(password, role: "password"))
                     }
                     GridRow(alignment: .top) {
                         Text("Generated Header").padding(.top, 3)
@@ -3575,21 +3561,74 @@ private struct AuthenticationEditor: View {
                         .overlay { RoundedRectangle(cornerRadius: 5).stroke(WireboltTheme.separator) }
                 }.padding(20)
                     .task(id: token) { await model.loadSecret(token) }
-            case .apiKey, .oauth2:
-                advancedAuthentication
+            case let .apiKey(placement, name, value):
+                Grid(alignment: .leading, horizontalSpacing: 8, verticalSpacing: 5) {
+                    GridRow {
+                        Text("Add To").gridColumnAlignment(.trailing)
+                        Picker("Add To", selection: Binding(
+                            get: { placement },
+                            set: { authentication = .apiKey(placement: $0, name: name, value: value) }
+                        )) {
+                            Text("Header").tag(APIKeyPlacement.header)
+                            Text("Query Params").tag(APIKeyPlacement.query)
+                        }
+                        .labelsHidden().fixedSize()
+                    }
+                    GridRow {
+                        Text("Key")
+                        TextField("Key", text: Binding(
+                            get: { name },
+                            set: { authentication = .apiKey(placement: placement, name: $0, value: value) }
+                        ))
+                        .labelsHidden()
+                    }
+                    GridRow {
+                        Text("Value")
+                        secretField("Value", text: credential(value, role: "api-key"))
+                    }
+                    GridRow {
+                        Color.clear.frame(width: 1, height: 1)
+                        Text("The value is stored in this Mac’s Keychain, not in the workspace.")
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                .font(.system(size: 13)).controlSize(.small)
+                .textFieldStyle(.roundedBorder).padding(.horizontal, 20).padding(.top, 16)
+                .task(id: value) { await model.loadSecret(value) }
+            case let .oauth2(configuration):
+                oauthEditor(configuration)
             }
         }
         .font(.system(size: 12))
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
 
+    private func secretField(_ title: String, text: Binding<String>) -> some View {
+        HStack(spacing: WireboltTheme.Spacing.xSmall) {
+            Group {
+                if revealsSecret {
+                    TextField(title, text: text)
+                } else {
+                    SecureField(title, text: text)
+                }
+            }
+            .labelsHidden()
+            .accessibilityLabel(title)
+            Button(revealsSecret ? "Hide \(title)" : "Show \(title)",
+                   systemImage: revealsSecret ? "eye.slash" : "eye") { revealsSecret.toggle() }
+                .labelStyle(.iconOnly).buttonStyle(.borderless)
+                .help(revealsSecret ? "Hide \(title)" : "Show \(title)")
+        }
+    }
+
+    /// Edits secret material staged for Keychain; the request keeps only the reference.
     private func credential(_ source: ValueSource, role: String) -> Binding<String> {
         Binding(
             get: { model.secretMaterial(for: source) },
             set: { value in
                 let name: String
-                if case let .secret(existing) = source { name = existing }
-                else { name = "request.\(session.requestID).\(role)" }
+                if case let .secret(existing) = source, !existing.isEmpty { name = existing }
+                else { name = CredentialReference.unique(role: role) }
                 model.editSecret(name: name, value: value)
                 switch authentication {
                 case let .basic(username, password):
@@ -3597,86 +3636,64 @@ private struct AuthenticationEditor: View {
                         ? .basic(username: .secret(name), password: password)
                         : .basic(username: username, password: .secret(name))
                 case .bearer: authentication = .bearer(token: .secret(name))
-                default: break
+                case let .apiKey(placement, keyName, _):
+                    authentication = .apiKey(placement: placement, name: keyName, value: .secret(name))
+                case var .oauth2(configuration):
+                    configuration.clientSecretReference = name
+                    authentication = .oauth2(configuration: configuration)
+                case .none: break
                 }
             }
         )
     }
 
-    private var advancedAuthentication: some View {
-        Form {
-            switch authentication {
-            case .none, .basic, .bearer: EmptyView()
-            case let .apiKey(placement, name, value):
-                Picker("Placement", selection: Binding(
-                    get: { placement },
-                    set: { authentication = .apiKey(placement: $0, name: name, value: value) }
-                )) {
-                    ForEach(APIKeyPlacement.allCases, id: \.self) {
-                        Text($0.rawValue.capitalized).tag($0)
+    private func oauthEditor(_ configuration: OAuth2Configuration) -> some View {
+        let clientSecret = ValueSource.secret(configuration.clientSecretReference)
+        return Form {
+            Picker("Grant", selection: oauthBinding(\.grant)) {
+                Text("Authorization Code + PKCE").tag(OAuth2Grant.authorizationCodePKCE)
+                Text("Client Credentials").tag(OAuth2Grant.clientCredentials)
+            }
+            if configuration.grant == .authorizationCodePKCE {
+                TextField("Authorization URL", text: oauthBinding(\.authorizationURL))
+                TextField("Redirect URI", text: oauthBinding(\.redirectURI))
+            }
+            TextField("Token URL", text: oauthBinding(\.tokenURL))
+            TextField("Client ID", text: oauthBinding(\.clientID))
+            if configuration.grant == .clientCredentials {
+                LabeledContent("Client Secret") {
+                    secretField("Client Secret", text: credential(clientSecret, role: "oauth-client-secret"))
+                }
+                .task(id: clientSecret) { await model.loadSecret(clientSecret) }
+            }
+            TextField("Scopes", text: oauthBinding(\.scopes))
+            TextField("Audience", text: oauthBinding(\.audience))
+            LabeledContent("Token") {
+                HStack {
+                    if model.isOAuthBusy {
+                        ProgressView().controlSize(.small)
+                    } else if let receipt = model.oauthReceipts[session.id] {
+                        Label(
+                            receipt.expiresAt.map { "Valid until \($0.formatted(date: .omitted, time: .shortened))" }
+                                ?? "Stored in Keychain",
+                            systemImage: "checkmark.circle.fill"
+                        )
+                        .foregroundStyle(.green)
                     }
-                }
-                TextField("Name", text: Binding(
-                    get: { name },
-                    set: { authentication = .apiKey(placement: placement, name: $0, value: value) }
-                ))
-                TextField("Value Secret", text: Binding(
-                    get: { value.editableValue },
-                    set: { authentication = .apiKey(placement: placement, name: name, value: .secret($0)) }
-                ))
-            case let .oauth2(configuration):
-                Picker("Grant", selection: oauthBinding(\.grant)) {
-                    Text("Authorization Code + PKCE").tag(OAuth2Grant.authorizationCodePKCE)
-                    Text("Client Credentials").tag(OAuth2Grant.clientCredentials)
-                }
-                if configuration.grant == .authorizationCodePKCE {
-                    TextField("Authorization URL", text: oauthBinding(\.authorizationURL))
-                    TextField("Redirect URI", text: oauthBinding(\.redirectURI))
-                } else {
-                    TextField("Client Secret Reference", text: oauthBinding(\.clientSecretReference))
-                    SecureField("Client Secret (Keychain only)", text: $clientSecretMaterial)
-                    Button("Store Client Secret in Keychain") {
-                        guard clientSecretMaterial.isEmpty == false else { return }
-                        let material = clientSecretMaterial
-                        clientSecretMaterial = ""
-                        Task {
-                            await model.saveSecret(
-                                name: configuration.clientSecretReference,
-                                value: material
-                            )
-                        }
+                    Button("Get New Access Token") {
+                        Task { await model.acquireOAuthToken(for: session) }
                     }
-                    .disabled(clientSecretMaterial.isEmpty || configuration.clientSecretReference.isEmpty)
-                }
-                TextField("Token URL", text: oauthBinding(\.tokenURL))
-                TextField("Client ID", text: oauthBinding(\.clientID))
-                TextField("Scopes", text: oauthBinding(\.scopes))
-                TextField("Audience", text: oauthBinding(\.audience))
-                TextField("Access Token Reference", text: oauthBinding(\.accessTokenReference))
-                LabeledContent("Token") {
-                    HStack {
-                        if model.isOAuthBusy {
-                            ProgressView().controlSize(.small)
-                        } else if let receipt = model.oauthReceipts[session.id] {
-                            Label(
-                                receipt.expiresAt.map { "Valid until \($0.formatted(date: .omitted, time: .shortened))" }
-                                    ?? "Stored in Keychain",
-                                systemImage: "checkmark.circle.fill"
-                            )
-                            .foregroundStyle(.green)
-                        }
-                        Button("Get New Access Token") {
-                            Task { await model.acquireOAuthToken(for: session) }
-                        }
-                        .disabled(model.isOAuthBusy)
-                    }
-                }
-                if let message = model.oauthFailureMessage {
-                    Text(message).foregroundStyle(.red)
+                    .disabled(model.isOAuthBusy || configuration.tokenURL.isEmpty || configuration.clientID.isEmpty)
                 }
             }
+            if let message = model.oauthFailureMessage {
+                Text(message).foregroundStyle(.red)
+            }
+            Text("The client secret and access token are stored in this Mac’s Keychain, not in the workspace.")
+                .foregroundStyle(.secondary)
         }
         .formStyle(.columns)
+        .textFieldStyle(.roundedBorder)
         .padding(20)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
@@ -3705,51 +3722,30 @@ private struct AuthenticationTypePicker: View {
     var body: some View {
         Menu {
             Picker("Auth Type", selection: kindBinding) {
-                ForEach(AuthenticationKind.allCases.filter { [.none, .basic, .bearer, kindBinding.wrappedValue].contains($0) }) { kind in Text(kind.title).tag(kind) }
+                ForEach(AuthenticationKind.allCases, id: \.self) { kind in Text(kind.title).tag(kind) }
             }
             .pickerStyle(.inline).labelsHidden()
         } label: {
-            Text(kindBinding.wrappedValue.title)
+            Text(authentication.kind.title)
         }
         .menuStyle(.borderlessButton).controlSize(.small).fixedSize()
         .accessibilityLabel("Auth Type")
-        .accessibilityValue(kindBinding.wrappedValue.title)
+        .accessibilityValue(authentication.kind.title)
         .help("Auth Type")
     }
+
     private var kindBinding: Binding<AuthenticationKind> {
         Binding(
-            get: {
-                switch authentication {
-                case .none: .none
-                case .basic: .basic
-                case .bearer: .bearer
-                case .apiKey: .apiKey
-                case .oauth2: .oauth2
-                }
-            },
-            set: {
-                authentication = switch $0 {
-                case .none: .none
-                case .basic: .basic(username: .literal(""), password: .secret("auth.\(UUID().uuidString).password"))
-                case .bearer: .bearer(token: .secret("auth.\(UUID().uuidString).token"))
-                case .apiKey: .apiKey(placement: .header, name: "X-API-Key", value: .secret("auth.api-key"))
-                case .oauth2: .oauth2(configuration: OAuth2Configuration())
-                }
+            get: { authentication.kind },
+            set: { kind in
+                guard kind != authentication.kind else { return }
+                authentication = .new(kind)
             }
         )
     }
-
 }
 
-private enum AuthenticationKind: CaseIterable, Identifiable {
-    case none
-    case basic
-    case bearer
-    case apiKey
-    case oauth2
-
-    var id: Self { self }
-
+private extension AuthenticationKind {
     var title: String {
         switch self {
         case .none: "None"
