@@ -22,7 +22,10 @@ while pending:
     root = Path(package["manifest_path"]).parent
     files = set()
     for path in root.iterdir():
-        if path.is_file() and path.name.upper().startswith(("LICENSE", "LICENCE", "COPYING", "NOTICE")):
+        name = path.name.upper()
+        # Also matches prefixed names such as MIT-LICENSE (yaml-rust2).
+        if path.is_file() and (name.startswith(("LICENSE", "LICENCE", "COPYING", "NOTICE"))
+                               or name.endswith(("-LICENSE", "_LICENSE"))):
             files.add(path)
         if path.is_dir() and path.name.lower() in ("license", "licenses"):
             files.update(item for item in path.rglob("*") if item.is_file())
