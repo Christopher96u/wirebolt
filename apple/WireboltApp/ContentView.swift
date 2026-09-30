@@ -1146,8 +1146,6 @@ struct InlineSidebarName: View {
     var renameOnDoubleClick = false
     let setEditing: (Bool) -> Void
     let save: (String) -> Void
-    @State private var value = ""
-    @FocusState private var focused: Bool
 
     init(title: String, isEditing: Binding<Bool>, renameOnDoubleClick: Bool = false, save: @escaping (String) -> Void) {
         self.title = title
@@ -1157,35 +1155,59 @@ struct InlineSidebarName: View {
         self.save = save
     }
 
+    // The editor, with its text and focus state, exists only while renaming: every sidebar
+    // row shows a name, and rows are created on each filter keystroke.
     var body: some View {
-        Group {
-            if isEditing {
-                TextField("Name", text: $value)
-                    .textFieldStyle(.plain).focused($focused)
-                    .onSubmit(commit)
-                    .onExitCommand { setEditing(false) }
-                    .onChange(of: focused) { _, focused in if !focused && isEditing { commit() } }
-            } else if renameOnDoubleClick {
-                Text(title).lineLimit(1)
-                    .contentShape(.rect)
-                    .onTapGesture(count: 2) { setEditing(true) }
-            } else { Text(title).lineLimit(1) }
+        if isEditing {
+            InlineNameEditor(title: title, setEditing: setEditing, save: save)
+        } else if renameOnDoubleClick {
+            Text(title).lineLimit(1)
+                .contentShape(.rect)
+                .onTapGesture(count: 2) { setEditing(true) }
+        } else {
+            Text(title).lineLimit(1)
         }
-        // Only a rename does work here; rows are created on every filter change, so they
-        // don't start a task each.
-        .onChange(of: isEditing, initial: true) {
-            guard isEditing else { return }
-            value = title
-            Task {
+    }
+}
+
+private struct InlineNameEditor: View {
+    let title: String
+    let setEditing: (Bool) -> Void
+    let save: (String) -> Void
+    @State private var value: String
+    /// Set once Return, Esc or losing focus ended this rename, so it ends only once.
+    @State private var isFinished = false
+    @FocusState private var focused: Bool
+
+    init(title: String, setEditing: @escaping (Bool) -> Void, save: @escaping (String) -> Void) {
+        self.title = title
+        self.setEditing = setEditing
+        self.save = save
+        _value = State(initialValue: title)
+    }
+
+    var body: some View {
+        TextField("Name", text: $value)
+            .textFieldStyle(.plain).focused($focused)
+            .onSubmit(commit)
+            .onExitCommand { finish() }
+            .onChange(of: focused) { _, focused in if !focused { commit() } }
+            .task {
                 await Task.yield()
-                if isEditing { focused = true }
+                focused = true
             }
-        }
+    }
+
+    private func finish() {
+        guard !isFinished else { return }
+        isFinished = true
+        setEditing(false)
     }
 
     private func commit() {
+        guard !isFinished else { return }
         let name = value.trimmingCharacters(in: .whitespacesAndNewlines)
-        setEditing(false)
+        finish()
         if !name.isEmpty && name != title { save(name) }
     }
 }
