@@ -22,6 +22,7 @@ Changes under **Unreleased** describe the source branch and may not be included 
 - Keyboard access: full sidebar navigation (arrows, type-select, Return to rename), Move Up/Down (**⌥⌘↑** / **⌥⌘↓**) and Move To, Cancel Request (**⌘.**), request and response section commands (**⌥⌘1–6**, **⌃⌘1–5**), Focus Sidebar (**⌘0**) and Focus Response (**⌥⌘0**).
 - A welcome state with New Request, Import and Open Workspace for empty workspaces, and a New Request row in empty collections.
 - Open or drop cURL, HAR, Postman and Wirebolt JSON files on the app to import them. File → Open Recent lists workspaces.
+- Insomnia (v4 JSON, v5 YAML) and Bruno (collection folder, `.bru` file or JSON export) import, including folders, bodies, authentication and environments.
 - Response pane: elapsed time and Cancel while sending, the previous response stays visible until the new one arrives, and failures explain the cause with Retry, Network Settings and View Request.
 - VoiceOver announcements for finished, failed and cancelled requests; clearer labels for credential, multipart and key-value fields, checkboxes and sidebar rows; help tags on icon-only buttons.
 - Local Markdown Edit/Preview for request notes, Git Collaboration commands, in-app help in its own window, user documentation and a local quick-start API example.

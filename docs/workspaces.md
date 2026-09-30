@@ -15,7 +15,7 @@ Switching workspaces closes the old tabs and cancels active requests. If there a
 
 ## Collections, folders and ordering
 
-A new workspace starts empty: use **New Request** (**⌘N**), **Import**, or drop a cURL, HAR, Postman or Wirebolt file on the window. Create requests and folders from the **+** menu or the relevant context menu; an empty collection shows its own **New Request** row. Right-click a sidebar item for its available actions.
+A new workspace starts empty: use **New Request** (**⌘N**), **Import**, or drop a cURL, HAR, Postman, Insomnia, Bruno or Wirebolt file (or a Bruno collection folder) on the window. Create requests and folders from the **+** menu or the relevant context menu; an empty collection shows its own **New Request** row. Right-click a sidebar item for its available actions.
 
 Drag a request or subfolder to the **upper or lower edge** of a sibling row to reorder it. The insertion line shows the destination. Requests and folders can be mixed. Drop in the **center of a folder** to move an item into it. Without dragging, use **Move Up** / **Move Down** (**⌥⌘↑** / **⌥⌘↓**) or the context menu's **Move To** submenu.
 
