@@ -171,3 +171,37 @@ public struct CodeTextWrapping: Hashable, Sendable {
         }
     }
 }
+
+/// Shows spaces as middle dots for "Show Invisible Characters" in views that draw text
+/// themselves. U+00B7 has the space advance in a monospaced font and one UTF-16 unit,
+/// so columns, wrapping and selection offsets are unchanged.
+public enum InvisibleSpaces {
+    public static let marker = "\u{00B7}"
+
+    /// Runs of consecutive spaces, in UTF-16 offsets.
+    public static func runs(in text: NSString) -> [NSRange] {
+        var runs: [NSRange] = []
+        var location = 0
+        while location < text.length {
+            let found = text.range(of: " ", options: .literal, range: NSRange(location: location, length: text.length - location))
+            guard found.location != NSNotFound else { break }
+            var end = NSMaxRange(found)
+            while end < text.length, text.character(at: end) == 0x20 { end += 1 }
+            runs.append(NSRange(location: found.location, length: end - found.location))
+            location = end
+        }
+        return runs
+    }
+
+    /// Replaces every space with the marker and applies `attributes` to the markers.
+    public static func marking(_ source: NSAttributedString, attributes: [NSAttributedString.Key: Any]) -> NSAttributedString {
+        let runs = runs(in: source.string as NSString)
+        guard !runs.isEmpty else { return source }
+        let marked = NSMutableAttributedString(attributedString: source)
+        for run in runs {
+            marked.replaceCharacters(in: run, with: String(repeating: marker, count: run.length))
+            marked.addAttributes(attributes, range: run)
+        }
+        return marked
+    }
+}
