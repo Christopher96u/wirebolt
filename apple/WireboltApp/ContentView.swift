@@ -4484,7 +4484,6 @@ private final class WindowConfigurationView: NSView {
         window.styleMask.insert(.fullSizeContentView)
         window.backgroundColor = .windowBackgroundColor
         window.isOpaque = false
-        window.setFrameAutosaveName("WireboltMainWindow")
         installCloseGuard()
         updateSidebarOutline()
         observeMainMenuChanges()

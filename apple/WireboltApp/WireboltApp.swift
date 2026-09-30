@@ -20,7 +20,8 @@ struct WireboltApp: App {
     var body: some Scene {
         // One workspace window: two windows on the same workspace folder would each hold
         // their own copy of the tree and overwrite each other's saves. File ▸ New Window is
-        // replaced by New Request, and restoration cannot bring back extra windows.
+        // replaced by New Request. AppKit state restoration is ignored (see init), so only the
+        // window frame is remembered.
         WindowGroup("Wirebolt", id: "workspace") {
             ContentView(
                 model: appDelegate.model,
@@ -32,7 +33,6 @@ struct WireboltApp: App {
         .defaultSize(width: 1_248, height: 580)
         .windowResizability(.contentMinSize)
         .windowToolbarStyle(.unified)
-        .restorationBehavior(.disabled)
         .commands {
             WireboltCommands(
                 model: appDelegate.model,
