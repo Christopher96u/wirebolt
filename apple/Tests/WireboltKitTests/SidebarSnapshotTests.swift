@@ -48,6 +48,14 @@ import Testing
         }
     }
 
+    @Test func asciiNormalizationMatchesFolding() {
+        let every = String((0..<128).compactMap { Unicode.Scalar($0).map(Character.init) })
+        for text in [every, "Request 42 GET https://Example.INVALID/Path?Q=1", "", "MiXeD\u{0}Case"] {
+            #expect(SidebarSnapshot.normalize(text) == SidebarSnapshot.foldedForComparison(text))
+            #expect(Array(SidebarSnapshot.normalize(text).utf8) == Array(SidebarSnapshot.foldedForComparison(text).utf8))
+        }
+    }
+
     @Test func tiedOrderIsDeterministicAndRootCollectionHasNoHeader() {
         var collection = fixture()
         collection.id = WorkspaceDraft.rootCollectionID

@@ -185,10 +185,25 @@ public struct SidebarSnapshot: Sendable {
     /// Case- and diacritic-folded, in canonical composed form and native UTF-8, so filtering
     /// can scan the bytes without bridging.
     static func normalize(_ text: String) -> String {
+        // ASCII (most names and URLs) only needs lowercasing, which is what folding does to it.
+        var text = text
+        if let ascii = text.withUTF8({ bytes -> String? in
+            guard !bytes.contains(where: { $0 >= 0x80 }) else { return nil }
+            return String(unsafeUninitializedCapacity: bytes.count) { buffer in
+                for (index, byte) in bytes.enumerated() { buffer[index] = byte >= 0x41 && byte <= 0x5A ? byte | 0x20 : byte }
+                return bytes.count
+            }
+        }) { return ascii }
         var folded = text.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: Locale(identifier: "en_US_POSIX"))
             .precomposedStringWithCanonicalMapping
         folded.makeContiguousUTF8()
         return folded
+    }
+
+    /// The full folding path, for checking the ASCII shortcut.
+    static func foldedForComparison(_ text: String) -> String {
+        text.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: Locale(identifier: "en_US_POSIX"))
+            .precomposedStringWithCanonicalMapping
     }
 }
 
