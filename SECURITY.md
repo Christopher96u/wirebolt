@@ -1,11 +1,32 @@
-# Security reporting
+# Security policy
 
-Do not post exploit details, credentials, private workspace files or sensitive response bodies in public issues.
+## Report a vulnerability
 
-A private vulnerability-reporting channel has **not yet been verified for this repository**. Before the public launch, the maintainer must enable GitHub private vulnerability reporting and verify its availability, or publish a monitored private contact here.
+Report privately through [GitHub private vulnerability reporting](https://github.com/Christopher96u/wirebolt/security/advisories/new) (**Security → Report a vulnerability**). Do not open public issues, discussions or pull requests for vulnerabilities.
 
-Once **Security → Report a vulnerability** is available on the repository, use it for a private report. If it is unavailable, open an issue containing only a request for a private contact method, with no vulnerability details, and wait for the maintainer to provide one. No response-time commitment is currently published.
+Include:
 
-A useful private report includes the affected version or commit, prerequisites, a minimal reproduction using synthetic data, expected versus actual behavior and impact. Never include live credentials.
+- Wirebolt version (**About Wirebolt**, for example `0.1.0 (2)`) or source commit, macOS version and chip
+- Steps to reproduce with synthetic data, expected versus actual behavior and impact
+- Proof of concept, if you have one
 
-Wirebolt is in beta. There is no published supported-version or security-backport policy yet. Updates and fixes should be documented in the [changelog](CHANGELOG.md).
+Never include live credentials, cookies, private workspace files or real response bodies.
+
+## Supported versions
+
+Wirebolt is in beta. Fixes land on `main` and ship in the next beta; only the latest beta is supported.
+
+## Response
+
+Wirebolt is maintained by one person. The goal is to acknowledge reports within 7 days and keep you updated while the report is triaged. Once a fix is released, the advisory is published and reporters are credited unless they prefer otherwise.
+
+## Scope
+
+Wirebolt is local-first: no accounts, telemetry or cloud sync. In scope:
+
+- Secret material leaking out of Keychain into workspace files, Git, history, logs, exports or raw-request views
+- Unsafe handling of imported files (cURL, HAR, Postman, Wirebolt JSON and other supported formats)
+- Proxy, TLS validation or certificate handling that differs from the configured policy
+- Markdown notes loading remote content, or Markdown or HTML response previews executing scripts
+
+Out of scope: servers you send requests to, issues requiring an already compromised Mac or user account, and the ad-hoc signed (not notarized) beta packaging, which is documented.
