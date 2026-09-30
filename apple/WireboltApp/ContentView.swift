@@ -1965,19 +1965,38 @@ private struct WebSocketRequestWorkspace: View {
     var body: some View {
         VStack(spacing: 0) {
             HStack(spacing: 10) {
-                ForEach([RequestPanelSection.body, .params, .headers, .auth, .note, .settings]) { section in
-                    PanelTabButton(
-                        title: section == .body ? "Message" : section.rawValue,
-                        badge: badge(for: section),
-                        isSelected: interface.requestSection == section,
-                        action: { interface.requestSection = section }
-                    )
+                // Tabs scroll instead of being clipped when the pane is narrow; the section
+                // controls keep their size at the trailing edge.
+                ScrollView(.horizontal) {
+                    HStack(spacing: 10) {
+                        ForEach([RequestPanelSection.body, .params, .headers, .auth, .note, .settings]) { section in
+                            PanelTabButton(
+                                title: section == .body ? "Message" : section.rawValue,
+                                badge: badge(for: section),
+                                isSelected: interface.requestSection == section,
+                                action: { interface.requestSection = section }
+                            )
+                        }
+                    }
                 }
+                .scrollIndicators(.never)
+                .scrollBounceBehavior(.basedOnSize, axes: .horizontal)
                 Spacer(minLength: 4)
                 if interface.requestSection == .body {
-                    Picker("Content Type", selection: messageKind) {
-                        ForEach(WebSocketMessageKind.allCases) { Text($0.rawValue).tag($0) }
-                    }.font(.system(size: 13)).controlSize(.small).frame(width: 170)
+                    // A borderless menu showing only the chosen kind, like the HTTP body type,
+                    // so it reads as a value rather than another section tab.
+                    Menu {
+                        Picker("Content Type", selection: messageKind) {
+                            ForEach(WebSocketMessageKind.allCases) { Text($0.rawValue).tag($0) }
+                        }
+                        .pickerStyle(.inline).labelsHidden()
+                    } label: {
+                        Text(messageKind.wrappedValue.rawValue)
+                    }
+                    .menuStyle(.borderlessButton).controlSize(.small).fixedSize()
+                    .accessibilityLabel("Content Type")
+                    .accessibilityValue(messageKind.wrappedValue.rawValue)
+                    .help("Content Type")
                     if messageKind.wrappedValue == .binary {
                         Picker("Binary Encoding", selection: binaryEncoding) {
                             ForEach(WebSocketBinaryEncoding.allCases, id: \.self) { Text($0.rawValue).tag($0) }
@@ -2110,6 +2129,8 @@ private struct RequestURLBar: View {
         HStack(spacing: 7) {
             if session.kind == .webSocket {
                 Text("WS").font(.system(size: 14, weight: .bold)).foregroundStyle(WireboltTheme.webSocketColor)
+                    // The URL field has layout priority; keep the label from compressing to nothing.
+                    .fixedSize()
             } else {
             Menu {
                 ForEach(HTTPMethod.allCases, id: \.self) { method in
