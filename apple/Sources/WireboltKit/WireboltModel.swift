@@ -142,6 +142,9 @@ public final class WireboltModel {
     /// no longer referenced are deleted only when the undo stack is discarded (switching
     /// workspace, reloading after a pull, quitting), so an undone deletion still finds its value.
     @ObservationIgnored private var observedSecretNames: Set<String> = []
+    /// Other workspace folders this Mac knows about (Open Recent, the built-in workspace).
+    /// A Keychain item one of them still references is never deleted.
+    @ObservationIgnored public var knownWorkspaceLocations: @MainActor () -> [URL] = { [] }
     public private(set) var oauthReceipts: [String: OAuth2TokenReceipt] = [:]
     public private(set) var oauthFailureMessage: String?
     public private(set) var isOAuthBusy = false
@@ -892,7 +895,21 @@ public final class WireboltModel {
             inUse.formUnion(session.draft.secretReferences)
             if let saved = session.savedDraft { inUse.formUnion(saved.secretReferences) }
         }
-        let released = observedSecretNames.subtracting(inUse)
+        var released = observedSecretNames.subtracting(inUse)
+        guard !released.isEmpty else { return }
+        // Clones of a repository, or copies of a workspace folder, share reference names.
+        let current = workspaceLocation?.standardizedFileURL.path
+        let others = Array(Set(knownWorkspaceLocations().map(\.standardizedFileURL.path)).subtracting([current].compactMap { $0 }))
+            .map { URL(fileURLWithPath: $0, isDirectory: true) }
+        if !others.isEmpty {
+            let candidates = released
+            let shared = await Task.detached(priority: .utility) {
+                WorkspaceSecretScan.referencedNames(candidates, in: others)
+            }.value
+            // Another workspace owns these too; its own session releases them later.
+            observedSecretNames.subtract(shared)
+            released.subtract(shared)
+        }
         for name in released.sorted() {
             do {
                 try await persistence.deleteSecret(name: name)
@@ -1706,5 +1723,41 @@ public extension ImportFormat {
         }
         if root["version"] as? Int == 1, root["nodes"] is [Any] { return .legacyWorkspaceV1 }
         return fileExtension.lowercased() == "har" ? .har : nil
+    }
+}
+
+/// Finds Keychain reference names in workspace folders on disk without opening them as
+/// workspaces: only request and environment documents are read, as plain text.
+public enum WorkspaceSecretScan {
+    /// The names in `candidates` that any request or environment document of `workspaces`
+    /// mentions. Missing or unreadable folders and files are skipped.
+    public nonisolated static func referencedNames(_ candidates: Set<String>, in workspaces: [URL]) -> Set<String> {
+        var remaining = candidates
+        var found: Set<String> = []
+        for root in workspaces {
+            for file in documentFiles(in: root) {
+                guard !remaining.isEmpty else { return found }
+                guard let text = try? String(contentsOf: file, encoding: .utf8) else { continue }
+                for name in remaining where text.contains("\"\(name)\"") || text.contains("'\(name)'") {
+                    found.insert(name)
+                }
+                remaining.subtract(found)
+            }
+        }
+        return found
+    }
+
+    /// `collections/<collection>/requests/*.toml` and `environments/*.toml`.
+    private nonisolated static func documentFiles(in root: URL) -> [URL] {
+        let manager = FileManager.default
+        func toml(in directory: URL) -> [URL] {
+            ((try? manager.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)) ?? [])
+                .filter { $0.pathExtension == "toml" }
+        }
+        let collections = (try? manager.contentsOfDirectory(
+            at: root.appending(path: "collections", directoryHint: .isDirectory), includingPropertiesForKeys: nil
+        )) ?? []
+        return collections.flatMap { toml(in: $0.appending(path: "requests", directoryHint: .isDirectory)) }
+            + toml(in: root.appending(path: "environments", directoryHint: .isDirectory))
     }
 }

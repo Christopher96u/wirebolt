@@ -16,7 +16,7 @@ Passwords, tokens, API key values and OAuth client secrets are stored in this Ma
 
 Choosing another scheme starts that scheme empty; switching back does not restore the previous credentials.
 
-**Duplicate** gives the copy its own Keychain items holding the same values, so changing or deleting one request never affects the other. When you delete a request, its Keychain items are removed once the deletion can no longer be undone: when you open another workspace, when a pull reloads the workspace, or when you quit.
+**Duplicate** gives the copy its own Keychain items holding the same values, so changing or deleting one request never affects the other. When you delete a request, its Keychain items are removed once the deletion can no longer be undone: when you open another workspace, when a pull reloads the workspace, or when you quit. An item that another workspace in **File → Open Recent** (or the built-in workspace) still references is kept, for example in a second clone of the same repository.
 
 Requests created by earlier versions used the shared names `auth.api-key`, `oauth.client-secret` and `oauth.access-token`. The first time you save such a request, edit its credential or request a token, Wirebolt copies the value into the request's own Keychain item. The shared item is left in place because other workspaces may still use it; delete it in Keychain Access once you no longer need it.
 

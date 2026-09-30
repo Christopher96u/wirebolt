@@ -97,6 +97,68 @@ struct SecretLifecycleTests {
         #expect(await keychain.saved[shared] == "c")
     }
 
+    private func writeWorkspace(at root: URL, requestSecret: String?, environmentSecret: String?) throws {
+        let manager = FileManager.default
+        let requests = root.appending(path: "collections/api/requests", directoryHint: .isDirectory)
+        let environments = root.appending(path: "environments", directoryHint: .isDirectory)
+        try manager.createDirectory(at: requests, withIntermediateDirectories: true)
+        try manager.createDirectory(at: environments, withIntermediateDirectories: true)
+        try Data("schema_version = 3\nname = \"Clone\"\n".utf8).write(to: root.appending(path: "wirebolt.toml"))
+        let auth = requestSecret.map { "\n[authentication]\nkind = \"bearer\"\n\n[authentication.token]\nsecret = \"\($0)\"\n" } ?? ""
+        try Data("""
+        schema_version = 3
+        id = "orders"
+        name = "Orders"
+        method = "GET"
+        url = "https://api.example.com/orders"
+        \(auth)
+        """.utf8).write(to: requests.appending(path: "orders.toml"))
+        let variable = environmentSecret.map { "\n[[variables]]\nid = \"token-row\"\nkey = \"token\"\nvalue = { secret = '\($0)' }\nenabled = true\norder = 0\n" } ?? ""
+        try Data("schema_version = 3\nid = \"staging\"\nname = \"Staging\"\n\(variable)".utf8)
+            .write(to: environments.appending(path: "staging.toml"))
+        // Text outside request and environment documents does not count as a reference.
+        try Data("\"\(tokenName)\" \"\(apiKeyName)\"".utf8).write(to: root.appending(path: "notes.txt"))
+    }
+
+    @Test("Scanning finds names in other workspaces' request and environment documents only")
+    func scansOtherWorkspaces() throws {
+        let root = FileManager.default.temporaryDirectory.appending(path: "wirebolt-scan-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: root) }
+        try writeWorkspace(at: root.appending(path: "Checkout"), requestSecret: tokenName, environmentSecret: nil)
+        try writeWorkspace(at: root.appending(path: "Payments"), requestSecret: nil, environmentSecret: apiKeyName)
+        let other = "auth.9b2e6a64-5c1f-4d0e-8f7a-2b3c4d5e6f70.password"
+
+        let found = WorkspaceSecretScan.referencedNames([tokenName, apiKeyName, other], in: [
+            root.appending(path: "Checkout"), root.appending(path: "Payments"), root.appending(path: "Missing"),
+        ])
+
+        #expect(found == [tokenName, apiKeyName])
+        #expect(WorkspaceSecretScan.referencedNames([other], in: [root.appending(path: "Checkout")]).isEmpty)
+    }
+
+    @Test("An item another known workspace still references is not deleted")
+    func sharedWithAnotherWorkspace() async throws {
+        let root = FileManager.default.temporaryDirectory.appending(path: "wirebolt-clones-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let clone = root.appending(path: "Checkout clone")
+        try writeWorkspace(at: clone, requestSecret: tokenName, environmentSecret: nil)
+        let first = RequestDraft(id: "orders", name: "Orders", authentication: .bearer(token: .secret(tokenName)))
+        let second = RequestDraft(id: "refunds", name: "Refunds", authentication: .apiKey(placement: .header, name: "X-Key", value: .secret(apiKeyName)))
+        let keychain = KeychainRecorder(location: root.appending(path: "Checkout"), workspace: workspace([first, second]),
+                                        keychain: [tokenName: "a", apiKeyName: "b"])
+        let (model, _) = await makeModel(keychain)
+        model.knownWorkspaceLocations = { [clone, root.appending(path: "Checkout"), root.appending(path: "Deleted")] }
+
+        await model.deleteRequest(collectionID: "api", requestID: "orders")
+        await model.deleteRequest(collectionID: "api", requestID: "refunds")
+        await model.purgeReleasedSecrets()
+
+        // The clone still uses the token; nothing else uses the API key; a missing folder doesn't block.
+        #expect(await keychain.deleted == [apiKeyName])
+        #expect(await keychain.saved[tokenName] == "a")
+        #expect(!model.hasReleasableSecrets)
+    }
+
     @Test("Removing a secret variable releases its item; purging twice deletes once")
     func environmentVariableDeletion() async throws {
         let reference = EnvironmentVariableDraft(key: "token").makeSecretReference(environmentID: "staging")
