@@ -495,14 +495,14 @@ private struct ResponseBodyViewer: View {
                 Spacer(minLength: 8)
 
                 HStack(spacing: 13) {
-                Button("Find", systemImage: "magnifyingglass") {
-                    if [.json, .xml, .html, .raw].contains(interface.responseRenderer) { find.isVisible = true }
-                }
+                Button("Find", systemImage: "magnifyingglass") { find.isVisible = true }
                 .labelStyle(.iconOnly)
                 .buttonStyle(.borderless)
                 .foregroundStyle(.secondary)
                 .frame(width: 20)
-                .help("Find in Response (⌘F)")
+                // Tree, image, web and hex renderers have no text to search.
+                .disabled(!rendererSupportsFind)
+                .help(rendererSupportsFind ? "Find in Response (⌘F)" : "Find is available in the JSON, XML, HTML and Raw renderers")
 
                 Menu("Response Actions", systemImage: "ellipsis.circle") {
                     Button("Copy Body", systemImage: "doc.on.doc") {
@@ -512,6 +512,7 @@ private struct ResponseBodyViewer: View {
                             NSPasteboard.general.setString(String(decoding: data, as: UTF8.self), forType: .string)
                         }
                     }
+                    .disabled(store == nil || receivedBytes == 0)
                     Divider()
                     Button("Export Body…", systemImage: "square.and.arrow.up", action: saveResponse).disabled(store == nil)
                     Divider()
@@ -604,6 +605,7 @@ private struct ResponseBodyViewer: View {
         }
     }
 
+    private var rendererSupportsFind: Bool { [.json, .xml, .html, .raw].contains(interface.responseRenderer) }
     private var renderedData: Data { loadedViewportData ?? previewData }
     private var renderedText: String { String(decoding: renderedData, as: UTF8.self) }
 
