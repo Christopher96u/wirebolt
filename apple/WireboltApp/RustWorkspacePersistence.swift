@@ -76,28 +76,43 @@ struct RustWorkspacePersistence: WorkspacePersistence, GitCollaboration {
         }.value
     }
 
-    func previewImport(format: ImportFormat, source: String) async throws -> ImportPreview {
+        func previewImport(format: ImportFormat, source: String) async throws -> ImportPreview {
         let bridge = bridge
         return try await Task.detached(priority: .userInitiated) {
-            let json = try bridge.previewImport(format: format.rawValue, source: source)
+            let json = try Self.importDocument { try bridge.previewImport(format: format.rawValue, source: source) }
             return try JSONDecoder().decode(ImportPreview.self, from: Data(json.utf8))
         }.value
     }
 
-    func commitImport(format: ImportFormat, source: String) async throws -> WorkspaceDelta {
+    func commitImport(format: ImportFormat, source: String) async throws -> ImportResult {
         let bridge = bridge
         return try await Task.detached(priority: .userInitiated) {
-            let json = try bridge.commitImport(format: format.rawValue, source: source)
-            return try JSONDecoder().decode(WorkspaceDelta.self, from: Data(json.utf8))
+            let json = try Self.importDocument { try bridge.commitImport(format: format.rawValue, source: source) }
+            return try JSONDecoder().decode(ImportResult.self, from: Data(json.utf8))
         }.value
     }
 
-    func commitImportFile(format: ImportFormat, source: String, name: String) async throws -> WorkspaceDelta {
+    func commitImportFile(format: ImportFormat, source: String, name: String) async throws -> ImportResult {
         let bridge = bridge
         return try await Task.detached(priority: .userInitiated) {
-            let json = try bridge.commitImportFile(format: format.rawValue, source: source, name: name)
-            return try JSONDecoder().decode(WorkspaceDelta.self, from: Data(json.utf8))
+            let json = try Self.importDocument {
+                try bridge.commitImportFile(format: format.rawValue, source: source, name: name)
+            }
+            return try JSONDecoder().decode(ImportResult.self, from: Data(json.utf8))
         }.value
+    }
+
+    /// Keeps the importer's user-facing reason, which never quotes the source.
+    private static func importDocument(_ operation: () throws -> String) throws -> String {
+        do { return try operation() }
+        catch let WorkspaceBridgeError.OperationFailed(reason) {
+            throw ImportFailure(reason: reason)
+        }
+    }
+
+    private struct ImportFailure: LocalizedError {
+        let reason: String
+        var errorDescription: String? { reason }
     }
 
     func exportWorkspace() async throws -> String {

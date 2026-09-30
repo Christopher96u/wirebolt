@@ -688,12 +688,114 @@ public struct ImportPreview: Codable, Equatable, Identifiable, Sendable {
     public let warnings: [String]
     public var id: String { "\(collectionName)-\(requestCount)-\(groupCount)" }
 
-    enum CodingKeys: String, CodingKey {
+        enum CodingKeys: String, CodingKey {
         case warnings
         case collectionName = "collection_name"
         case requestCount = "request_count"
         case groupCount = "group_count"
     }
+}
+
+/// What an import created and everything it could not carry over exactly.
+public struct ImportSummary: Codable, Equatable, Identifiable, Sendable {
+    public struct Environment: Codable, Equatable, Sendable {
+        public let id: String
+        public let name: String
+
+        public init(id: String, name: String) {
+            self.id = id
+            self.name = name
+        }
+    }
+
+    /// Distinguishes consecutive imports so presentations restart.
+    public var id = UUID()
+    public let collectionNames: [String]
+    public let requestCount: Int
+    public let groupCount: Int
+    public let environments: [Environment]
+    public let warnings: [String]
+
+    public init(
+        collectionNames: [String],
+        requestCount: Int,
+        groupCount: Int,
+        environments: [Environment] = [],
+        warnings: [String] = []
+    ) {
+        self.collectionNames = collectionNames
+        self.requestCount = requestCount
+        self.groupCount = groupCount
+        self.environments = environments
+        self.warnings = warnings
+    }
+
+    public init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        collectionNames = try container.decode([String].self, forKey: .collectionNames)
+        requestCount = try container.decode(Int.self, forKey: .requestCount)
+        groupCount = try container.decode(Int.self, forKey: .groupCount)
+        environments = try container.decodeIfPresent([Environment].self, forKey: .environments) ?? []
+        warnings = try container.decodeIfPresent([String].self, forKey: .warnings) ?? []
+    }
+
+        /// Warnings or new environments deserve a closer look than a transient banner.
+    public var needsReview: Bool { !warnings.isEmpty || !environments.isEmpty }
+
+    /// One sentence describing what was imported, such as
+    /// "Imported 9 requests in 3 folders into “Shop API”."
+    public var headline: String {
+        var text = "Imported \(Self.counted(requestCount, "request"))"
+        if groupCount > 0 { text += " in \(Self.counted(groupCount, "folder"))" }
+        if collectionNames.count == 1, let name = collectionNames.first {
+            text += " into “\(name)”."
+        } else if collectionNames.count > 1 {
+            text += " into \(collectionNames.count) collections."
+        } else {
+            text += "."
+        }
+        return text
+    }
+
+    /// Describes the environments the import created, if any.
+    public var environmentLine: String? {
+        switch environments.count {
+        case 0: nil
+        case 1: "Created the environment “\(environments[0].name)” for its variables."
+        default:
+            "Created \(environments.count) environments: "
+                + ListFormatter.localizedString(byJoining: environments.map { "“\($0.name)”" }) + "."
+        }
+    }
+
+    private static func counted(_ count: Int, _ noun: String) -> String {
+        "\(count) \(noun)\(count == 1 ? "" : "s")"
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case warnings, environments
+        case collectionNames = "collection_names"
+        case requestCount = "request_count"
+        case groupCount = "group_count"
+    }
+}
+
+/// A committed import: the workspace delta and its summary, decoded from one bridge document.
+public struct ImportResult: Decodable, Equatable, Sendable {
+    public let delta: WorkspaceDelta
+    public let summary: ImportSummary
+
+    public init(delta: WorkspaceDelta, summary: ImportSummary) {
+        self.delta = delta
+        self.summary = summary
+    }
+
+    public init(from decoder: any Decoder) throws {
+        delta = try WorkspaceDelta(from: decoder)
+        summary = try decoder.container(keyedBy: CodingKeys.self).decode(ImportSummary.self, forKey: .summary)
+    }
+
+    enum CodingKeys: String, CodingKey { case summary }
 }
 
 public struct WorkspaceDraft: Equatable, Sendable {
