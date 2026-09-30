@@ -1,0 +1,31 @@
+meta {
+  name: Replace catalogue
+  type: http
+  seq: 2
+}
+
+post {
+  url: {{baseUrl}}/catalogue/import
+  body: file
+  auth: oauth2
+}
+
+auth:oauth2 {
+  grant_type: client_credentials
+  access_token_url: https://auth.example.test/token
+  refresh_token_url: 
+  client_id: library-importer
+  client_secret: demo-client-secret
+  scope: catalogue:write
+  credentials_placement: body
+  credentials_id: credentials
+  token_placement: header
+  token_header_prefix: Bearer
+  auto_fetch_token: true
+  auto_refresh_token: false
+}
+
+body:file {
+  file: @file(data/catalogue.csv) @contentType(text/csv)
+  ~file: @file(data/old.csv) @contentType(text/csv)
+}

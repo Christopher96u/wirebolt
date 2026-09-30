@@ -1,0 +1,27 @@
+meta {
+  name: Upload cover
+  type: http
+  seq: 1
+}
+
+put {
+  url: {{baseUrl}}/books/:isbn/cover
+  body: multipartForm
+  auth: apikey
+}
+
+params:path {
+  isbn: 9780000000001
+}
+
+auth:apikey {
+  key: X-Api-Key
+  value: {{apiKey}}
+  placement: header
+}
+
+body:multipart-form {
+  title: Demo cover
+  cover: @file(assets/cover.png) @contentType(image/png)
+  ~draft: true
+}

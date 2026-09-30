@@ -26,7 +26,8 @@ pub use http_engine::{
     TlsConfigurationError,
 };
 pub use import_engine::{
-    ImportEngine, ImportError, ImportFormat, ImportedCollection, ImportedGroup, ImportedRequest,
+    ImportEngine, ImportError, ImportFormat, ImportedCollection, ImportedEnvironment,
+    ImportedGroup, ImportedRequest, ImportedRequestSettings, ImportedWorkspace,
 };
 #[cfg(target_vendor = "apple")]
 pub use proxy::{KeychainSecretResolver, KeychainSecretStore};

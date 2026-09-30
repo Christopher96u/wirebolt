@@ -1,0 +1,53 @@
+meta {
+  name: Create member
+  type: http
+  seq: 2
+}
+
+post {
+  url: {{baseUrl}}/{{apiVersion}}/members?notify=true
+  body: json
+  auth: inherit
+}
+
+params:query {
+  notify: true
+  ~draft: 1
+}
+
+headers {
+  @description('Idempotency key: any unique value')
+  Idempotency-Key: {{$guid}}
+  ~X-Debug: 1
+}
+
+body:json {
+  {
+    "name": "Ada Lovelace",
+    "tags": ["math", "poetry"]
+  }
+}
+
+vars:pre-request {
+  memberType: reader
+}
+
+assert {
+  res.status: eq 201
+}
+
+script:post-response {
+  bru.setVar("memberId", res.body.id);
+}
+
+tests {
+  test("created", function () {
+    expect(res.status).to.equal(201);
+  });
+}
+
+docs {
+  Creates a library member.
+  
+  Returns the new member `id`.
+}

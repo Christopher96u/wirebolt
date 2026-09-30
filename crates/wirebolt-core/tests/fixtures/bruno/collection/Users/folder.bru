@@ -1,0 +1,21 @@
+meta {
+  name: Members
+  seq: 1
+}
+
+auth {
+  mode: basic
+}
+
+auth:basic {
+  username: librarian
+  password: {{librarianPassword}}
+}
+
+headers {
+  X-Section: members
+}
+
+docs {
+  Member management.
+}

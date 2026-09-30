@@ -2,7 +2,15 @@ use std::{error::Error, fmt};
 
 use serde_json::Value;
 
+mod bru;
+mod bruno;
+mod insomnia;
 mod legacy_v1;
+mod support;
+mod workspace;
+mod yaml;
+
+pub use workspace::{ImportedEnvironment, ImportedRequestSettings, ImportedWorkspace};
 
 use crate::{
     MultipartPart, MultipartPartKind, Request, RequestAuthentication, RequestBody, RequestHeader,
@@ -15,6 +23,12 @@ pub enum ImportFormat {
     Har,
     LegacyWorkspaceV1,
     PostmanV2,
+    /// Insomnia v4 export (JSON or YAML) or Insomnia v5 YAML collection.
+    Insomnia,
+    /// Bruno "Export collection" JSON document.
+    Bruno,
+    /// A Bruno collection folder, bundled by [`ImportEngine::bruno_folder_source`].
+    BrunoFolder,
 }
 
 impl ImportFormat {
@@ -29,6 +43,9 @@ impl ImportFormat {
             "har" => Ok(Self::Har),
             "legacy_workspace_v1" => Ok(Self::LegacyWorkspaceV1),
             "postman_v2" => Ok(Self::PostmanV2),
+            "insomnia" => Ok(Self::Insomnia),
+            "bruno" => Ok(Self::Bruno),
+            "bruno_folder" => Ok(Self::BrunoFolder),
             _ => Err(ImportError::new("unsupported import format")),
         }
     }
@@ -139,8 +156,48 @@ impl ImportEngine {
             ImportFormat::Har => parse_har(source),
             ImportFormat::LegacyWorkspaceV1 => parse_legacy_workspace(source),
             ImportFormat::PostmanV2 => parse_postman(source),
+            ImportFormat::Insomnia => first_collection(insomnia::parse(source, None)),
+            ImportFormat::Bruno => first_collection(bruno::parse_export(source)),
+            ImportFormat::BrunoFolder => first_collection(bruno::parse_folder(source, None)),
         }
     }
+
+    /// Imports a file with everything it describes, including environments.
+    /// Formats without environments yield the single collection of
+    /// [`Self::parse_file`].
+    ///
+    /// # Errors
+    /// Returns [`ImportError`] for invalid input without including source contents.
+    pub fn parse_workspace_file(
+        format: ImportFormat,
+        source: &str,
+        name: &str,
+    ) -> Result<ImportedWorkspace, ImportError> {
+        match format {
+            ImportFormat::Insomnia => insomnia::parse(source, Some(name)),
+            ImportFormat::Bruno => bruno::parse_export(source),
+            ImportFormat::BrunoFolder => bruno::parse_folder(source, Some(name)),
+            _ => Self::parse_file(format, source, name).map(ImportedWorkspace::from),
+        }
+    }
+
+    /// Bundles the text files of a Bruno collection folder into the source
+    /// accepted by [`ImportFormat::BrunoFolder`]. `files` holds paths relative
+    /// to `root` (using `/`) with their UTF-8 contents.
+    #[must_use]
+    pub fn bruno_folder_source(root: &str, files: &[(String, String)]) -> String {
+        bruno::folder_source(root, files)
+    }
+}
+
+fn first_collection(
+    workspace: Result<ImportedWorkspace, ImportError>,
+) -> Result<ImportedCollection, ImportError> {
+    workspace?
+        .collections
+        .into_iter()
+        .next()
+        .ok_or_else(|| ImportError::new("import has no collections"))
 }
 
 fn parse_curl(source: &str) -> Result<ImportedCollection, ImportError> {

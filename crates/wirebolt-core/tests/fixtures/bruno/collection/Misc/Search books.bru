@@ -1,0 +1,26 @@
+meta {
+  name: Search books
+  type: graphql
+  seq: 2
+}
+
+post {
+  url: {{baseUrl}}/graphql
+  body: graphql
+  auth: none
+}
+
+body:graphql {
+  query Search($term: String!) {
+    books(term: $term) {
+      isbn
+      title
+    }
+  }
+}
+
+body:graphql:vars {
+  {
+    "term": "engine"
+  }
+}

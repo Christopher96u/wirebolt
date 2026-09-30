@@ -1,0 +1,21 @@
+meta {
+  name: Stock report
+  type: http
+  seq: 3
+}
+
+http {
+  method: REPORT
+  url: {{baseUrl}}/stock
+  body: xml
+  auth: digest
+}
+
+auth:digest {
+  username: auditor
+  password: demo
+}
+
+body:xml {
+  <report><branch>central</branch></report>
+}

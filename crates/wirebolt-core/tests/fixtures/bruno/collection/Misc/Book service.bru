@@ -1,0 +1,12 @@
+meta {
+  name: Book service
+  type: grpc
+  seq: 5
+}
+
+grpc {
+  url: grpc://library.example.test
+  method: /library.Books/Get
+  body: grpc
+  auth: none
+}
