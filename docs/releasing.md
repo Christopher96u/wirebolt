@@ -4,7 +4,7 @@
 
 Releases are published from this repository: the ZIP is attached to a GitHub Release, and the Homebrew Cask lives at `Casks/wirebolt.rb`, so the repository doubles as the tap. Versions are `X.Y.Z` or prereleases `X.Y.Z-rc.N` (`X.Y.Z-beta.N` is still accepted). Prereleases are marked as such on GitHub.
 
-`Casks/` does not exist until the first release is published. Until then, `brew tap` succeeds but `brew install --cask wirebolt` finds no cask.
+`Casks/` does not exist until the first release is published. Until then, `brew tap` succeeds but installing reports that the cask does not exist. Homebrew 6 and later refuse short names from untrusted third-party taps, so install instructions use the full name `christopher96u/wirebolt/wirebolt`, which trusts only this cask.
 
 ## Prepare
 
@@ -26,7 +26,7 @@ On an Apple Silicon Mac with Python 3:
 
 The script refuses to overwrite an existing output directory. It builds an arm64 app, sets `CFBundleShortVersionString` to `X.Y.Z` and `CFBundleVersion` to the commit count, includes third-party notices, verifies ad-hoc signing and writes the ZIP, notices, Cask and source commit under `build/releases/<version>/`.
 
-Packages are ad-hoc signed, not notarized. The Cask removes the quarantine attribute after installation and says so in its caveats. Do not describe builds as notarized until the distribution process changes.
+Packages are ad-hoc signed, not notarized. The Cask removes the quarantine attribute in `postflight_steps` (Homebrew 6.0.16 or later) and says so in its caveats. Do not describe builds as notarized until the distribution process changes.
 
 ## Publish deliberately
 
@@ -44,7 +44,7 @@ Re-running is safe: an existing tag or release is verified against the package i
 
 ```sh
 brew tap christopher96u/wirebolt https://github.com/Christopher96u/wirebolt
-brew install --cask wirebolt
+brew install --cask christopher96u/wirebolt/wirebolt
 ```
 
 Open Wirebolt and check **About Wirebolt**. Also download the ZIP from the release page and confirm the first-launch steps in [installation](installation.md#first-launch).

@@ -59,7 +59,7 @@ Requires an Apple Silicon Mac with macOS 15 or later.
 
 ```sh
 brew tap christopher96u/wirebolt https://github.com/Christopher96u/wirebolt
-brew install --cask wirebolt
+brew install --cask christopher96u/wirebolt/wirebolt
 ```
 
 Or download the ZIP below. Wirebolt is ad-hoc signed and not notarized; see
@@ -152,4 +152,4 @@ done
 gh release edit "$tag" --repo "$repository" --draft=false "$prerelease" "$latest" \
   --title "Wirebolt $version" --notes-file "$stage/notes.md"
 printf 'Published https://github.com/%s/releases/tag/%s\n' "$repository" "$tag"
-printf 'brew tap christopher96u/wirebolt https://github.com/Christopher96u/wirebolt\nbrew install --cask wirebolt\n'
+printf 'brew tap christopher96u/wirebolt https://github.com/Christopher96u/wirebolt\nbrew install --cask christopher96u/wirebolt/wirebolt\n'

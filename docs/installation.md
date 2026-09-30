@@ -6,7 +6,7 @@
 
 - macOS 15 (Sequoia) or later.
 - An Apple Silicon Mac (M-series).
-- Homebrew only if using the Homebrew installation method.
+- A current Homebrew (run `brew update`) only if using the Homebrew installation method.
 
 There is no account requirement. Network access is needed for downloads and remote APIs; workspace editing and the bundled help work locally.
 
@@ -14,10 +14,10 @@ There is no account requirement. Network access is needed for downloads and remo
 
 ```sh
 brew tap christopher96u/wirebolt https://github.com/Christopher96u/wirebolt
-brew install --cask wirebolt
+brew install --cask christopher96u/wirebolt/wirebolt
 ```
 
-The tap is this source repository; its Cask lives in `Casks/wirebolt.rb`. Wirebolt is ad-hoc signed and not notarized, so the Cask removes the quarantine attribute after installing and the app opens without a Gatekeeper prompt.
+The tap is this source repository; its Cask lives in `Casks/wirebolt.rb`. Homebrew 6 and later only load casks from third-party taps you trust, and installing by the full name trusts just this cask, so later `brew upgrade` commands can use the short name. Wirebolt is ad-hoc signed and not notarized, so the Cask removes the quarantine attribute after installing and the app opens without a Gatekeeper prompt.
 
 To update:
 
@@ -42,7 +42,7 @@ Betas were installed from `christopher96u/tap`, which no longer receives updates
 ```sh
 brew uninstall --cask wirebolt && brew untap christopher96u/tap
 brew tap christopher96u/wirebolt https://github.com/Christopher96u/wirebolt
-brew install --cask wirebolt
+brew install --cask christopher96u/wirebolt/wirebolt
 ```
 
 Workspace folders are not affected.

@@ -36,7 +36,7 @@ Requires **Apple Silicon and macOS 15 or later**.
 
 ```sh
 brew tap christopher96u/wirebolt https://github.com/Christopher96u/wirebolt
-brew install --cask wirebolt
+brew install --cask christopher96u/wirebolt/wirebolt
 ```
 
 Or download the ZIP from [releases](https://github.com/Christopher96u/wirebolt/releases), extract it, and move Wirebolt to Applications. Builds are ad-hoc signed, not notarized; see [first launch](docs/installation.md#first-launch) to approve the app once. Installed a beta from `christopher96u/tap`? [Switch taps](docs/installation.md#migrate-from-the-beta-tap).
