@@ -247,17 +247,23 @@ struct ContentView: View {
                 .labelStyle(.iconOnly).buttonStyle(.borderless).help("Workspace Settings")
         }
         ToolbarItem(id: "response-placement", placement: .primaryAction) {
+            // Below the split's minimum width every group stacks the response under the
+            // request, so the toggle would have no visible effect.
+            let fitsRight = interface.fitsResponseOnRight(groupIDs: model.sessions.groups.map(\.id))
             Button {
                 interface.responseOrientation = interface.responseOrientation == .bottom ? .right : .bottom
             } label: {
                 // Shows the current layout, like Xcode's area toggles.
-                Image(systemName: interface.responseOrientation == .right
+                Image(systemName: interface.responseOrientation == .right && fitsRight
                     ? "rectangle.righthalf.inset.filled" : "rectangle.bottomthird.inset.filled")
             }
             .accessibilityLabel(interface.responseOrientation == .bottom ? "Place Response on Right" : "Place Response on Bottom")
             .buttonStyle(.borderless)
             .frame(width: 30, height: 30)
-            .help(interface.responseOrientation == .bottom ? "Place Response on Right" : "Place Response on Bottom")
+            .disabled(!fitsRight)
+            .help(fitsRight
+                ? (interface.responseOrientation == .bottom ? "Place Response on Right" : "Place Response on Bottom")
+                : "Widen the editor to place the response on the right")
         }
     }
 
@@ -4360,6 +4366,9 @@ private struct EnvironmentPopup: View {
     }
 }
 
+/// Narrower editor groups stack the response below the request.
+private let responseOnRightMinimumWidth: CGFloat = 700
+
 private struct ResponseSplit<RequestContent: View, ResponseContent: View>: View {
     @Bindable var layout: ResponseLayoutState
     var orientation: ResponseOrientation = .bottom
@@ -4371,7 +4380,7 @@ private struct ResponseSplit<RequestContent: View, ResponseContent: View>: View 
     var body: some View {
         GeometryReader { geometry in
             // Narrow groups use a vertical split so every section remains reachable.
-            let vertical = orientation == .bottom || geometry.size.width < 700
+            let vertical = orientation == .bottom || geometry.size.width < responseOnRightMinimumWidth
             let length = vertical ? geometry.size.height : geometry.size.width
             let minimum: CGFloat = vertical ? 132 : 320
             let maximum = max(minimum, length - (vertical ? 200 : minimumResponseWidth) - 1)
@@ -4408,6 +4417,9 @@ private struct ResponseSplit<RequestContent: View, ResponseContent: View>: View 
                 if vertical { layout.requestHeight = (geometry.size.height / 2).rounded(.down) }
                 else { layout.requestWidth = (geometry.size.width / 2).rounded(.down) }
             }
+        }
+        .onGeometryChange(for: Bool.self) { $0.size.width >= responseOnRightMinimumWidth } action: { fits in
+            if layout.fitsResponseOnRight != fits { layout.fitsResponseOnRight = fits }
         }
     }
 }

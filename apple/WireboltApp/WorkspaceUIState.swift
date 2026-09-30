@@ -47,6 +47,8 @@ enum ResponseOrientation: String, CaseIterable {
 final class ResponseLayoutState {
     var requestHeight: CGFloat?
     var requestWidth: CGFloat?
+    /// Whether the group is wide enough to place the response on the right.
+    var fitsResponseOnRight = true
 }
 
 @MainActor
@@ -138,6 +140,11 @@ final class WorkspaceUIState {
         didSet { defaults.set(responseOrientation.rawValue, forKey: Self.responseOrientationKey) }
     }
     private var responseLayoutsByGroupID: [String: ResponseLayoutState] = [:]
+
+    /// True when at least one of the groups can show the response on the right.
+    func fitsResponseOnRight(groupIDs: [String]) -> Bool {
+        groupIDs.isEmpty || groupIDs.contains { responseLayoutsByGroupID[$0]?.fitsResponseOnRight ?? true }
+    }
 
     func responseLayout(for groupID: String) -> ResponseLayoutState {
         if let layout = responseLayoutsByGroupID[groupID] { return layout }
