@@ -110,14 +110,21 @@ final class WireboltAppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
-        guard model.hasUnsavedRequestChanges else {
+        guard model.hasUnsavedRequestChanges || model.hasReleasableSecrets else {
             interface.persistSessionLayout(model: model)
             return .terminateNow
         }
         let window = WorkspaceWindowRegistry.primary.flatMap { $0.isVisible ? $0 : nil } ?? NSApp.mainWindow
         Task {
-            let proceed = await confirmUnsavedChanges(model: model, in: window, quitting: true)
-            if proceed { interface.persistSessionLayout(model: model) }
+            var proceed = true
+            if model.hasUnsavedRequestChanges {
+                proceed = await confirmUnsavedChanges(model: model, in: window, quitting: true)
+            }
+            if proceed {
+                interface.persistSessionLayout(model: model)
+                // Undo ends with the app, so Keychain items of deleted requests can go now.
+                await model.purgeReleasedSecrets()
+            }
             sender.reply(toApplicationShouldTerminate: proceed)
         }
         return .terminateLater

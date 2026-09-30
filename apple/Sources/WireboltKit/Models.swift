@@ -233,8 +233,89 @@ public enum RequestAuthentication: Codable, Equatable, Sendable {
 /// Keychain names for credentials a request stores. Every new credential gets its own
 /// name so two requests never read or overwrite each other's secret material.
 public enum CredentialReference {
-    public static func unique(role: String) -> String {
-        "auth.\(UUID().uuidString.lowercased()).\(role)"
+    public static func unique(role: String, scope: String = "auth") -> String {
+        String("\(scope).\(UUID().uuidString.lowercased()).\(sanitized(role))".prefix(128))
+    }
+
+    /// Names earlier versions gave every API Key and OAuth request. Other workspaces may still
+    /// use them, so Wirebolt copies their values to per-request names and never deletes them.
+    public static let legacySharedNames: Set<String> = ["auth.api-key", "oauth.client-secret", "oauth.access-token"]
+
+    public static func isLegacyShared(_ name: String) -> Bool { legacySharedNames.contains(name) }
+
+    /// Whether Wirebolt generated `name` for exactly one request or variable, so the Keychain
+    /// item can be deleted once nothing references it. Names people chose (such as proxy
+    /// credentials or `{{secret}}` references) and legacy shared names never qualify.
+    public static func isOwned(_ name: String) -> Bool {
+        name.wholeMatch(of: ownedPattern) != nil
+    }
+
+    // `auth.<uuid>.<role>` and `env.<uuid>.<environment>` from this version, the uppercase
+    // `auth.<UUID>.<role>` and `request.<uuid>.<role>` from earlier ones, and names created
+    // by an import (`import-<time>-<process>-<sequence>-request-<n>-<role>`).
+    private nonisolated(unsafe) static let ownedPattern =
+        /(?:(?:auth|env|request)\.[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\.[A-Za-z0-9._-]+)|(?:import-[0-9a-f]+-[0-9a-f]+-[0-9a-f]+-request-[0-9]+-[a-z-]+)/
+
+    static func sanitized(_ text: String) -> String {
+        let allowed = Set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789.-_")
+        let clean = String(text.map { allowed.contains($0) ? $0 : "-" })
+        return clean.isEmpty ? "value" : clean
+    }
+}
+
+public extension ValueSource {
+    var secretName: String? {
+        if case let .secret(name) = self { name } else { nil }
+    }
+}
+
+public extension RequestAuthentication {
+    /// Keychain names this authentication reads or writes.
+    var secretReferences: [String] {
+        switch self {
+        case .none: []
+        case let .basic(username, password): [username.secretName, password.secretName].compactMap { $0 }
+        case let .bearer(token): [token.secretName].compactMap { $0 }
+        case let .apiKey(_, _, value): [value.secretName].compactMap { $0 }
+        case let .oauth2(configuration):
+            [configuration.clientSecretReference, configuration.accessTokenReference].filter { !$0.isEmpty }
+        }
+    }
+
+    /// The same authentication with each Keychain name passed through `rename`.
+    func renamingSecrets(_ rename: (String) -> String) -> RequestAuthentication {
+        func renamed(_ source: ValueSource) -> ValueSource {
+            source.secretName.map { .secret(rename($0)) } ?? source
+        }
+        switch self {
+        case .none: return .none
+        case let .basic(username, password): return .basic(username: renamed(username), password: renamed(password))
+        case let .bearer(token): return .bearer(token: renamed(token))
+        case let .apiKey(placement, name, value): return .apiKey(placement: placement, name: name, value: renamed(value))
+        case var .oauth2(configuration):
+            if !configuration.clientSecretReference.isEmpty {
+                configuration.clientSecretReference = rename(configuration.clientSecretReference)
+            }
+            if !configuration.accessTokenReference.isEmpty {
+                configuration.accessTokenReference = rename(configuration.accessTokenReference)
+            }
+            return .oauth2(configuration: configuration)
+        }
+    }
+
+    /// Fresh per-request names for every credential, for a copy of a request (`all`) or for
+    /// migrating legacy shared names only. Returns the new authentication and old → new names.
+    func withOwnKeychainNames(onlyLegacy: Bool) -> (RequestAuthentication, [String: String]) {
+        var renames: [String: String] = [:]
+        let authentication = renamingSecrets { name in
+            guard !onlyLegacy || CredentialReference.isLegacyShared(name) else { return name }
+            if let existing = renames[name] { return existing }
+            let role = name.contains(".") ? String(name.split(separator: ".").last ?? "secret") : "secret"
+            let fresh = CredentialReference.unique(role: role)
+            renames[name] = fresh
+            return fresh
+        }
+        return (authentication, renames)
     }
 }
 
@@ -566,12 +647,45 @@ public extension EnvironmentVariableDraft {
         if case .secret = value { true } else { false }
     }
 
-    /// The Keychain name for this variable's secret value. It is unique per environment and
-    /// row, so renaming the variable keeps its value and two environments never share one.
-    func secretReference(environmentID: String) -> String {
-        let allowed = Set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789.-_")
-        let clean = { (text: String) in String(text.map { allowed.contains($0) ? $0 : "-" }) }
-        return String("env.\(clean(environmentID)).\(clean(id))".prefix(128))
+    /// A new Keychain name for this variable's secret value. It is stored in the variable, so
+    /// renaming the key keeps its value, and it is unique, so no other environment,
+    /// workspace or Mac user of the same Keychain shares it.
+    func makeSecretReference(environmentID: String) -> String {
+        CredentialReference.unique(role: environmentID, scope: "env")
+    }
+}
+
+public extension EnvironmentDraft {
+    var secretReferences: Set<String> { Set(variables.compactMap(\.value.secretName)) }
+}
+
+public extension RequestDraft {
+    /// Every Keychain name the request refers to: authentication, fields, bodies and proxy.
+    var secretReferences: Set<String> {
+        var names = Set(authentication.secretReferences)
+        names.formUnion((query + headers).compactMap(\.value.secretName))
+        switch body {
+        case let .formURLEncoded(fields): names.formUnion(fields.compactMap(\.value.secretName))
+        case let .multipart(parts): names.formUnion(parts.compactMap(\.value.secretName))
+        default: break
+        }
+        if case let .manual(.manual(routes)) = proxy {
+            names.formUnion(routes.compactMap(\.credentials).flatMap { [$0.username, $0.password] })
+        }
+        return names
+    }
+}
+
+public extension WorkspaceDraft {
+    var secretReferences: Set<String> {
+        var names = Set(environments.flatMap(\.secretReferences))
+        for collection in collections {
+            for location in collection.requests { names.formUnion(location.request.secretReferences) }
+        }
+        if case let .manual(routes) = proxy {
+            names.formUnion(routes.compactMap(\.credentials).flatMap { [$0.username, $0.password] })
+        }
+        return names
     }
 }
 

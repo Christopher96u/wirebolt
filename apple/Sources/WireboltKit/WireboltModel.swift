@@ -26,6 +26,8 @@ public protocol WorkspacePersistence: Sendable {
     func save(environment: EnvironmentDraft) async throws
     func saveSecret(name: String, value: String) async throws
     func readSecret(name: String) async throws -> String?
+    /// Removes a Keychain item. Deleting a missing item succeeds.
+    func deleteSecret(name: String) async throws
     func apply(_ command: WorkspaceCommand) async throws -> WorkspaceDelta
     func previewImport(format: ImportFormat, source: String) async throws -> ImportPreview
     func commitImport(format: ImportFormat, source: String) async throws -> WorkspaceDelta
@@ -40,6 +42,7 @@ public protocol WorkspacePersistence: Sendable {
 public extension WorkspacePersistence {
     var location: URL? { nil }
     func readSecret(name _: String) async throws -> String? { nil }
+    func deleteSecret(name _: String) async throws {}
     func apply(_ command: WorkspaceCommand) async throws -> WorkspaceDelta {
         switch command {
         case let .saveRequest(collectionID, location):
@@ -135,6 +138,10 @@ public final class WireboltModel {
     public private(set) var historyRevision = 0
     private var editedSecrets: [String: String] = [:]
     private var dirtySecrets: Set<String> = []
+    /// Keychain names Wirebolt generated that this workspace used during this session. Those
+    /// no longer referenced are deleted only when the undo stack is discarded (switching
+    /// workspace, reloading after a pull, quitting), so an undone deletion still finds its value.
+    @ObservationIgnored private var observedSecretNames: Set<String> = []
     public private(set) var oauthReceipts: [String: OAuth2TokenReceipt] = [:]
     public private(set) var oauthFailureMessage: String?
     public private(set) var isOAuthBusy = false
@@ -421,16 +428,19 @@ public final class WireboltModel {
     }
 
     public func acquireOAuthToken(for session: DocumentSession) async {
-        guard case let .oauth2(configuration) = session.draft.authentication,
-              let persistence
-        else { return }
+        guard case .oauth2 = session.draft.authentication, let persistence else { return }
         isOAuthBusy = true
         oauthFailureMessage = nil
         defer { isOAuthBusy = false }
         do {
             // A client secret typed in the editor must reach Keychain before the token request reads it.
             try await flushSecrets()
+            // A new token must never overwrite the legacy shared item other requests read.
+            let migrated = try await migratingLegacySecrets(session.draft)
+            if migrated != session.draft { session.draft = migrated }
+            guard case let .oauth2(configuration) = session.draft.authentication else { return }
             let (token, receipt) = try await oauth2.acquireToken(configuration: configuration)
+            observeSecrets([configuration.accessTokenReference])
             try await persistence.saveSecret(name: configuration.accessTokenReference, value: token)
             oauthReceipts[session.id] = receipt
         } catch {
@@ -546,6 +556,10 @@ public final class WireboltModel {
             let loaded = try await persistence.load()
             for session in sessions.sessions.values { cancel(session) }
             sessions.removeAll()
+            // The previous workspace's undo stack is discarded below, so its released
+            // Keychain items can go.
+            await purgeReleasedSecrets()
+            observedSecretNames = []
             configurePersistence(persistence, gitCollaboration: gitCollaboration)
             transportSave = nil
             persistedTransport = nil
@@ -681,6 +695,9 @@ public final class WireboltModel {
         }
         do {
             try await flushSecrets()
+            let migrated = try await migratingLegacySecrets(session.draft)
+            if migrated != session.draft { session.draft = migrated }
+            observeSecrets(session.draft.secretReferences)
             let location = RequestLocation(
                 collectionID: collectionID,
                 groupID: workspace.location(collectionID: collectionID, requestID: session.draft.id)?.groupID,
@@ -700,6 +717,10 @@ public final class WireboltModel {
     @discardableResult
     public func saveEnvironment(_ environment: EnvironmentDraft) async -> Bool {
         guard let persistence else { return false }
+        observeSecrets(environment.secretReferences)
+        if let previous = workspace.environments.first(where: { $0.id == environment.id }) {
+            observeSecrets(previous.secretReferences)
+        }
         do {
             _ = try await persistence.apply(.saveEnvironment(environment))
             if let index = workspace.environments.firstIndex(where: { $0.id == environment.id }) {
@@ -847,10 +868,66 @@ public final class WireboltModel {
         }
         for name in dirtySecrets {
             guard let value = editedSecrets[name] else { continue }
+            observeSecrets([name])
             try await persistence.saveSecret(name: name, value: value)
             if editedSecrets[name] == value { dirtySecrets.remove(name) }
         }
         if !dirtySecrets.isEmpty { try await flushSecrets() }
+    }
+
+    private func observeSecrets(_ names: some Sequence<String>) {
+        observedSecretNames.formUnion(names.lazy.filter(CredentialReference.isOwned))
+    }
+
+    /// Whether quitting may have Keychain items to clean up.
+    public var hasReleasableSecrets: Bool { !observedSecretNames.isEmpty }
+
+    /// Deletes Keychain items Wirebolt generated for requests and variables that no saved
+    /// document or open tab references any more. Call only when the undo stack is being
+    /// discarded; items of deletions that can still be undone must stay.
+    public func purgeReleasedSecrets() async {
+        guard let persistence, !observedSecretNames.isEmpty else { return }
+        var inUse = workspace.secretReferences
+        for session in sessions.sessions.values {
+            inUse.formUnion(session.draft.secretReferences)
+            if let saved = session.savedDraft { inUse.formUnion(saved.secretReferences) }
+        }
+        let released = observedSecretNames.subtracting(inUse)
+        for name in released.sorted() {
+            do {
+                try await persistence.deleteSecret(name: name)
+                editedSecrets[name] = nil
+                dirtySecrets.remove(name)
+                observedSecretNames.remove(name)
+            } catch {
+                // Keep the name; a later purge retries. A leftover item is harmless.
+            }
+        }
+    }
+
+    /// Gives a request per-request Keychain names in place of legacy shared ones, copying
+    /// each value. The shared items stay: other workspaces may still use them.
+    private func migratingLegacySecrets(_ draft: RequestDraft) async throws -> RequestDraft {
+        let (authentication, renames) = draft.authentication.withOwnKeychainNames(onlyLegacy: true)
+        guard !renames.isEmpty else { return draft }
+        try await copySecrets(renames)
+        var migrated = draft
+        migrated.authentication = authentication
+        return migrated
+    }
+
+    /// Copies Keychain values from old to new names. Missing values stay missing.
+    private func copySecrets(_ renames: [String: String]) async throws {
+        guard let persistence else { throw WorkspaceMutationError.unsupported }
+        for (old, new) in renames.sorted(by: { $0.key < $1.key }) {
+            let value: String? = if dirtySecrets.contains(old) { editedSecrets[old] } else {
+                try await persistence.readSecret(name: old) ?? editedSecrets[old]
+            }
+            guard let value else { continue }
+            try await persistence.saveSecret(name: new, value: value)
+            editedSecrets[new] = value
+            observeSecrets([new])
+        }
     }
 
     /// Writes secret values straight to Keychain, for editors with their own Save button.
@@ -861,6 +938,7 @@ public final class WireboltModel {
         guard let persistence else { return false }
         do {
             for (name, value) in values.sorted(by: { $0.key < $1.key }) {
+                observeSecrets([name])
                 try await persistence.saveSecret(name: name, value: value)
                 editedSecrets[name] = value
                 dirtySecrets.remove(name)
@@ -1177,6 +1255,7 @@ public final class WireboltModel {
 
     private func applyLoadedWorkspace(_ loaded: WorkspaceDraft, restoring layout: SessionLayout? = nil) {
         workspace = loaded
+        observeSecrets(loaded.secretReferences)
         persistedTransport = loaded.transport
         rebuildRequestSearchIndex()
         selectedEnvironmentID = loaded.environments.first(where: { $0.id != WorkspaceDraft.globalEnvironmentID })?.id
@@ -1293,6 +1372,7 @@ public final class WireboltModel {
             applyLoadedWorkspace(try await persistence.load())
             // Pulled files may no longer match the recorded inverses.
             undoManager?.removeAllActions(withTarget: self)
+            await purgeReleasedSecrets()
         } catch {
             gitFailure = GitFailure(
                 kind: "workspace_reload",
@@ -1393,11 +1473,23 @@ extension WireboltModel {
 
             case let .duplicateRequest(collectionID, id, newID, name):
                 guard var copy = workspace.location(collectionID: collectionID, requestID: id) else { return nil }
+                // The copy gets its own Keychain items holding the same values, so editing
+                // or deleting either request never changes the other's credentials.
+                try await flushSecrets()
+                let (authentication, renames) = copy.request.authentication.withOwnKeychainNames(onlyLegacy: false)
+                try await copySecrets(renames)
                 _ = try await persistence.apply(.duplicateRequest(collectionID: collectionID, id: id, newID: newID, name: name))
                 guard let index = workspace.collections.firstIndex(where: { $0.id == collectionID }) else { return nil }
                 copy.request.id = newID
                 copy.request.name = name
+                copy.request.authentication = authentication
                 copy.order = workspace.collections[index].requests.count
+                if !renames.isEmpty {
+                    // Same position the bridge gave the duplicate, now with its own names.
+                    var persisted = copy
+                    persisted.order = (workspace.location(collectionID: collectionID, requestID: id)?.order ?? 0) + 1
+                    _ = try await persistence.apply(.saveRequest(collectionID: collectionID, location: persisted))
+                }
                 workspace.collections[index].requests.append(copy)
                 rebuildRequestSearchIndex()
                 return .removeRequest(collectionID: collectionID, id: newID)

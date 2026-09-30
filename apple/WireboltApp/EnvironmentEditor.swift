@@ -248,7 +248,7 @@ struct EnvironmentEditor: View {
         let row = variable.wrappedValue
         guard secret != row.isSecret else { return }
         if secret {
-            let name = row.secretReference(environmentID: selectedID)
+            let name = row.makeSecretReference(environmentID: selectedID)
             stagedSecrets[name] = row.value.editableValue
             variable.wrappedValue.value = .secret(name)
         } else if case let .secret(name) = row.value {

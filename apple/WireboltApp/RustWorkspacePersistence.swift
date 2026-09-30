@@ -75,6 +75,13 @@ struct RustWorkspacePersistence: WorkspacePersistence, GitCollaboration {
         }.value
     }
 
+    func deleteSecret(name: String) async throws {
+        let bridge = bridge
+        try await Task.detached(priority: .userInitiated) {
+            try bridge.deleteSecret(name: name)
+        }.value
+    }
+
     func apply(_ command: WorkspaceCommand) async throws -> WorkspaceDelta {
         let bridge = bridge
         let document = WorkspaceCommandDocument(command)

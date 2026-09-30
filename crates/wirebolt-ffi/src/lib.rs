@@ -599,6 +599,35 @@ impl WorkspaceBridge {
         }
     }
 
+    /// Removes a credential Wirebolt created once nothing references it. A missing item
+    /// counts as removed.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`WorkspaceBridgeError`] for invalid names or Keychain failures.
+    pub fn delete_secret(&self, name: String) -> Result<(), WorkspaceBridgeError> {
+        let name = SecretName::new(name)
+            .map_err(|_| WorkspaceBridgeError::operation("secret name is invalid"))?;
+        #[cfg(target_vendor = "apple")]
+        {
+            let store = wirebolt_core::KeychainSecretStore::default();
+            if store.remove(&name).is_err() && !matches!(store.read(&name), Ok(None)) {
+                return Err(WorkspaceBridgeError::operation(
+                    "secret could not be deleted",
+                ));
+            }
+            clear_manual_http_engines();
+            Ok(())
+        }
+        #[cfg(not(target_vendor = "apple"))]
+        {
+            let _ = name;
+            Err(WorkspaceBridgeError::operation(
+                "secret storage is unavailable",
+            ))
+        }
+    }
+
     /// Returns a read-only Git status snapshot without fetching.
     ///
     /// # Errors
