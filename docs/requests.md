@@ -45,6 +45,6 @@ Clicking a request in the sidebar opens it in a *preview* tab (italic title) tha
 
 Open multiple requests in tabs. **Navigate → Split Right** (**⇧⌘D**) creates a second editor group for comparison. Drafts and responses are independent between document sessions. Save each edited draft you want to retain. Wirebolt reopens your tabs and the latest response of each request at the next launch.
 
-Use **Request History** beside the request controls to inspect available prior runs. History is local runtime data, subject to storage limits, and is not included in workspace exports or Git commits.
+For HTTP requests, use **Request History** beside the request controls to inspect available prior runs. History is local runtime data, subject to storage limits, and is not included in workspace exports or Git commits.
 
 Use **Request → Copy cURL** to copy a command representation. Review the clipboard content before sharing: URLs, bodies and manually entered values can contain sensitive information even when credential fields are redacted.

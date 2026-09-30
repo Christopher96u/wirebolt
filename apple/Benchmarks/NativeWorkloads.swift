@@ -25,7 +25,7 @@ private struct NotesFixture: View {
 final class ProbeWindow: NSWindow { override var canBecomeKey: Bool { true } }
 
 @main @MainActor struct NativeWorkloads {
-    static let log = OSLog(subsystem: "com.wirebolt.profiling", category: .pointsOfInterest)
+    static let log = OSLog(subsystem: "io.github.christopher96u.wirebolt", category: .pointsOfInterest)
     static var measurements: [[String: Any]] = []
     private struct Budgets: Decodable {
         let nativeColdWindowFirstContentMilliseconds: Double

@@ -271,14 +271,14 @@ private let wireboltOnCookies: @convention(c) (UnsafeMutableRawPointer?, UnsafeP
 private final class SystemProxyMonitor: @unchecked Sendable {
     private let store: SCDynamicStore?
     init() {
-        store = SCDynamicStoreCreate(nil, "Wirebolt.ProxySettings" as CFString, { _, _, _ in
+        store = SCDynamicStoreCreate(nil, "io.github.christopher96u.wirebolt.proxy-settings" as CFString, { _, _, _ in
             resetHttpEngines()
         }, nil)
         if let store {
             SCDynamicStoreSetNotificationKeys(store,
                 ["State:/Network/Global/Proxies", "Setup:/Network/Global/Proxies"] as CFArray,
                 ["State:/Network/Service/.*/Proxies", "Setup:/Network/Service/.*/Proxies"] as CFArray)
-            SCDynamicStoreSetDispatchQueue(store, DispatchQueue(label: "Wirebolt.ProxySettings"))
+            SCDynamicStoreSetDispatchQueue(store, DispatchQueue(label: "io.github.christopher96u.wirebolt.proxy-settings"))
         }
     }
 }

@@ -37,7 +37,7 @@
 | Cancel request | ⌘. |
 | Connect / disconnect WebSocket | ⌃⌘Return |
 | Move sidebar item up / down | ⌥⌘↑ / ⌥⌘↓ |
-| Copy cURL | ⇧⌘C |
+| Copy cURL | ⌥⇧⌘C |
 | Edit URL | ⌘L |
 | Add key (switches to Params when the section has no key-value table) | ⇧⌘K |
 | Bulk edit | ⌘B |
@@ -62,7 +62,7 @@ For a WebSocket request, ⌥⌘3 opens **Message**. Response sections apply to H
 
 | Action | Shortcut |
 | --- | --- |
-| Git collaboration | ⇧⌘G |
+| Git collaboration | ⌃⌘G |
 | Wirebolt Help | ⌘? |
 | Settings | ⌘, |
 

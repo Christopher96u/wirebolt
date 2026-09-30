@@ -384,6 +384,7 @@ struct TransportSettingsFields: View {
     var session: DocumentSession?
     /// Edits a staged copy instead of the request or workspace.
     var staged: Binding<TransportSettings>?
+    @State private var certificateError: String?
     private var inherited: Bool { session?.draft.inheritsWorkspaceTransport == true }
     private var transport: Binding<TransportSettings> {
         if let staged { return staged }
@@ -415,8 +416,104 @@ struct TransportSettingsFields: View {
                 LabeledContent("Total timeout (ms)") { TextField("0 = no limit", value: transport.totalTimeoutMS, format: .number).frame(width: 110) }
                 LabeledContent("Read timeout (ms)") { TextField("0 = no limit", value: transport.readTimeoutMS, format: .number).frame(width: 110) }
                 Text("A timeout of 0 disables that deadline.").font(.caption).foregroundStyle(.secondary)
+                Divider().padding(.vertical, 2)
+                certificateFields
             }.disabled(inherited)
         }.font(.callout)
+    }
+
+    @ViewBuilder private var certificateFields: some View {
+        LabeledContent("Client certificate") {
+            HStack(spacing: 8) {
+                if transport.wrappedValue.clientCertificateReference != nil {
+                    Label("Stored in Keychain", systemImage: "lock.fill").foregroundStyle(.secondary)
+                    Button("Replace…", action: chooseClientCertificate)
+                    Button("Remove") { transport.wrappedValue.clientCertificateReference = nil; certificateError = nil }
+                } else {
+                    Button("Choose…", action: chooseClientCertificate)
+                }
+            }
+        }
+        Text("For servers that require mutual TLS: a PEM certificate and its unencrypted private key, in one file or two. They’re stored in Keychain; workspace files keep only a reference.")
+            .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+        LabeledContent("Custom CA") {
+            HStack(spacing: 8) {
+                if let path = transport.wrappedValue.customCAPath {
+                    Text(URL(fileURLWithPath: path).lastPathComponent).lineLimit(1).truncationMode(.middle).help(path)
+                    Button("Change…", action: chooseCustomCA)
+                    Button("Remove") { transport.wrappedValue.customCAPath = nil; certificateError = nil }
+                } else {
+                    Button("Choose…", action: chooseCustomCA)
+                }
+            }
+        }
+        Text("Also trust the certificate authorities in a PEM bundle, such as a private or development CA. Workspace files store the bundle’s path.")
+            .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+        if let certificateError {
+            Label(certificateError, systemImage: "exclamationmark.circle").font(.caption).foregroundStyle(WireboltTheme.danger)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    private func chooseClientCertificate() {
+        let panel = NSOpenPanel()
+        panel.message = "Choose a PEM file with the certificate and private key, or select both files."
+        panel.prompt = "Choose"
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = true
+        let transport = transport
+        Task {
+            guard await present(panel, in: NSApp.keyWindow) == .OK, !panel.urls.isEmpty else { return }
+            do {
+                let sources = try await Self.readPEM(panel.urls)
+                let identity = try ClientIdentityPEM(parsing: sources)
+                // A new name per choice: Cancel in Workspace Settings keeps the previous identity intact.
+                let name = "tls.\(UUID().uuidString.lowercased()).client-identity"
+                model.editSecret(name: name, value: identity.combined)
+                await model.saveSecret(name: name, value: identity.combined)
+                transport.wrappedValue.clientCertificateReference = name
+                certificateError = nil
+            } catch { certificateError = error.localizedDescription }
+        }
+    }
+
+    private func chooseCustomCA() {
+        let panel = NSOpenPanel()
+        panel.message = "Choose a PEM file with one or more CA certificates."
+        panel.prompt = "Choose"
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = false
+        let transport = transport
+        Task {
+            guard await present(panel, in: NSApp.keyWindow) == .OK, let url = panel.url else { return }
+            do {
+                guard try await Self.readPEM([url]).first?.contains("-----BEGIN CERTIFICATE-----") == true else {
+                    throw PEMFileError(name: url.lastPathComponent)
+                }
+                transport.wrappedValue.customCAPath = url.path
+                certificateError = nil
+            } catch { certificateError = error.localizedDescription }
+        }
+    }
+
+    private static func readPEM(_ urls: [URL]) async throws -> [String] {
+        try await Task.detached(priority: .userInitiated) {
+            try urls.map { url in
+                // PEM files are small; a larger or binary file (DER, PKCS #12) is the wrong format.
+                let size = (try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
+                guard size <= 1_048_576, let text = try? String(contentsOf: url, encoding: .utf8) else {
+                    throw PEMFileError(name: url.lastPathComponent)
+                }
+                return text
+            }
+        }.value
+    }
+}
+
+private struct PEMFileError: LocalizedError {
+    let name: String
+    var errorDescription: String? {
+        "“\(name)” isn’t a PEM certificate file. Convert DER or PKCS #12 (.p12) files to PEM first."
     }
 }
 
@@ -452,7 +549,7 @@ struct WireboltSettingsView: View {
                                     Text(String(size)).tag(Double(size))
                                 }
                             }.labelsHidden().frame(width: 60)
-                            Text("Applies only to the Body tab.").font(WireboltTheme.Typography.detail).foregroundStyle(.secondary)
+                            Text("Applies to request and response editors.").font(WireboltTheme.Typography.detail).foregroundStyle(.secondary)
                         }
                     }
                     GridRow {

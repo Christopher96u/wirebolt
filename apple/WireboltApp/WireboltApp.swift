@@ -255,8 +255,9 @@ struct WireboltCommands: Commands {
             }.keyboardShortcut(.downArrow, modifiers: [.command, .option])
                 .disabled(sidebarMove?.canMoveDown != true)
             Divider()
+            // ⇧⌘C shows the Colors panel and ⌥⌘C copies style (Match Case in the find bar).
             Button("Copy cURL") { copyRequestAsCurl(model.draft, model: model) }
-                .keyboardShortcut("c", modifiers: [.command, .shift])
+                .keyboardShortcut("c", modifiers: [.command, .option, .shift])
                 .disabled(noWorkspace || state.activeKind != .http)
             Divider()
             Button("Edit URL") { interface.focusURLTrigger += 1 }
@@ -327,8 +328,9 @@ struct WireboltCommands: Commands {
                 .disabled(noWorkspace || workspaceActionsBusy)
             Button("Cookies…") { openWindow(id: CookiesView.windowID) }
                 .disabled(noWorkspace)
+            // ⇧⌘G is the system Find Previous.
             Button("Git Collaboration…") { model.isShowingGitCollaboration = true }
-                .keyboardShortcut("g", modifiers: [.command, .shift])
+                .keyboardShortcut("g", modifiers: [.command, .control])
                 .disabled(noWorkspace || model.isLoadingWorkspace)
         }
     }

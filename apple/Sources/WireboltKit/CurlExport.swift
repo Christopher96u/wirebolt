@@ -4,6 +4,7 @@ public extension RequestDraft {
     var curlValueSources: [ValueSource] {
         var sources: [ValueSource] = []
         _ = resolvingCurlValues { source in sources.append(source); return source.editableValue }
+        if let identity = transport.clientCertificateReference { sources.append(.secret(identity)) }
         return sources
     }
 
@@ -48,10 +49,13 @@ public extension RequestDraft {
     /// Produces a shell command for the current draft. The caller decides whether
     /// to resolve credentials for an explicit copy action or retain placeholders.
     func curlCommand(resolve: (ValueSource) -> String) -> String {
-        resolvingCurlValues(resolve).renderCurlCommand()
+        let identity = transport.clientCertificateReference.map { resolve(.secret($0)) }
+        return resolvingCurlValues(resolve).renderCurlCommand(clientIdentity: identity)
     }
 
-    private func renderCurlCommand() -> String {
+    /// The client identity is passed through process substitution, like binary multipart
+    /// parts, so its private key is never written to a file.
+    private func renderCurlCommand(clientIdentity: String?) -> String {
         func resolve(_ value: ValueSource) -> String { value.editableValue }
         func quote(_ value: String) -> String { "'" + value.replacingOccurrences(of: "'", with: "'\"'\"'") + "'" }
         func formQuote(_ value: String) -> String {
@@ -72,10 +76,24 @@ public extension RequestDraft {
         case let .oauth2(configuration): auth += ["--header", quote("Authorization: Bearer " + resolve(.secret(configuration.accessTokenReference)))]
         }
         var arguments = ["curl", "--request", quote(method.rawValue), quote(request.displayURL)] + auth
+        var streams: [String] = []
+        // Returns a `/dev/fd` path that reads `text` from a process substitution.
+        func stream(_ text: String, decoding: String? = nil) -> String {
+            let descriptor = streams.count + 3
+            streams.append("\(descriptor)< <(printf %s \(quote(text))\(decoding.map { " | " + $0 } ?? ""))")
+            return "/dev/fd/\(descriptor)"
+        }
         if transport.followRedirects { arguments += ["--location", "--max-redirs", String(transport.maximumRedirects)] }
         if !transport.validateTLS { arguments.append("--insecure") }
         if transport.totalTimeoutMS != 30_000 { arguments += ["--max-time", String(Double(transport.totalTimeoutMS) / 1000)] }
         if let path = transport.customCAPath { arguments += ["--cacert", quote(path)] }
+        if let clientIdentity {
+            if let identity = try? ClientIdentityPEM(parsing: [clientIdentity]) {
+                arguments += ["--cert", stream(identity.certificates.joined(separator: "\n") + "\n"), "--key", stream(identity.privateKey + "\n")]
+            } else {
+                arguments += ["--cert", stream(clientIdentity)]
+            }
+        }
         for header in headers where header.enabled {
             if case .multipart = body, header.name.caseInsensitiveCompare("Content-Type") == .orderedSame { continue }
             arguments += ["--header", quote(header.name + ": " + resolve(header.value))]
@@ -84,7 +102,6 @@ public extension RequestDraft {
         func contentType(_ value: String?) {
             if !hasContentType, let value { arguments += ["--header", quote("Content-Type: " + value)] }
         }
-        var streams: [String] = []
         switch body {
         case .empty: break
         case let .json(value): contentType("application/json"); arguments += ["--data-raw", quote(value)]
@@ -101,10 +118,7 @@ public extension RequestDraft {
                 switch part.kind {
                 case .text: value = formQuote(resolve(part.value))
                 case .file: value = "@" + formQuote(part.filePath ?? "")
-                case .binary:
-                    let descriptor = streams.count + 3
-                    value = "@/dev/fd/\(descriptor)"
-                    streams.append("\(descriptor)< <(printf %s \(quote(resolve(part.value))) | base64 --decode)")
+                case .binary: value = "@" + stream(resolve(part.value), decoding: "base64 --decode")
                 }
                 if let mime = part.contentType, !mime.isEmpty { value += ";type=" + formQuote(mime) }
                 if let name = part.fileName { value += ";filename=" + formQuote(name) }

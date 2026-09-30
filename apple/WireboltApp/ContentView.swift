@@ -247,17 +247,23 @@ struct ContentView: View {
                 .labelStyle(.iconOnly).buttonStyle(.borderless).help("Workspace Settings")
         }
         ToolbarItem(id: "response-placement", placement: .primaryAction) {
+            // Below the split's minimum width every group stacks the response under the
+            // request, so the toggle would have no visible effect.
+            let fitsRight = interface.fitsResponseOnRight(groupIDs: model.sessions.groups.map(\.id))
             Button {
                 interface.responseOrientation = interface.responseOrientation == .bottom ? .right : .bottom
             } label: {
                 // Shows the current layout, like Xcode's area toggles.
-                Image(systemName: interface.responseOrientation == .right
+                Image(systemName: interface.responseOrientation == .right && fitsRight
                     ? "rectangle.righthalf.inset.filled" : "rectangle.bottomthird.inset.filled")
             }
             .accessibilityLabel(interface.responseOrientation == .bottom ? "Place Response on Right" : "Place Response on Bottom")
             .buttonStyle(.borderless)
             .frame(width: 30, height: 30)
-            .help(interface.responseOrientation == .bottom ? "Place Response on Right" : "Place Response on Bottom")
+            .disabled(!fitsRight)
+            .help(fitsRight
+                ? (interface.responseOrientation == .bottom ? "Place Response on Right" : "Place Response on Bottom")
+                : "Widen the editor to place the response on the right")
         }
     }
 
@@ -1310,6 +1316,7 @@ private struct SidebarRequestButton: View, @MainActor Equatable {
             Button("Export Wirebolt JSON…", action: onExport)
             Divider()
             Button("Copy cURL") { copyRequestAsCurl(location.request, model: model) }
+                .disabled(location.request.webSocket)
             Divider()
             Button("Rename") { interface.renamingRequestID = location.id }
             Button("Duplicate", action: onDuplicate)
@@ -2005,9 +2012,20 @@ private struct WebSocketRequestWorkspace: View {
                 } else if interface.requestSection == .auth {
                     AuthenticationTypePicker(authentication: $session.draft.authentication)
                 }
-                Menu("Message Actions", systemImage: "ellipsis.circle") { EditorPreferencesMenu() }
+                if interface.requestSection == .params || interface.requestSection == .headers {
+                    Menu("Section Actions", systemImage: "ellipsis.circle") {
+                        Button("New Entry") { interface.isBulkEditing = false; interface.focusNewKeyTrigger += 1 }
+                        Divider()
+                        Button("Key-Value Edit") { interface.isBulkEditing = false }
+                        Button("Bulk Edit") { interface.isBulkEditing = true }
+                    }
                     .menuStyle(.borderlessButton).menuIndicator(.hidden).labelStyle(.iconOnly).fixedSize()
-                    .help("Message Actions")
+                    .help("Section Actions")
+                } else {
+                    Menu("Message Actions", systemImage: "ellipsis.circle") { EditorPreferencesMenu() }
+                        .menuStyle(.borderlessButton).menuIndicator(.hidden).labelStyle(.iconOnly).fixedSize()
+                        .help("Message Actions")
+                }
             }
             .padding(.horizontal, 11)
             .frame(height: 32)
@@ -2027,9 +2045,17 @@ private struct WebSocketRequestWorkspace: View {
                 FileBodyEditor(path: path, contentType: contentType) { session.draft.body = .file(path: $0, contentType: $1) }
             } else { BodyTextEditor(text: messageText, language: messageKind.wrappedValue == .json ? .json : .plain) }
         case .params:
-            FieldEditor(title: "Query Params", fields: $session.draft.query, kind: .query, focusTrigger: interface.focusNewKeyTrigger)
+            if interface.isBulkEditing {
+                BulkFieldEditor(fields: $session.draft.query)
+            } else {
+                FieldEditor(title: "Query Params", fields: $session.draft.query, kind: .query, focusTrigger: interface.focusNewKeyTrigger)
+            }
         case .headers:
-            FieldEditor(title: "Header List", fields: $session.draft.headers, kind: .header, focusTrigger: interface.focusNewKeyTrigger)
+            if interface.isBulkEditing {
+                BulkFieldEditor(fields: $session.draft.headers)
+            } else {
+                FieldEditor(title: "Header List", fields: $session.draft.headers, kind: .header, focusTrigger: interface.focusNewKeyTrigger)
+            }
         case .auth:
             AuthenticationEditor(model: model, session: session, authentication: $session.draft.authentication)
         case .settings:
@@ -2182,8 +2208,11 @@ private struct RequestURLBar: View {
                 .accessibilityLabel("Edit Long URL")
                 .help("Edit Long URL")
 
-            RequestHistoryMenu(model: model, session: session)
-                .frame(width: 24, height: 30)
+            // History records HTTP runs only.
+            if session.kind == .http {
+                RequestHistoryMenu(model: model, session: session)
+                    .frame(width: 24, height: 30)
+            }
 
             primaryAction
         }
@@ -3030,12 +3059,6 @@ private struct RequestSectionBar: View {
         }
     }
 
-    private func updateAll(enabled: Bool) {
-        guard var fields = fieldsBinding?.wrappedValue else { return }
-        for index in fields.indices { fields[index].enabled = enabled }
-        fieldsBinding?.wrappedValue = fields
-    }
-
     private func clearFields() {
         fieldsBinding?.wrappedValue = []
     }
@@ -3760,7 +3783,6 @@ private extension AuthenticationKind {
 private struct BodyEditor: View {
     @Binding var requestBody: RequestBody
     @Binding var headers: [RequestField]
-    @State private var wrapsLines = true
     @State private var pendingContentType: String?
 
     var body: some View {
@@ -3844,7 +3866,6 @@ private struct BodyEditor: View {
 
 private struct BodyTools: View {
     @Binding var requestBody: RequestBody
-    @AppStorage("editor.wordWrap") private var wrapsLines = true
     var body: some View {
         HStack(spacing: 7) {
             // A borderless menu sized to the chosen type, so it reads as a value rather
@@ -4209,46 +4230,6 @@ private struct FileBodyEditor: View {
     }
 }
 
-private struct WorkspaceStatusBar: View {
-    @Bindable var model: WireboltModel
-    let status: CoreStatus
-
-    var body: some View {
-        HStack {
-            Text("UTF-8")
-            Spacer()
-            Text("\(requestLineCount) lines")
-            Spacer()
-            HStack(spacing: 6) {
-                Image(systemName: "lock")
-                Text("Local · No telemetry")
-                Circle()
-                    .fill(.green)
-                    .frame(width: 8, height: 8)
-            }
-            .accessibilityElement(children: .combine)
-            .accessibilityLabel("Local mode. No telemetry.")
-            Text("Core \(status.coreVersion)")
-                .help("ABI \(status.streamABIVersion)")
-        }
-        .font(.caption)
-        .foregroundStyle(.secondary)
-        .padding(.horizontal, 12)
-        .frame(height: 27)
-        .background(WireboltTheme.barBackground)
-        .overlay(alignment: .top) { Divider() }
-    }
-
-    private var requestLineCount: Int {
-        let text = switch model.draft.body {
-        case let .json(value), let .text(_, value), let .xml(value),
-             let .html(value), let .raw(_, value): value
-        case .empty, .formURLEncoded, .multipart, .file: ""
-        }
-        return max(text.components(separatedBy: .newlines).count, 1)
-    }
-}
-
 /// A system empty state for panels that have nothing to show yet.
 struct LightweightPlaceholder: View {
     let title: String
@@ -4379,11 +4360,10 @@ private struct EnvironmentPopup: View {
     private var selectedEnvironment: EnvironmentDraft? {
         model.workspace.environments.first { $0.id == model.selectedEnvironmentID }
     }
-
-    private func environmentLabel(_ title: String, selected: Bool) -> some View {
-        Label(title, systemImage: selected ? "checkmark" : "circle.dotted")
-    }
 }
+
+/// Narrower editor groups stack the response below the request.
+private let responseOnRightMinimumWidth: CGFloat = 700
 
 private struct ResponseSplit<RequestContent: View, ResponseContent: View>: View {
     @Bindable var layout: ResponseLayoutState
@@ -4396,7 +4376,7 @@ private struct ResponseSplit<RequestContent: View, ResponseContent: View>: View 
     var body: some View {
         GeometryReader { geometry in
             // Narrow groups use a vertical split so every section remains reachable.
-            let vertical = orientation == .bottom || geometry.size.width < 700
+            let vertical = orientation == .bottom || geometry.size.width < responseOnRightMinimumWidth
             let length = vertical ? geometry.size.height : geometry.size.width
             let minimum: CGFloat = vertical ? 132 : 320
             let maximum = max(minimum, length - (vertical ? 200 : minimumResponseWidth) - 1)
@@ -4433,6 +4413,9 @@ private struct ResponseSplit<RequestContent: View, ResponseContent: View>: View 
                 if vertical { layout.requestHeight = (geometry.size.height / 2).rounded(.down) }
                 else { layout.requestWidth = (geometry.size.width / 2).rounded(.down) }
             }
+        }
+        .onGeometryChange(for: Bool.self) { $0.size.width >= responseOnRightMinimumWidth } action: { fits in
+            if layout.fitsResponseOnRight != fits { layout.fitsResponseOnRight = fits }
         }
     }
 }

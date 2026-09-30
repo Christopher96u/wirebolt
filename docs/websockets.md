@@ -11,6 +11,8 @@
 
 Available message representations include Text, JSON, Binary (Hex/Base64) and File. A binary message must use the selected encoding; a file message requires a readable local file.
 
+Params and Headers support **Request → Bulk Edit** (**⌘B**), as in HTTP requests. Request history and **Copy cURL** apply only to HTTP requests.
+
 ![WebSocket text exchange against a local demo endpoint](assets/screenshots/websocket.png)
 
 The screenshot uses a local echo fixture; the HTTP-only [quick-start server](examples/demo-server.py) does not implement WebSockets. Use your own WebSocket endpoint to follow these steps.
