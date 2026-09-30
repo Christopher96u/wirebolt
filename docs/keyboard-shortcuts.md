@@ -33,7 +33,7 @@
 
 | Action | Shortcut |
 | --- | --- |
-| Send HTTP request | ⌘Return |
+| Send request or WebSocket message | ⌘Return |
 | Cancel request | ⌘. |
 | Connect / disconnect WebSocket | ⌃⌘Return |
 | Move sidebar item up / down | ⌥⌘↑ / ⌥⌘↓ |

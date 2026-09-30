@@ -34,7 +34,7 @@ Changes under **Unreleased** describe the source branch and may not be included 
 - Durations, sizes and status lines read naturally (“<0.1 ms”, “1.23 s”, “18.6 KB”, “302 Found”).
 - Invisible characters are hidden by default. JSON can decode Unicode escapes for display.
 - The Light, Dark and System appearance applies to every window, including Settings.
-- The Git sheet shows readable file statuses and disables Push without an upstream.
+- The Git sheet shows readable file statuses. Without an upstream, Push becomes **Publish** (pushes the branch to `origin` and tracks it); Push is disabled when there is nothing to push.
 - Save and open panels attach to the window as sheets; export failures explain the reason.
 
 ### Fixed
