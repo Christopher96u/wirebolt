@@ -764,6 +764,25 @@ public final class WireboltModel {
         if !dirtySecrets.isEmpty { try await flushSecrets() }
     }
 
+    /// Writes secret values straight to Keychain, for editors with their own Save button.
+    /// The in-memory copy is updated so other editors show the new value.
+    @discardableResult
+    public func saveSecrets(_ values: [String: String]) async -> Bool {
+        guard !values.isEmpty else { return true }
+        guard let persistence else { return false }
+        do {
+            for (name, value) in values.sorted(by: { $0.key < $1.key }) {
+                try await persistence.saveSecret(name: name, value: value)
+                editedSecrets[name] = value
+                dirtySecrets.remove(name)
+            }
+            return true
+        } catch {
+            operationFailure = RunFailure(kind: "keychain", issues: [])
+            return false
+        }
+    }
+
     public func saveSecret(name: String, value: String) async {
         guard let persistence else { return }
         do {

@@ -561,6 +561,20 @@ public struct EnvironmentVariableDraft: Identifiable, Codable, Equatable, Sendab
     }
 }
 
+public extension EnvironmentVariableDraft {
+    var isSecret: Bool {
+        if case .secret = value { true } else { false }
+    }
+
+    /// The Keychain name for this variable's secret value. It is unique per environment and
+    /// row, so renaming the variable keeps its value and two environments never share one.
+    func secretReference(environmentID: String) -> String {
+        let allowed = Set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789.-_")
+        let clean = { (text: String) in String(text.map { allowed.contains($0) ? $0 : "-" }) }
+        return String("env.\(clean(environmentID)).\(clean(id))".prefix(128))
+    }
+}
+
 public struct EnvironmentDraft: Identifiable, Codable, Equatable, Sendable {
     public var id: String
     public var name: String
