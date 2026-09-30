@@ -80,7 +80,7 @@ mod tests {
             handshake(),
             CoreHandshake {
                 product: "Wirebolt",
-                core_version: "0.1.0",
+                core_version: env!("CARGO_PKG_VERSION"),
                 stream_abi_version: 4,
             }
         );
