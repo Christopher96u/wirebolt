@@ -1310,6 +1310,7 @@ private struct SidebarRequestButton: View, @MainActor Equatable {
             Button("Export Wirebolt JSON…", action: onExport)
             Divider()
             Button("Copy cURL") { copyRequestAsCurl(location.request, model: model) }
+                .disabled(location.request.webSocket)
             Divider()
             Button("Rename") { interface.renamingRequestID = location.id }
             Button("Duplicate", action: onDuplicate)
@@ -2201,8 +2202,11 @@ private struct RequestURLBar: View {
                 .accessibilityLabel("Edit Long URL")
                 .help("Edit Long URL")
 
-            RequestHistoryMenu(model: model, session: session)
-                .frame(width: 24, height: 30)
+            // History records HTTP runs only.
+            if session.kind == .http {
+                RequestHistoryMenu(model: model, session: session)
+                    .frame(width: 24, height: 30)
+            }
 
             primaryAction
         }
