@@ -39,18 +39,7 @@ struct ResponseViewer: View {
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                     .transition(.opacity)
             } else {
-                ContentUnavailableView {
-                    Label("No Response", systemImage: "paperplane")
-                } description: {
-                    Text(session.draft.url.isEmpty ? "Enter a URL, then send the request (⌘↩) to see the response here."
-                        : "Send the request (⌘↩) to see the response here.")
-                } actions: {
-                    if let send {
-                        Button("Send Request", action: send)
-                            .disabled(session.draft.url.isEmpty)
-                            .help("Send Request (⌘↩)")
-                    }
-                }
+                NoResponseState(session: session, canSend: send != nil) { send?() }
             }
         }
         .animation(reduceMotion ? nil : .easeOut(duration: 0.18), value: phase)
@@ -357,6 +346,30 @@ private struct ResponseSectionBar: View {
         .padding(.leading, 11)
         .padding(.trailing, 10)
         .fixedSize(horizontal: true, vertical: false)
+    }
+}
+
+/// The empty response pane. Its own view: it reads the URL, so typing re-renders only this
+/// rather than the whole response viewer.
+private struct NoResponseState: View {
+    let session: DocumentSession
+    let canSend: Bool
+    let send: () -> Void
+
+    var body: some View {
+        let hasURL = !session.draft.url.isEmpty
+        ContentUnavailableView {
+            Label("No Response", systemImage: "paperplane")
+        } description: {
+            Text(hasURL ? "Send the request (⌘↩) to see the response here."
+                : "Enter a URL, then send the request (⌘↩) to see the response here.")
+        } actions: {
+            if canSend {
+                Button("Send Request", action: send)
+                    .disabled(!hasURL)
+                    .help("Send Request (⌘↩)")
+            }
+        }
     }
 }
 
