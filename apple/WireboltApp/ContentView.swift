@@ -1711,10 +1711,12 @@ private struct DocumentTabButton: View {
         }
         .padding(.horizontal, WireboltTheme.Spacing.small)
         .frame(minWidth: 28, minHeight: 28)
-        .background(isSelected ? Color.primary.opacity(0.055) : .clear, in: .rect(cornerRadius: 14))
+        // Only the selected tab draws a capsule; the others add no shapes.
+        .background { if isSelected { RoundedRectangle(cornerRadius: 14).fill(Color.primary.opacity(0.055)) } }
         .overlay {
-            RoundedRectangle(cornerRadius: 14)
-                .stroke(isSelected ? WireboltTheme.separator.opacity(0.65) : .clear, lineWidth: 0.5)
+            if isSelected {
+                RoundedRectangle(cornerRadius: 14).stroke(WireboltTheme.separator.opacity(0.65), lineWidth: 0.5)
+            }
         }
         .onHover { isHovered = $0 }
         .contextMenu {
