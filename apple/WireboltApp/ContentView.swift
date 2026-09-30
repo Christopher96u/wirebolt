@@ -4425,17 +4425,39 @@ private final class WindowConfigurationView: NSView {
     var sidebarWidth = 250.0
     var isWorkspaceWindow = false
     var requestClose: (NSWindow) -> Void = { _ in }
-    private let sidebarOutline = SidebarOutlineView()
+    private let sidebarOutline = SidebarOutlineLayer()
 
+    /// The outline is a layer above the window frame's views (the title bar included), not a
+    /// view: AppKit logs adding an unknown view to the window frame, with a symbolicated
+    /// call stack that took several milliseconds as the window opened.
     func updateSidebarOutline() {
-        guard let content = window?.contentView?.superview else { return }
-        if sidebarOutline.superview !== content {
-            sidebarOutline.frame = content.bounds
-            sidebarOutline.autoresizingMask = [.width, .height]
-            content.addSubview(sidebarOutline, positioned: .above, relativeTo: nil)
+        guard let window, let frame = window.contentView?.superview, let host = frame.layer else { return }
+        if sidebarOutline.superlayer !== host {
+            // In front of the view layers, which AppKit keeps ordered after added layers.
+            sidebarOutline.zPosition = 1_000
+            host.addSublayer(sidebarOutline)
         }
+        sidebarOutline.appearance = window.effectiveAppearance
+        sidebarOutline.contentsScale = window.backingScaleFactor
+        sidebarOutline.frame = host.bounds
         sidebarOutline.sidebarWidth = sidebarWidth
-        sidebarOutline.needsDisplay = true
+        sidebarOutline.setNeedsDisplay()
+    }
+
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        updateSidebarOutline()
+    }
+
+    override func viewDidChangeBackingProperties() {
+        super.viewDidChangeBackingProperties()
+        updateSidebarOutline()
+    }
+
+    override func setFrameSize(_ newSize: NSSize) {
+        super.setFrameSize(newSize)
+        // Follows the window size, since this view spans the workspace.
+        if let host = sidebarOutline.superlayer, sidebarOutline.frame != host.bounds { updateSidebarOutline() }
     }
 
     override func viewDidMoveToWindow() {
@@ -4528,16 +4550,40 @@ private final class WindowConfigurationView: NSView {
     }
 }
 
-@MainActor
-private final class SidebarOutlineView: NSView {
-    var sidebarWidth = 250.0
-    override func hitTest(_ point: NSPoint) -> NSView? { nil }
-    override func draw(_ dirtyRect: NSRect) {
+/// Strokes the rounded outline around the sidebar panel with AppKit drawing, so it matches
+/// the system separator color in the window's appearance.
+private final class SidebarOutlineLayer: CALayer, @unchecked Sendable {
+    nonisolated(unsafe) var sidebarWidth = 250.0
+    nonisolated(unsafe) var appearance: NSAppearance?
+
+    override init() {
+        super.init()
+        needsDisplayOnBoundsChange = true
+    }
+
+    override init(layer: Any) {
+        super.init(layer: layer)
+        if let other = layer as? SidebarOutlineLayer {
+            sidebarWidth = other.sidebarWidth
+            appearance = other.appearance
+        }
+    }
+
+    required init?(coder: NSCoder) { fatalError("not coded") }
+
+    override func draw(in context: CGContext) {
         guard sidebarWidth > 0 else { return }
-        NSColor.separatorColor.setStroke()
-        let outline = NSBezierPath(roundedRect: NSRect(x: 8.5, y: 8.5,
-            width: sidebarWidth - 9, height: bounds.height - 17), xRadius: 18, yRadius: 18)
-        outline.lineWidth = 1
-        outline.stroke()
+        let graphics = NSGraphicsContext(cgContext: context, flipped: false)
+        NSGraphicsContext.saveGraphicsState()
+        NSGraphicsContext.current = graphics
+        let draw = { [self] in
+            NSColor.separatorColor.setStroke()
+            let outline = NSBezierPath(roundedRect: NSRect(x: 8.5, y: 8.5,
+                width: sidebarWidth - 9, height: bounds.height - 17), xRadius: 18, yRadius: 18)
+            outline.lineWidth = 1
+            outline.stroke()
+        }
+        if let appearance { appearance.performAsCurrentDrawingAppearance(draw) } else { draw() }
+        NSGraphicsContext.restoreGraphicsState()
     }
 }
