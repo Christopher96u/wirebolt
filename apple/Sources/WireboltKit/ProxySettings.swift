@@ -169,3 +169,69 @@ public struct ProxyFormDraft: Equatable {
     }
 }
 
+
+/// A TLS client identity in the PEM form the transport accepts: one or more certificates
+/// (leaf first) and one unencrypted private key. The combined text is stored in Keychain;
+/// workspaces keep only its reference.
+public struct ClientIdentityPEM: Equatable, Sendable {
+    public enum Failure: LocalizedError, Equatable {
+        case noCertificate, noPrivateKey, multiplePrivateKeys, encryptedPrivateKey
+
+        public var errorDescription: String? {
+            switch self {
+            case .noCertificate: "Choose a PEM file with a certificate (BEGIN CERTIFICATE)."
+            case .noPrivateKey: "Choose the certificate’s private key too, in the same PEM file or a second one."
+            case .multiplePrivateKeys: "Choose only one private key."
+            case .encryptedPrivateKey: "Encrypted private keys aren’t supported. Export the key without a passphrase."
+            }
+        }
+    }
+
+    public let certificates: [String]
+    public let privateKey: String
+
+    /// Certificates followed by the key, the order the transport expects.
+    public var combined: String { (certificates + [privateKey]).joined(separator: "\n") + "\n" }
+
+    /// Parses the PEM blocks of one or more files, such as a certificate chain and a key.
+    public init(parsing sources: [String]) throws {
+        var certificates: [String] = []
+        var keys: [String] = []
+        for source in sources {
+            for block in Self.blocks(in: source) {
+                if block.label == "CERTIFICATE" {
+                    certificates.append(block.text)
+                } else if block.label == "ENCRYPTED PRIVATE KEY" || (block.label.hasSuffix("PRIVATE KEY") && block.text.contains("Proc-Type: 4,ENCRYPTED")) {
+                    throw Failure.encryptedPrivateKey
+                } else if ["PRIVATE KEY", "RSA PRIVATE KEY", "EC PRIVATE KEY"].contains(block.label) {
+                    keys.append(block.text)
+                }
+            }
+        }
+        guard !certificates.isEmpty else { throw Failure.noCertificate }
+        guard let key = keys.first else { throw Failure.noPrivateKey }
+        guard keys.count == 1 else { throw Failure.multiplePrivateKeys }
+        self.certificates = certificates
+        privateKey = key
+    }
+
+    private static func blocks(in source: String) -> [(label: String, text: String)] {
+        var blocks: [(label: String, text: String)] = []
+        var label: String?
+        var lines: [Substring] = []
+        for line in source.split(whereSeparator: \.isNewline) {
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            if label == nil, trimmed.hasPrefix("-----BEGIN "), trimmed.hasSuffix("-----") {
+                label = String(trimmed.dropFirst(11).dropLast(5))
+                lines = [Substring(trimmed)]
+            } else if let current = label {
+                lines.append(Substring(trimmed))
+                if trimmed == "-----END \(current)-----" {
+                    blocks.append((current, lines.joined(separator: "\n")))
+                    label = nil
+                }
+            }
+        }
+        return blocks
+    }
+}
