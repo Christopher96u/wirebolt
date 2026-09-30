@@ -526,10 +526,11 @@ impl WorkspaceBridge {
         format: &str,
         source: &str,
     ) -> Result<String, WorkspaceBridgeError> {
-        self.commit_imported(parse_import(format, source)?)
+        self.commit_imported(parse_import(format, source)?.into())
     }
 
-    /// Imports a collection file under its filename, preserving every exported folder.
+    /// Imports a file under its filename, preserving every exported folder. A
+    /// Wirebolt workspace export creates each of its collections and environments.
     ///
     /// # Errors
     /// Returns [`WorkspaceBridgeError`] for invalid source or storage failures.
@@ -541,7 +542,7 @@ impl WorkspaceBridge {
     ) -> Result<String, WorkspaceBridgeError> {
         let format = ImportFormat::parse(format)
             .map_err(|_| WorkspaceBridgeError::operation("unsupported import format"))?;
-        let imported = ImportEngine::parse_file(format, source, name)
+        let imported = ImportEngine::parse_workspace_file(format, source, name)
             .map_err(|_| WorkspaceBridgeError::operation("import could not be parsed"))?;
         self.commit_imported(imported)
     }
@@ -639,19 +640,102 @@ impl WorkspaceBridge {
 }
 
 impl WorkspaceBridge {
+    /// Creates every imported collection and environment, or none of them.
     fn commit_imported(
         &self,
-        imported: wirebolt_core::ImportedCollection,
+        imported: wirebolt_core::ImportedWorkspace,
     ) -> Result<String, WorkspaceBridgeError> {
         let sequence = self.version.load(Ordering::Relaxed) + 1;
         let timestamp = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map_err(|_| WorkspaceBridgeError::operation("import identifier could not be created"))?
             .as_nanos();
-        let collection_id = document_id(format!(
-            "import-{timestamp:x}-{:x}-{sequence:x}",
-            std::process::id()
-        ))?;
+        let prefix = format!("import-{timestamp:x}-{:x}-{sequence:x}", std::process::id());
+        let mut created = CreatedImport::default();
+        if let Err(error) = self.save_imported(&prefix, imported, &mut created) {
+            for id in &created.collections {
+                let _ = self.store.delete_collection(id);
+            }
+            for id in &created.environments {
+                let _ = self.store.delete_environment(id);
+            }
+            #[cfg(target_vendor = "apple")]
+            for name in created.secrets {
+                let _ = wirebolt_core::KeychainSecretStore::default().remove(&name);
+            }
+            return Err(error);
+        }
+
+        let delta = WorkspaceDeltaDocument {
+            version: self.version.fetch_add(1, Ordering::Relaxed) + 1,
+            kind: "collection",
+            affected_ids: created
+                .collections
+                .iter()
+                .map(ToString::to_string)
+                .collect(),
+        };
+        serde_json::to_string(&delta)
+            .map_err(|_| WorkspaceBridgeError::operation("import delta could not be encoded"))
+    }
+
+    fn save_imported(
+        &self,
+        prefix: &str,
+        imported: wirebolt_core::ImportedWorkspace,
+        created: &mut CreatedImport,
+    ) -> Result<(), WorkspaceBridgeError> {
+        let wirebolt_core::ImportedWorkspace {
+            collections,
+            environments,
+            mut request_settings,
+        } = imported;
+        for (index, imported) in collections.into_iter().enumerate() {
+            let collection_id = document_id(format!("{prefix}-{index}"))?;
+            self.save_imported_collection(
+                &collection_id,
+                imported,
+                &mut request_settings,
+                created,
+            )?;
+        }
+        let has_global = environments.iter().any(|environment| environment.global)
+            && self
+                .store
+                .load()
+                .map_err(|_| WorkspaceBridgeError::operation("workspace could not be loaded"))?
+                .environments
+                .iter()
+                .any(|environment| environment.id.as_str() == wirebolt_core::GLOBAL_ENVIRONMENT_ID);
+        for (index, environment) in environments.into_iter().enumerate() {
+            // Never replace this workspace's own global environment.
+            let id = if environment.global && !has_global {
+                wirebolt_core::GLOBAL_ENVIRONMENT_ID.to_owned()
+            } else {
+                format!("{prefix}-env-{index}")
+            };
+            let environment =
+                Environment::from_rows(document_id(id)?, environment.name, environment.variables);
+            created.environments.push(environment.id.clone());
+            self.store
+                .save(&WorkspaceDocument::Environment(environment))
+                .map_err(|_| {
+                    WorkspaceBridgeError::operation("import environment could not be saved")
+                })?;
+        }
+        Ok(())
+    }
+
+    fn save_imported_collection(
+        &self,
+        collection_id: &DocumentId,
+        imported: wirebolt_core::ImportedCollection,
+        request_settings: &mut std::collections::BTreeMap<
+            String,
+            wirebolt_core::ImportedRequestSettings,
+        >,
+        created: &mut CreatedImport,
+    ) -> Result<(), WorkspaceBridgeError> {
         let mut group_ids = HashMap::new();
         for (index, group) in imported.groups.iter().enumerate() {
             group_ids.insert(
@@ -683,53 +767,44 @@ impl WorkspaceBridge {
             .map_err(|_| {
                 WorkspaceBridgeError::operation("import collection could not be created")
             })?;
+        created.collections.push(collection_id.clone());
 
-        let mut created_secrets = Vec::new();
-        let commit_result =
-            imported
-                .requests
-                .into_iter()
-                .enumerate()
-                .try_for_each(|(index, imported_request)| {
-                    let request_id = document_id(format!("request-{index}"))?;
-                    let group_id = imported_request
-                        .group_source_id
-                        .as_ref()
-                        .and_then(|source| group_ids.get(source))
-                        .cloned();
-                    let mut request = imported_request.into_request(request_id, group_id);
-                    secure_import_authentication(
-                        &mut request.authentication,
-                        &format!("{collection_id}-{}", request.id),
-                        &mut created_secrets,
-                    )?;
-                    self.store
-                        .save(&WorkspaceDocument::Request {
-                            collection_id: collection_id.clone(),
-                            request,
-                        })
-                        .map(|_| ())
-                        .map_err(|_| {
-                            WorkspaceBridgeError::operation("import request could not be saved")
-                        })
-                });
-        if let Err(error) = commit_result {
-            let _ = self.store.delete_collection(&collection_id);
-            #[cfg(target_vendor = "apple")]
-            for name in created_secrets {
-                let _ = wirebolt_core::KeychainSecretStore::default().remove(&name);
+        for (index, imported_request) in imported.requests.into_iter().enumerate() {
+            let request_id = document_id(format!("request-{index}"))?;
+            let group_id = imported_request
+                .group_source_id
+                .as_ref()
+                .and_then(|source| group_ids.get(source))
+                .cloned();
+            let settings = request_settings.remove(&imported_request.source_id);
+            let mut request = imported_request.into_request(request_id, group_id);
+            if let Some(settings) = settings {
+                settings.apply(&mut request);
             }
-            return Err(error);
+            secure_import_authentication(
+                &mut request.authentication,
+                &format!("{collection_id}-{}", request.id),
+                &mut created.secrets,
+            )?;
+            self.store
+                .save(&WorkspaceDocument::Request {
+                    collection_id: collection_id.clone(),
+                    request,
+                })
+                .map_err(|_| {
+                    WorkspaceBridgeError::operation("import request could not be saved")
+                })?;
         }
-
-        let delta = WorkspaceDeltaDocument {
-            version: self.version.fetch_add(1, Ordering::Relaxed) + 1,
-            kind: "collection",
-            affected_ids: vec![collection_id.to_string()],
-        };
-        serde_json::to_string(&delta)
-            .map_err(|_| WorkspaceBridgeError::operation("import delta could not be encoded"))
+        Ok(())
     }
+}
+
+/// Documents and credentials an import has written so far, for rollback.
+#[derive(Default)]
+struct CreatedImport {
+    collections: Vec<DocumentId>,
+    environments: Vec<DocumentId>,
+    secrets: Vec<SecretName>,
 }
 
 impl WorkspaceBridge {
@@ -2413,6 +2488,137 @@ mod tests {
             assert!(reopened.apply_workspace_command(&serde_json::json!({"kind":"reorder_children","collection_id":"api","items":invalid}).to_string()).is_err());
             assert_eq!(reopened.snapshot_json().unwrap(), before);
         }
+    }
+
+    fn test_secret(name: &str) -> ValueSource {
+        ValueSource::secret(SecretName::new(name).unwrap())
+    }
+
+    /// Exports a workspace with two collections, a global and a staging environment.
+    fn exported_source_workspace() -> String {
+        let id = |value: &str| DocumentId::new(value).unwrap();
+        let secret = test_secret;
+        let source_directory = tempfile::tempdir().unwrap();
+        let source =
+            WorkspaceStore::create(source_directory.path(), &Workspace::new("Source")).unwrap();
+        let mut request = Request::new(
+            id("search"),
+            "Search",
+            "GET",
+            "https://api.example.test/items",
+        );
+        request.headers = vec![RequestHeader {
+            sensitive: true,
+            ..RequestHeader::enabled("X-Api-Token", secret("inventory.token"))
+        }];
+        request.proxy_override = Some(ProxyMode::Direct);
+        request.transport.validate_tls = false;
+        request.inherits_workspace_transport = false;
+        let documents = [
+            WorkspaceDocument::Collection(Collection::new(id("inventory"), "Inventory".into())),
+            WorkspaceDocument::Request {
+                collection_id: id("inventory"),
+                request,
+            },
+            WorkspaceDocument::Collection(Collection::new(id("billing"), "Billing".into())),
+            WorkspaceDocument::Request {
+                collection_id: id("billing"),
+                request: Request::new(
+                    id("invoices"),
+                    "Invoices",
+                    "GET",
+                    "https://billing.example.test",
+                ),
+            },
+            WorkspaceDocument::Environment(Environment::new(
+                id("global"),
+                "Source globals".into(),
+                [(
+                    "baseUrl".to_owned(),
+                    ValueSource::literal("https://api.example.test"),
+                )]
+                .into(),
+            )),
+            WorkspaceDocument::Environment(Environment::new(
+                id("staging"),
+                "Staging".into(),
+                [("token".to_owned(), secret("staging.token"))].into(),
+            )),
+        ];
+        for document in &documents {
+            source.save(document).unwrap();
+        }
+        WorkspaceBridge::open_or_create(
+            source_directory.path().to_string_lossy().into_owned(),
+            "Source".into(),
+        )
+        .unwrap()
+        .export_workspace_json()
+        .unwrap()
+    }
+
+    #[test]
+    fn workspace_export_file_imports_as_separate_collections_and_environments() {
+        let exported = exported_source_workspace();
+        let secret = test_secret;
+        let target_directory = tempfile::tempdir().unwrap();
+        let target =
+            WorkspaceStore::create(target_directory.path(), &Workspace::new("Target")).unwrap();
+        target
+            .save(&WorkspaceDocument::Environment(Environment::new(
+                DocumentId::new("global").unwrap(),
+                "Target globals".into(),
+                BTreeMap::new(),
+            )))
+            .unwrap();
+        let bridge = WorkspaceBridge::open_or_create(
+            target_directory.path().to_string_lossy().into_owned(),
+            "Target".into(),
+        )
+        .unwrap();
+        let delta: serde_json::Value = serde_json::from_str(
+            &bridge
+                .commit_import_file("legacy_workspace_v1", &exported, "source-export")
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(delta["affected_ids"].as_array().unwrap().len(), 2);
+
+        let snapshot = target.load().unwrap();
+        let mut collections: Vec<_> = snapshot
+            .collections
+            .iter()
+            .map(|entry| entry.collection.name.as_str())
+            .collect();
+        collections.sort_unstable();
+        assert_eq!(collections, ["Billing", "Inventory"]);
+        let inventory = snapshot
+            .collections
+            .iter()
+            .find(|entry| entry.collection.name == "Inventory")
+            .unwrap();
+        assert!(inventory.collection.groups.is_empty());
+        let imported = &inventory.requests[0];
+        assert_eq!(imported.headers[0].value, secret("inventory.token"));
+        assert!(imported.headers[0].sensitive);
+        assert_eq!(imported.proxy_override, Some(ProxyMode::Direct));
+        assert!(!imported.transport.validate_tls);
+        assert!(!imported.inherits_workspace_transport);
+
+        let environment = |name: &str| {
+            snapshot
+                .environments
+                .iter()
+                .find(|environment| environment.name == name)
+                .unwrap()
+        };
+        assert_eq!(snapshot.environments.len(), 3);
+        assert_eq!(environment("Target globals").id.as_str(), "global");
+        assert_ne!(environment("Source globals").id.as_str(), "global");
+        assert_eq!(
+            environment("Staging").variables[0].value,
+            secret("staging.token")
+        );
     }
 
     #[test]

@@ -3,6 +3,9 @@ use std::{error::Error, fmt};
 use serde_json::Value;
 
 mod legacy_v1;
+mod workspace;
+
+pub use workspace::{ImportedEnvironment, ImportedRequestSettings, ImportedWorkspace};
 
 use crate::{
     MultipartPart, MultipartPartKind, Request, RequestAuthentication, RequestBody, RequestHeader,
@@ -126,6 +129,27 @@ impl ImportEngine {
             }
         }
         Self::parse(format, source)
+    }
+
+    /// Imports a file with everything it describes: a Wirebolt workspace export
+    /// yields one collection per exported collection plus its environments;
+    /// other formats yield the single collection of [`Self::parse_file`].
+    ///
+    /// # Errors
+    /// Returns [`ImportError`] for invalid input without including source contents.
+    pub fn parse_workspace_file(
+        format: ImportFormat,
+        source: &str,
+        name: &str,
+    ) -> Result<ImportedWorkspace, ImportError> {
+        if format == ImportFormat::LegacyWorkspaceV1 {
+            let root: Value = serde_json::from_str(source)
+                .map_err(|_| ImportError::new("legacy workspace JSON is invalid"))?;
+            if root.get("nodes").is_some() {
+                return legacy_v1::parse_workspace(&root, Some(name));
+            }
+        }
+        Self::parse_file(format, source, name).map(ImportedWorkspace::from)
     }
 
     /// Parses a source completely before returning any documents to storage.
