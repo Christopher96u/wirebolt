@@ -74,6 +74,28 @@ private func openWorkspace(at url: URL, create: Bool, model: WireboltModel, inte
     }
 }
 
+/// Workspace ▸ Rename Workspace…: the name lives in wirebolt.toml; the folder keeps its name.
+@MainActor
+func promptToRenameWorkspace(model: WireboltModel) {
+    let window = NSApp.keyWindow
+    Task {
+        let alert = NSAlert()
+        alert.messageText = "Rename Workspace"
+        alert.informativeText = "The name is saved in the workspace and shown in the window title. The folder keeps its name."
+        let field = NSTextField(string: model.workspace.name)
+        field.frame = NSRect(x: 0, y: 0, width: 280, height: 24)
+        field.setAccessibilityLabel("Workspace name")
+        alert.accessoryView = field
+        alert.addButton(withTitle: "Rename")
+        alert.addButton(withTitle: "Cancel")
+        alert.window.initialFirstResponder = field
+        guard await present(alert, in: window) == .alertFirstButtonReturn else { return }
+        let name = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty else { NSSound.beep(); return }
+        await model.renameWorkspace(name)
+    }
+}
+
 /// Asks before unsaved request edits are lost. Returns true when the caller may
 /// continue: edits were saved, or the person chose Don't Save (edits are reverted).
 @MainActor

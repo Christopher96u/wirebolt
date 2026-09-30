@@ -565,6 +565,23 @@ public final class WireboltModel {
         }
     }
 
+    // MARK: Workspace name
+
+    @discardableResult
+    public func renameWorkspace(_ proposedName: String) async -> Bool {
+        let name = proposedName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let persistence, !name.isEmpty else { return false }
+        guard name != workspace.name else { return true }
+        do {
+            _ = try await persistence.apply(.renameWorkspace(name: name))
+            workspace.name = name
+            return true
+        } catch {
+            operationFailure = RunFailure(kind: "workspace", issues: [])
+            return false
+        }
+    }
+
     /// Opens a saved request. `preview` reuses the group's preview tab instead of adding a tab.
     public func select(_ location: RequestLocation, preview: Bool = false) {
         if preview {

@@ -687,6 +687,7 @@ public enum WorkspaceCommand: Equatable, Sendable {
     case reorderChildren(collectionID: String, parentID: String?, items: [String])
     case saveWorkspaceProxy(ProxyDocument?)
     case saveWorkspaceSettings(TransportSettings)
+    case renameWorkspace(name: String)
     case createCollection(CollectionDraft)
     case renameCollection(id: String, name: String)
     case deleteCollection(id: String)

@@ -317,6 +317,8 @@ struct WireboltCommands: Commands {
         CommandMenu("Workspace") {
             Button("Workspace Settings…") { model.isShowingWorkspaceSettings = true }
                 .disabled(noWorkspace)
+            Button("Rename Workspace…") { promptToRenameWorkspace(model: model) }
+                .disabled(noWorkspace || workspaceActionsBusy)
             Button("Git Collaboration…") { model.isShowingGitCollaboration = true }
                 .keyboardShortcut("g", modifiers: [.command, .shift])
                 .disabled(noWorkspace || model.isLoadingWorkspace)

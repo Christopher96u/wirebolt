@@ -18,8 +18,17 @@ struct RustWorkspacePersistence: WorkspacePersistence, GitCollaboration {
             break
         }
         // A new workspace starts empty; the first request creates the top-level list, so the
-        // sidebar never opens on an empty placeholder collection.
-        bridge = try WorkspaceBridge.openOrCreate(path: path.path, name: "Wirebolt")
+        // sidebar never opens on an empty placeholder collection. Its name follows the folder.
+        bridge = try WorkspaceBridge.openOrCreate(path: path.path, name: Self.defaultName(for: path))
+    }
+
+    /// The folder name, except for the built-in workspace in Application Support.
+    static func defaultName(for path: URL) -> String {
+        let name = path.standardizedFileURL.lastPathComponent.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard path.standardizedFileURL != builtInWorkspaceURL.standardizedFileURL, !name.isEmpty, name != "/" else {
+            return "Wirebolt"
+        }
+        return name
     }
 
     func load() async throws -> WorkspaceDraft {
@@ -177,6 +186,11 @@ struct RustWorkspacePersistence: WorkspacePersistence, GitCollaboration {
         if let path = UserDefaults.standard.string(forKey: "workspace.lastOpenedPath") {
             return URL(fileURLWithPath: path, isDirectory: true)
         }
+        return builtInWorkspaceURL
+    }
+
+    /// The workspace used until another one is created or opened.
+    static var builtInWorkspaceURL: URL {
         let applicationSupport = FileManager.default.urls(
             for: .applicationSupportDirectory,
             in: .userDomainMask
@@ -401,6 +415,9 @@ private struct WorkspaceCommandDocument: Encodable {
         case let .saveWorkspaceSettings(transport):
             try container.encode("save_workspace_settings", forKey: .kind)
             try container.encode(transport, forKey: .transport)
+        case let .renameWorkspace(name):
+            try container.encode("rename_workspace", forKey: .kind)
+            try container.encode(name, forKey: .name)
         case let .createCollection(collection):
             try container.encode("create_collection", forKey: .kind)
             try container.encode(collection.id, forKey: .id)
