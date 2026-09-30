@@ -238,6 +238,9 @@ enum WorkspaceCommandDocument {
     SaveWorkspaceSettings {
         transport: TransportSettings,
     },
+    RenameWorkspace {
+        name: String,
+    },
     CreateCollection {
         id: String,
         name: String,
@@ -792,6 +795,26 @@ impl WorkspaceBridge {
                         WorkspaceBridgeError::operation("workspace settings could not be saved")
                     })?;
                 Ok(("workspace", vec!["transport".to_owned()]))
+            }
+            WorkspaceCommandDocument::RenameWorkspace { name } => {
+                let name = name.trim();
+                if name.is_empty() {
+                    return Err(WorkspaceBridgeError::operation(
+                        "workspace name must not be empty",
+                    ));
+                }
+                let mut workspace = self
+                    .store
+                    .load()
+                    .map_err(|_| WorkspaceBridgeError::operation("workspace could not be loaded"))?
+                    .workspace;
+                name.clone_into(&mut workspace.name);
+                self.store
+                    .save(&WorkspaceDocument::Workspace(workspace))
+                    .map_err(|_| {
+                        WorkspaceBridgeError::operation("workspace could not be renamed")
+                    })?;
+                Ok(("workspace", vec!["name".to_owned()]))
             }
             WorkspaceCommandDocument::CreateCollection { id, name, order } => {
                 let mut collection = Collection::new(document_id(id.clone())?, name);
@@ -2906,6 +2929,37 @@ mod tests {
         assert_eq!(status["merging"], false);
         assert!(root.join(".git").exists());
         assert!(bridge.git_status_json().is_ok());
+    }
+
+    #[test]
+    fn rename_workspace_persists_a_trimmed_name_and_rejects_blank_names() {
+        let temporary = tempfile::tempdir().expect("temporary workspace");
+        let path = temporary.path().to_string_lossy().into_owned();
+        let bridge = WorkspaceBridge::open_or_create(path.clone(), "Checkout".into())
+            .expect("workspace bridge");
+
+        let delta: serde_json::Value = serde_json::from_str(
+            &bridge
+                .apply_workspace_command(
+                    &serde_json::json!({"kind":"rename_workspace","name":"  Checkout Team  "})
+                        .to_string(),
+                )
+                .expect("rename workspace"),
+        )
+        .expect("delta JSON");
+        assert_eq!(delta["kind"], "workspace");
+        assert!(
+            bridge
+                .apply_workspace_command(
+                    &serde_json::json!({"kind":"rename_workspace","name":"   "}).to_string()
+                )
+                .is_err()
+        );
+
+        let reopened = WorkspaceBridge::open_or_create(path, "Ignored".into()).expect("reopen");
+        let snapshot: serde_json::Value =
+            serde_json::from_str(&reopened.snapshot_json().expect("snapshot")).expect("JSON");
+        assert_eq!(snapshot["name"], "Checkout Team");
     }
 
     /// Each test owns its cache, so resets in one test cannot race lookups
