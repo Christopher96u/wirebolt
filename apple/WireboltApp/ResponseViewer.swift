@@ -18,6 +18,9 @@ struct ResponseViewer: View {
                 VStack(spacing: 0) {
                     ResponseSectionBar(interface: interface, session: session, cancel: cancel)
                     sectionContent
+                        // Fill the pane so short content (failure, empty states) keeps the section
+                        // bar pinned to the top instead of centering the whole stack.
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
                         // Keep the previous response (scroll, find, folding) until the new head arrives.
                         .opacity(isAwaitingNewResponse ? 0.35 : 1)
                         .allowsHitTesting(!isAwaitingNewResponse)
