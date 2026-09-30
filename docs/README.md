@@ -2,7 +2,7 @@
 
 [← Wirebolt](../README.md)
 
-These guides describe the current source on `main`. Downloaded betas may not include everything shown; check the [changelog](../CHANGELOG.md). Screenshots use demonstration data rendered by the native app views.
+These guides describe the current source on `main`. Downloaded releases may not include everything shown; check the [changelog](../CHANGELOG.md). Screenshots use demonstration data rendered by the native app views.
 
 ## Start here
 
