@@ -3030,12 +3030,6 @@ private struct RequestSectionBar: View {
         }
     }
 
-    private func updateAll(enabled: Bool) {
-        guard var fields = fieldsBinding?.wrappedValue else { return }
-        for index in fields.indices { fields[index].enabled = enabled }
-        fieldsBinding?.wrappedValue = fields
-    }
-
     private func clearFields() {
         fieldsBinding?.wrappedValue = []
     }
@@ -3764,7 +3758,6 @@ private enum AuthenticationKind: CaseIterable, Identifiable {
 private struct BodyEditor: View {
     @Binding var requestBody: RequestBody
     @Binding var headers: [RequestField]
-    @State private var wrapsLines = true
     @State private var pendingContentType: String?
 
     var body: some View {
@@ -3848,7 +3841,6 @@ private struct BodyEditor: View {
 
 private struct BodyTools: View {
     @Binding var requestBody: RequestBody
-    @AppStorage("editor.wordWrap") private var wrapsLines = true
     var body: some View {
         HStack(spacing: 7) {
             // A borderless menu sized to the chosen type, so it reads as a value rather
@@ -4213,46 +4205,6 @@ private struct FileBodyEditor: View {
     }
 }
 
-private struct WorkspaceStatusBar: View {
-    @Bindable var model: WireboltModel
-    let status: CoreStatus
-
-    var body: some View {
-        HStack {
-            Text("UTF-8")
-            Spacer()
-            Text("\(requestLineCount) lines")
-            Spacer()
-            HStack(spacing: 6) {
-                Image(systemName: "lock")
-                Text("Local · No telemetry")
-                Circle()
-                    .fill(.green)
-                    .frame(width: 8, height: 8)
-            }
-            .accessibilityElement(children: .combine)
-            .accessibilityLabel("Local mode. No telemetry.")
-            Text("Core \(status.coreVersion)")
-                .help("ABI \(status.streamABIVersion)")
-        }
-        .font(.caption)
-        .foregroundStyle(.secondary)
-        .padding(.horizontal, 12)
-        .frame(height: 27)
-        .background(WireboltTheme.barBackground)
-        .overlay(alignment: .top) { Divider() }
-    }
-
-    private var requestLineCount: Int {
-        let text = switch model.draft.body {
-        case let .json(value), let .text(_, value), let .xml(value),
-             let .html(value), let .raw(_, value): value
-        case .empty, .formURLEncoded, .multipart, .file: ""
-        }
-        return max(text.components(separatedBy: .newlines).count, 1)
-    }
-}
-
 /// A system empty state for panels that have nothing to show yet.
 struct LightweightPlaceholder: View {
     let title: String
@@ -4382,10 +4334,6 @@ private struct EnvironmentPopup: View {
 
     private var selectedEnvironment: EnvironmentDraft? {
         model.workspace.environments.first { $0.id == model.selectedEnvironmentID }
-    }
-
-    private func environmentLabel(_ title: String, selected: Bool) -> some View {
-        Label(title, systemImage: selected ? "checkmark" : "circle.dotted")
     }
 }
 

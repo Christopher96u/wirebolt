@@ -619,12 +619,6 @@ private struct ResponseBodyViewer: View {
         }
     }
 
-
-    private func showInFinder() {
-        guard let store else { return }
-        NSWorkspace.shared.activateFileViewerSelecting([store.url])
-    }
-
     @ViewBuilder
     private var rendererContent: some View {
         switch interface.responseRenderer {
@@ -917,20 +911,6 @@ private struct SentRequestViewer: View {
         }
         return lines.joined(separator: "\n")
     }
-
-    private var headerText: String {
-        sentRequestText
-            .components(separatedBy: "\n\n")
-            .first ?? sentRequestText
-    }
-
-}
-
-private enum SentRequestMode: String, CaseIterable, Identifiable {
-    case raw = "Raw"
-    case headers = "Headers"
-
-    var id: Self { self }
 }
 
 private struct JSONResponseTree: View {

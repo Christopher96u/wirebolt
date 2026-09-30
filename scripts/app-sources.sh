@@ -42,7 +42,6 @@ wirebolt_app_inputs=(
   apple/WireboltApp/IndexedResponseEditor.swift
   apple/WireboltApp/WireboltTheme.swift
   apple/WireboltApp/ResponseViewport.swift
-  apple/WireboltApp/RustCore.swift
   apple/WireboltApp/RustRequestRunner.swift
   apple/WireboltApp/RustWebSocketRunner.swift
   apple/WireboltApp/RustWorkspacePersistence.swift
