@@ -22,6 +22,7 @@ swiftc \
   apple/Sources/WireboltKit/ProxySettings.swift \
   apple/Sources/WireboltKit/Models.swift \
   apple/Sources/WireboltKit/CurlExport.swift \
+  apple/Sources/WireboltKit/VariableTemplates.swift \
   apple/Sources/WireboltKit/WebSocket.swift \
   apple/Sources/WireboltKit/JSONNode.swift \
   apple/Sources/WireboltKit/CodeFolding.swift \
