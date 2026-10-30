@@ -29,7 +29,7 @@ An explicit `--workspace` overrides the remembered workspace path. Avoid launchi
 
 The full gate runs linting, Rust/Swift tests, bridge smoke checks, performance smoke checks, editor workloads, the app build, native performance workloads and launch smoke validation.
 
-In GitHub Actions (or with `WIREBOLT_SKIP_NATIVE_PERFORMANCE=1`) the gate skips native performance workloads, because GitHub's virtualized macOS runners are several times slower than the Apple Silicon these budgets target. Native performance workloads therefore run only locally; run the full `./scripts/check.sh` before requesting review of an app change and before a release.
+In GitHub Actions (or with `WIREBOLT_SKIP_BENCHMARKS=1`) the gate skips the editor and native performance workloads, because GitHub's virtualized macOS runners are several times slower than the Apple Silicon these budgets target. Timing benchmarks therefore run only locally; run the full `./scripts/check.sh` before requesting review of an app change and before a release.
 
 For a focused change:
 
