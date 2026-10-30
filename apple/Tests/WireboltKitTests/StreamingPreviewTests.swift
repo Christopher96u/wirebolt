@@ -4,6 +4,15 @@ import Testing
 
 @Suite("Progressive response previews") @MainActor
 struct StreamingPreviewTests {
+    /// Previews publish asynchronously; wait for the expected state rather than a fixed
+    /// delay, which slower CI runners can miss.
+    private func waitUntil(_ condition: () -> Bool) async throws {
+        let deadline = ContinuousClock.now + .seconds(2)
+        while !condition(), ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+    }
+
     @Test func slowChunksAppearBeforeCompletionAndPreserveUTF8() async throws {
         let session = DocumentSession(draft: RequestDraft())
         let run = RunID()
@@ -12,13 +21,13 @@ struct StreamingPreviewTests {
         let bytes = Array("first 🌍 line\n".utf8)
         let split = 8 // Two bytes into the four-byte scalar.
         await session.consume(.chunk(Data(bytes.prefix(split))), runID: run)
-        try await Task.sleep(for: .milliseconds(60))
+        try await waitUntil { session.responseBytes == UInt64(split) }
         #expect(session.isRunning)
         #expect(session.responseText == "first ")
         #expect(!session.responseText.contains("�"))
         #expect(session.responseBytes == UInt64(split))
         await session.consume(.chunk(Data(bytes.dropFirst(split))), runID: run)
-        try await Task.sleep(for: .milliseconds(60))
+        try await waitUntil { session.responseBytes == UInt64(bytes.count) }
         #expect(session.isRunning)
         #expect(session.responseText == "first 🌍 line\n")
         let store = try #require(session.bodyStore)
@@ -50,7 +59,7 @@ struct StreamingPreviewTests {
         session.beginRun(run)
         await session.consume(.chunk(Data("partial".utf8)), runID: run)
         session.cancel(runID: run)
-        try await Task.sleep(for: .milliseconds(60))
+        try await waitUntil { session.responseText == "partial" }
         #expect(!session.isRunning && session.failure?.kind == "cancelled")
         #expect(session.responseText == "partial")
         await session.consume(.chunk(Data("late".utf8)), runID: run)
