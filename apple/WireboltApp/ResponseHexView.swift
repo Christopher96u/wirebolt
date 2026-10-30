@@ -2,6 +2,8 @@ import AppKit
 import SwiftUI
 
 struct ResponseHexView: NSViewRepresentable {
+    @Environment(\.wireboltTheme) private var theme
+    @AppStorage("editor.fontSize") private var fontSize = 12.0
     let store: ResponseBodyStore?
     let data: Data
     let byteCount: UInt64
@@ -20,6 +22,10 @@ struct ResponseHexView: NSViewRepresentable {
     func updateNSView(_ scroll: NSScrollView, context: Context) {
         guard let view = scroll.documentView as? HexGridView else { return }
         let changed = view.store?.url != store?.url || view.byteCount != byteCount
+        view.theme = theme
+        view.fontSize = fontSize
+        scroll.backgroundColor = theme.definition.window.nsColor
+        view.needsDisplay = true
         view.store = store
         view.preview = data
         view.byteCount = byteCount
@@ -39,6 +45,17 @@ private final class HexScrollView: NSScrollView {
 
 @MainActor
 private final class HexGridView: NSView {
+    var theme = ResolvedTheme(preset: .black)
+    var fontSize = 12.0 {
+        didSet {
+            if oldValue != fontSize {
+                advance = ("0" as NSString).size(withAttributes: [.font: NSFont.monospacedSystemFont(ofSize: fontSize, weight: .regular)]).width
+            }
+        }
+    }
+    private var lineHeight: Double { CodeEditorMetrics.lineHeight(fontSize) }
+    private var advance = ("0" as NSString).size(withAttributes: [.font: NSFont.monospacedSystemFont(ofSize: 12, weight: .regular)]).width
+    private var hexAdvance: Double { advance * 2.5 }
     var store: ResponseBodyStore?
     var preview = Data()
     var byteCount: UInt64 = 0
@@ -62,10 +79,10 @@ private final class HexGridView: NSView {
 
     func resizeViewport(_ size: NSSize) {
         guard size.width > 0 else { return }
-        let updated = max(1, Int((size.width - 8) / 25.4))
+        let updated = max(1, Int((size.width - 30) / (advance * 3.5)))
         if columns != updated { columns = updated; invalidate() }
         let rows = (Double(byteCount) / Double(columns)).rounded(.up)
-        let proposed = NSSize(width: size.width, height: max(size.height, rows * 15))
+        let proposed = NSSize(width: size.width, height: max(size.height, rows * lineHeight))
         if frame.size != proposed { setFrameSize(proposed) }
     }
 
@@ -78,35 +95,35 @@ private final class HexGridView: NSView {
     }
 
     override func draw(_ dirtyRect: NSRect) {
-        NSColor.textBackgroundColor.setFill()
+        theme.definition.window.nsColor.setFill()
         dirtyRect.fill()
-        let firstRow = max(0, Int(visibleRect.minY / 15))
-        let lastRow = max(firstRow, Int(visibleRect.maxY / 15) + 1)
+        let firstRow = max(0, Int(visibleRect.minY / lineHeight))
+        let lastRow = max(firstRow, Int(visibleRect.maxY / lineHeight) + 1)
         let start = min(byteCount, UInt64(firstRow * columns))
         let end = min(byteCount, UInt64((lastRow + 1) * columns))
         if firstByte > start || firstByte + UInt64(bytes.count) < end { load(start..<end) }
         let attributes: [NSAttributedString.Key: Any] = [
-            .font: NSFont.monospacedSystemFont(ofSize: 10, weight: .regular),
-            .foregroundColor: NSColor.labelColor,
+            .font: NSFont.monospacedSystemFont(ofSize: fontSize, weight: .regular),
+            .foregroundColor: theme.primary.nsColor,
         ]
         for row in firstRow...lastRow {
-            let y = Double(row * 15)
+            let y = Double(row) * lineHeight
             if row % 2 == 1 {
-                NSColor.alternatingContentBackgroundColors[1].setFill()
-                NSRect(x: 0, y: y, width: bounds.width, height: 15).fill()
+                theme.definition.card.nsColor.setFill()
+                NSRect(x: 0, y: y, width: bounds.width, height: lineHeight).fill()
             }
             for column in 0..<columns {
                 let offset = UInt64(row * columns + column)
                 guard offset >= firstByte, offset < firstByte + UInt64(bytes.count), offset < byteCount else { continue }
                 let byte = bytes[Int(offset - firstByte)]
-                let x = 4 + Double(column) * 18
+                let x = 4 + Double(column) * hexAdvance
                 if selection?.contains(offset) == true {
                     NSColor.selectedTextBackgroundColor.setFill()
-                    NSRect(x: x - 2, y: y, width: 18, height: 15).fill()
+                    NSRect(x: x - 2, y: y, width: hexAdvance, height: lineHeight).fill()
                 }
                 (String(format: "%02X", byte) as NSString).draw(at: NSPoint(x: x, y: y + 1), withAttributes: attributes)
                 let character = (32...126).contains(byte) ? String(UnicodeScalar(byte)) : "."
-                (character as NSString).draw(at: NSPoint(x: 4 + Double(columns) * 18 + 22 + Double(column) * 7.4, y: y + 1), withAttributes: attributes)
+                (character as NSString).draw(at: NSPoint(x: 4 + Double(columns) * hexAdvance + 22 + Double(column) * advance, y: y + 1), withAttributes: attributes)
             }
         }
     }
@@ -132,9 +149,9 @@ private final class HexGridView: NSView {
 
     private func offset(at event: NSEvent) -> UInt64 {
         let point = convert(event.locationInWindow, from: nil)
-        let ascii = 4 + Double(columns) * 18 + 22
-        let column = point.x >= ascii ? Int((point.x - ascii) / 7.4) : Int((point.x - 2) / 18)
-        return min(byteCount == 0 ? 0 : byteCount - 1, UInt64(max(0, Int(point.y / 15)) * columns + min(columns - 1, max(0, column))))
+        let ascii = 4 + Double(columns) * hexAdvance + 22
+        let column = point.x >= ascii ? Int((point.x - ascii) / advance) : Int((point.x - 2) / hexAdvance)
+        return min(byteCount == 0 ? 0 : byteCount - 1, UInt64(max(0, Int(point.y / lineHeight)) * columns + min(columns - 1, max(0, column))))
     }
 
     override func mouseDown(with event: NSEvent) {
@@ -182,9 +199,9 @@ private final class HexGridView: NSView {
         let extending = event.modifierFlags.contains(.shift)
         let last = Int64(byteCount - 1)
         let row = Int64(columns)
-        let page = row * Int64(max(1, Int(visibleRect.height / 15) - 1))
+        let page = row * Int64(max(1, Int(visibleRect.height / lineHeight) - 1))
         let origin = selection.map { anchor == $0.lowerBound ? $0.upperBound - 1 : $0.lowerBound }
-            ?? min(byteCount - 1, UInt64(max(0, Int(visibleRect.minY / 15)) * columns))
+            ?? min(byteCount - 1, UInt64(max(0, Int(visibleRect.minY / lineHeight)) * columns))
         var cursor = Int64(origin)
         switch event.keyCode {
         case 123: cursor -= 1
@@ -201,9 +218,9 @@ private final class HexGridView: NSView {
         let fixed = extending && selection != nil ? (anchor ?? origin) : extending ? origin : target
         anchor = fixed
         selection = min(fixed, target)..<(max(fixed, target) + 1)
-        let y = Double(Int(target) / columns) * 15
-        if y < visibleRect.minY || y + 15 > visibleRect.maxY {
-            scroll(NSPoint(x: 0, y: max(0, y < visibleRect.minY ? y : y + 15 - visibleRect.height)))
+        let y = Double(Int(target) / columns) * lineHeight
+        if y < visibleRect.minY || y + lineHeight > visibleRect.maxY {
+            scroll(NSPoint(x: 0, y: max(0, y < visibleRect.minY ? y : y + lineHeight - visibleRect.height)))
         }
         selectionChanged()
         return true

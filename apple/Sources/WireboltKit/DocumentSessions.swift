@@ -55,7 +55,7 @@ public final class DocumentSession: Identifiable {
     /// The previous response (if any) stays presented until then.
     public private(set) var isAwaitingResponseHead = false
 
-    @ObservationIgnored private var presentedBodyBytes = 0
+    @ObservationIgnored private var progressTask: Task<Void, Never>?
     /// Output of the active run staged until its head (or terminal event) replaces the previous response.
     @ObservationIgnored private var pendingBodyStore: ResponseBodyStore?
     @ObservationIgnored private var pendingPreparedRun: PreparedRunSnapshot?
@@ -95,6 +95,8 @@ public final class DocumentSession: Identifiable {
 
     public func beginRun(_ runID: RunID) {
         isTouched = true
+        progressTask?.cancel()
+        progressTask = nil
         failure = nil
         pendingBodyStore = try? ResponseBodyStore(runID: runID)
         pendingPreparedRun = nil
@@ -134,21 +136,29 @@ public final class DocumentSession: Identifiable {
             responseHead = head
         case let .chunk(data):
             presentPendingRun()
-            try? await bodyStore?.append(data)
-            responseBytes += UInt64(data.count)
-            let remaining = max(Self.previewByteLimit - presentedBodyBytes, 0)
-            guard remaining > 0 else {
-                responseWasTruncated = true
+            guard let store = bodyStore else { return }
+            do { try await store.append(data) }
+            catch {
+                await finish(runID: runID, failure: RunFailure(kind: "storage", issues: []))
                 return
             }
-            let prefix = data.prefix(remaining)
-            responsePreviewData.append(prefix)
-            responseText.append(String(decoding: prefix, as: UTF8.self))
-            presentedBodyBytes += prefix.count
-            responseWasTruncated = prefix.count < data.count
+            guard activeRunID == runID else { return }
+            // Only one publication is scheduled for any burst of chunks. Disk I/O,
+            // bounded buffering and decoding stay on the response store's actor.
+            if progressTask == nil {
+                progressTask = Task { [weak self] in
+                    do { try await Task.sleep(for: .milliseconds(16)) } catch { return }
+                    let progress = await store.progress()
+                    guard !Task.isCancelled, let self, self.activeRunID == runID else { return }
+                    self.publish(progress)
+                    self.progressTask = nil
+                }
+            }
         case let .complete(value):
             presentPendingRun()
             try? await bodyStore?.finish()
+            await publishFinalProgress(runID: runID)
+            guard activeRunID == runID else { return }
             completion = value
             responseBytes = value.bytesReceived
             endRun()
@@ -159,6 +169,8 @@ public final class DocumentSession: Identifiable {
         guard activeRunID == runID else { return }
         presentPendingRun()
         try? await bodyStore?.finish()
+        await publishFinalProgress(runID: runID)
+        guard activeRunID == runID else { return }
         self.failure = failure
         endRun()
     }
@@ -167,7 +179,34 @@ public final class DocumentSession: Identifiable {
         guard activeRunID == runID else { return }
         presentPendingRun()
         failure = RunFailure(kind: "cancelled", issues: [])
+        progressTask?.cancel()
+        progressTask = nil
+        let store = bodyStore
         endRun()
+        // Freeze this run's partial body, without letting a late publication touch
+        // a newer run or another document.
+        Task { [weak self] in
+            try? await store?.finish()
+            let progress = await store?.progress()
+            guard let self, self.activeRunID == nil, self.bodyStore === store else { return }
+            self.publish(progress)
+        }
+    }
+
+    private func publish(_ progress: ResponseBodyStore.Progress?) {
+        guard let progress else { return }
+        responseBytes = progress.bytes
+        responsePreviewData = progress.data
+        responseText = progress.text
+        responseWasTruncated = progress.truncated
+    }
+
+    private func publishFinalProgress(runID: RunID) async {
+        progressTask?.cancel()
+        progressTask = nil
+        let progress = await bodyStore?.progress()
+        guard activeRunID == runID else { return }
+        publish(progress)
     }
 
     public func markSaved(_ draft: RequestDraft) {
@@ -188,7 +227,6 @@ public final class DocumentSession: Identifiable {
         failure = nil
         bodyStore = nil
         responseCookies = []
-        presentedBodyBytes = 0
     }
 
     public func copyCompletedResponse(from source: DocumentSession) {
@@ -204,7 +242,6 @@ public final class DocumentSession: Identifiable {
         failure = source.failure
         bodyStore = source.bodyStore
         responseCookies = source.responseCookies
-        presentedBodyBytes = source.presentedBodyBytes
     }
 
     public func setResponseCookies(_ cookies: [CookieSnapshot]) {

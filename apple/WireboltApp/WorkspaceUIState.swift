@@ -18,7 +18,7 @@ enum ResponsePanelSection: String, CaseIterable, Identifiable {
     case headers = "Headers"
     case body = "Body"
     case cookies = "Cookies"
-    case raw = "Raw"
+    case raw = "Raw HTTP"
     case request = "Request"
 
     var id: Self { self }
@@ -31,7 +31,7 @@ enum ResponseRenderer: String, CaseIterable, Identifiable {
     case xml = "XML"
     case html = "HTML"
     case webView = "Webview"
-    case raw = "Raw"
+    case raw = "Text"
     case hex = "Hex"
 
     var id: Self { self }
@@ -54,6 +54,7 @@ final class ResponseLayoutState {
 @MainActor
 @Observable
 final class DocumentPresentationState {
+    var responseFindTrigger = 0
     let editorStorage = EditorPresentationStorage()
     var requestSection: RequestPanelSection
     var responseSection: ResponsePanelSection = .body
@@ -73,6 +74,7 @@ struct DirtyCloseRequest: Identifiable, Equatable {
     let scope: TabCloseScope
     let groupID: String
     let documentTitles: [String]
+    let documentIDs: [String]
 }
 
 enum WorkspaceNameTarget: Equatable {
@@ -179,9 +181,21 @@ final class WorkspaceUIState {
     var isShowingCurlImporter = false
         var importFormat: ImportFormat = .postmanV2
     var focusURLTrigger = 0
+    var pendingURLFocusID: String?
     var focusSearchTrigger = 0
     /// Moves keyboard focus into the active editor group's response content.
     var focusResponseTrigger = 0
+    var collectionsExpanded = true
+    var isShowingEnvironmentInspector = false
+    var hasEnvironmentEdits = false
+    @ObservationIgnored var saveEnvironmentEdits: (@MainActor () async -> Bool)?
+    var environmentCloseTrigger = 0
+
+    func toggleEnvironmentInspector() {
+        if isShowingEnvironmentInspector { environmentCloseTrigger += 1 }
+        else { isShowingEnvironmentInspector = true }
+    }
+
     var dirtyCloseRequest: DirtyCloseRequest?
     var workspaceNamePrompt: WorkspaceNamePrompt?
     var workspaceDeleteRequest: WorkspaceDeleteRequest?
@@ -202,8 +216,10 @@ final class WorkspaceUIState {
         requestSection = defaults.string(forKey: Self.requestSectionKey)
             .flatMap(RequestPanelSection.init(rawValue:)) ?? .params
         responseSection = defaults.string(forKey: Self.responseSectionKey)
+            .map { $0 == "Raw" ? "Raw HTTP" : $0 }
             .flatMap(ResponsePanelSection.init(rawValue:)) ?? .body
         responseRenderer = defaults.string(forKey: Self.responseRendererKey)
+            .map { $0 == "Raw" ? "Text" : $0 }
             .flatMap(ResponseRenderer.init(rawValue:)) ?? .json
         responseOrientation = defaults.string(forKey: Self.responseOrientationKey)
             .flatMap(ResponseOrientation.init(rawValue:)) ?? .bottom
@@ -234,7 +250,7 @@ final class WorkspaceUIState {
         PerformanceProbe.tabSwitched()
     }
 
-    func makeNewRequest(model: WireboltModel, kind: DocumentKind = .http, rename: Bool = true) {
+    func makeNewRequest(model: WireboltModel, kind: DocumentKind = .http, rename: Bool = false) {
         persistActivePresentation()
         Task {
             guard let session = await model.createRequest(kind: kind) else { return }
@@ -243,7 +259,7 @@ final class WorkspaceUIState {
             requestSection = kind == .http ? .params : .body
             responseSection = .body
             renamingRequestID = rename ? model.selectedRequestID : nil
-            focusSidebarTrigger += 1
+            if rename { focusSidebarTrigger += 1 } else { pendingURLFocusID = session.id; focusURLTrigger += 1 }
         }
     }
 
@@ -264,12 +280,17 @@ final class WorkspaceUIState {
             presentationByTabID[session.id] = DocumentPresentationState()
             requestSection = kind == .http ? .params : .body
             responseSection = .body
-            renamingRequestID = model.selectedRequestID
-            focusSidebarTrigger += 1
+            renamingRequestID = nil
+            pendingURLFocusID = session.id
+            focusURLTrigger += 1
         }
     }
 
     func resetForWorkspace(model: WireboltModel) {
+        isShowingEnvironmentInspector = false
+        hasEnvironmentEdits = false
+        saveEnvironmentEdits = nil
+        pendingURLFocusID = nil
         presentationByTabID = [:]
         responseLayoutsByGroupID = [:]
         lastClosedSession = nil
@@ -482,7 +503,8 @@ final class WorkspaceUIState {
             dirtyCloseRequest = DirtyCloseRequest(
                 scope: scope,
                 groupID: groupID,
-                documentTitles: blocked.map(\.title)
+                documentTitles: blocked.map(\.title),
+                documentIDs: blocked.map(\.id)
             )
             return
         }
@@ -492,6 +514,18 @@ final class WorkspaceUIState {
             lastClosedSession = previous
             lastClosedPresentation = previousPresentation
             NSApp.keyWindow?.performClose(nil)
+        }
+    }
+
+    func saveDirtyClose(model: WireboltModel) {
+        guard let request = dirtyCloseRequest else { return }
+        dirtyCloseRequest = nil
+        Task {
+            for id in request.documentIDs {
+                guard let session = model.sessions.session(id: id) else { continue }
+                guard await model.save(session, fallbackCollectionID: model.workspace.collections.first?.id) else { return }
+            }
+            close(request.scope, model: model, in: request.groupID)
         }
     }
 
@@ -570,7 +604,8 @@ extension WorkspaceUIState {
     }
 
     func visibleSidebarRows(model: WireboltModel) -> [SidebarSnapshot.Row] {
-        model.sidebarRows(query: sidebarFilter, collapsed: collapsedSidebarCollections, expanded: expandedSidebarGroups)
+        guard collectionsExpanded || isFilteringSidebar else { return [] }
+        return model.sidebarRows(query: sidebarFilter, collapsed: collapsedSidebarCollections, expanded: expandedSidebarGroups)
     }
 
     /// The highlighted row: a selected folder or collection, otherwise the active request.

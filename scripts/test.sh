@@ -38,6 +38,7 @@ swiftc \
   apple/Sources/WireboltKit/CollectionImportSources.swift \
   apple/Sources/WireboltKit/WireboltModel.swift \
   apple/Sources/WireboltKit/SidebarSnapshot.swift \
+  apple/Tests/StreamBridgeSmoke.swift \
   apple/Tests/BridgeSmoke.swift \
   apple/WireboltApp/PerformanceProbe.swift \
   apple/WireboltApp/RustRequestRunner.swift \

@@ -6,7 +6,7 @@ func chooseWorkspace(model: WireboltModel, interface: WorkspaceUIState, create: 
     guard !model.isLoadingWorkspace, !model.isGitBusy, !model.isOAuthBusy else { return }
     let window = NSApp.keyWindow
     Task {
-        guard await confirmDiscardingForWorkspaceSwitch(model: model, in: window) else { return }
+        guard await confirmDiscardingForWorkspaceSwitch(model: model, interface: interface, in: window) else { return }
         let panel: NSSavePanel
         if create {
             panel = NSSavePanel()
@@ -35,13 +35,14 @@ func openRecentWorkspace(_ url: URL, model: WireboltModel, interface: WorkspaceU
     guard !model.isLoadingWorkspace, !model.isGitBusy, !model.isOAuthBusy else { return }
     let window = NSApp.keyWindow
     Task {
-        guard await confirmDiscardingForWorkspaceSwitch(model: model, in: window) else { return }
+        guard await confirmDiscardingForWorkspaceSwitch(model: model, interface: interface, in: window) else { return }
         await openWorkspace(at: url, create: false, model: model, interface: interface, window: window)
     }
 }
 
 @MainActor
-private func confirmDiscardingForWorkspaceSwitch(model: WireboltModel, in window: NSWindow?) async -> Bool {
+private func confirmDiscardingForWorkspaceSwitch(model: WireboltModel, interface: WorkspaceUIState, in window: NSWindow?) async -> Bool {
+    guard await confirmEnvironmentEdits(interface: interface, in: window) else { return false }
     guard model.hasUnsavedRequestChanges else { return true }
     let alert = NSAlert()
     alert.messageText = "Discard unsaved request changes?"
@@ -125,10 +126,33 @@ func confirmUnsavedChanges(model: WireboltModel, in window: NSWindow?, quitting:
     }
 }
 
+/// Staged inspector edits have the same exit protection as request documents.
+@MainActor
+func confirmEnvironmentEdits(interface: WorkspaceUIState, in window: NSWindow?) async -> Bool {
+    guard interface.hasEnvironmentEdits else { return true }
+    let alert = NSAlert()
+    alert.messageText = "Apply your environment changes?"
+    alert.informativeText = "Unapplied variables and secret edits will be lost if you continue."
+    alert.addButton(withTitle: "Apply")
+    alert.addButton(withTitle: "Cancel")
+    alert.addButton(withTitle: "Discard Changes")
+    switch await present(alert, in: window) {
+    case .alertFirstButtonReturn:
+        return await interface.saveEnvironmentEdits?() ?? false
+    case .alertThirdButtonReturn:
+        interface.isShowingEnvironmentInspector = false
+        interface.hasEnvironmentEdits = false
+        interface.saveEnvironmentEdits = nil
+        return true
+    default: return false
+    }
+}
+
 /// The window close button and File ▸ Close Window route here so unsaved edits are confirmed.
 @MainActor
 func requestWorkspaceWindowClose(_ window: NSWindow, model: WireboltModel, interface: WorkspaceUIState) {
     Task {
+        guard await confirmEnvironmentEdits(interface: interface, in: window) else { return }
         guard await confirmUnsavedChanges(model: model, in: window, quitting: false) else { return }
         interface.persistSessionLayout(model: model)
         window.close()

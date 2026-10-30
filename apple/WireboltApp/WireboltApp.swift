@@ -27,6 +27,7 @@ struct WireboltApp: App {
                 model: appDelegate.model,
                 interface: appDelegate.interface
             )
+            .modifier(ThemeScope())
             .focusedSceneValue(\.workspaceCommands, appDelegate.interface)
             .handlesExternalEvents(preferring: ["*"], allowing: ["*"])
         }
@@ -48,14 +49,11 @@ struct WireboltApp: App {
         .windowResizability(.contentMinSize)
 
         Window("Cookies", id: CookiesView.windowID) {
-            CookiesView(model: appDelegate.model)
+            CookiesView(model: appDelegate.model).modifier(ThemeScope())
         }
         .defaultSize(width: 760, height: 420)
         .windowResizability(.contentMinSize)
 
-        Settings {
-            WireboltSettingsView(model: appDelegate.model)
-        }
     }
 }
 
@@ -79,6 +77,10 @@ final class WireboltAppDelegate: NSObject, NSApplicationDelegate {
         // In-app tabs own ⌘T; native window tabs would stack a second tab bar on top.
         NSWindow.allowsAutomaticWindowTabbing = false
         Self.applyInterfaceAppearance()
+        ThemeStore.shared.update(selection: UserDefaults.standard.string(forKey: "interfaceAppearance") ?? "system",
+            systemIsDark: NSApp.effectiveAppearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua,
+            increasedContrast: NSWorkspace.shared.accessibilityDisplayShouldIncreaseContrast,
+            density: InterfaceDensity(rawValue: UserDefaults.standard.string(forKey: "interfaceDensity") ?? "comfortable") ?? .comfortable)
         appearanceObservation = UserDefaults.standard.observe(\.interfaceAppearance) { _, _ in
             Task { @MainActor in WireboltAppDelegate.applyInterfaceAppearance() }
         }
@@ -114,14 +116,14 @@ final class WireboltAppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
-        guard model.hasUnsavedRequestChanges || model.hasReleasableSecrets else {
+        guard model.hasUnsavedRequestChanges || model.hasReleasableSecrets || interface.hasEnvironmentEdits else {
             interface.persistSessionLayout(model: model)
             return .terminateNow
         }
         let window = WorkspaceWindowRegistry.primary.flatMap { $0.isVisible ? $0 : nil } ?? NSApp.mainWindow
         Task {
-            var proceed = true
-            if model.hasUnsavedRequestChanges {
+            var proceed = await confirmEnvironmentEdits(interface: interface, in: window)
+            if proceed && model.hasUnsavedRequestChanges {
                 proceed = await confirmUnsavedChanges(model: model, in: window, quitting: true)
             }
             if proceed {
@@ -142,8 +144,8 @@ final class WireboltAppDelegate: NSObject, NSApplicationDelegate {
     /// System (nil) fully reverts to the macOS appearance.
     static func applyInterfaceAppearance() {
         NSApp.appearance = switch UserDefaults.standard.string(forKey: "interfaceAppearance") {
-        case "light": NSAppearance(named: .aqua)
-        case "dark": NSAppearance(named: .darkAqua)
+        case "light", "paper": NSAppearance(named: .aqua)
+        case "dark", "black", "ember": NSAppearance(named: .darkAqua)
         default: nil
         }
     }
@@ -159,17 +161,25 @@ struct WireboltCommands: Commands {
 
     @FocusedValue(\.workspaceCommands) private var focusedWorkspace
     @FocusedValue(\.sidebarMove) private var sidebarMove
+    @FocusedValue(\.environmentAddRow) private var environmentAddRow
     @Environment(\.openWindow) private var openWindow
     let model: WireboltModel
     @Bindable var interface: WorkspaceUIState
     let state: WorkspaceCommandState
     private var recents: RecentWorkspaces { .shared }
 
-    private var workspaceActionsBusy: Bool { model.isLoadingWorkspace || model.isGitBusy || model.isOAuthBusy }
-    private var noWorkspace: Bool { focusedWorkspace == nil }
+    private var workspaceActionsBusy: Bool { model.isLoadingWorkspace || model.isGitBusy || model.isOAuthBusy || model.isShowingAppSettings }
+    private var noWorkspace: Bool { focusedWorkspace == nil || model.isShowingAppSettings }
 
     var body: some Commands {
         TextEditingCommands()
+        CommandGroup(replacing: .appSettings) {
+            Button("Settings…") {
+                presentAppSettings(model)
+                if let window = WorkspaceWindowRegistry.primary { window.makeKeyAndOrderFront(nil) }
+                else { openWindow(id: "workspace") }
+            }.keyboardShortcut(",", modifiers: .command)
+        }
         CommandGroup(replacing: .help) {
             Button("Wirebolt Help") { openWindow(id: Self.helpWindowID) }
                 .keyboardShortcut("?", modifiers: .command)
@@ -210,7 +220,10 @@ struct WireboltCommands: Commands {
         }
         CommandGroup(replacing: .saveItem) {
             Button("Close Tab") {
-                if let focusedWorkspace { focusedWorkspace.closeActiveTab(model: model) }
+                if NSApp.keyWindow?.sheetParent != nil {
+                    NSApp.sendAction(#selector(NSResponder.cancelOperation(_:)), to: nil, from: nil)
+                } else if model.isShowingAppSettings && focusedWorkspace != nil { model.isShowingAppSettings = false }
+                else if let focusedWorkspace { focusedWorkspace.closeActiveTab(model: model) }
                 else { NSApp.keyWindow?.performClose(nil) }
             }.keyboardShortcut("w", modifiers: .command)
             Button("Close Window") {
@@ -275,9 +288,11 @@ struct WireboltCommands: Commands {
                 .keyboardShortcut("l", modifiers: .command)
                 .disabled(noWorkspace || !state.hasActiveSession)
             // Switches to Params first when the visible section has no key-value table.
-            Button("Add Key") { interface.addKey() }
+            Button("Add Key") {
+                if let environmentAddRow { environmentAddRow() } else { interface.addKey() }
+            }
                 .keyboardShortcut("k", modifiers: [.command, .shift])
-                .disabled(noWorkspace || !state.hasActiveSession)
+                .disabled(noWorkspace || (!state.hasActiveSession && environmentAddRow == nil))
             Divider()
             Toggle("Bulk Edit", isOn: $interface.isBulkEditing)
                 .keyboardShortcut("b", modifiers: .command)

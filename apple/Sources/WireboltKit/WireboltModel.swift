@@ -138,6 +138,11 @@ public final class WireboltModel {
     public var importSummary: ImportSummary?
     public private(set) var historyEntries: [RunHistoryEntry] = []
     public private(set) var historyRevision = 0
+    public struct RequestActivity: Sendable {
+        public let date: Date
+        public let status: UInt16?
+    }
+    public private(set) var requestActivity: [String: RequestActivity] = [:]
     private var editedSecrets: [String: String] = [:]
     private var dirtySecrets: Set<String> = []
     /// Keychain names Wirebolt generated that this workspace used during this session. Those
@@ -156,7 +161,8 @@ public final class WireboltModel {
     /// Increases whenever the active cookie jar changes, so a cookie list can refresh.
     public private(set) var cookieRevision = 0
     public var isShowingWorkspaceSettings = false
-    public var settingsTab = "general"
+    public var isShowingAppSettings = false
+    public var settingsTab = "appearance"
 
     @ObservationIgnored private let socketConnector: (any WebSocketConnecting)?
     @ObservationIgnored private let runner: any RequestRunner
@@ -489,6 +495,7 @@ public final class WireboltModel {
                 let viewport = await Self.historyViewport(entry)
                 guard sessions.session(id: session.id) === session, !session.isRunning,
                       session.responseHead == nil, session.failure == nil else { continue }
+                requestActivity[session.requestID] = RequestActivity(date: entry.createdAt, status: entry.responseHead?.status)
                 session.restore(entry, viewport: viewport)
             }
         }
@@ -497,6 +504,7 @@ public final class WireboltModel {
     public func clearHistory(for session: DocumentSession) async {
         try? await history.clear(requestID: session.requestID)
         historyEntries = []
+        requestActivity[session.requestID] = nil
     }
 
     private func recordHistory(session: DocumentSession, runID: RunID) async {
@@ -511,6 +519,7 @@ public final class WireboltModel {
             body: body
         )
         historyEntries = await history.list(requestID: session.requestID)
+        requestActivity[session.requestID] = RequestActivity(date: Date(), status: session.responseHead?.status)
         historyRevision += 1
     }
 
@@ -577,6 +586,7 @@ public final class WireboltModel {
             selectedEnvironmentID = nil
             oauthReceipts = [:]
             historyEntries = []
+            requestActivity = [:]
             gitStatus = nil
             gitOperation = nil
             gitFailure = nil
@@ -727,24 +737,8 @@ public final class WireboltModel {
 
     @discardableResult
     public func saveEnvironment(_ environment: EnvironmentDraft) async -> Bool {
-        guard let persistence else { return false }
-        observeSecrets(environment.secretReferences)
-        if let previous = workspace.environments.first(where: { $0.id == environment.id }) {
-            observeSecrets(previous.secretReferences)
-        }
-        do {
-            _ = try await persistence.apply(.saveEnvironment(environment))
-            if let index = workspace.environments.firstIndex(where: { $0.id == environment.id }) {
-                workspace.environments[index] = environment
-            } else {
-                workspace.environments.append(environment)
-            }
-            selectedEnvironmentID = environment.id == WorkspaceDraft.globalEnvironmentID ? nil : environment.id
-            return true
-        } catch {
-            operationFailure = RunFailure(kind: "workspace", issues: [])
-            return false
-        }
+        if workspace.environments.first(where: { $0.id == environment.id }) == environment { return true }
+        return await perform(.restoreEnvironment(environment, index: workspace.environments.firstIndex { $0.id == environment.id } ?? workspace.environments.count), named: "Edit Environment")
     }
 
     public func makeProxyConnectionTest() -> ProxyConnectionTest { ProxyConnectionTest(runner: runner) }
@@ -807,18 +801,7 @@ public final class WireboltModel {
 
     @discardableResult
     public func deleteEnvironment(id: String) async -> Bool {
-        guard let persistence else { return false }
-        do {
-            _ = try await persistence.apply(.deleteEnvironment(id: id))
-            workspace.environments.removeAll { $0.id == id }
-            if selectedEnvironmentID == id {
-                selectedEnvironmentID = nil
-            }
-            return true
-        } catch {
-            operationFailure = RunFailure(kind: "workspace", issues: [])
-            return false
-        }
+        await perform(.removeEnvironment(id: id), named: "Delete Environment")
     }
 
     /// Explicit export: resolved credentials are returned only to the caller, never persisted.
@@ -1488,6 +1471,8 @@ public final class WireboltModel {
 /// One reversible workspace mutation. Applying a step persists it and returns the step
 /// that reverses it, so undo and redo share the code path of the original command.
 enum WorkspaceEditStep: Equatable, Sendable {
+    case restoreEnvironment(EnvironmentDraft, index: Int)
+    case removeEnvironment(id: String)
     case restoreRequest(RequestLocation)
     case removeRequest(collectionID: String, id: String)
     case duplicateRequest(collectionID: String, id: String, newID: String, name: String)
@@ -1556,6 +1541,27 @@ extension WireboltModel {
         guard let persistence else { return nil }
         do {
             switch step {
+            case let .restoreEnvironment(environment, index):
+                let previousIndex = workspace.environments.firstIndex { $0.id == environment.id }
+                let previous = previousIndex.map { workspace.environments[$0] }
+                observeSecrets(environment.secretReferences)
+                if let previous { observeSecrets(previous.secretReferences) }
+                _ = try await persistence.apply(.saveEnvironment(environment))
+                workspace.environments.removeAll { $0.id == environment.id }
+                workspace.environments.insert(environment, at: min(index, workspace.environments.count))
+                selectedEnvironmentID = environment.id == WorkspaceDraft.globalEnvironmentID ? nil : environment.id
+                if let previous, let previousIndex { return .restoreEnvironment(previous, index: previousIndex) }
+                return .removeEnvironment(id: environment.id)
+
+            case let .removeEnvironment(id):
+                guard let index = workspace.environments.firstIndex(where: { $0.id == id }) else { return nil }
+                let previous = workspace.environments[index]
+                observeSecrets(previous.secretReferences)
+                _ = try await persistence.apply(.deleteEnvironment(id: id))
+                workspace.environments.remove(at: index)
+                if selectedEnvironmentID == id { selectedEnvironmentID = nil }
+                return .restoreEnvironment(previous, index: index)
+
             case let .restoreRequest(location):
                 guard let collection = workspace.collections.first(where: { $0.id == location.collectionID }),
                       location.groupID.map({ id in collection.groups.contains { $0.id == id } }) ?? true

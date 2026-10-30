@@ -7,19 +7,28 @@ struct ContentView: View {
     @Bindable var interface: WorkspaceUIState
 
     var loadsWorkspace = true
-    @AppStorage("workspace.sidebarWidth") private var storedSidebarWidth = 250.0
+    @AppStorage("workspace.sidebarWidth") private var storedSidebarWidth = 320.0
     /// Width while the divider is dragged; stored once the drag ends.
+    @AppStorage("workspace.environmentInspectorWidth") private var storedInspectorWidth = 380.0
+    @State private var liveInspectorWidth: Double?
+    private var inspectorWidth: Double { liveInspectorWidth ?? storedInspectorWidth }
+    @State private var inspectorDragOrigin: Double?
     @State private var liveSidebarWidth: Double?
     @State private var sidebarDragOrigin: Double?
+    @Environment(\.wireboltTheme) private var theme
     @State private var isDropTargeted = false
     private var sidebarWidth: Double { liveSidebarWidth ?? storedSidebarWidth }
-    private var toolbarGap: Double { max(0, sidebarWidth - 184) }
     /// Until the first workspace load finishes, show placeholders instead of an empty sidebar
     /// and "No Open Request".
     private var showsLaunchSkeleton: Bool { loadsWorkspace && !model.hasLoadedWorkspace }
 
     var body: some View {
         workspaceWithDialogs
+            .blur(radius: model.isShowingAppSettings ? 4 : 0)
+            .disabled(model.isShowingAppSettings)
+            .allowsHitTesting(!model.isShowingAppSettings)
+            .accessibilityHidden(model.isShowingAppSettings)
+            .overlay { SettingsModal(model: model) }
     }
 
     private var workspacePanels: some View {
@@ -39,6 +48,8 @@ struct ContentView: View {
                     .frame(width: sidebarWidth - 1)
                 Rectangle().fill(WireboltTheme.separator).frame(width: 1)
                     .overlay {
+                        // A narrow grab area like a native split divider: wider would cover
+                        // the content's leading controls. VoiceOver adjusts width below.
                         Color.clear.frame(width: 7).contentShape(.rect)
                             .gesture(DragGesture(minimumDistance: 1, coordinateSpace: .global)
                                 .onChanged { value in
@@ -53,12 +64,51 @@ struct ContentView: View {
                             .onHover { inside in
                                 if inside { NSCursor.resizeLeftRight.push() } else { NSCursor.pop() }
                             }
+                            .accessibilityElement()
+                            .accessibilityLabel("Sidebar width")
+                            .accessibilityValue("\(Int(sidebarWidth)) points")
+                            .accessibilityAdjustableAction { direction in
+                                switch direction {
+                                case .increment: storedSidebarWidth = min(480, sidebarWidth + 20)
+                                case .decrement: storedSidebarWidth = max(180, sidebarWidth - 20)
+                                @unknown default: break
+                                }
+                            }
                     }
             }
-            if showsLaunchSkeleton {
-                InitialDetailPane()
-            } else {
-                WorkspaceDeck(model: model, interface: interface)
+            Group {
+                if showsLaunchSkeleton { InitialDetailPane() }
+                else { WorkspaceDeck(model: model, interface: interface) }
+            }.frame(maxWidth: .infinity, maxHeight: .infinity)
+            if interface.isShowingEnvironmentInspector {
+                Rectangle().fill(theme.hairline.color).frame(width: 1)
+                    .overlay {
+                        Color.clear.frame(width: 7).contentShape(.rect)
+                            .gesture(DragGesture(minimumDistance: 1, coordinateSpace: .global)
+                                .onChanged { value in
+                                    if inspectorDragOrigin == nil { inspectorDragOrigin = inspectorWidth }
+                                    liveInspectorWidth = min(640, max(340, (inspectorDragOrigin ?? inspectorWidth) - value.translation.width))
+                                }.onEnded { _ in
+                                    if let liveInspectorWidth { storedInspectorWidth = liveInspectorWidth }
+                                    liveInspectorWidth = nil
+                                    inspectorDragOrigin = nil
+                                })
+                            .onHover { if $0 { NSCursor.resizeLeftRight.push() } else { NSCursor.pop() } }
+                            .accessibilityElement()
+                            .accessibilityLabel("Environment inspector width")
+                            .accessibilityValue("\(Int(inspectorWidth)) points")
+                            .accessibilityAdjustableAction { direction in
+                                switch direction {
+                                case .increment: storedInspectorWidth = min(640, inspectorWidth + 20)
+                                case .decrement: storedInspectorWidth = max(340, inspectorWidth - 20)
+                                @unknown default: break
+                                }
+                            }
+                    }
+                EnvironmentEditor(model: model, interface: interface, closeTrigger: interface.environmentCloseTrigger) {
+                    interface.isShowingEnvironmentInspector = false
+                }
+                .frame(width: min(640, max(340, inspectorWidth)))
             }
         }
     }
@@ -68,13 +118,13 @@ struct ContentView: View {
         return workspacePanels
         .disabled(model.isLoadingWorkspace)
         .background { WorkspaceWindowTitle(model: model) }
-        .frame(minWidth: groupCount > 1
+        .frame(minWidth: (groupCount > 1
             ? (interface.columnVisibility == .detailOnly ? 0 : 208) + Double(groupCount * 440 + groupCount - 1)
-            : 720, minHeight: 411)
+            : 720) + (interface.isShowingEnvironmentInspector ? min(640, max(340, inspectorWidth)) : 0), minHeight: 411)
         .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { width in
             let groupCount = model.sessions.groupCount
             if groupCount > 1 {
-                let detailMinimum = Double(groupCount * 440 + groupCount - 1)
+                let detailMinimum = Double(groupCount * 440 + groupCount - 1) + (interface.isShowingEnvironmentInspector ? inspectorWidth : 0)
                 let fitted = min(storedSidebarWidth, max(208, width - detailMinimum))
                 if fitted != storedSidebarWidth { storedSidebarWidth = fitted }
             }
@@ -83,7 +133,7 @@ struct ContentView: View {
         .toolbar(id: "workspace-toolbar") { workspaceToolbar }
         .toolbar(removing: .sidebarToggle)
         .background(WindowConfigurator(
-            sidebarWidth: interface.columnVisibility == .detailOnly ? 0 : sidebarWidth,
+            sidebarWidth: model.isShowingAppSettings || interface.columnVisibility == .detailOnly ? 0 : sidebarWidth,
             isWorkspaceWindow: loadsWorkspace,
             requestClose: { window in requestWorkspaceWindowClose(window, model: model, interface: interface) }
         ))
@@ -99,9 +149,9 @@ struct ContentView: View {
         }
         .overlay {
             if isDropTargeted {
-                RoundedRectangle(cornerRadius: 10)
+                RoundedRectangle(cornerRadius: WireboltTheme.Radius.group)
                     .strokeBorder(Color.accentColor, lineWidth: 3)
-                    .padding(4)
+                    .padding(WireboltTheme.Spacing.xSmall)
                     .allowsHitTesting(false)
                     .accessibilityHidden(true)
             }
@@ -133,7 +183,7 @@ struct ContentView: View {
                 ImportCompleteBanner(summary: summary) {
                     if model.importSummary?.id == summary.id { model.importSummary = nil }
                 }
-                .padding(.bottom, 16)
+                .padding(.bottom, WireboltTheme.Spacing.xLarge)
                 .transition(.move(edge: .bottom).combined(with: .opacity))
             }
         }
@@ -143,7 +193,7 @@ struct ContentView: View {
             set: { if $0 == nil { model.importSummary = nil } }
         )) { summary in
             ImportSummaryView(summary: summary) { model.importSummary = nil }
-                .padding(20)
+                .padding(WireboltTheme.Spacing.xxLarge)
                 .frame(width: 520)
         }
         .alert("Import Failed", isPresented: Binding(
@@ -169,6 +219,7 @@ struct ContentView: View {
         }
         .alert("Discard Unsaved Changes?", isPresented: $interface.isShowingDirtyClose) {
             Button("Cancel", role: .cancel) {}
+            Button("Save and Close") { interface.saveDirtyClose(model: model) }
             Button("Discard and Close", role: .destructive) {
                 interface.confirmDirtyClose(model: model)
             }
@@ -230,41 +281,40 @@ struct ContentView: View {
         }
     }
 
+    /// Window actions are plain monochrome icons. On macOS 26 every item opts out of the
+    /// shared Liquid Glass capsule; the environment picker lives in the request composer.
     @ToolbarContentBuilder
     private var workspaceToolbar: some CustomizableToolbarContent {
         if #available(macOS 26.0, *) {
             ToolbarItem(id: "sidebar", placement: .navigation) { sidebarToggle }
                 .sharedBackgroundVisibility(.hidden)
-            ToolbarItem(id: "new", placement: .navigation) { CollectionActionMenu(model: model, interface: interface).frame(width: 26, height: 30) }
+            ToolbarItem(id: "new", placement: .navigation) { CollectionActionMenu(model: model, interface: interface).frame(width: 28, height: 30) }
+                .sharedBackgroundVisibility(.hidden)
+            // Pins the window actions to the trailing edge when no title pushes them over.
+            ToolbarSpacer(.flexible, placement: .primaryAction)
+            ToolbarItem(id: "environment-inspector", placement: .primaryAction) { environmentInspectorButton }
+                .sharedBackgroundVisibility(.hidden)
+            ToolbarItem(id: "workspace-settings", placement: .primaryAction) { workspaceSettingsButton }
+                .sharedBackgroundVisibility(.hidden)
+            ToolbarItem(id: "response-placement", placement: .primaryAction) { ResponsePlacementButton(model: model, interface: interface) }
                 .sharedBackgroundVisibility(.hidden)
         } else {
             ToolbarItem(id: "sidebar", placement: .navigation) { sidebarToggle }
-            ToolbarItem(id: "new", placement: .navigation) { CollectionActionMenu(model: model, interface: interface).frame(width: 26, height: 30) }
+            ToolbarItem(id: "new", placement: .navigation) { CollectionActionMenu(model: model, interface: interface).frame(width: 28, height: 30) }
+            ToolbarItem(id: "environment-inspector", placement: .primaryAction) { environmentInspectorButton }
+            ToolbarItem(id: "workspace-settings", placement: .primaryAction) { workspaceSettingsButton }
+            ToolbarItem(id: "response-placement", placement: .primaryAction) { ResponsePlacementButton(model: model, interface: interface) }
         }
-        if #available(macOS 26.0, *) {
-            ToolbarItem(id: "sidebar-spacing", placement: .navigation) {
-                ToolbarSpace(width: interface.columnVisibility == .detailOnly ? 0 : toolbarGap)
-            }
-            .sharedBackgroundVisibility(.hidden)
-        }
-        ToolbarItem(id: "environment", placement: .navigation) {
-            EnvironmentPopup(model: model)
-                .frame(width: 185, height: 34)
+    }
 
-        }
+    private var environmentInspectorButton: some View {
+        Button("Environments", systemImage: "sidebar.right") { interface.toggleEnvironmentInspector() }
+            .labelStyle(.iconOnly).buttonStyle(.borderless).frame(width: 28, height: 30).help("Edit Environments")
+    }
 
-        if #available(macOS 26.0, *) {
-            // Pins the window actions to the trailing edge. Without it they follow the
-            // environment picker whenever the window has no visible title to push them over.
-            ToolbarSpacer(.flexible, placement: .primaryAction)
-        }
-        ToolbarItem(id: "workspace-settings", placement: .primaryAction) {
-            Button("Workspace Settings", systemImage: "gearshape") { model.isShowingWorkspaceSettings = true }
-                .labelStyle(.iconOnly).buttonStyle(.borderless).help("Workspace Settings")
-        }
-        ToolbarItem(id: "response-placement", placement: .primaryAction) {
-            ResponsePlacementButton(model: model, interface: interface)
-        }
+    private var workspaceSettingsButton: some View {
+        Button("Workspace Settings", systemImage: "gearshape") { model.isShowingWorkspaceSettings = true }
+            .labelStyle(.iconOnly).buttonStyle(.borderless).frame(width: 28, height: 30).help("Workspace Settings")
     }
 
     @ViewBuilder
@@ -272,7 +322,7 @@ struct ContentView: View {
         Button("Toggle Sidebar", systemImage: "sidebar.left") {
             interface.columnVisibility = interface.columnVisibility == .detailOnly ? .all : .detailOnly
         }
-        .labelStyle(.iconOnly).buttonStyle(.borderless).frame(width: 26, height: 30)
+        .labelStyle(.iconOnly).buttonStyle(.borderless).frame(width: 28, height: 30)
         .help(interface.columnVisibility == .detailOnly ? "Show Sidebar (⌃⌘S)" : "Hide Sidebar (⌃⌘S)")
     }
 
@@ -357,7 +407,7 @@ private struct SidebarLoadingSkeleton: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             ForEach(Array([96.0, 150, 128, 162, 112, 140].enumerated()), id: \.offset) { _, width in
-                RoundedRectangle(cornerRadius: 4)
+                RoundedRectangle(cornerRadius: WireboltTheme.Radius.small)
                     .fill(Color.secondary.opacity(0.14))
                     .frame(width: width, height: 11)
             }
@@ -365,7 +415,7 @@ private struct SidebarLoadingSkeleton: View {
         .padding(.leading, 28).padding(.top, 62)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .background {
-            if reduceTransparency { Color(nsColor: .windowBackgroundColor) } else { SidebarMaterialView() }
+            if reduceTransparency { WireboltTheme.sidebarBackground } else { SidebarMaterialView() }
         }
         .accessibilityElement()
         .accessibilityLabel("Loading workspace")
@@ -376,35 +426,58 @@ private struct InitialDetailPane: View {
     var body: some View {
         VStack(spacing: 0) {
             Rectangle()
-                .fill(Color(nsColor: .controlBackgroundColor).opacity(0.5))
+                .fill(WireboltTheme.cardBackground.opacity(0.5))
                 .frame(height: 30)
             Divider()
-            Color(nsColor: .textBackgroundColor)
+            WireboltTheme.paneBackground
         }
         .accessibilityHidden(true)
     }
 }
 
 private struct WorkspaceSidebar: View {
-    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
     @Environment(\.controlActiveState) private var controlActiveState
 
     @Bindable var model: WireboltModel
     @Bindable var interface: WorkspaceUIState
     let showsMaterial: Bool
 
+    @Environment(\.wireboltTheme) private var theme
+    @State private var historyExpanded = false
     @FocusState private var filterIsFocused: Bool
     @FocusState private var sidebarIsFocused: Bool
 
     var body: some View {
         VStack(spacing: 0) {
+        SidebarSearchRow(model: model, interface: interface, filterIsFocused: $filterIsFocused)
         ScrollViewReader { proxy in
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 0) {
-                    if showsMaterial { WorkspaceSidebarOutline(model: model, interface: interface) }
+                    if showsMaterial {
+                        Button {
+                            interface.collectionsExpanded.toggle()
+                        } label: {
+                            HStack {
+                                Text("Collections")
+                                Spacer()
+                                Text(model.workspace.collections.count, format: .number)
+                                Image(systemName: interface.collectionsExpanded || interface.isFilteringSidebar ? "chevron.down" : "chevron.right")
+                            }
+                            .font(WireboltTheme.Typography.detail).foregroundStyle(WireboltTheme.muted)
+                            .frame(minHeight: theme.density.controlHeight)
+                        }.buttonStyle(.plain)
+                        WorkspaceSidebarOutline(model: model, interface: interface)
+                        DisclosureGroup("History", isExpanded: $historyExpanded) {
+                            SidebarHistoryRows(model: model)
+                        }
+                        .font(WireboltTheme.Typography.detail)
+                        .tint(WireboltTheme.muted)
+                        .padding(.top, WireboltTheme.Spacing.large)
+                    }
                 }
-                .padding(.leading, 18).padding(.trailing, 9)
-                .font(.system(size: 13))
+                .padding(.horizontal, WireboltTheme.Spacing.large)
+                .padding(.top, WireboltTheme.Spacing.small)
+                .font(WireboltTheme.Typography.body)
             }
             .onChange(of: interface.sidebarScrollTarget) { _, target in
                 guard let target else { return }
@@ -476,22 +549,10 @@ private struct WorkspaceSidebar: View {
         .contentMargins(.top, 0, for: .scrollContent)
         .controlSize(.small)
         .scrollContentBackground(.hidden)
-        .background {
-            if reduceTransparency {
-                Color(nsColor: .windowBackgroundColor)
-            } else if showsMaterial == false {
-                Color(nsColor: .windowBackgroundColor)
-            } else {
-                SidebarMaterialView()
-            }
+        .background(WireboltTheme.sidebarBackground)
+            if showsMaterial { SidebarFooter(model: model) }
         }
-            if showsMaterial {
-                SidebarFooter(
-                    interface: interface,
-                    filterIsFocused: $filterIsFocused
-                )
-            }
-        }
+        .background(WireboltTheme.sidebarBackground)
         .onChange(of: interface.focusSearchTrigger) {
             filterIsFocused = true
         }
@@ -550,23 +611,25 @@ private struct SidebarSelectionBackground: View {
     let isSelected: Bool
     var leadingInset: CGFloat = 0
     @Environment(\.sidebarSelectionIsEmphasized) private var emphasized
-    @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
         GeometryReader { geometry in
             RoundedRectangle(cornerRadius: WireboltTheme.Radius.row)
                 .fill(fill)
-                .frame(width: geometry.size.width + leadingInset, height: 24)
+                .overlay {
+                    if isSelected && emphasized {
+                        RoundedRectangle(cornerRadius: WireboltTheme.Radius.row).stroke(WireboltTheme.muted, lineWidth: 1)
+                    }
+                }
+                .frame(width: geometry.size.width + leadingInset, height: geometry.size.height)
                 .offset(x: -leadingInset)
         }
     }
 
     private var fill: Color {
-        guard isSelected else { return .clear }
-        guard emphasized else { return WireboltTheme.unemphasizedSidebarSelection }
-        // Opaque in light mode so white labels keep 4.5:1 over the sidebar.
-        return WireboltTheme.primaryAccent.opacity(colorScheme == .dark ? 0.82 : 1)
+        isSelected ? WireboltTheme.selectedBackground : .clear
     }
+
 }
 
 private struct SidebarSearchEmptyState: View {
@@ -635,7 +698,7 @@ private struct WorkspaceNameEditor: View {
                     .disabled(trimmedName.isEmpty)
             }
         }
-        .padding(20)
+        .padding(WireboltTheme.Spacing.xxLarge)
         .frame(width: 380)
         .onAppear { nameIsFocused = true }
     }
@@ -686,7 +749,7 @@ private struct CurlImportSheet: View {
                 editor.frame(width: 620, height: failure == nil ? 300 : 340)
             }
         }
-        .padding(20)
+        .padding(WireboltTheme.Spacing.xxLarge)
     }
 
     private var editor: some View {
@@ -699,11 +762,11 @@ private struct CurlImportSheet: View {
             TextEditor(text: $source)
                 .font(.body.monospaced())
                 .frame(minHeight: 160)
-                .overlay { RoundedRectangle(cornerRadius: 6).stroke(WireboltTheme.separator) }
+                .overlay { RoundedRectangle(cornerRadius: WireboltTheme.Radius.control).stroke(WireboltTheme.separator) }
                 .onChange(of: source) { failure = nil }
             if let failure {
                 Label(failure, systemImage: "exclamationmark.triangle.fill")
-                    .foregroundStyle(.red)
+                    .foregroundStyle(WireboltTheme.danger)
                     .font(.callout)
                     .fixedSize(horizontal: false, vertical: true)
             }
@@ -837,6 +900,11 @@ private struct SidebarOutlineRow: View {
         }
     }
 
+    private var rowHeight: Double {
+        if case .request = row.content { return WireboltTheme.current.density.rowHeight }
+        return WireboltTheme.current.density.controlHeight
+    }
+
     private var content: some View {
         Group {
             switch row.content {
@@ -849,7 +917,7 @@ private struct SidebarOutlineRow: View {
             }
         }
         .padding(.leading, Double(row.depth) * 14)
-        .frame(height: 24)
+        .frame(minHeight: rowHeight)
         .modifier(SidebarReorderTarget(row: row, model: model, interface: interface))
     }
 }
@@ -870,7 +938,7 @@ private struct EmptyCollectionRow: View {
         }
         .buttonStyle(.plain)
         .foregroundStyle(.secondary)
-        .padding(.leading, 32)
+        .padding(.leading, WireboltTheme.Spacing.canvas)
         .frame(height: 24)
         .accessibilityLabel("New Request in \(collection.name)")
         .help("Create a request in “\(collection.name)”")
@@ -901,7 +969,7 @@ private struct SidebarReorderTarget: ViewModifier {
                 .overlay(alignment: position == .after ? .bottom : .top) {
                     if let position {
                         if position == .inside {
-                            RoundedRectangle(cornerRadius: 4).stroke(Color.accentColor, lineWidth: 2)
+                            RoundedRectangle(cornerRadius: WireboltTheme.Radius.small).stroke(Color.accentColor, lineWidth: 2)
                                 .allowsHitTesting(false)
                         } else {
                             Rectangle().fill(Color.accentColor).frame(height: 2)
@@ -1034,8 +1102,8 @@ private struct SidebarContainerRow<Name: View, Actions: View>: View {
             Button(action: toggle) {
                 Image(systemName: isExpanded ? "chevron.down" : "chevron.forward")
                     .font(.system(size: 9, weight: .semibold))
-                    .foregroundStyle(highlighted ? AnyShapeStyle(Color.white) : AnyShapeStyle(.secondary))
-                    .frame(width: 12, height: 24).padding(.trailing, 6).contentShape(.rect)
+                    .foregroundStyle(highlighted ? AnyShapeStyle(WireboltTheme.primary) : AnyShapeStyle(WireboltTheme.muted))
+                    .frame(width: 12, height: 24).padding(.trailing, WireboltTheme.Spacing.small).contentShape(.rect)
             }
             .buttonStyle(.plain)
             .help(isExpanded ? "Collapse" : "Expand")
@@ -1043,8 +1111,8 @@ private struct SidebarContainerRow<Name: View, Actions: View>: View {
                 Image(systemName: "folder.fill")
                 name
             }
-            .foregroundStyle(highlighted ? Color.white : Color.primary)
-            .frame(maxWidth: .infinity, minHeight: 24, alignment: .leading)
+            .foregroundStyle(WireboltTheme.primary)
+            .frame(maxWidth: .infinity, minHeight: WireboltTheme.current.density.controlHeight, alignment: .leading)
             .contentShape(.rect)
             if isEditing {
                 label
@@ -1052,7 +1120,7 @@ private struct SidebarContainerRow<Name: View, Actions: View>: View {
                 Button { select(); toggle() } label: { label }.buttonStyle(.plain)
             }
         }
-        .frame(height: 24)
+        .frame(height: WireboltTheme.current.density.controlHeight)
         .background { SidebarSelectionBackground(isSelected: isSelected, leadingInset: 4) }
         .contextMenu { menu }
         // One outline row for VoiceOver: kind, name, state and level, with its actions.
@@ -1323,6 +1391,18 @@ private struct SavedGroupRow: View {
     }
 }
 
+private struct RelativeActivityTime: View {
+    let date: Date
+    var body: some View {
+        TimelineView(.periodic(from: .now, by: 60)) { context in
+            let minutes = max(0, Int(context.date.timeIntervalSince(date) / 60))
+            Text(minutes == 0 ? "now" : minutes < 60 ? "\(minutes)m" : minutes < 1440 ? "\(minutes / 60)h" : "\(minutes / 1440)d")
+                .font(WireboltTheme.Typography.detail).foregroundStyle(WireboltTheme.muted)
+                .lineLimit(1).fixedSize()
+        }
+    }
+}
+
 private struct SidebarRequestButton: View, @MainActor Equatable {
     static func == (lhs: Self, rhs: Self) -> Bool {
         lhs.model === rhs.model && lhs.interface === rhs.interface && lhs.location == rhs.location
@@ -1331,6 +1411,8 @@ private struct SidebarRequestButton: View, @MainActor Equatable {
 
     @Bindable var model: WireboltModel
     @Bindable var interface: WorkspaceUIState
+    @Environment(\.wireboltTheme) private var theme
+    @Environment(\.accessibilityDifferentiateWithoutColor) private var differentiateWithoutColor
     @Environment(\.sidebarSelectionIsEmphasized) private var emphasized
 
     let location: RequestLocation
@@ -1376,44 +1458,65 @@ private struct SidebarRequestButton: View, @MainActor Equatable {
     private var identifier: String { "request|\(location.collectionID)|\(location.request.id)" }
 
     var body: some View {
-        let highlighted = isSelected && emphasized
-            HStack(spacing: 3) {
-                Text(location.request.webSocket ? "WS" : location.request.method.rawValue)
-                    .font(WireboltTheme.Typography.methodLabel)
-                    .lineLimit(1).minimumScaleFactor(0.8)
-                    // Method hues can't keep contrast on the accent selection fill.
-                    .foregroundStyle(highlighted ? Color.white : isSelected ? Color.primary
-                        : WireboltTheme.methodColor(location.request.method, webSocket: location.request.webSocket))
-                    .frame(width: 40, alignment: .trailing)
+        let activity = model.requestActivity[location.request.id]
+        VStack(alignment: .leading, spacing: WireboltTheme.Spacing.xSmall) {
+            if theme.density == .comfortable {
+                HStack(spacing: WireboltTheme.Spacing.medium) {
+                    MethodChip(method: location.request.method, webSocket: location.request.webSocket)
+                    Text(model.workspace.collections.first { $0.id == location.collectionID }?.name ?? "Workspace")
+                        .font(WireboltTheme.Typography.detail).foregroundStyle(WireboltTheme.muted).lineLimit(1)
+                    Spacer(minLength: 0)
+                    if let activity {
+                        RelativeActivityTime(date: activity.date)
+                    }
+                }
+            }
+            HStack(spacing: WireboltTheme.Spacing.medium) {
+                if theme.density == .compact {
+                    MethodChip(method: location.request.method, webSocket: location.request.webSocket)
+                }
                 InlineSidebarName(title: location.request.name, isEditing: Binding(
                     get: { interface.renamingRequestID == location.id },
                     set: { editing in
-                    if editing { interface.renamingRequestID = location.id }
-                    else if interface.renamingRequestID == location.id { interface.renamingRequestID = nil }
-                }
+                        if editing { interface.renamingRequestID = location.id }
+                        else if interface.renamingRequestID == location.id { interface.renamingRequestID = nil }
+                    }
                 ), renameOnDoubleClick: true, save: onRename)
-                    .lineLimit(1)
-                    .foregroundStyle(highlighted ? Color.white : Color.primary)
+                    .lineLimit(1).foregroundStyle(WireboltTheme.primary)
                 Spacer(minLength: 0)
+                if let status = activity?.status {
+                    Group {
+                        if differentiateWithoutColor { Image(systemName: WireboltTheme.statusSymbol(status)).font(WireboltTheme.Typography.badge) }
+                        else { Circle().frame(width: 7, height: 7) }
+                    }
+                    .foregroundStyle(WireboltTheme.statusColor(status))
+                    .accessibilityLabel(ResponseFormatting.statusLine(status))
+                }
             }
-            .font(.system(size: 13))
-            .padding(.trailing, 6)
-            .frame(height: 24)
-            .contentShape(.rect)
-            .background {
-                SidebarSelectionBackground(
-                    isSelected: isSelected,
-                    leadingInset: location.collectionID == WorkspaceDraft.rootCollectionID && location.groupID == nil ? 0 : 14
-                )
+        }
+        .font(WireboltTheme.Typography.body)
+        .padding(.horizontal, WireboltTheme.Spacing.large)
+        .frame(height: theme.density.rowHeight)
+        .contentShape(.rect)
+        .background { SidebarSelectionBackground(isSelected: isSelected) }
+        .overlay {
+            if isSelected && emphasized {
+                RoundedRectangle(cornerRadius: theme.geometry.row).stroke(theme.muted.color, lineWidth: 1)
+                    .allowsHitTesting(false)
             }
+        }
         .buttonStyle(.plain)
         // Selection must not wait for the name's double-click rename gesture to fail.
         .simultaneousGesture(TapGesture().onEnded {
             if !isRenaming { action() }
         })
+        .simultaneousGesture(TapGesture(count: 2).onEnded {
+            action()
+            interface.renamingRequestID = location.id
+        })
         .accessibilityElement(children: isRenaming ? .contain : .combine)
         .accessibilityAction(.default, action)
-        .frame(height: 24)
+        .frame(height: theme.density.rowHeight)
         .listRowInsets(EdgeInsets(top: 0, leading: 0, bottom: 0, trailing: 0))
         .contextMenu {
             NewRequestMenu(model: model, interface: interface, collectionID: location.collectionID, groupID: location.groupID)
@@ -1454,27 +1557,75 @@ func copyRequestAsCurl(_ request: RequestDraft, model: WireboltModel) {
     }
 }
 
-private struct SidebarFooter: View {
+private struct SidebarSearchRow: View {
+    @Bindable var model: WireboltModel
     @Bindable var interface: WorkspaceUIState
     var filterIsFocused: FocusState<Bool>.Binding
-
     var body: some View {
-        HStack(spacing: 3) {
-            Image(systemName: "magnifyingglass")
-                .foregroundStyle(.secondary)
-                .font(.system(size: 12)).frame(width: 12)
-            TextField("Filter", text: $interface.sidebarFilter)
-                .textFieldStyle(.plain)
-                .focused(filterIsFocused)
+        HStack(spacing: WireboltTheme.Spacing.xSmall) {
+            Image(systemName: "magnifyingglass").foregroundStyle(WireboltTheme.muted)
+            TextField("Search", text: $interface.sidebarFilter)
+                .textFieldStyle(.plain).focused(filterIsFocused)
                 .help("Filter Requests (⇧⌘F)")
+            Button("Filter Requests", systemImage: "line.3.horizontal.decrease") { filterIsFocused.wrappedValue = true }
+                .labelStyle(.iconOnly).buttonStyle(GhostIconStyle())
+            Button("New Folder", systemImage: "folder.badge.plus") { interface.makeNewFolder(model: model) }
+                .labelStyle(.iconOnly).buttonStyle(GhostIconStyle())
+            Button("New Request", systemImage: "square.and.pencil") { interface.makeNewRequest(model: model) }
+                .labelStyle(.iconOnly).buttonStyle(GhostIconStyle())
         }
-        .padding(.horizontal, 7)
-        .frame(height: 24)
-        .background(.thinMaterial, in: .capsule)
-        .padding(.leading, 14)
-        .padding(.trailing, 5)
-        .padding(.top, 11)
-        .padding(.bottom, 14)
+        .font(WireboltTheme.Typography.body)
+        .padding(.horizontal, WireboltTheme.Spacing.large)
+        .frame(height: WireboltTheme.current.density == .compact ? 36 : 46)
+    }
+}
+
+private struct SidebarHistoryRows: View {
+    let model: WireboltModel
+    @State private var entries: [RunHistoryEntry] = []
+    @State private var loadedSessionID: String?
+    var body: some View {
+        Group {
+            if let session = model.sessions.activeSession {
+                ForEach(loadedSessionID == session.id ? entries : []) { entry in
+                    Button {
+                        Task { await model.restoreHistory(entry, into: session) }
+                    } label: {
+                        HStack {
+                            Text(entry.responseHead.map { ResponseFormatting.statusLine($0.status) } ?? "Failed")
+                            Spacer()
+                            RelativeActivityTime(date: entry.createdAt)
+                        }
+                        .font(WireboltTheme.Typography.detail)
+                        .frame(minHeight: WireboltTheme.current.density.controlHeight)
+                    }.buttonStyle(.plain)
+                }
+                if loadedSessionID == session.id && entries.isEmpty { Text("No history for this request").foregroundStyle(WireboltTheme.muted) }
+            } else { Text("Open a request to see its history").foregroundStyle(WireboltTheme.muted) }
+        }
+        .task(id: "\(model.sessions.activeSession?.id ?? ""):\(model.historyRevision)") {
+            guard let session = model.sessions.activeSession else { entries = []; loadedSessionID = nil; return }
+            let history = await model.historyEntries(for: session)
+            guard !Task.isCancelled else { return }
+            entries = history
+            loadedSessionID = session.id
+        }
+    }
+}
+
+private struct SidebarFooter: View {
+    let model: WireboltModel
+    @Environment(\.openWindow) private var openWindow
+    var body: some View {
+        HStack(spacing: WireboltTheme.Spacing.medium) {
+            Button("Settings", systemImage: "gearshape") { presentAppSettings(model) }
+            Button("Git Collaboration", systemImage: "arrow.triangle.branch") { model.isShowingGitCollaboration = true }
+            Button("Cookies", systemImage: "circle.hexagongrid") { openWindow(id: CookiesView.windowID) }
+            Button("Network Settings", systemImage: "chart.bar") { model.isShowingWorkspaceSettings = true }
+            Spacer(minLength: 0)
+        }
+        .labelStyle(.iconOnly).buttonStyle(GhostIconStyle())
+        .padding(WireboltTheme.Spacing.large)
     }
 }
 
@@ -1660,7 +1811,7 @@ private struct DocumentTabBar: View {
                         .id(tab.id)
                 }
             }
-            .padding(.top, 2)
+            .padding(.top, WireboltTheme.Spacing.xxSmall)
             }
             .onChange(of: group?.selectedTabID) { _, selected in
                 if let selected { scroll.scrollTo(selected, anchor: .center) }
@@ -1771,13 +1922,13 @@ private struct DocumentTabButton: View {
 
             if isRenaming {
                 InlineSidebarName(title: tab.title, isEditing: $isRenaming, save: onRename)
-                    .font(.system(size: 12))
-                    .frame(height: 19)
+                    .font(WireboltTheme.Typography.tab)
+                    .frame(height: 28)
                     .accessibilityLabel("Request Name")
             } else {
                 Button(action: onSelect) {
                     DocumentTabLabel(title: tab.title, italic: isPreview)
-                        .frame(height: 19)
+                        .frame(height: 28)
                         .frame(maxWidth: .infinity)
                         .offset(y: -1)
                         .allowsHitTesting(false)
@@ -1796,15 +1947,15 @@ private struct DocumentTabButton: View {
                 })
             }
             // Balances the close slot so the title stays centered.
-            Color.clear.frame(width: 20, height: 20)
+            Color.clear.frame(width: 28, height: 28)
         }
         .padding(.horizontal, WireboltTheme.Spacing.small)
         .frame(minWidth: 28, minHeight: 28)
         // Only the selected tab draws a capsule; the others add no shapes.
-        .background { if isSelected { RoundedRectangle(cornerRadius: 14).fill(Color.primary.opacity(0.055)) } }
+        .background { if isSelected { RoundedRectangle(cornerRadius: WireboltTheme.Radius.control).fill(WireboltTheme.tabBackground) } }
         .overlay {
             if isSelected {
-                RoundedRectangle(cornerRadius: 14).stroke(WireboltTheme.separator.opacity(0.65), lineWidth: 0.5)
+                RoundedRectangle(cornerRadius: WireboltTheme.Radius.control).stroke(WireboltTheme.separator.opacity(0.65), lineWidth: 0.5)
             }
         }
         .onHover { isHovered = $0 }
@@ -1853,7 +2004,7 @@ private struct DocumentTabCloseSlot: View {
             Button(action: onClose) {
                 Image(systemName: "xmark")
                     .font(.system(size: 9, weight: .semibold))
-                    .frame(width: 20, height: 20)
+                    .frame(width: 28, height: 28)
                     .contentShape(.rect)
             }
             .buttonStyle(.plain)
@@ -1865,7 +2016,7 @@ private struct DocumentTabCloseSlot: View {
             .accessibilityHidden(isRenaming)
             .help("Close Tab (⌘W)")
         }
-        .frame(width: 20, height: 20)
+        .frame(width: 28, height: 28)
     }
 }
 
@@ -1877,7 +2028,7 @@ private struct DocumentTabLabel: View {
 
     var body: some View {
         Text(title)
-            .font(.system(size: 12))
+            .font(WireboltTheme.Typography.tab)
             .italic(italic)
             .lineLimit(1)
             .truncationMode(.tail)
@@ -2226,86 +2377,82 @@ private struct RequestURLBar: View {
     @Bindable var session: DocumentSession
     let groupID: String
 
+    @Environment(\.wireboltTheme) private var theme
     @State private var isEnteringCustomMethod = false
     @State private var customMethod = ""
     @State private var isEditingLongURL = false
+    @State private var isURLFocused = false
     /// Narrow groups (for example a split editor) collapse the proxy pill and status to
     /// icons so the URL keeps most of the width.
-    @State private var isCompact = false
+    @State private var isCompact = true
 
     var body: some View {
-        HStack(spacing: 7) {
-            if session.kind == .webSocket {
-                Text("WS").font(.system(size: 14, weight: .bold)).foregroundStyle(WireboltTheme.webSocketColor)
-                    // The URL field has layout priority; keep the label from compressing to nothing.
-                    .fixedSize()
-            } else {
-            Menu {
-                ForEach(HTTPMethod.allCases, id: \.self) { method in
-                    Button(method.rawValue) { session.draft.method = method }
-                }
-                Divider()
-                Button("Custom…") {
-                    customMethod = HTTPMethod.allCases.contains(session.draft.method)
-                        ? ""
-                        : session.draft.method.rawValue
-                    isEnteringCustomMethod = true
-                }
-            } label: {
-                Text(session.draft.method.rawValue)
-                    .font(.system(size: 15, weight: .bold))
-                    .foregroundStyle(WireboltTheme.requestBarMethodColor(session.draft.method))
-            }
-            .menuStyle(.borderlessButton)
-            .menuIndicator(.hidden)
-            .frame(width: ceil((session.draft.method.rawValue as NSString).size(withAttributes: [.font: NSFont.systemFont(ofSize: 15, weight: .bold)]).width) + 1)
-            .fixedSize()
-            .offset(x: 2, y: -1)
-            .accessibilityLabel("HTTP method, \(session.draft.method.rawValue)")
-
-            }
-
+        VStack(alignment: .leading, spacing: WireboltTheme.Spacing.medium) {
             RequestURLField(session: session, focusTrigger: interface.focusURLTrigger,
-                active: model.sessions.activeGroupID == groupID, submit: send)
+                active: model.sessions.activeGroupID == groupID, isEditing: $isURLFocused, submit: send)
                 .id(session.id)
-                .frame(minWidth: 96)
-                .layoutPriority(1)
-
-            ProxyConnectionIndicator(model: model, session: session, compact: isCompact) {
-                interface.presentation(for: session).requestSection = .settings
+                .frame(minWidth: 96, minHeight: theme.density.controlHeight)
+            HStack(spacing: isCompact ? WireboltTheme.Spacing.xSmall : WireboltTheme.Spacing.medium) {
+                if session.kind == .webSocket { MethodChip(method: .get, webSocket: true) }
+                else { methodMenu }
+                EnvironmentPopup(model: model, interface: interface)
+                    .frame(maxWidth: isCompact ? 120 : 210)
+                if !isCompact {
+                Button { interface.presentation(for: session).requestSection = .auth } label: {
+                    Label(authenticationTitle, systemImage: "lock")
+                }
+                .buttonStyle(.plain).labelStyle(ComposerLabelStyle(compact: isCompact)).frame(minHeight: 28).help("Edit Authentication")
+                Button { interface.presentation(for: session).requestSection = .settings } label: {
+                    Label("\(session.draft.transport.totalTimeoutMS / 1000) s", systemImage: "gauge")
+                }
+                .buttonStyle(.plain).labelStyle(ComposerLabelStyle(compact: isCompact)).frame(minHeight: 28).help("Edit Timeout and Network Settings")
+                }
+                Spacer(minLength: 0)
+                if isCompact {
+                    Button("Edit Long URL", systemImage: "rectangle.expand.vertical") { isEditingLongURL = true }
+                        .labelStyle(.iconOnly).buttonStyle(GhostIconStyle()).help("Edit Long URL")
+                    Menu("Request Actions", systemImage: "ellipsis") {
+                        Button("Authentication") { interface.presentation(for: session).requestSection = .auth }
+                        Button("Network Settings") { interface.presentation(for: session).requestSection = .settings }
+                        if session.kind == .http {
+                            Button("Attach File", action: attachFile)
+                            RequestHistoryMenu(model: model, session: session)
+                        }
+                    }.menuStyle(.borderlessButton).menuIndicator(.hidden).labelStyle(.iconOnly).frame(width: 28, height: 28)
+                } else {
+                    ProxyConnectionIndicator(model: model, session: session, compact: true) {
+                        interface.presentation(for: session).requestSection = .settings
+                    }
+                    Button("Edit Long URL", systemImage: "rectangle.expand.vertical") { isEditingLongURL = true }
+                        .labelStyle(.iconOnly).buttonStyle(GhostIconStyle()).help("Edit Long URL")
+                    if session.kind == .http {
+                        RequestHistoryMenu(model: model, session: session).frame(minWidth: 28, minHeight: 28)
+                        Button("Attach File", systemImage: "paperclip", action: attachFile)
+                            .labelStyle(.iconOnly).buttonStyle(GhostIconStyle()).help("Attach a File as the Request Body")
+                    }
+                }
+                primaryAction
             }
-            // A fixed slot: the URL field never resizes when a status appears or changes.
-            InlineResponseStatus(session: session, compact: isCompact)
-                // A tab switch shows the other document's status without animating.
-                .id(session.id)
-                .frame(width: isCompact ? 20 : 148, alignment: .leading)
-
-            Button("Edit Long URL", systemImage: "rectangle.expand.vertical") {
-                isEditingLongURL = true
-            }
-                .labelStyle(.iconOnly)
-                .buttonStyle(.borderless)
-                .foregroundStyle(.secondary)
-                .frame(width: 24, height: 30)
-                .accessibilityLabel("Edit Long URL")
-                .help("Edit Long URL")
-
-            // History records HTTP runs only.
-            if session.kind == .http {
-                RequestHistoryMenu(model: model, session: session)
-                    .frame(width: 24, height: 30)
-            }
-
-            primaryAction
+            .font(WireboltTheme.Typography.tab)
+            .foregroundStyle(WireboltTheme.muted)
         }
-        .padding(.leading, 10)
-        .padding(.trailing, 11)
-        .frame(height: 44)
-        .background(WireboltTheme.barBackground)
+        .padding(WireboltTheme.Spacing.large)
+        .background(theme.definition.card.color, in: .rect(cornerRadius: theme.geometry.card))
+        .overlay { RoundedRectangle(cornerRadius: theme.geometry.card).stroke(isURLFocused ? theme.focusBorder.color : theme.cardBorder.color, lineWidth: 1) }
+        .padding(.horizontal, isCompact || theme.density == .compact ? WireboltTheme.Spacing.large : WireboltTheme.Spacing.canvas)
+        .padding(.vertical, WireboltTheme.Spacing.large)
         .onGeometryChange(for: Bool.self) { $0.size.width < Self.compactWidth } action: { isCompact = $0 }
+        .task(id: session.id) {
+            guard interface.pendingURLFocusID == session.id else { return }
+            await Task.yield()
+            guard !Task.isCancelled, model.sessions.activeGroupID == groupID else { return }
+            interface.pendingURLFocusID = nil
+            interface.focusURLTrigger += 1
+        }
         .onChange(of: session.id) {
             // The bar stays mounted across tab switches: close what belonged to the previous
             // document, as it closed when each document had its own bar.
+            isURLFocused = false
             if isEnteringCustomMethod { isEnteringCustomMethod = false }
             if isEditingLongURL { isEditingLongURL = false }
         }
@@ -2329,58 +2476,77 @@ private struct RequestURLBar: View {
         }
     }
 
-    /// Below this bar width the proxy pill and status collapse to icons.
-    nonisolated private static let compactWidth: CGFloat = 760
-
-    /// Native bordered buttons provide the disabled, hover, pressed, and focus-ring states.
-    /// Send and Connect are prominent; Cancel and Disconnect are secondary. Shortcuts live in
-    /// the Request menu and in the help tag, not in the title.
-    @ViewBuilder private var primaryAction: some View {
-        let hasURL = !session.draft.url.isEmpty
-        Group {
-            if session.kind == .webSocket {
-                if session.socket.status == .disconnected {
-                    prominentAction("Connect", enabled: hasURL, action: toggleConnection)
-                        .help(hasURL ? "Connect (⌃⌘↩)" : "Enter a URL to connect")
-                } else {
-                    Button(action: toggleConnection) { actionTitle("Disconnect") }
-                        .buttonStyle(.bordered)
-                        .help("Disconnect (⌃⌘↩)")
+    private var methodMenu: some View {
+            Menu {
+                ForEach(HTTPMethod.allCases, id: \.self) { method in
+                    Button(method.rawValue) { session.draft.method = method }
                 }
-            } else if session.isRunning {
-                Button(action: cancel) { actionTitle("Cancel") }
-                    .buttonStyle(.bordered)
-                    .accessibilityLabel("Cancel Request")
-                    .help("Cancel Request (⌘.)")
-            } else {
-                prominentAction("Send", enabled: hasURL, action: send)
-                    .accessibilityLabel("Send Request")
-                    .help(hasURL ? "Send Request (⌘↩)" : "Enter a URL to send the request")
+                Divider()
+                Button("Custom…") {
+                    customMethod = HTTPMethod.allCases.contains(session.draft.method)
+                        ? ""
+                        : session.draft.method.rawValue
+                    isEnteringCustomMethod = true
+                }
+            } label: {
+                Text(session.draft.method.rawValue)
+                    .font(WireboltTheme.Typography.tab.weight(.semibold))
+                    .foregroundStyle(WireboltTheme.requestBarMethodColor(session.draft.method))
             }
+            .menuStyle(.borderlessButton)
+            .menuIndicator(.hidden)
+            .frame(minWidth: 42, minHeight: 28)
+            .fixedSize()
+            .offset(x: 2, y: -1)
+            .accessibilityLabel("HTTP method, \(session.draft.method.rawValue)")
+
+    }
+
+    private var authenticationTitle: String {
+        switch session.draft.authentication {
+        case .none: "No auth"
+        case .basic: "Basic"
+        case .bearer: "Bearer"
+        case .apiKey: "API key"
+        case .oauth2: "OAuth 2"
         }
-        .controlSize(.large)
-        .buttonBorderShape(.capsule)
-        .tint(WireboltTheme.primaryAccent)
-        .fixedSize()
     }
 
-    /// Equal minimum widths keep Send and Cancel from shifting the URL field when they swap.
-    private func actionTitle(_ title: String) -> some View {
-        Text(title).frame(minWidth: 52)
+    private func attachFile() {
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = false
+        Task {
+            guard await present(panel, in: NSApp.keyWindow) == .OK, let url = panel.url else { return }
+            session.draft.body = .file(path: url.path, contentType: UTType(filenameExtension: url.pathExtension)?.preferredMIMEType)
+            interface.presentation(for: session).requestSection = .body
+        }
     }
 
-    /// A disabled prominent button keeps a tinted fill that reads as enabled, especially in
-    /// Dark Mode, so an unavailable Send or Connect falls back to the neutral bordered style
-    /// with the system's dimmed label.
-    @ViewBuilder
-    private func prominentAction(_ title: String, enabled: Bool, action: @escaping () -> Void) -> some View {
-        if enabled {
-            Button(action: action) { actionTitle(title) }
-                .buttonStyle(.borderedProminent)
-        } else {
-            Button(action: action) { actionTitle(title) }
-                .buttonStyle(.bordered)
-                .disabled(true)
+    /// Below this bar width the proxy pill and status collapse to icons.
+    nonisolated private static let compactWidth: CGFloat = 860
+
+    private var primaryAction: some View {
+        HStack(spacing: WireboltTheme.Spacing.xSmall) {
+            if session.kind == .webSocket {
+                Button(session.socket.status == .disconnected ? "Connect" : "Disconnect", action: toggleConnection)
+                    .buttonStyle(.plain)
+                    .frame(minHeight: theme.density.controlHeight)
+                    .disabled(session.draft.url.isEmpty)
+            }
+            Button(action: { if session.isRunning { cancel() } else { send() } }) {
+                Image(systemName: session.isRunning ? "stop.fill" : "arrow.up")
+                    .font(.system(size: 16, weight: .medium))
+                    .frame(width: theme.density.controlHeight, height: theme.density.controlHeight)
+                    .foregroundStyle(theme.definition.sendForeground.color)
+                    .background(theme.definition.sendBackground.color, in: .circle)
+                    .contentShape(.circle)
+            }
+            .buttonStyle(.plain)
+            .disabled(!session.isRunning && (session.draft.url.isEmpty || (session.kind == .webSocket && session.socket.status != .connected)))
+            .opacity(!session.isRunning && (session.draft.url.isEmpty || (session.kind == .webSocket && session.socket.status != .connected)) ? 0.4 : 1)
+            .accessibilityLabel(session.isRunning ? "Cancel Request" : session.kind == .webSocket ? "Send Message" : "Send Request")
+            .help(session.isRunning ? "Cancel Request (⌘.)" : "Send (⌘↩)")
         }
     }
 
@@ -2406,6 +2572,16 @@ private struct RequestURLBar: View {
     }
 
 
+}
+
+private struct ComposerLabelStyle: LabelStyle {
+    let compact: Bool
+    func makeBody(configuration: Configuration) -> some View {
+        HStack(spacing: WireboltTheme.Spacing.small) {
+            configuration.icon
+            if !compact { configuration.title }
+        }.frame(minWidth: 28)
+    }
 }
 
 private enum WebSocketMessageFilter: String, CaseIterable, Identifiable {
@@ -2653,7 +2829,7 @@ private struct LongURLEditor: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text("Edit Long URL").font(.system(size: 11))
+            Text("Edit Long URL").font(WireboltTheme.Typography.detail)
             TextEditor(text: $editedURL)
                 .font(.system(size: 12, design: .monospaced))
                 .border(WireboltTheme.separator, width: 0.5)
@@ -2664,83 +2840,12 @@ private struct LongURLEditor: View {
                     .keyboardShortcut(.return, modifiers: .command)
                     .help("Done (⌘↩)")
             }.controlSize(.small)
-        }.padding(16).frame(width: 566, height: 362)
+        }.padding(WireboltTheme.Spacing.xLarge).frame(width: 566, height: 362)
     }
 }
 
 /// Status of the latest run in a fixed-size slot: a spinner while running, then the
 /// status symbol and line. Long reason phrases truncate; the full line is in the help tag.
-private struct InlineResponseStatus: View {
-    @Bindable var session: DocumentSession
-    var compact = false
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-
-    var body: some View {
-        Group {
-            if session.isRunning || (session.kind == .webSocket && session.socket.status == .connecting) {
-                ProgressView()
-                    .controlSize(.small)
-                    .accessibilityLabel(session.kind == .webSocket ? "Connecting" : "Sending")
-            } else if let outcome {
-                HStack(spacing: WireboltTheme.Spacing.small) {
-                    Image(systemName: symbol(for: outcome))
-                        .font(.system(size: compact ? 15 : 14))
-                    if !compact {
-                        Text(outcome.label)
-                            .font(.system(size: 14).monospacedDigit())
-                            .lineLimit(1)
-                            .truncationMode(.tail)
-                            .contentTransition(reduceMotion ? .identity : .numericText())
-                    }
-                }
-                .foregroundStyle(color(for: outcome))
-                .help(outcome.detail)
-                .accessibilityElement(children: .ignore)
-                .accessibilityLabel(accessibilityLabel(for: outcome))
-            }
-        }
-        .animation(reduceMotion ? nil : .snappy(duration: 0.2), value: outcome)
-    }
-
-    private var outcome: RunOutcomeBadge? {
-        if session.kind == .webSocket {
-            return session.socket.status == .connected ? .status(101) : nil
-        }
-        let failure = session.failure
-        // The URL is read only after a failure so typing does not re-render the status.
-        return RunOutcomeBadge(
-            status: session.responseHead?.status,
-            failure: failure,
-            host: failure == nil ? nil : RunFailureMessage.host(from: session.preparedRun?.url ?? session.draft.url)
-        )
-    }
-
-    private func symbol(for outcome: RunOutcomeBadge) -> String {
-        switch outcome {
-        case let .status(status): WireboltTheme.statusSymbol(status)
-        case .failed: "exclamationmark.octagon.fill"
-        case .cancelled: "xmark.circle.fill"
-        }
-    }
-
-    /// A user-initiated cancel is not an error, so it stays neutral.
-    private func color(for outcome: RunOutcomeBadge) -> Color {
-        switch outcome {
-        case let .status(status): WireboltTheme.statusColor(status)
-        case .failed: WireboltTheme.danger
-        case .cancelled: .secondary
-        }
-    }
-
-    private func accessibilityLabel(for outcome: RunOutcomeBadge) -> String {
-        switch outcome {
-        case .status: "Status \(outcome.detail)"
-        case .failed: "Request failed. \(outcome.detail)"
-        case .cancelled: "Request cancelled"
-        }
-    }
-}
-
 /// Ends editing so pending text edits reach the draft, then puts focus back where it was
 /// (with the same selection) so sending from the keyboard does not lose the insertion point.
 @MainActor
@@ -2765,14 +2870,15 @@ private struct RequestURLField: View {
     let focusTrigger: Int
     let active: Bool
     let submit: () -> Void
-    @State private var isEditing = false
+    @Binding var isEditing: Bool
     @State private var text: String
     @Environment(\.variableCatalog) private var variables
 
-    init(session: DocumentSession, focusTrigger: Int, active: Bool, submit: @escaping () -> Void) {
+    init(session: DocumentSession, focusTrigger: Int, active: Bool, isEditing: Binding<Bool>, submit: @escaping () -> Void) {
         self.session = session
         self.focusTrigger = focusTrigger
         self.active = active
+        _isEditing = isEditing
         self.submit = submit
         _text = State(initialValue: session.draft.displayURL)
     }
@@ -2798,6 +2904,7 @@ private struct RequestURLField: View {
 /// not) while viewing and editing, the help tag lists their values, and typing `{{`
 /// offers the active variables (↑↓ to choose, Return or Tab to insert, Esc to dismiss).
 private struct NativeRequestURLField: NSViewRepresentable {
+    @Environment(\.wireboltTheme) private var theme
     @Binding var text: String
     @Binding var isEditing: Bool
     let focusTrigger: Int
@@ -2811,6 +2918,8 @@ private struct NativeRequestURLField: NSViewRepresentable {
     func makeNSView(context: Context) -> NSTextField {
         let field = NSTextField()
         field.isBordered = false
+        field.isBezeled = false
+        field.focusRingType = .none
         field.drawsBackground = false
         field.font = Self.font
         field.placeholderString = "Enter URL"
@@ -2828,13 +2937,23 @@ private struct NativeRequestURLField: NSViewRepresentable {
     func updateNSView(_ field: NSTextField, context: Context) {
         let coordinator = context.coordinator
         coordinator.parent = self
+        if coordinator.appliedThemeRevision != theme.revision {
+            coordinator.appliedThemeRevision = theme.revision
+            field.textColor = theme.primary.nsColor
+            coordinator.highlightedState = nil
+        }
         field.cell?.isScrollable = isEditing
         field.cell?.lineBreakMode = isEditing ? .byClipping : .byTruncatingTail
         if field.stringValue != text { field.stringValue = text; coordinator.highlightedState = nil }
         coordinator.highlight(field)
         if context.coordinator.focusTrigger != focusTrigger {
             context.coordinator.focusTrigger = focusTrigger
-            if active { field.window?.makeFirstResponder(field); field.selectText(nil) }
+            if active {
+                DispatchQueue.main.async { [weak field] in
+                    guard let field else { return }
+                    field.window?.makeFirstResponder(field); field.selectText(nil)
+                }
+            }
         }
     }
     static func dismantleNSView(_: NSTextField, coordinator: Coordinator) { coordinator.closeCompletions() }
@@ -2843,8 +2962,9 @@ private struct NativeRequestURLField: NSViewRepresentable {
     final class Coordinator: NSObject, NSTextFieldDelegate {
         var parent: NativeRequestURLField
         var focusTrigger: Int
+        var appliedThemeRevision: UInt64?
         /// What the field currently shows, so unchanged updates skip re-highlighting.
-        var highlightedState: (text: String, variables: VariableCatalog?, editing: Bool)?
+        var highlightedState: (text: String, variables: VariableCatalog?, editing: Bool, themeRevision: UInt64)?
         private var popover: NSPopover?
         private var completions: [VariableCatalog.Entry] = []
         private var selectedIndex = 0
@@ -2899,22 +3019,26 @@ private struct NativeRequestURLField: NSViewRepresentable {
         func highlight(_ field: NSTextField) {
             let text = field.stringValue
             let editor = field.currentEditor() as? NSTextView
-            let state = (text: text, variables: parent.variables, editing: editor != nil)
+            let state = (text: text, variables: parent.variables, editing: editor != nil, themeRevision: parent.theme.revision)
             if let current = highlightedState, current.text == state.text, current.variables == state.variables,
-               current.editing == state.editing { return }
+               current.editing == state.editing, current.themeRevision == state.themeRevision { return }
             highlightedState = state
             let summary = parent.variables.flatMap { text.contains("{{") ? $0.summary(for: text) : nil }
             if field.toolTip != summary { field.toolTip = summary }
             guard let variables = parent.variables, text.contains("{{") else {
                 if let storage = editor?.textStorage, storage.length > 0 {
-                    storage.addAttribute(.foregroundColor, value: NSColor.textColor, range: NSRange(location: 0, length: storage.length))
+                    let range = NSRange(location: 0, length: storage.length)
+                    storage.addAttribute(.foregroundColor, value: parent.theme.primary.nsColor, range: range)
+                    storage.removeAttribute(.backgroundColor, range: range)
+                } else {
+                    field.attributedStringValue = NSAttributedString(string: text, attributes: [.font: NativeRequestURLField.font, .foregroundColor: parent.theme.primary.nsColor])
                 }
                 return
             }
             if let storage = editor?.textStorage {
-                VariableHighlighting.apply(to: storage, catalog: variables, baseColor: .textColor)
+                VariableHighlighting.apply(to: storage, catalog: variables, baseColor: parent.theme.primary.nsColor, theme: parent.theme)
             } else {
-                let highlighted = NSMutableAttributedString(attributedString: VariableHighlighting.attributedString(text, font: NativeRequestURLField.font, catalog: variables))
+                let highlighted = NSMutableAttributedString(attributedString: VariableHighlighting.attributedString(text, font: NativeRequestURLField.font, catalog: variables, theme: parent.theme))
                 let paragraph = NSMutableParagraphStyle()
                 paragraph.lineBreakMode = .byTruncatingTail
                 highlighted.addAttribute(.paragraphStyle, value: paragraph, range: NSRange(location: 0, length: highlighted.length))
@@ -3002,6 +3126,8 @@ private struct RequestSectionBar: View {
     /// the section tabs scroll when the pane is too narrow, so the editor never jumps.
     /// A clipped edge fades out, and a chevron menu lists the sections that are not fully
     /// visible; choosing one (or selecting it any other way) scrolls it into view.
+    @Environment(\.wireboltReduceMotion) private var reduceMotion
+
     var body: some View {
         HStack(spacing: WireboltTheme.Spacing.medium) {
             ScrollViewReader { scroll in
@@ -3020,7 +3146,7 @@ private struct RequestSectionBar: View {
                 .mask { edgeFadeMask }
                 .onChange(of: SectionScrollTarget(documentID: session.id, section: interface.requestSection)) { old, new in
                     if old.documentID == new.documentID {
-                        withAnimation(.snappy(duration: 0.2)) { scroll.scrollTo(new.section, anchor: .center) }
+                        withAnimation(reduceMotion ? nil : .snappy(duration: 0.2)) { scroll.scrollTo(new.section, anchor: .center) }
                     } else if let first = RequestPanelSection.allCases.first {
                         // The bar stays mounted across tab switches: another document starts
                         // at the leading edge, without animation, like a newly shown bar.
@@ -3075,7 +3201,7 @@ private struct RequestSectionBar: View {
         .coordinateSpace(.named(Self.tabSpace))
     }
 
-    private static let tabSpace = "request-section-tabs"
+    nonisolated private static let tabSpace = "request-section-tabs"
     private static let fadeWidth: CGFloat = 18
 
     /// Sections whose tab is at least partly scrolled out of view, in tab order.
@@ -3240,20 +3366,16 @@ struct PanelTabButton: View {
                     Circle().fill(.secondary).frame(width: 5, height: 5)
                 }
             }
-            .font(.system(size: 13))
+            .font(WireboltTheme.Typography.tab)
             .lineLimit(1)
             .fixedSize(horizontal: true, vertical: false)
-            .foregroundStyle(isSelected ? .primary : .secondary)
-            .padding(.horizontal, 3)
-            .frame(height: height)
+            .foregroundStyle(isSelected ? WireboltTheme.primary : WireboltTheme.muted)
+            .padding(.horizontal, WireboltTheme.Spacing.medium)
+            .frame(height: max(28, height))
             .contentShape(.rect)
         }
         .buttonStyle(.plain)
-        .overlay(alignment: .bottom) {
-            Rectangle()
-                .fill(isSelected ? WireboltTheme.primaryAccent : .clear)
-                .frame(height: 2)
-        }
+        .background(isSelected ? WireboltTheme.tabBackground : .clear, in: .rect(cornerRadius: WireboltTheme.Radius.control))
         .accessibilityAddTraits(isSelected ? .isSelected : [])
         .accessibilityLabel(title)
         .accessibilityValue(badge.map { $0 > 0 ? "\($0) entries" : "" } ?? (indicator ? "configured" : ""))
@@ -3327,11 +3449,11 @@ private struct FieldTableHeader: View {
             Divider().frame(height: 14)
             Text("Key")
                 .frame(width: 177, alignment: .leading)
-                .padding(.leading, 6)
+                .padding(.leading, WireboltTheme.Spacing.small)
             Divider().frame(height: 14)
             Text("Value")
                 .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
-                .padding(.leading, 6)
+                .padding(.leading, WireboltTheme.Spacing.small)
         }
         .font(.system(size: 11, weight: .semibold))
         .foregroundStyle(.primary)
@@ -3348,6 +3470,7 @@ private struct FieldTableRow: View {
     let onRemove: () -> Void
 
     @State private var isHovered = false
+    @FocusState private var containsFocus: Bool
     private var fieldHeight: Double { FieldEditorMetrics.height(key: field.name, value: field.value.editableValue, valueWidth: valueWidth) }
 
     var body: some View {
@@ -3356,13 +3479,13 @@ private struct FieldTableRow: View {
             FieldTextInput("Key", text: $field.name, height: fieldHeight,
                 accessibilityLabel: field.name.isEmpty ? "\(kind.noun.capitalized) name" : "\(kind.noun.capitalized) name, \(field.name)")
                 .frame(width: 175)
-                .padding(.horizontal, 4)
+                .padding(.horizontal, WireboltTheme.Spacing.xSmall)
 
             Color.clear.frame(width: 1)
             FieldTextInput("Value", text: literalBinding($field.value), height: fieldHeight,
                 accessibilityLabel: field.name.isEmpty ? "\(kind.noun.capitalized) value" : "Value of \(field.name)")
                 .frame(width: valueWidth)
-                .padding(.horizontal, 4)
+                .padding(.horizontal, WireboltTheme.Spacing.xSmall)
                 .padding(.trailing, 5)
         }
         .overlay(alignment: .topTrailing) {
@@ -3370,15 +3493,18 @@ private struct FieldTableRow: View {
                 .labelStyle(.iconOnly)
                 .buttonStyle(.borderless)
                 .foregroundStyle(.secondary)
-                .frame(width: 42, height: 20)
+                .frame(width: 42, height: 28)
+                .focused($containsFocus)
                 .help("Remove")
-                .opacity(isHovered ? 1 : 0)
-                .allowsHitTesting(isHovered)
+                .opacity(isHovered || containsFocus ? 1 : 0)
+                .allowsHitTesting(isHovered || containsFocus)
         }
         .frame(height: fieldHeight)
-        .padding(.vertical, 4)
+        .padding(.vertical, WireboltTheme.Spacing.xSmall)
         .background(isHovered ? Color.primary.opacity(0.035) : .clear)
         .onHover { isHovered = $0 }
+        .contextMenu { Button("Remove \(field.name)", role: .destructive, action: onRemove) }
+        .accessibilityAction(named: "Remove \(field.name)", onRemove)
     }
 
     private func literalBinding(_ source: Binding<ValueSource>) -> Binding<String> {
@@ -3416,7 +3542,7 @@ private struct NewFieldTableRow: View {
                 FieldTextInput("New Key", text: $name, height: fieldHeight, accessibilityLabel: "New \(kind.noun) name")
                     .focused($focusedField, equals: .key)
                     .frame(width: 175)
-                    .padding(.horizontal, 4)
+                    .padding(.horizontal, WireboltTheme.Spacing.xSmall)
 
                     .onSubmit { focusedField = .value }
                     .popover(isPresented: $showingSuggestions, arrowEdge: .bottom) {
@@ -3430,7 +3556,7 @@ private struct NewFieldTableRow: View {
                 FieldTextInput("New Value", text: $value, height: fieldHeight, accessibilityLabel: "New \(kind.noun) value")
                     .focused($focusedField, equals: .value)
                     .frame(width: valueWidth)
-                    .padding(.horizontal, 4)
+                    .padding(.horizontal, WireboltTheme.Spacing.xSmall)
                     .padding(.trailing, 5)
 
                     .onSubmit(commit)
@@ -3453,7 +3579,7 @@ private struct NewFieldTableRow: View {
                 }
             }
             .frame(height: fieldHeight)
-            .padding(.vertical, 4)
+            .padding(.vertical, WireboltTheme.Spacing.xSmall)
 
             if !name.isEmpty {
                 Color.clear.frame(width: 1)
@@ -3533,14 +3659,14 @@ private struct EmptyNewFieldRow: View {
             Color.clear.frame(width: 1)
             Text("New Key")
                 .frame(width: 175, alignment: .leading)
-                .padding(.horizontal, 4)
+                .padding(.horizontal, WireboltTheme.Spacing.xSmall)
             Color.clear.frame(width: 1)
             Text("New Value")
                 .frame(minWidth: 50, maxWidth: .infinity, alignment: .leading)
-                .padding(.horizontal, 4)
+                .padding(.horizontal, WireboltTheme.Spacing.xSmall)
                 .padding(.trailing, 5)
         }
-        .font(.system(size: 11, design: .monospaced))
+        .font(WireboltTheme.Typography.field)
         .foregroundStyle(.tertiary)
         .frame(height: 28)
     }
@@ -3578,7 +3704,7 @@ private struct HeaderSuggestions: View {
             ForEach(filteredSuggestions, id: \.self) { suggestion in
                 Button(suggestion) { onSelect(suggestion) }
                     .buttonStyle(.plain)
-                    .padding(.horizontal, 8)
+                    .padding(.horizontal, WireboltTheme.Spacing.medium)
                     .frame(maxWidth: .infinity, minHeight: 24, alignment: .leading)
             }
         }
@@ -3606,7 +3732,7 @@ private struct HeaderValueSuggestions: View {
             ForEach(filteredSuggestions, id: \.self) { suggestion in
                 Button(suggestion) { onSelect(suggestion) }
                     .buttonStyle(.plain)
-                    .padding(.horizontal, 8)
+                    .padding(.horizontal, WireboltTheme.Spacing.medium)
                     .frame(maxWidth: .infinity, minHeight: 28, alignment: .leading)
             }
         }
@@ -3651,8 +3777,8 @@ private struct AuthenticationEditor: View {
                             .textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading)
                     }
                 }
-                .font(.system(size: 13)).controlSize(.small)
-                .textFieldStyle(.roundedBorder).padding(.horizontal, 20).padding(.top, 16)
+                .font(WireboltTheme.Typography.body).controlSize(.small)
+                .textFieldStyle(.roundedBorder).padding(.horizontal, WireboltTheme.Spacing.xxLarge).padding(.top, WireboltTheme.Spacing.xLarge)
                 .task(id: password) { await model.loadSecret(password) }
                 .task(id: username) { await model.loadSecret(username) }
             case let .bearer(token):
@@ -3660,11 +3786,11 @@ private struct AuthenticationEditor: View {
                     Text("Bearer Token").frame(width: 80, alignment: .trailing).padding(.top, 5)
                     TextEditor(text: credential(token, role: "token"))
                         .accessibilityLabel("Bearer Token")
-                        .font(.system(size: 13)).scrollContentBackground(.hidden)
-                        .padding(4).frame(height: 162)
-                        .background(Color(nsColor: .textBackgroundColor), in: .rect(cornerRadius: 5))
-                        .overlay { RoundedRectangle(cornerRadius: 5).stroke(WireboltTheme.separator) }
-                }.padding(20)
+                        .font(WireboltTheme.Typography.body).scrollContentBackground(.hidden)
+                        .padding(WireboltTheme.Spacing.xSmall).frame(height: 162)
+                        .background(WireboltTheme.paneBackground, in: .rect(cornerRadius: WireboltTheme.Radius.row))
+                        .overlay { RoundedRectangle(cornerRadius: WireboltTheme.Radius.row).stroke(WireboltTheme.separator) }
+                }.padding(WireboltTheme.Spacing.xxLarge)
                     .task(id: token) { await model.loadSecret(token) }
             case let .apiKey(placement, name, value):
                 Grid(alignment: .leading, horizontalSpacing: 8, verticalSpacing: 5) {
@@ -3697,14 +3823,14 @@ private struct AuthenticationEditor: View {
                             .foregroundStyle(.secondary)
                     }
                 }
-                .font(.system(size: 13)).controlSize(.small)
-                .textFieldStyle(.roundedBorder).padding(.horizontal, 20).padding(.top, 16)
+                .font(WireboltTheme.Typography.body).controlSize(.small)
+                .textFieldStyle(.roundedBorder).padding(.horizontal, WireboltTheme.Spacing.xxLarge).padding(.top, WireboltTheme.Spacing.xLarge)
                 .task(id: value) { await model.loadSecret(value) }
             case let .oauth2(configuration):
                 oauthEditor(configuration)
             }
         }
-        .font(.system(size: 12))
+        .font(WireboltTheme.Typography.tab)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
 
@@ -3785,7 +3911,7 @@ private struct AuthenticationEditor: View {
                                 ?? "Stored in Keychain",
                             systemImage: "checkmark.circle.fill"
                         )
-                        .foregroundStyle(.green)
+                        .foregroundStyle(WireboltTheme.success)
                     }
                     Button("Get New Access Token") {
                         Task { await model.acquireOAuthToken(for: session) }
@@ -3794,14 +3920,14 @@ private struct AuthenticationEditor: View {
                 }
             }
             if let message = model.oauthFailureMessage {
-                Text(message).foregroundStyle(.red)
+                Text(message).foregroundStyle(WireboltTheme.danger)
             }
             Text("The client secret and access token are stored in this Mac’s Keychain, not in the workspace.")
                 .foregroundStyle(.secondary)
         }
         .formStyle(.columns)
         .textFieldStyle(.roundedBorder)
-        .padding(20)
+        .padding(WireboltTheme.Spacing.xxLarge)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
 
@@ -4104,13 +4230,13 @@ private struct MultipartEditor: View {
             HStack(spacing: 0) {
                 Text("Part").frame(width: 99, alignment: .leading).padding(.leading, 10)
                 Divider().frame(height: 16)
-                Text("Content Type").frame(width: 118, alignment: .leading).padding(.leading, 6)
+                Text("Content Type").frame(width: 118, alignment: .leading).padding(.leading, WireboltTheme.Spacing.small)
                 Divider().frame(height: 16)
-                Text("File Name").frame(width: 98, alignment: .leading).padding(.leading, 6)
+                Text("File Name").frame(width: 98, alignment: .leading).padding(.leading, WireboltTheme.Spacing.small)
                 Divider().frame(height: 16)
-                Text("Value").frame(width: 175, alignment: .leading).padding(.leading, 6)
+                Text("Value").frame(width: 175, alignment: .leading).padding(.leading, WireboltTheme.Spacing.small)
                 Spacer(minLength: 0)
-            }.font(.system(size: 11)).frame(height: 28).background(WireboltTheme.barBackground)
+            }.font(WireboltTheme.Typography.detail).frame(height: 28).background(WireboltTheme.barBackground)
             Divider()
             ScrollView([.horizontal, .vertical]) {
                 VStack(alignment: .leading, spacing: 0) {
@@ -4130,18 +4256,18 @@ private struct MultipartRow: View {
     var body: some View {
         HStack(spacing: 0) {
             Text(part.name).frame(width: 99, alignment: .leading).padding(.leading, 10)
-            Text(part.contentType ?? "").frame(width: 119, alignment: .leading).padding(.leading, 6)
+            Text(part.contentType ?? "").frame(width: 119, alignment: .leading).padding(.leading, WireboltTheme.Spacing.small)
             Text(part.fileName ?? part.filePath.map { URL(fileURLWithPath: $0).lastPathComponent } ?? "")
-                .frame(width: 99, alignment: .leading).padding(.leading, 6)
+                .frame(width: 99, alignment: .leading).padding(.leading, WireboltTheme.Spacing.small)
             Text(part.kind == .text ? String(part.value.editableValue.prefix(12)) : "<…")
-                .lineLimit(1).frame(width: 31, alignment: .leading).padding(.leading, 6)
+                .lineLimit(1).frame(width: 31, alignment: .leading).padding(.leading, WireboltTheme.Spacing.small)
             Button("Export", systemImage: "square.and.arrow.up", action: export).controlSize(.mini).frame(width: 78)
             Button("Edit", systemImage: "pencil") { isEditing = true }.controlSize(.mini).frame(width: 63)
                 .popover(isPresented: $isEditing, arrowEdge: .bottom) {
                     MultipartPartEditor(part: $part, remove: { isEditing = false; remove() })
                 }
             Spacer(minLength: 0)
-        }.font(.system(size: 11)).lineLimit(1).frame(height: 28)
+        }.font(WireboltTheme.Typography.detail).lineLimit(1).frame(height: 28)
             .onAppear { if part.name.isEmpty { isEditing = true } }
     }
     private func export() {
@@ -4205,15 +4331,15 @@ private struct MultipartPartEditor: View {
                     TextField("File Name", text: optional(\.fileName)).labelsHidden().frame(height: 26)
                 }
                 GridRow(alignment: .top) {
-                    Text("Value:").padding(.top, 4)
+                    Text("Value:").padding(.top, WireboltTheme.Spacing.xSmall)
                     VStack(alignment: .leading, spacing: 8) {
-                        Text("<Double-click to edit>").padding(4)
+                        Text("<Double-click to edit>").padding(WireboltTheme.Spacing.xSmall)
                             .frame(maxWidth: .infinity, minHeight: 82, maxHeight: 82, alignment: .topLeading)
                             .background(WireboltTheme.paneBackground).border(WireboltTheme.separator)
                             .onTapGesture(count: 2, perform: editValue)
                             .accessibilityAction(named: "Edit Value", editValue)
                         Button("Select File…", action: selectFile).controlSize(.small)
-                    }.padding(.top, 6)
+                    }.padding(.top, WireboltTheme.Spacing.small)
                 }
             }.textFieldStyle(.roundedBorder)
             Spacer()
@@ -4222,7 +4348,7 @@ private struct MultipartPartEditor: View {
                 Spacer()
                 Button("OK") { dismiss() }.keyboardShortcut(.defaultAction)
             }.controlSize(.small)
-        }.font(.system(size: 12)).padding(20).frame(width: 510, height: 298)
+        }.font(WireboltTheme.Typography.tab).padding(WireboltTheme.Spacing.xxLarge).frame(width: 510, height: 298)
             .sheet(isPresented: $isEditingValue) {
                 VStack(spacing: 12) {
                     BodyTextEditor(text: $text)
@@ -4238,7 +4364,7 @@ private struct MultipartPartEditor: View {
                         }
                             .keyboardShortcut(.defaultAction)
                     }
-                }.padding(16).frame(width: 566, height: 362)
+                }.padding(WireboltTheme.Spacing.xLarge).frame(width: 566, height: 362)
             }
     }
     private func optional(_ keyPath: WritableKeyPath<MultipartPart, String?>) -> Binding<String> {
@@ -4276,13 +4402,13 @@ private struct FileBodyEditor: View {
         VStack(spacing: 0) {
             Image(systemName: "paperclip.circle.fill").font(.system(size: 42)).foregroundStyle(.secondary)
             Text(path.isEmpty ? "Select any file on your Mac" : path)
-                .font(.system(size: 13)).foregroundStyle(.secondary)
-                .lineLimit(1).truncationMode(.middle).padding(.horizontal, 20).padding(.top, 20)
+                .font(WireboltTheme.Typography.body).foregroundStyle(.secondary)
+                .lineLimit(1).truncationMode(.middle).padding(.horizontal, WireboltTheme.Spacing.xxLarge).padding(.top, WireboltTheme.Spacing.xxLarge)
             if !path.isEmpty {
                 Button("Show In Finder…") { NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: path)]) }
-                    .padding(.top, 6)
+                    .padding(.top, WireboltTheme.Spacing.small)
             }
-            Divider().frame(width: 200).padding(.top, 14).padding(.bottom, 16)
+            Divider().frame(width: 200).padding(.top, 14).padding(.bottom, WireboltTheme.Spacing.xLarge)
             if path.isEmpty { Button("Select Local File…", action: choose) }
             else {
                 HStack(spacing: 8) {
@@ -4291,7 +4417,7 @@ private struct FileBodyEditor: View {
                 }
             }
         }
-        .font(.system(size: 13)).controlSize(.regular)
+        .font(WireboltTheme.Typography.body).controlSize(.regular)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .contentShape(.rect)
         .dropDestination(for: URL.self) { urls, _ in
@@ -4378,6 +4504,7 @@ private struct ToolbarSpace: NSViewRepresentable {
 }
 
 private struct WindowConfigurator: NSViewRepresentable {
+    @Environment(\.wireboltTheme) private var theme
     var sidebarWidth: Double
     var isWorkspaceWindow = false
     var requestClose: (NSWindow) -> Void = { _ in }
@@ -4391,8 +4518,10 @@ private struct WindowConfigurator: NSViewRepresentable {
     func updateNSView(_ view: WindowConfigurationView, context _: Context) {
         view.requestClose = requestClose
         view.installCloseGuard()
-        // Root updates are frequent; only a width change needs the outline redrawn.
-        guard view.sidebarWidth != sidebarWidth else { return }
+        guard view.sidebarWidth != sidebarWidth || view.theme != theme else { return }
+        view.theme = theme
+        view.window?.backgroundColor = theme.definition.window.nsColor
+        view.window?.titleVisibility = .hidden
         view.sidebarWidth = sidebarWidth
         view.updateSidebarOutline()
     }
@@ -4415,30 +4544,24 @@ struct SidebarMaterialView: NSViewRepresentable {
 
 private struct EnvironmentPopup: View {
     @Bindable var model: WireboltModel
-    @State private var isEditingEnvironments = false
+    let interface: WorkspaceUIState
 
     var body: some View {
-        Picker("Environment", selection: Binding(
-            get: { model.selectedEnvironmentID ?? WorkspaceDraft.globalEnvironmentID },
-            set: { selection in
-                if selection == "configure" { isEditingEnvironments = true }
-                else { model.selectedEnvironmentID = selection == WorkspaceDraft.globalEnvironmentID ? nil : selection }
-            }
-        )) {
-            Text("Global Environment").tag(WorkspaceDraft.globalEnvironmentID)
+        Menu {
+            Button("Globals") { model.selectedEnvironmentID = nil }
             ForEach(model.workspace.environments.filter { $0.id != WorkspaceDraft.globalEnvironmentID }.sorted(by: { $0.name < $1.name })) { environment in
-                Text(environment.name).tag(environment.id)
+                Button(environment.name) { model.selectedEnvironmentID = environment.id }
             }
             Divider()
-            Text("Configure Environments…").tag("configure")
+            Button("Configure Environments…") { interface.toggleEnvironmentInspector() }
+        } label: {
+            Label(selectedEnvironment?.name ?? "Globals", systemImage: "globe")
+                .lineLimit(1).font(WireboltTheme.Typography.tab).foregroundStyle(WireboltTheme.muted)
+                .frame(minHeight: 28)
         }
-        .labelsHidden().pickerStyle(.menu).controlSize(.large)
-        .font(.system(size: 13))
+        .menuStyle(.borderlessButton)
         .accessibilityLabel("Environment")
-        .accessibilityValue(selectedEnvironment?.name ?? "Global Environment")
-        .sheet(isPresented: $isEditingEnvironments) {
-            EnvironmentEditor(model: model)
-        }
+        .accessibilityValue(selectedEnvironment?.name ?? "Globals")
     }
 
     private var selectedEnvironment: EnvironmentDraft? {
@@ -4506,6 +4629,7 @@ private struct ResponseSplit<RequestContent: View, ResponseContent: View>: View 
 
 @MainActor
 private final class WindowConfigurationView: NSView {
+    var theme = ResolvedTheme(preset: .black)
     var sidebarWidth = 250.0
     var isWorkspaceWindow = false
     var requestClose: (NSWindow) -> Void = { _ in }
@@ -4522,6 +4646,7 @@ private final class WindowConfigurationView: NSView {
             host.addSublayer(sidebarOutline)
         }
         sidebarOutline.appearance = window.effectiveAppearance
+        sidebarOutline.separatorColor = theme.hairline.nsColor
         sidebarOutline.contentsScale = window.backingScaleFactor
         sidebarOutline.frame = host.bounds
         sidebarOutline.sidebarWidth = sidebarWidth
@@ -4566,7 +4691,7 @@ private final class WindowConfigurationView: NSView {
         window.toolbarStyle = .unified
         window.tabbingMode = .disallowed
         window.styleMask.insert(.fullSizeContentView)
-        window.backgroundColor = .windowBackgroundColor
+        window.backgroundColor = theme.definition.window.nsColor
         window.isOpaque = false
         installCloseGuard()
         updateSidebarOutline()
@@ -4638,6 +4763,7 @@ private final class WindowConfigurationView: NSView {
 private final class SidebarOutlineLayer: CALayer, @unchecked Sendable {
     nonisolated(unsafe) var sidebarWidth = 250.0
     nonisolated(unsafe) var appearance: NSAppearance?
+    nonisolated(unsafe) var separatorColor = NSColor.separatorColor
 
     override init() {
         super.init()
@@ -4649,6 +4775,7 @@ private final class SidebarOutlineLayer: CALayer, @unchecked Sendable {
         if let other = layer as? SidebarOutlineLayer {
             sidebarWidth = other.sidebarWidth
             appearance = other.appearance
+            separatorColor = other.separatorColor
         }
     }
 
@@ -4660,9 +4787,10 @@ private final class SidebarOutlineLayer: CALayer, @unchecked Sendable {
         NSGraphicsContext.saveGraphicsState()
         NSGraphicsContext.current = graphics
         let draw = { [self] in
-            NSColor.separatorColor.setStroke()
-            let outline = NSBezierPath(roundedRect: NSRect(x: 8.5, y: 8.5,
-                width: sidebarWidth - 9, height: bounds.height - 17), xRadius: 18, yRadius: 18)
+            separatorColor.setStroke()
+            let outline = NSBezierPath()
+            outline.move(to: NSPoint(x: sidebarWidth - 0.5, y: 0))
+            outline.line(to: NSPoint(x: sidebarWidth - 0.5, y: bounds.height))
             outline.lineWidth = 1
             outline.stroke()
         }

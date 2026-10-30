@@ -4,6 +4,19 @@ Changes under **Unreleased** are on `main` but not in a published build yet. Dow
 
 ## Unreleased
 
+### Added
+
+- Black, Paper and Ember themes with checked contrast, Compact and Comfortable density, and Increase Contrast support (Settings → Appearance).
+- Settings open in the workspace window (**⌘,**); Esc or **⌘W** closes them.
+- Streaming responses show a bounded partial preview while they arrive.
+- **Save and Close** when closing a tab with unsaved edits.
+
+### Changed
+
+- Redesigned sidebar, request composer and response bar. Environments are edited in a side inspector instead of a sheet.
+- **⌘N** focuses the new request's URL.
+- The response renderer **Raw** is now **Text**, and the **Raw** response section is now **Raw HTTP**.
+
 ## 1.0.0-rc.1
 
 First release candidate for Wirebolt 1.0. It collects everything since 0.1.0-beta.2 and is the first build published from this repository; Homebrew users of the old `christopher96u/tap` need to [switch taps](https://github.com/Christopher96u/wirebolt/blob/main/docs/installation.md#migrate-from-the-beta-tap).

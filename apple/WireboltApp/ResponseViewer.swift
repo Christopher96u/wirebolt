@@ -10,7 +10,7 @@ struct ResponseViewer: View {
     var send: (() -> Void)?
     /// Cancels this document's active run. The in-pane Cancel button is hidden when nil.
     var cancel: (() -> Void)?
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.wireboltReduceMotion) private var reduceMotion
 
     // The viewer stays mounted across tab switches so the common empty state is updated
     // rather than rebuilt; everything that holds per-document state (the response views and
@@ -34,8 +34,8 @@ struct ResponseViewer: View {
                             if isAwaitingNewResponse, let startedAt = session.runStartedAt {
                                 RunProgressView(startedAt: startedAt, cancel: cancel)
                                     .padding(.horizontal, 22).padding(.vertical, 16)
-                                    .background(.regularMaterial, in: .rect(cornerRadius: 10))
-                                    .overlay { RoundedRectangle(cornerRadius: 10).stroke(Color(nsColor: .separatorColor), lineWidth: 0.5) }
+                                    .background(.regularMaterial, in: .rect(cornerRadius: WireboltTheme.Radius.group))
+                                    .overlay { RoundedRectangle(cornerRadius: WireboltTheme.Radius.group).stroke(WireboltTheme.separator, lineWidth: 0.5) }
                                     .transition(.opacity)
                             }
                         }
@@ -88,7 +88,7 @@ struct ResponseViewer: View {
 
     @ViewBuilder
     private var sectionContent: some View {
-        if let failure = session.failure, interface.responseSection != .request {
+        if let failure = session.failure, interface.responseSection != .request, failure.kind != "cancelled" || session.responseBytes == 0 {
             ResponseFailureView(
                 message: RunFailureMessage(failure, host: RunFailureMessage.host(from: session.preparedRun?.url ?? session.draft.url)),
                 retry: send,
@@ -96,7 +96,13 @@ struct ResponseViewer: View {
                 viewRequest: session.preparedRun == nil ? nil : { interface.responseSection = .request }
             )
         } else {
-            responseContent
+            VStack(spacing: 0) {
+                if session.failure?.kind == "cancelled" {
+                    Text("Cancelled · Partial response").font(WireboltTheme.Typography.detail)
+                        .foregroundStyle(WireboltTheme.warning).padding(WireboltTheme.Spacing.medium)
+                }
+                responseContent
+            }
         }
     }
 
@@ -211,15 +217,24 @@ private struct ElapsedTimeText: View {
 
 private struct ReceivingBodyView: View {
     let byteCount: UInt64
-
+    var text = ""
+    @State private var pausedText: String?
     var body: some View {
-        VStack(spacing: 8) {
-            ProgressView().controlSize(.small)
-            Text("Receiving Body…").font(.system(size: 13)).foregroundStyle(.secondary)
-            Text(ResponseFormatting.byteCount(byteCount)).font(.system(size: 12).monospacedDigit()).foregroundStyle(.tertiary)
+        VStack(spacing: 0) {
+            HStack(spacing: WireboltTheme.Spacing.medium) {
+                ProgressView().controlSize(.mini)
+                Text("Partial preview · first \(ResponseFormatting.byteCount(UInt64(DocumentSession.previewByteLimit))) maximum")
+                Spacer(minLength: 0)
+                Text(ResponseFormatting.byteCount(byteCount)).monospacedDigit()
+                Button(pausedText == nil ? "Pause" : "Resume") {
+                    if pausedText == nil { pausedText = text } else { pausedText = nil }
+                }
+            }
+            .font(WireboltTheme.Typography.detail).foregroundStyle(WireboltTheme.muted)
+            .padding(WireboltTheme.Spacing.medium)
+            NativeCodeEditor(text: .constant(pausedText ?? text), editable: false, language: .plain, label: "Partial streaming response")
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .accessibilityElement(children: .combine)
     }
 }
 
@@ -291,7 +306,7 @@ private struct ResponseSourceView: View {
                 .background(WireboltTheme.barBackground)
             Divider()
             if isReceiving {
-                ReceivingBodyView(byteCount: byteCount)
+                ReceivingBodyView(byteCount: byteCount, text: text)
             } else if let bodyStore, ResponseTextPresentation.usesIndex(byteCount: byteCount, preview: loadedText ?? text) {
                 IndexedResponseEditor(url: bodyStore.url, preview: text, language: .http, search: "", prefix: prefix, find: find)
             } else {
@@ -328,48 +343,158 @@ private struct ResponseSectionBar: View {
     @Bindable var interface: DocumentPresentationState
     @Bindable var session: DocumentSession
     let cancel: (() -> Void)?
+    @Environment(\.wireboltTheme) private var theme
+    @State private var showsDetails = false
+    @State private var actionError: String?
+    @AppStorage("response.decodesUnicodeEscapes") private var decodesUnicodeEscapes = true
 
     var body: some View {
-        ViewThatFits(in: .horizontal) {
-            HStack(spacing: 4) {
-                tabs
-                Spacer(minLength: 0)
-                ResponseTransferMetrics(session: session, cancel: cancel).equatable().padding(.trailing, 10)
-            }.frame(height: 34)
-            VStack(spacing: 0) {
-                tabs.frame(maxWidth: .infinity, alignment: .leading).frame(height: 34)
-                ResponseTransferMetrics(session: session, cancel: cancel).equatable()
-                    .padding(.horizontal, 10)
-                    .frame(maxWidth: .infinity, alignment: .trailing).frame(height: 26)
+        VStack(alignment: .leading, spacing: WireboltTheme.Spacing.xSmall) {
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: WireboltTheme.Spacing.large) {
+                    summary
+                    Spacer(minLength: 0)
+                    tabs
+                    actions
+                }
+                VStack(alignment: .leading, spacing: WireboltTheme.Spacing.small) {
+                    summary
+                    HStack(spacing: WireboltTheme.Spacing.small) { tabs; Spacer(minLength: 0); actions }
+                }
+            }
+            if showsDetails {
+                VStack(alignment: .leading, spacing: WireboltTheme.Spacing.small) {
+                    Text(session.responseHead?.version ?? "Waiting for response")
+                    if let snapshot = session.preparedRun {
+                        Text(snapshot.url).lineLimit(2).textSelection(.enabled)
+                    }
+                    Text("\(session.responseHead?.headers.count ?? 0) headers · \(session.responseCookies.count) cookies")
+                }
+                .font(WireboltTheme.Typography.detail).foregroundStyle(WireboltTheme.muted)
+                .padding(.vertical, WireboltTheme.Spacing.medium)
             }
         }
-        .background(WireboltTheme.barBackground)
+        .padding(.horizontal, WireboltTheme.Spacing.large)
+        .padding(.vertical, WireboltTheme.Spacing.small)
+        .background(WireboltTheme.paneBackground)
+        .overlay(alignment: .top) { theme.hairline.color.frame(height: 1) }
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Response sections")
+        .alert("Response Action Failed", isPresented: Binding(get: { actionError != nil }, set: { if !$0 { actionError = nil } })) {
+            Button("OK", role: .cancel) {}
+        } message: { Text(actionError ?? "The operation could not be completed.") }
+    }
+
+    private var summary: some View {
+        HStack(spacing: WireboltTheme.Spacing.medium) {
+            Button { showsDetails.toggle() } label: {
+                HStack(spacing: WireboltTheme.Spacing.medium) {
+                    if let head = session.responseHead {
+                        Text(ResponseFormatting.statusLine(head.status)).foregroundStyle(WireboltTheme.statusColor(head.status))
+                    }
+                    Text("·").foregroundStyle(WireboltTheme.dim)
+                    if session.isRunning, let start = session.runStartedAt { ElapsedTimeText(startedAt: start) }
+                    else { Text(session.completion.map { ResponseFormatting.duration(nanoseconds: $0.totalTimeNS) } ?? "—") }
+                    Text("·").foregroundStyle(WireboltTheme.dim)
+                    Text(ResponseFormatting.byteCount(session.responseBytes))
+                    Image(systemName: showsDetails ? "chevron.down" : "chevron.right")
+                }
+                .font(WireboltTheme.Typography.tab).foregroundStyle(WireboltTheme.muted)
+                .frame(minHeight: theme.density.controlHeight)
+                .fixedSize()
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Response summary")
+            .accessibilityValue(ResponseFormatting.completionSummary(status: session.responseHead?.status,
+                totalTimeNS: session.completion?.totalTimeNS, bytes: session.responseBytes))
+            .accessibilityHint(showsDetails ? "Collapse details" : "Expand details")
+            if session.isRunning, let cancel {
+                Button("Cancel Request", systemImage: "xmark", action: cancel)
+                    .labelStyle(.iconOnly).buttonStyle(GhostIconStyle())
+            }
+        }
     }
 
     private var tabs: some View {
-        HStack(spacing: 10) {
-            ForEach([
-                ResponsePanelSection.headers,
-                .body,
-                .cookies,
-                .raw,
-                .request,
-            ]) { section in
-                PanelTabButton(
-                    title: section.rawValue,
+        ScrollView(.horizontal) {
+        HStack(spacing: WireboltTheme.Spacing.xSmall) {
+            ForEach([ResponsePanelSection.body, .headers, .cookies, .raw, .request]) { section in
+                PanelTabButton(title: section.rawValue,
                     badge: section == .headers ? session.responseHead?.headers.count : nil,
-                    isSelected: interface.responseSection == section,
-                    action: { interface.responseSection = section }
-                )
-                .offset(y: -0.5)
-                if section == .raw { Divider().frame(height: 14).padding(.horizontal, 1) }
+                    isSelected: interface.responseSection == section, height: theme.density.controlHeight,
+                    action: { interface.responseSection = section })
             }
         }
-        .padding(.leading, 11)
-        .padding(.trailing, 10)
-        .fixedSize(horizontal: true, vertical: false)
+        }.scrollIndicators(.never).frame(height: theme.density.controlHeight)
+    }
+
+    private var rendererSelection: Binding<ResponseRenderer> {
+        Binding(get: { interface.responseRenderer }, set: { interface.responseRenderer = $0; interface.usesAutomaticRenderer = false })
+    }
+
+    private var actions: some View {
+        HStack(spacing: WireboltTheme.Spacing.xSmall) {
+            // Choosing JSON, Tree or Text is a primary action, so the renderer stays
+            // visible like the request body's format menu rather than in the overflow menu.
+            Menu {
+                Picker("Renderer", selection: rendererSelection) {
+                    ForEach(ResponseRenderer.allCases) { Text($0.rawValue).tag($0) }
+                }
+                .pickerStyle(.inline).labelsHidden()
+            } label: {
+                Text(interface.responseRenderer.rawValue)
+                    .font(WireboltTheme.Typography.tab).foregroundStyle(WireboltTheme.muted)
+            }
+            .menuStyle(.borderlessButton).fixedSize()
+            .frame(minHeight: 28).help("Response Renderer")
+            .accessibilityLabel("Response renderer")
+            .accessibilityValue(interface.responseRenderer.rawValue)
+            Button("Find in Body", systemImage: "magnifyingglass", action: findBody)
+                .labelStyle(.iconOnly).buttonStyle(GhostIconStyle()).disabled(session.isRunning)
+            Button("Copy Body", systemImage: "doc.on.doc", action: copyBody)
+                .labelStyle(.iconOnly).buttonStyle(GhostIconStyle()).disabled(session.bodyStore == nil || session.isRunning)
+        Menu("Response Actions", systemImage: "ellipsis") {
+            Button("Find in Body", systemImage: "magnifyingglass", action: findBody).disabled(session.isRunning)
+            Button("Copy Body", systemImage: "doc.on.doc", action: copyBody).disabled(session.bodyStore == nil || session.isRunning)
+            Button("Export Body…", systemImage: "square.and.arrow.up", action: saveResponse)
+                .disabled(session.bodyStore == nil || session.isRunning)
+            Toggle("Decode Unicode Escapes", isOn: $decodesUnicodeEscapes).disabled(interface.responseRenderer != .json)
+            EditorPreferencesMenu()
+            Menu("Open With") { OpenWithMenuItems(store: session.bodyStore) }.disabled(session.isRunning)
+        }
+        .menuStyle(.borderlessButton).menuIndicator(.hidden).labelStyle(.iconOnly)
+        .frame(minWidth: 28, minHeight: 28).help("Response Actions")
+        }
+    }
+
+    private func findBody() {
+        if ![ResponseRenderer.json, .xml, .html, .raw].contains(interface.responseRenderer) { interface.responseRenderer = .raw }
+        interface.responseSection = .body
+        interface.responseFindTrigger += 1
+    }
+
+    private func copyBody() {
+        guard let store = session.bodyStore else { return }
+        let length = Int(clamping: session.responseBytes)
+        Task {
+            do {
+                let data = try await store.viewport(length: length)
+                let text = await Task.detached(priority: .userInitiated) { String(decoding: data, as: UTF8.self) }.value
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setString(text, forType: .string)
+            } catch { actionError = error.localizedDescription }
+        }
+    }
+
+    private func saveResponse() {
+        guard let store = session.bodyStore else { return }
+        let panel = NSSavePanel()
+        panel.nameFieldStringValue = "response.body"
+        panel.canCreateDirectories = true
+        Task {
+            guard await present(panel, in: NSApp.keyWindow) == .OK, let destination = panel.url else { return }
+            do { try await store.export(to: destination) } catch { actionError = error.localizedDescription }
+        }
     }
 }
 
@@ -419,61 +544,6 @@ private struct OpenWithMenuItems: View {
     }
 }
 
-private struct ResponseTransferMetrics: View, @MainActor Equatable {
-    @Bindable var session: DocumentSession
-    let cancel: (() -> Void)?
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-
-    /// The cancel action always cancels this document's run, so a new closure is no change;
-    /// without this the metrics re-rendered (and re-formatted) on every renderer switch.
-    static func == (lhs: Self, rhs: Self) -> Bool {
-        lhs.session === rhs.session && (lhs.cancel == nil) == (rhs.cancel == nil)
-    }
-
-    var body: some View {
-        HStack(spacing: 10) {
-            Group {
-                if session.isRunning, let startedAt = session.runStartedAt {
-                    Label {
-                        ElapsedTimeText(startedAt: startedAt).monospacedDigit()
-                    } icon: {
-                        ProgressView().controlSize(.mini)
-                    }
-                    if !session.isAwaitingResponseHead {
-                        Label(ResponseFormatting.byteCount(session.responseBytes), systemImage: "arrow.down.circle.fill")
-                            .monospacedDigit()
-                    }
-                } else {
-                    let duration = durationLabel
-                    let size = ResponseFormatting.byteCount(session.responseBytes)
-                    Label(duration, systemImage: "clock.fill")
-                        .contentTransition(reduceMotion ? .identity : .numericText())
-                        .accessibilityLabel("Time \(duration)")
-                    Label(size, systemImage: "arrow.down.circle.fill")
-                        .contentTransition(reduceMotion ? .identity : .numericText())
-                        .accessibilityLabel("Size \(size)")
-                }
-            }
-            .accessibilityElement(children: .combine)
-            if session.isRunning, !session.isAwaitingResponseHead, let cancel {
-                Button("Cancel Request", systemImage: "xmark.circle.fill", action: cancel)
-                    .labelStyle(.iconOnly)
-                    .buttonStyle(.borderless)
-                    .help("Cancel Request (⌘.)")
-            }
-        }
-        .font(.system(size: 15))
-        .foregroundStyle(.secondary)
-        .fixedSize()
-        .animation(reduceMotion ? nil : .snappy(duration: 0.2), value: session.completion)
-    }
-
-    private var durationLabel: String {
-        guard let completion = session.completion else { return "—" }
-        return ResponseFormatting.duration(nanoseconds: completion.totalTimeNS)
-    }
-}
-
 private struct ResponseBodyViewer: View {
     @Bindable var interface: DocumentPresentationState
     let text: String
@@ -489,7 +559,6 @@ private struct ResponseBodyViewer: View {
     @State private var hasShownOtherText = false
     @State private var otherLanguage = SyntaxLanguage.plain
     private var find: EditorFindState { interface.responseRenderer == .json ? jsonFind : otherFind }
-    @State private var actionError: String?
     @State private var loadedViewportData: Data?
     @State private var storeSize: UInt64 = 0
     @State private var jsonDocument: JSONResponseDocument?
@@ -500,71 +569,8 @@ private struct ResponseBodyViewer: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            HStack(spacing: 8) {
-                Text("Body")
-                    .foregroundStyle(.secondary)
-
-                NativeRendererPicker(selection: Binding(
-                    get: { interface.responseRenderer },
-                    set: { interface.responseRenderer = $0; interface.usesAutomaticRenderer = false }
-                ))
-                    .controlSize(.small)
-                    .frame(width: 122, height: 22)
-                    .offset(y: -1)
-                .help("Response Renderer")
-
-                Spacer(minLength: 8)
-
-                HStack(spacing: 13) {
-                Button("Find", systemImage: "magnifyingglass") { find.isVisible = true }
-                .labelStyle(.iconOnly)
-                .buttonStyle(.borderless)
-                .foregroundStyle(.secondary)
-                .frame(width: 20)
-                // Tree, image, web and hex renderers have no text to search.
-                .disabled(!rendererSupportsFind)
-                .help(rendererSupportsFind ? "Find in Response (⌘F)" : "Find is available in the JSON, XML, HTML and Raw renderers")
-
-                Menu("Response Actions", systemImage: "ellipsis.circle") {
-                    Button("Copy Body", systemImage: "doc.on.doc") {
-                        Task {
-                            guard let store, let data = try? await store.viewport(offset: 0, length: Int(clamping: receivedBytes)) else { return }
-                            NSPasteboard.general.clearContents()
-                            NSPasteboard.general.setString(String(decoding: data, as: UTF8.self), forType: .string)
-                        }
-                    }
-                    .disabled(store == nil || receivedBytes == 0)
-                    Divider()
-                    Button("Export Body…", systemImage: "square.and.arrow.up", action: saveResponse).disabled(store == nil)
-                    Divider()
-                    Toggle("Decode Unicode Escapes", systemImage: "textformat.characters", isOn: $decodesUnicodeEscapes)
-                        .disabled(interface.responseRenderer != .json)
-                        .help("Show \\uXXXX escapes as characters in the JSON view. Raw keeps the exact bytes.")
-                    EditorPreferencesMenu()
-                    Divider()
-                    Menu("Open With", systemImage: "square.and.arrow.up") {
-                        OpenWithMenuItems(store: store)
-                    }
-                }
-                .menuStyle(.borderlessButton)
-                .menuIndicator(.hidden)
-                .labelStyle(.iconOnly)
-                .foregroundStyle(.secondary)
-                .fixedSize()
-                .frame(width: 20)
-                .help("Response Actions")
-                }
-                .offset(y: -1)
-            }
-            .font(.system(size: 13))
-            .padding(.leading, 11)
-            .padding(.trailing, 11)
-            .frame(height: 27)
-            .background(WireboltTheme.barBackground)
-            Divider()
-
             if isReceiving {
-                ReceivingBodyView(byteCount: receivedBytes)
+                ReceivingBodyView(byteCount: receivedBytes, text: text)
             } else if receivedBytes == 0 {
                 ContentUnavailableView {
                     Label("No Body", systemImage: "doc")
@@ -616,31 +622,18 @@ private struct ResponseBodyViewer: View {
                 formattedSource = key
             }
         }
-        .alert("Response Action Failed", isPresented: Binding(
-            get: { actionError != nil },
-            set: { if !$0 { actionError = nil } }
-        )) {
-            Button("OK", role: .cancel) { actionError = nil }
-        } message: {
-            Text(actionError ?? "The operation could not be completed.")
+        // Consume the request so remounting this viewer (tab or section switch) does not
+        // reopen Find on its own.
+        .onChange(of: interface.responseFindTrigger, initial: true) {
+            guard interface.responseFindTrigger > 0 else { return }
+            find.isVisible = true
+            interface.responseFindTrigger = 0
         }
+
     }
 
-    private var rendererSupportsFind: Bool { [.json, .xml, .html, .raw].contains(interface.responseRenderer) }
     private var renderedData: Data { loadedViewportData ?? previewData }
     private var renderedText: String { String(decoding: renderedData, as: UTF8.self) }
-
-    private func saveResponse() {
-        guard let store else { return }
-        let panel = NSSavePanel()
-        panel.nameFieldStringValue = "response.body"
-        panel.canCreateDirectories = true
-        Task {
-            guard await present(panel, in: NSApp.keyWindow) == .OK, let destination = panel.url else { return }
-            do { try await store.export(to: destination) }
-            catch { actionError = error.localizedDescription }
-        }
-    }
 
     @ViewBuilder
     private var rendererContent: some View {
@@ -970,7 +963,9 @@ private struct JSONResponseTree: View {
     }
 }
 
-private struct JSONTreeView: NSViewRepresentable {
+struct JSONTreeView: NSViewRepresentable {
+    @Environment(\.wireboltTheme) private var theme
+    @AppStorage("editor.fontSize") private var fontSize = 12.0
     let nodes: [JSONNode]
     let revision: Int
 
@@ -984,10 +979,9 @@ private struct JSONTreeView: NSViewRepresentable {
         let outline = NSOutlineView()
         outline.style = .plain
         outline.rowSizeStyle = .custom
-        outline.rowHeight = 19
         outline.intercellSpacing = .zero
         outline.indentationPerLevel = 16
-        outline.backgroundColor = .textBackgroundColor
+        outline.backgroundColor = theme.definition.window.nsColor
         outline.headerView = NSTableHeaderView()
         let key = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("key"))
         key.title = "Key"
@@ -1005,16 +999,32 @@ private struct JSONTreeView: NSViewRepresentable {
         scroll.documentView = outline
         scroll.hasVerticalScroller = true
         scroll.drawsBackground = true
-        scroll.backgroundColor = .textBackgroundColor
+        scroll.backgroundColor = theme.definition.window.nsColor
         updateNSView(scroll, context: context)
         return scroll
     }
     func updateNSView(_ scroll: NSScrollView, context: Context) {
-        guard let outline = scroll.documentView as? NSOutlineView, context.coordinator.revision != revision else { return }
-        context.coordinator.revision = revision
-        context.coordinator.roots = nodes.map(Node.init)
-        outline.reloadData()
-        for root in context.coordinator.roots { outline.expandItem(root) }
+        guard let outline = scroll.documentView as? NSOutlineView else { return }
+        let coordinator = context.coordinator
+        let contentChanged = coordinator.revision != revision
+        let styleChanged = coordinator.themeRevision != theme.revision || coordinator.fontSize != fontSize
+        guard contentChanged || styleChanged else { return }
+        coordinator.theme = theme
+        coordinator.themeRevision = theme.revision
+        coordinator.fontSize = fontSize
+        outline.backgroundColor = theme.definition.window.nsColor
+        scroll.backgroundColor = theme.definition.window.nsColor
+        outline.rowHeight = max(theme.density.controlHeight, ceil(fontSize * 1.5) + 1)
+        if contentChanged {
+            coordinator.revision = revision
+            coordinator.roots = nodes.map(Node.init)
+            outline.reloadData()
+            for root in coordinator.roots { outline.expandItem(root) }
+        } else {
+            // Refresh cell styles without rebuilding nodes or losing expansion/selection.
+            outline.reloadData(forRowIndexes: IndexSet(integersIn: 0..<outline.numberOfRows),
+                columnIndexes: IndexSet(integersIn: 0..<outline.numberOfColumns))
+        }
     }
 
     fileprivate final class Node: NSObject {
@@ -1029,6 +1039,9 @@ private struct JSONTreeView: NSViewRepresentable {
     final class Coordinator: NSObject, NSOutlineViewDataSource, NSOutlineViewDelegate {
         fileprivate var roots: [Node] = []
         var revision = -1
+        var theme = ResolvedTheme(preset: .black)
+        var themeRevision: UInt64?
+        var fontSize = 12.0
         func outlineView(_ outlineView: NSOutlineView, numberOfChildrenOfItem item: Any?) -> Int {
             (item as? Node)?.children.count ?? roots.count
         }
@@ -1043,73 +1056,22 @@ private struct JSONTreeView: NSViewRepresentable {
             let field = (outlineView.makeView(withIdentifier: column.identifier, owner: nil) as? NSTextField)
                 ?? NSTextField(labelWithString: "")
             field.identifier = column.identifier
-            field.font = .monospacedSystemFont(ofSize: 12, weight: .regular)
+            field.font = .monospacedSystemFont(ofSize: fontSize, weight: .regular)
             field.lineBreakMode = .byTruncatingTail
             field.maximumNumberOfLines = 1
             field.stringValue = column.identifier.rawValue == "key" ? node.value.key : node.value.value
-            if node.value.key == "Root" { field.textColor = .secondaryLabelColor }
-            else if column.identifier.rawValue == "key" { field.textColor = WireboltTheme.nsJSONKey }
+            if node.value.key == "Root" { field.textColor = theme.muted.nsColor }
+            else if column.identifier.rawValue == "key" { field.textColor = theme.definition.syntaxKey.nsColor }
             else {
                 field.textColor = switch node.value.type {
-                case "String": WireboltTheme.nsJSONString
-                case "Number": WireboltTheme.nsJSONNumber
-                case "Boolean": WireboltTheme.nsJSONBoolean
-                case "Null": WireboltTheme.nsJSONNull
-                default: .secondaryLabelColor
+                case "String": theme.definition.syntaxString.nsColor
+                case "Number": theme.definition.syntaxNumber.nsColor
+                case "Boolean": theme.definition.syntaxKeyword.nsColor
+                case "Null": theme.definition.syntaxKeyword.nsColor
+                default: theme.muted.nsColor
                 }
             }
             return field
-        }
-    }
-}
-
-@MainActor
-private final class FixedRendererPopupButton: NSPopUpButton {
-    override var intrinsicContentSize: NSSize {
-        NSSize(width: 122, height: 22)
-    }
-}
-
-private struct NativeRendererPicker: NSViewRepresentable {
-    @Binding var selection: ResponseRenderer
-
-    func makeCoordinator() -> Coordinator {
-        Coordinator(selection: $selection)
-    }
-
-    func makeNSView(context: Context) -> FixedRendererPopupButton {
-        let button = FixedRendererPopupButton(frame: .zero, pullsDown: false)
-        button.controlSize = .small
-        button.font = .systemFont(ofSize: 11)
-        button.alignment = .center
-        button.addItems(withTitles: ResponseRenderer.allCases.map(\.rawValue))
-        button.target = context.coordinator
-        button.action = #selector(Coordinator.changed(_:))
-        button.selectItem(withTitle: selection.rawValue)
-        button.setAccessibilityLabel("Response renderer")
-        return button
-    }
-
-    func updateNSView(_ button: FixedRendererPopupButton, context: Context) {
-        context.coordinator.selection = $selection
-        if button.titleOfSelectedItem != selection.rawValue {
-            button.selectItem(withTitle: selection.rawValue)
-        }
-    }
-
-    @MainActor
-    final class Coordinator: NSObject {
-        var selection: Binding<ResponseRenderer>
-
-        init(selection: Binding<ResponseRenderer>) {
-            self.selection = selection
-        }
-
-        @objc func changed(_ sender: NSPopUpButton) {
-            guard let title = sender.titleOfSelectedItem,
-                  let renderer = ResponseRenderer(rawValue: title)
-            else { return }
-            selection.wrappedValue = renderer
         }
     }
 }

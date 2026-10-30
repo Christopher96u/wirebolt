@@ -69,6 +69,7 @@ struct IndexedResponseEditor: View {
 }
 
 private struct IndexedCodeScrollView: NSViewRepresentable {
+    @Environment(\.wireboltTheme) private var theme
     @Environment(\.editorStorage) private var editorStorage
     @Environment(\.editorIsActive) private var isActive
     let index: ResponseTextIndex
@@ -103,12 +104,14 @@ private struct IndexedCodeScrollView: NSViewRepresentable {
             view?.presentation?.origin = point
             view?.visibleAreaChanged()
         }
-        let changed = view.index?.rowCount != index.rowCount || view.index?.url != index.url || view.index?.columns != index.columns || view.index?.wrapping != index.wrapping || view.fontSize != fontSize || view.language != language
+        let changed = view.theme != theme || view.index?.rowCount != index.rowCount || view.index?.url != index.url || view.index?.columns != index.columns || view.index?.wrapping != index.wrapping || view.fontSize != fontSize || view.language != language
         let oldIndex = view.index
         let oldOrigin = scroll.contentView.bounds.origin
         let oldRow = max(0, Int(oldOrigin.y / view.lineHeight))
         let fraction = oldOrigin.y / view.lineHeight - Double(oldRow)
         let anchor = changed && oldIndex?.url == index.url ? try? oldIndex?.rows(start: oldRow, count: 1).first : nil
+        view.theme = theme
+        scroll.backgroundColor = theme.definition.window.nsColor
         view.index = index
         view.fontSize = fontSize
         view.language = language
@@ -142,6 +145,7 @@ private struct IndexedCodeScrollView: NSViewRepresentable {
 
 @MainActor
 final class IndexedCodeView: NSView, NSUserInterfaceValidations {
+    var theme = ResolvedTheme(preset: .black)
     var presentation: EditorPresentationStorage.State?
     var index: ResponseTextIndex?
     var fontSize = 12.0
@@ -165,6 +169,7 @@ final class IndexedCodeView: NSView, NSUserInterfaceValidations {
         let language: SyntaxLanguage
         let fontSize: Double
         let appearance: NSAppearance.Name
+        let themeRevision: UInt64
         let line: IndexedTextLine
         var complete = true
     }
@@ -276,7 +281,7 @@ final class IndexedCodeView: NSView, NSUserInterfaceValidations {
     }
 
     override func draw(_ dirtyRect: NSRect) {
-        NSColor.textBackgroundColor.setFill()
+        theme.definition.window.nsColor.setFill()
         dirtyRect.fill()
         guard let index else { return }
         let first = max(0, Int(visibleRect.minY / lineHeight) - 4)
@@ -285,7 +290,7 @@ final class IndexedCodeView: NSView, NSUserInterfaceValidations {
         if cachedRows.first?.number ?? Int.max > first || cachedRows.last?.number ?? -1 < end - 1 {
             load(range)
         }
-        let numberAttributes: [NSAttributedString.Key: Any] = [.font: NSFont.monospacedSystemFont(ofSize: fontSize, weight: .regular), .foregroundColor: NSColor.secondaryLabelColor]
+        let numberAttributes: [NSAttributedString.Key: Any] = [.font: NSFont.monospacedSystemFont(ofSize: fontSize, weight: .regular), .foregroundColor: theme.definition.lineNumber.nsColor]
         let selection = orderedSelection
         let singleLongLine = cachedRows.filter { $0.text.utf16.count > 2048 }.count == 1
         for row in cachedRows where range.contains(row.number) {
@@ -296,14 +301,14 @@ final class IndexedCodeView: NSView, NSUserInterfaceValidations {
             }
             if row.text.utf16.count > 2048, selection == nil, query.isEmpty, findMatches.isEmpty {
                 let cached: ShapedLine
-                if let found = shapedLines.firstIndex(where: { $0.text == row.text && $0.language == language && $0.fontSize == fontSize && $0.appearance == effectiveAppearance.name }) {
+                if let found = shapedLines.firstIndex(where: { $0.text == row.text && $0.language == language && $0.fontSize == fontSize && $0.appearance == effectiveAppearance.name && $0.themeRevision == theme.revision }) {
                     cached = shapedLines.remove(at: found)
                 } else {
                     let source = row.text as NSString
                     let progressive = singleLongLine && source.length <= 2 * 1024 * 1024
                     let prefix = progressive ? source.substring(with: source.rangeOfComposedCharacterSequences(for: NSRange(location: 0, length: min(2048, source.length)))) : row.text
-                    cached = ShapedLine(text: row.text, language: language, fontSize: fontSize, appearance: effectiveAppearance.name,
-                        line: IndexedTextLine(Self.styled(prefix, language: language, fontSize: fontSize, invisibles: showsInvisibles), fontSize: fontSize), complete: !progressive)
+                    cached = ShapedLine(text: row.text, language: language, fontSize: fontSize, appearance: effectiveAppearance.name, themeRevision: theme.revision,
+                        line: IndexedTextLine(Self.styled(prefix, language: language, fontSize: fontSize, invisibles: showsInvisibles, theme: theme), fontSize: fontSize), complete: !progressive)
                 }
                 shapedLines.append(cached)
                 if !cached.complete { prepareLongLine(row.text) }
@@ -312,7 +317,7 @@ final class IndexedCodeView: NSView, NSUserInterfaceValidations {
                 hasDrawnViewport = true
                 continue
             }
-            let attributed = NSMutableAttributedString(attributedString: Self.styled(row.text, language: language, fontSize: fontSize, invisibles: showsInvisibles))
+            let attributed = NSMutableAttributedString(attributedString: Self.styled(row.text, language: language, fontSize: fontSize, invisibles: showsInvisibles, theme: theme))
             for range in findHighlights(row: row.number, length: attributed.length) {
                 attributed.addAttribute(.backgroundColor, value: NSColor.findHighlightColor.withAlphaComponent(0.25), range: range)
             }
@@ -334,16 +339,16 @@ final class IndexedCodeView: NSView, NSUserInterfaceValidations {
         guard shapingText == nil else { return }
         shapingTask?.cancel()
         shapingText = text
-        let fontSize = fontSize, language = language, appearance = effectiveAppearance.name, invisibles = showsInvisibles
+        let fontSize = fontSize, language = language, appearance = effectiveAppearance.name, invisibles = showsInvisibles, theme = theme
         shapingTask = Task { [weak self] in
             do {
-                let attributed = Self.styled(text, language: language, fontSize: fontSize, invisibles: invisibles)
+                let attributed = Self.styled(text, language: language, fontSize: fontSize, invisibles: invisibles, theme: theme)
                 let line = try await IndexedTextLine.prepare(attributed, fontSize: fontSize)
                 try Task.checkCancellation()
                 guard let self, self.fontSize == fontSize, self.language == language, self.effectiveAppearance.name == appearance,
-                      self.showsInvisibles == invisibles else { return }
+                      self.showsInvisibles == invisibles, self.theme.revision == theme.revision else { return }
                 self.shapedLines.removeAll { $0.text == text }
-                self.shapedLines.append(ShapedLine(text: text, language: language, fontSize: fontSize, appearance: appearance, line: line))
+                self.shapedLines.append(ShapedLine(text: text, language: language, fontSize: fontSize, appearance: appearance, themeRevision: theme.revision, line: line))
                 while self.shapedLines.count > 2 { self.shapedLines.removeFirst() }
                 self.shapingText = nil
                 self.needsDisplay = true
@@ -353,9 +358,9 @@ final class IndexedCodeView: NSView, NSUserInterfaceValidations {
         }
     }
 
-    private static func styled(_ text: String, language: SyntaxLanguage, fontSize: Double, invisibles: Bool) -> NSAttributedString {
-        let highlighted = SyntaxHighlighter.attributedString(text: text, language: language, fontSize: fontSize)
-        return invisibles ? InvisibleSpaces.marking(highlighted, attributes: [.foregroundColor: NSColor.tertiaryLabelColor]) : highlighted
+    private static func styled(_ text: String, language: SyntaxLanguage, fontSize: Double, invisibles: Bool, theme: ResolvedTheme) -> NSAttributedString {
+        let highlighted = SyntaxHighlighter.attributedString(text: text, language: language, fontSize: fontSize, theme: theme)
+        return invisibles ? InvisibleSpaces.marking(highlighted, attributes: [.foregroundColor: theme.definition.dim.nsColor]) : highlighted
     }
 
     private func load(_ range: Range<Int>) {

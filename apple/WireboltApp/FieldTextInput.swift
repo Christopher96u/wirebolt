@@ -5,7 +5,7 @@ import SwiftUI
 enum FieldEditorMetrics {
     static func height(for text: String, width: Double) -> Double {
         let cell = NSTextFieldCell(textCell: text.isEmpty ? " " : text)
-        let font = NSFont.monospacedSystemFont(ofSize: 11, weight: .regular)
+        let font = NSFont.monospacedSystemFont(ofSize: WireboltTheme.current.typography.field, weight: .regular)
         cell.font = font
         cell.wraps = true
         cell.isScrollable = false
@@ -15,7 +15,7 @@ enum FieldEditorMetrics {
         // single line. Keep measuring wrapped rows when the value is clipped.
         let minimumWidth = (" " as NSString).size(withAttributes: [.font: font]).width.rounded(.up)
         let bounds = NSRect(x: 0, y: 0, width: max(minimumWidth, width - 24), height: .greatestFiniteMagnitude)
-        return max(20, cell.cellSize(forBounds: bounds).height.rounded(.up) + 6)
+        return max(WireboltTheme.current.density.controlHeight, cell.cellSize(forBounds: bounds).height.rounded(.up) + 6)
     }
 
     static func height(key: String, value: String, valueWidth: Double) -> Double {
@@ -40,6 +40,7 @@ struct FieldTextInput: View {
     let accessibilityLabel: String?
 
     @Environment(\.variableCatalog) private var variables
+    @Environment(\.wireboltTheme) private var theme
     @FocusState private var isFocused: Bool
     @State private var selection: TextSelection?
     @State private var completionIndex = 0
@@ -58,14 +59,14 @@ struct FieldTextInput: View {
         let completions = completionEntries
         TextField(placeholder, text: $text, selection: $selection, axis: .vertical)
             .textFieldStyle(.plain)
-            .font(.system(size: 11, design: .monospaced))
+            .font(WireboltTheme.Typography.field)
             // Clear (not zero opacity) so the field still takes clicks under the overlay.
             .foregroundStyle(highlights ? AnyShapeStyle(Color.clear) : AnyShapeStyle(HierarchicalShapeStyle.primary))
             .focused($isFocused)
             .overlay(alignment: .topLeading) {
                 if highlights, let variables {
-                    Text(VariableHighlighting.attributed(text, catalog: variables))
-                        .font(.system(size: 11, design: .monospaced))
+                    Text(VariableHighlighting.attributed(text, catalog: variables, theme: theme))
+                        .font(WireboltTheme.Typography.field)
                         .frame(maxWidth: .infinity, alignment: .topLeading)
                         .allowsHitTesting(false)
                         .accessibilityHidden(true)
@@ -122,35 +123,34 @@ struct FieldTextInput: View {
 /// Highlighting and completion edits shared by the URL field and key/value cells.
 @MainActor
 enum VariableHighlighting {
-    static let resolvedColor = NSColor(WireboltTheme.primaryAccent)
-    static let unresolvedColor = NSColor(WireboltTheme.danger)
-
-    static func attributed(_ text: String, catalog: VariableCatalog) -> AttributedString {
+    static func attributed(_ text: String, catalog: VariableCatalog, theme: ResolvedTheme) -> AttributedString {
         var attributed = AttributedString(text)
         for reference in VariableTemplate.references(in: text) {
             guard let stringRange = Range(reference.range, in: text),
                   let range = Range(stringRange, in: attributed) else { continue }
-            attributed[range].foregroundColor = catalog.entry(named: reference.name) == nil ? WireboltTheme.danger : WireboltTheme.primaryAccent
+            attributed[range].foregroundColor = catalog.entry(named: reference.name) == nil ? theme.definition.error.color : theme.definition.variableForeground.color
+            attributed[range].backgroundColor = theme.definition.variableBackground.color
         }
         return attributed
     }
 
     /// Colors references in place; used on the field editor while the URL is edited.
-    static func apply(to storage: NSTextStorage, catalog: VariableCatalog, baseColor: NSColor) {
+    static func apply(to storage: NSTextStorage, catalog: VariableCatalog, baseColor: NSColor, theme: ResolvedTheme) {
         let text = storage.string
         let full = NSRange(location: 0, length: storage.length)
         storage.beginEditing()
         storage.addAttribute(.foregroundColor, value: baseColor, range: full)
+        storage.removeAttribute(.backgroundColor, range: full)
         for reference in VariableTemplate.references(in: text) where NSMaxRange(reference.range) <= storage.length {
-            storage.addAttribute(.foregroundColor, value: color(for: reference, catalog: catalog), range: reference.range)
+            storage.addAttributes([.foregroundColor: color(for: reference, catalog: catalog, theme: theme), .backgroundColor: theme.definition.variableBackground.nsColor], range: reference.range)
         }
         storage.endEditing()
     }
 
-    static func attributedString(_ text: String, font: NSFont, catalog: VariableCatalog) -> NSAttributedString {
-        let result = NSMutableAttributedString(string: text, attributes: [.font: font, .foregroundColor: NSColor.labelColor])
+    static func attributedString(_ text: String, font: NSFont, catalog: VariableCatalog, theme: ResolvedTheme) -> NSAttributedString {
+        let result = NSMutableAttributedString(string: text, attributes: [.font: font, .foregroundColor: theme.primary.nsColor])
         for reference in VariableTemplate.references(in: text) {
-            result.addAttribute(.foregroundColor, value: color(for: reference, catalog: catalog), range: reference.range)
+            result.addAttributes([.foregroundColor: color(for: reference, catalog: catalog, theme: theme), .backgroundColor: theme.definition.variableBackground.nsColor], range: reference.range)
         }
         return result
     }
@@ -163,8 +163,8 @@ enum VariableHighlighting {
         return (updated, reference.replacementRange.location + (name as NSString).length + 2)
     }
 
-    private static func color(for reference: VariableReference, catalog: VariableCatalog) -> NSColor {
-        catalog.entry(named: reference.name) == nil ? unresolvedColor : resolvedColor
+    private static func color(for reference: VariableReference, catalog: VariableCatalog, theme: ResolvedTheme) -> NSColor {
+        catalog.entry(named: reference.name) == nil ? theme.definition.error.nsColor : theme.definition.variableForeground.nsColor
     }
 }
 
@@ -212,9 +212,7 @@ struct FieldCheckbox: View {
 
     var body: some View {
         NativeCheckbox(isOn: $isOn, label: label)
-            .frame(width: 18, height: 18)
-            .offset(x: 2)
-            .frame(width: 28, height: 20)
+            .frame(width: 28, height: 28)
     }
 
     private struct NativeCheckbox: NSViewRepresentable {

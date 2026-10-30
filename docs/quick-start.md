@@ -18,10 +18,10 @@ Leave that terminal open. It listens only on `127.0.0.1:18990`. Stop it with **C
 
 1. Open Wirebolt and choose **File → New Workspace…**. Choose a new folder.
 2. Choose **File → New Collection…** (**⇧⌘N**) and name it **Catalog API**.
-3. Click **New Request** under the empty collection in the sidebar. Type the name **List products** and press **Return**.
+3. Click **New Request** under the empty collection in the sidebar. The URL field receives focus. Rename the request **List products** from its sidebar context menu.
 4. Choose **GET** and enter `http://127.0.0.1:18990/products`.
 5. Click **Send** or press **⌘Return**.
-6. Expect **200 OK** beside the URL and a JSON object containing `products` and `total`.
+6. Expect **200 OK** in the response summary and a JSON object containing `products` and `total`.
 7. Press **⌘S** to save the request.
 
 If your system proxy interferes with loopback requests, select **Direct — No proxy** in the request's **Settings** tab, apply it and retry. This changes only that request.
@@ -40,7 +40,7 @@ Send the request. The response includes your JSON under `body`. Rename it **Crea
 
 ## Reuse a base URL
 
-Open the environment menu → **Configure Environments…**. Add an enabled Global variable named `base_url` with value `http://127.0.0.1:18990`, then click **Save**. Change the request URL to `{{base_url}}/products` and send again.
+Open the environment menu → **Configure Environments…**. Add an enabled Global variable named `base_url` with value `http://127.0.0.1:18990`, then click **Apply**. Change the request URL to `{{base_url}}/products` and send again.
 
 Add your endpoint's usage notes under **Note → Edit**, then open **Preview** and save with **⌘S**.
 
