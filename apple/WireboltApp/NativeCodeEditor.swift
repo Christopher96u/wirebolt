@@ -1030,7 +1030,7 @@ final class CodeTextContainer: NSTextContainer {
         let font = storage.attribute(.font, at: index, effectiveRange: nil) as? NSFont
             ?? .monospacedSystemFont(ofSize: 12, weight: .regular)
         if fontMetrics?.font != font {
-            fontMetrics = (font, (" " as NSString).size(withAttributes: [.font: font]).width)
+            fontMetrics = (font, Double((" " as NSString).size(withAttributes: [.font: font]).width))
         }
         let advance = fontMetrics!.advance
         // Shape enough context for several visual lines, never the entire minified document.
