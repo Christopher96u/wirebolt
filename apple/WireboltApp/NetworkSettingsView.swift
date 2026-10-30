@@ -29,7 +29,8 @@ struct NetworkSettingsPage: View {
     let scope: ProxyScope
     var session: DocumentSession?
     var onClose: (() -> Void)?
-    @Environment(\.openSettings) private var openSettings
+    var isActive: Bool
+    @Environment(\.wireboltTheme) private var theme
     @State private var form: ProxyFormDraft
     @State private var baseline: ProxyFormDraft
     @State private var saving = false
@@ -42,9 +43,11 @@ struct NetworkSettingsPage: View {
     @State private var transport: TransportSettings
     @State private var transportBaseline: TransportSettings
     @State private var isConfirmingDiscard = false
+    @State private var isConfirmingAppSettings = false
 
-    init(model: WireboltModel, scope: ProxyScope, session: DocumentSession? = nil, onClose: (() -> Void)? = nil) {
+    init(model: WireboltModel, scope: ProxyScope, session: DocumentSession? = nil, onClose: (() -> Void)? = nil, isActive: Bool = true) {
         self.model = model; self.scope = scope; self.session = session; self.onClose = onClose
+        self.isActive = isActive
         _transport = State(initialValue: model.workspace.transport)
         _transportBaseline = State(initialValue: model.workspace.transport)
         _test = State(initialValue: model.makeProxyConnectionTest())
@@ -120,8 +123,9 @@ struct NetworkSettingsPage: View {
                             }.font(.caption)
                         }
                     }
-                }.padding(16).frame(maxWidth: .infinity, alignment: .leading).background(.background, in: RoundedRectangle(cornerRadius: 10))
-                    .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(.quaternary))
+                }.padding(WireboltTheme.Spacing.xLarge).frame(maxWidth: .infinity, alignment: .leading)
+                    .background(theme.definition.card.color, in: .rect(cornerRadius: theme.geometry.card))
+                    .overlay(RoundedRectangle(cornerRadius: theme.geometry.card).strokeBorder(theme.cardBorder.color))
 
                 if let validation {
                     Label(validation, systemImage: "exclamationmark.circle").font(.callout).foregroundStyle(WireboltTheme.danger)
@@ -139,11 +143,11 @@ struct NetworkSettingsPage: View {
                                 if scope == .request {
                                     Button("Edit workspace settings") { model.isShowingWorkspaceSettings = true }
                                 }
-                                Button("Edit app default") { model.settingsTab = "network"; openSettings() }
+                                Button("Edit app default", action: openAppSettings)
                             }.buttonStyle(.link).font(.caption)
                         }
                     }.padding(16).frame(maxWidth: .infinity, alignment: .leading)
-                        .background(Color.accentColor.opacity(0.055), in: RoundedRectangle(cornerRadius: 10))
+                        .background(theme.definition.variableForeground.color.opacity(0.055), in: .rect(cornerRadius: theme.geometry.card))
                 }
                 if let saveError { Label(saveError, systemImage: "exclamationmark.circle").font(.caption).foregroundStyle(WireboltTheme.danger) }
                 if let session, session.kind == .webSocket, session.socket.status != .disconnected {
@@ -193,7 +197,7 @@ struct NetworkSettingsPage: View {
         Divider()
         if isSheet { sheetFooter } else { inlineFooter }
         }
-        .background(Color(nsColor: .windowBackgroundColor))
+        .background(theme.definition.window.color)
         .onChange(of: currentConfiguration) {
             if !changed { reload() }
         }
@@ -201,12 +205,30 @@ struct NetworkSettingsPage: View {
         .onChange(of: effective.configuration) { test.reset() }
         .onChange(of: testURL) { test.reset() }
         .onDisappear { test.cancel() }
+        .onChange(of: isActive) { if !isActive { test.cancel() } }
         .alert("Discard changes?", isPresented: $isConfirmingDiscard) {
             Button("Discard Changes", role: .destructive) { onClose?() }
             Button("Keep Editing", role: .cancel) {}
         } message: {
             Text("Your network settings changes haven’t been saved.")
         }
+        .alert("Discard network edits and open app settings?", isPresented: $isConfirmingAppSettings) {
+            Button("Keep Editing", role: .cancel) {}
+            Button("Discard and Open", role: .destructive, action: showAppSettings)
+        } message: {
+            Text("Your unapplied workspace network edits will be discarded. Save them first to keep them.")
+        }
+    }
+
+    private func openAppSettings() {
+        if isSheet && (changed || transportChanged) { isConfirmingAppSettings = true }
+        else { showAppSettings() }
+    }
+
+    private func showAppSettings() {
+        onClose?()
+        model.settingsTab = "network"
+        presentAppSettings(model)
     }
 
     private var inlineFooter: some View {
@@ -337,7 +359,6 @@ struct ProxyConnectionIndicator: View {
     var compact = false
     let openRequestSettings: () -> Void
     @State private var showsDetails = false
-    @Environment(\.openSettings) private var openSettings
     private var effective: EffectiveProxy { model.effectiveProxy(for: session.draft) }
     private var label: String {
         if (try? effective.configuration.validate()) == nil { return "Error" }
@@ -367,7 +388,7 @@ struct ProxyConnectionIndicator: View {
                     Divider()
                     Button("Request settings") { showsDetails = false; openRequestSettings() }
                     Button("Workspace settings") { showsDetails = false; model.isShowingWorkspaceSettings = true }
-                    Button("App default") { showsDetails = false; model.settingsTab = "network"; openSettings() }
+                    Button("App default") { showsDetails = false; model.settingsTab = "network"; presentAppSettings(model) }
                     if let last = session.preparedRun?.proxy {
                         Divider()
                         Text("Last execution").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
@@ -529,92 +550,4 @@ private struct NetworkScrollStyle: NSViewRepresentable {
             scroll.scrollerStyle = .legacy
         }
     }
-}
-
-struct WireboltSettingsView: View {
-    @Bindable var model: WireboltModel
-    @AppStorage("interfaceAppearance") private var interfaceAppearance = "system"
-    @AppStorage("editor.fontSize") private var fontSize = 12.0
-    @State private var showingPrivacyPolicy = false
-
-    var body: some View {
-        TabView(selection: $model.settingsTab) {
-            Tab("General", systemImage: "gearshape", value: "general") {
-                Grid(alignment: .leading, horizontalSpacing: 10, verticalSpacing: 13) {
-                    GridRow(alignment: .top) {
-                        Text("Font Size:").gridColumnAlignment(.trailing)
-                        VStack(alignment: .leading, spacing: 6) {
-                            Picker("Font Size", selection: $fontSize) {
-                                ForEach(Array(10...20) + [24, 28], id: \.self) { size in
-                                    Text(String(size)).tag(Double(size))
-                                }
-                            }.labelsHidden().frame(width: 60)
-                            Text("Applies to request and response editors.").font(WireboltTheme.Typography.detail).foregroundStyle(.secondary)
-                        }
-                    }
-                    GridRow {
-                        Text("App Theme:")
-                        Picker("App Theme", selection: $interfaceAppearance) {
-                            Text("System").tag("system")
-                            Text("Light").tag("light")
-                            Text("Dark").tag("dark")
-                        }.labelsHidden().frame(width: 80)
-                    }
-                }
-                .font(WireboltTheme.Typography.body).controlSize(.regular)
-                .padding(WireboltTheme.Spacing.xxLarge)
-                // The Settings window sizes itself to each tab's content.
-                .frame(width: 440, alignment: .top)
-                .fixedSize(horizontal: false, vertical: true)
-            }
-            Tab("Network", systemImage: "network", value: "network") {
-                NetworkSettingsPage(model: model, scope: .app)
-                    .frame(width: 600, height: 540)
-            }
-            Tab("Privacy", systemImage: "hand.raised", value: "privacy") {
-                Grid(alignment: .leading, horizontalSpacing: 10, verticalSpacing: 18) {
-                    GridRow(alignment: .top) {
-                        Text("Analytics:").frame(width: 104, alignment: .trailing)
-                        VStack(alignment: .leading, spacing: 6) {
-                            Label("Not collected", systemImage: "checkmark.shield")
-                                .frame(height: 18, alignment: .top).padding(.leading, 2)
-                            Text("Wirebolt does not collect usage analytics or send identifiers automatically. Your collections, requests and environments stay in your workspace.")
-                                .font(.system(size: 11)).foregroundStyle(.secondary)
-                                .frame(width: 384, height: 44, alignment: .topLeading).padding(.leading, 2)
-                        }
-                    }
-                    GridRow(alignment: .top) {
-                        Text("Crash Report:").frame(width: 104, alignment: .trailing)
-                        VStack(alignment: .leading, spacing: 6) {
-                            Label("Not uploaded automatically", systemImage: "checkmark.shield")
-                                .frame(height: 18, alignment: .top).padding(.leading, 2)
-                            Text("Wirebolt does not upload crash reports or diagnostics automatically. You decide what information to include when reporting a problem.")
-                                .font(.system(size: 11)).foregroundStyle(.secondary)
-                                .frame(width: 384, height: 44, alignment: .topLeading).padding(.leading, 2)
-                            Text("Your data stays under your control.")
-                                .font(.system(size: 13)).foregroundStyle(.secondary).padding(.leading, 2)
-                            Button { showingPrivacyPolicy = true } label: {
-                                Text("Privacy Policy").frame(width: 86, height: 18)
-                            }
-                                .padding(.top, 12).padding(.leading, 2)
-                        }
-                    }
-                }
-                .font(WireboltTheme.Typography.body).controlSize(.regular)
-                .padding(WireboltTheme.Spacing.xxLarge).padding(.trailing, WireboltTheme.Spacing.xSmall)
-                .frame(width: 580, alignment: .top)
-                .fixedSize(horizontal: false, vertical: true)
-                .sheet(isPresented: $showingPrivacyPolicy) {
-                    VStack(alignment: .leading, spacing: 16) {
-                        Text("Privacy Policy").font(.title2.weight(.semibold))
-                        Text("Wirebolt stores your workspace on this Mac. It does not automatically send analytics, identifiers, crash reports or diagnostics.")
-                        Text("Requests connect to the addresses you choose and may use your configured proxy. Sign-in and Git sync connect to their services when you use those features.")
-                        Text("You control which workspace files or diagnostic details you share with others.")
-                        HStack { Spacer(); Button("Done") { showingPrivacyPolicy = false }.keyboardShortcut(.defaultAction) }
-                    }.padding(24).frame(width: 480)
-                }
-            }
-        }
-    }
-
 }

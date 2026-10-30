@@ -94,6 +94,7 @@ extension EnvironmentValues {
 }
 
 struct NativeCodeEditor: NSViewRepresentable {
+    @Environment(\.wireboltTheme) private var theme
     @Binding var text: String
     @Environment(\.editorStorage) private var editorStorage
     @Environment(\.editorIsActive) private var isActive
@@ -189,7 +190,7 @@ struct NativeCodeEditor: NSViewRepresentable {
         (view as? FindableCodeTextView)?.findState = isActive ? find : nil
         guard isActive else { return }
         let configuration = Configuration(fontSize: fontSize, wraps: wrapsLines, invisibles: showInvisibles,
-            scrollBeyond: scrollBeyond, editable: editable, language: language, appearance: view.effectiveAppearance.name)
+            scrollBeyond: scrollBeyond, editable: editable, language: language, appearance: view.effectiveAppearance.name, themeRevision: theme.revision)
         if context.coordinator.configuration == configuration,
            context.coordinator.projection.source == text, !context.coordinator.needsHighlight,
            context.coordinator.search == search {
@@ -205,8 +206,14 @@ struct NativeCodeEditor: NSViewRepresentable {
             coordinator.presentation = editorStorage?.state(for: storageKey ?? label)
             coordinator.collapsed = coordinator.presentation?.collapsed ?? []
         }
-        let needsStyle = coordinator.fontSize != fontSize || coordinator.language != language
+        let needsStyle = coordinator.theme.revision != theme.revision || coordinator.fontSize != fontSize || coordinator.language != language
             || coordinator.appearance != view.effectiveAppearance.name
+        coordinator.theme = theme
+        scroll.backgroundColor = theme.definition.window.nsColor
+        view.backgroundColor = theme.definition.window.nsColor
+        if needsStyle { view.textColor = theme.primary.nsColor }
+        (scroll.verticalRulerView as? CodeLineRuler)?.theme = theme
+        view.insertionPointColor = theme.primary.nsColor
         coordinator.fontSize = fontSize
         coordinator.language = language
         coordinator.appearance = view.effectiveAppearance.name
@@ -216,8 +223,10 @@ struct NativeCodeEditor: NSViewRepresentable {
         let paragraph = NSMutableParagraphStyle()
         paragraph.lineSpacing = CodeEditorMetrics.lineSpacing(fontSize)
         paragraph.lineBreakMode = .byCharWrapping
-        view.typingAttributes = [.paragraphStyle: paragraph, .font: NSFont.monospacedSystemFont(ofSize: fontSize, weight: .regular), .foregroundColor: NSColor.labelColor]
+        view.typingAttributes = [.paragraphStyle: paragraph, .font: NSFont.monospacedSystemFont(ofSize: fontSize, weight: .regular), .foregroundColor: theme.primary.nsColor]
         (view.layoutManager as? CodeLayoutManager)?.drawInvisibles = showInvisibles
+        (view.layoutManager as? CodeLayoutManager)?.invisibleColor = theme.definition.dim.nsColor
+        (view.layoutManager as? CodeLayoutManager)?.editorFontSize = fontSize
         scroll.contentInsets = NSEdgeInsets(top: 0, left: 0, bottom: 0, right: 0)
         (scroll as? NativeEditorScrollView)?.scrollBeyond = scrollBeyond
         if context.coordinator.search != search {
@@ -261,6 +270,7 @@ struct NativeCodeEditor: NSViewRepresentable {
         let editable: Bool
         let language: SyntaxLanguage
         let appearance: NSAppearance.Name
+        let themeRevision: UInt64
     }
 
     @MainActor
@@ -272,6 +282,7 @@ struct NativeCodeEditor: NSViewRepresentable {
         var needsHighlight = false
         var fontSize = 0.0
         var language: SyntaxLanguage = .plain
+        var theme = ResolvedTheme(preset: .black)
         var appearance: NSAppearance.Name?
         var presentation: EditorPresentationStorage.State?
         var restored = false
@@ -356,6 +367,7 @@ struct NativeCodeEditor: NSViewRepresentable {
             guard let view = scroll.documentView as? NSTextView else { return }
             let selection = view.selectedRange()
             let sourceSelection = projection.sourceOffset(selection.location)
+            let sourceEnd = projection.sourceOffset(NSMaxRange(selection))
             updating = true
             foldTask?.cancel()
             foldTask = nil
@@ -365,8 +377,10 @@ struct NativeCodeEditor: NSViewRepresentable {
             highlightsViewport = projection.text.utf8.count > 64 * 1024 && (language == .json || language == .http)
             highlightedRange = NSRange(location: NSNotFound, length: 0)
             view.textStorage?.setAttributedString(SyntaxHighlighter.attributedString(text: projection.text,
-                language: highlightsViewport ? .plain : language, fontSize: fontSize))
-            view.setSelectedRange(NSRange(location: min(projection.displayOffset(sourceSelection), (projection.text as NSString).length), length: 0))
+                language: highlightsViewport ? .plain : language, fontSize: fontSize, theme: theme))
+            let start = min(projection.displayOffset(sourceSelection), (projection.text as NSString).length)
+            let end = min(projection.displayOffset(sourceEnd), (projection.text as NSString).length)
+            view.setSelectedRange(NSRange(location: start, length: max(0, end - start)))
             needsHighlight = false
             (scroll.verticalRulerView as? CodeLineRuler)?.updateProjection(projection, folding: language.folding != .none, index: lineIndex)
             updating = false
@@ -386,7 +400,7 @@ struct NativeCodeEditor: NSViewRepresentable {
             highlightedRange = range
             updating = true
             defer { updating = false }
-            let styled = SyntaxHighlighter.attributedString(text: source.substring(with: range), language: language, fontSize: fontSize)
+            let styled = SyntaxHighlighter.attributedString(text: source.substring(with: range), language: language, fontSize: fontSize, theme: theme)
             viewportStyle = styled
             styled.enumerateAttributes(in: NSRange(location: 0, length: styled.length)) { attributes, local, _ in
                 let target = NSRange(location: range.location + local.location, length: local.length)
@@ -453,7 +467,7 @@ struct NativeCodeEditor: NSViewRepresentable {
                 let string = source as NSString
                 let start = min(edit.range.location, string.length)
                 let range = string.lineRange(for: NSRange(location: start, length: min((edit.replacement as NSString).length, string.length - start)))
-                let styled = SyntaxHighlighter.attributedString(text: string.substring(with: range), language: language, fontSize: fontSize)
+                let styled = SyntaxHighlighter.attributedString(text: string.substring(with: range), language: language, fontSize: fontSize, theme: theme)
                 storage.beginEditing()
                 storage.setAttributes([:], range: range)
                 styled.enumerateAttributes(in: NSRange(location: 0, length: styled.length)) { attributes, local, _ in
@@ -701,6 +715,8 @@ final class CodeTextStorage: NSTextStorage {
 }
 
 private final class CodeLayoutManager: NSLayoutManager {
+    var invisibleColor = NSColor.secondaryLabelColor
+    var editorFontSize = 12.0
     var drawInvisibles = false {
         didSet { if drawInvisibles != oldValue { invisibleMarkers.removeAll() } }
     }
@@ -748,7 +764,7 @@ private final class CodeLayoutManager: NSLayoutManager {
     override func drawGlyphs(forGlyphRange glyphsToShow: NSRange, at origin: NSPoint) {
         super.drawGlyphs(forGlyphRange: glyphsToShow, at: origin)
         guard drawInvisibles, let storage = textStorage, let context = NSGraphicsContext.current?.cgContext,
-              let marker = markerFont(size: textContainers.first?.textView?.font?.pointSize ?? 12) else { return }
+              let marker = markerFont(size: editorFontSize) else { return }
         // Non-contiguous layout can move fragments without an invalidation callback;
         // the first and last fragments of the range validate a cached entry.
         let bounds = glyphsToShow.length == 0 ? [] : [glyphsToShow.location, NSMaxRange(glyphsToShow) - 1]
@@ -772,7 +788,7 @@ private final class CodeLayoutManager: NSLayoutManager {
         let positions = markers.map { CGPoint(x: origin.x + $0.x, y: -(origin.y + $0.y)) }
         let glyphs = [CGGlyph](repeating: marker.glyph, count: positions.count)
         context.saveGState()
-        context.setFillColor(NSColor.tertiaryLabelColor.cgColor)
+        context.setFillColor(invisibleColor.cgColor)
         context.textMatrix = .identity
         context.scaleBy(x: 1, y: -1)
         CTFontDrawGlyphs(marker.font, glyphs, positions, positions.count, context)
@@ -896,6 +912,7 @@ final class EditorClipView: NSClipView {
 
 @MainActor
 private final class CodeLineRuler: NSRulerView {
+    var theme = ResolvedTheme(preset: .black)
     private var lines: [(offset: Int, number: Int, fold: Bool)] = []
     private var hitAreas: [(NSRect, Int)] = []
     private var collapsed: Set<Int> = []
@@ -951,12 +968,20 @@ private final class CodeLineRuler: NSRulerView {
         NSBezierPath(rect: bounds).addClip()
         let attributes: [NSAttributedString.Key: Any] = [
             .font: view.font ?? NSFont.monospacedSystemFont(ofSize: 12, weight: .regular),
-            .foregroundColor: NSColor.secondaryLabelColor
+            .foregroundColor: theme.definition.lineNumber.nsColor
         ]
         let glyphs = manager.glyphRange(forBoundingRect: view.visibleRect, in: container)
         let chars = manager.characterRange(forGlyphRange: glyphs, actualGlyphRange: nil)
         hitAreas.removeAll(keepingCapacity: true)
-        for line in lines where line.offset >= chars.location && line.offset <= NSMaxRange(chars) {
+        // The line table is ordered. A viewport redraw must not walk a large
+        // document's entire gutter just to find the handful of visible labels.
+        var lower = 0, upper = lines.count
+        while lower < upper {
+            let middle = lower + (upper - lower) / 2
+            if lines[middle].offset < chars.location { lower = middle + 1 } else { upper = middle }
+        }
+        let end = NSMaxRange(chars)
+        for line in lines[lower...].prefix(while: { $0.offset <= end }) {
             let point: NSPoint
             if line.offset < (view.textStorage?.length ?? 0) {
                 let glyph = manager.glyphIndexForCharacter(at: line.offset)
@@ -977,7 +1002,7 @@ private final class CodeLineRuler: NSRulerView {
                 } else {
                     path.move(to: NSPoint(x: x - 4 * scale, y: y - 2 * scale)); path.line(to: NSPoint(x: x, y: y + 2 * scale)); path.line(to: NSPoint(x: x + 4 * scale, y: y - 2 * scale))
                 }
-                NSColor.secondaryLabelColor.setStroke()
+                theme.definition.lineNumber.nsColor.setStroke()
                 path.lineWidth = max(1, scale)
                 path.stroke()
             }
@@ -1005,7 +1030,7 @@ final class CodeTextContainer: NSTextContainer {
         let font = storage.attribute(.font, at: index, effectiveRange: nil) as? NSFont
             ?? .monospacedSystemFont(ofSize: 12, weight: .regular)
         if fontMetrics?.font != font {
-            fontMetrics = (font, (" " as NSString).size(withAttributes: [.font: font]).width)
+            fontMetrics = (font, Double((" " as NSString).size(withAttributes: [.font: font]).width))
         }
         let advance = fontMetrics!.advance
         // Shape enough context for several visual lines, never the entire minified document.
@@ -1084,13 +1109,14 @@ enum SyntaxHighlighter {
         expressions[pattern] = expression
         return expression
     }
-    static func attributedString(text: String, language: SyntaxLanguage, fontSize: Double = 12) -> NSAttributedString {
+    static func attributedString(text: String, language: SyntaxLanguage, fontSize: Double = 12, theme value: ResolvedTheme? = nil) -> NSAttributedString {
+        let theme = value ?? WireboltTheme.current
         // Applying successive token passes to one large attributed string inserts
         // into its run array repeatedly (quadratic memmoves). These grammars have
         // no multiline tokens, so style bounded, whole-paragraph chunks and append.
         guard language == .json || language == .plain || language == .http,
               text.utf8.count > 16 * 1024 else {
-            return attributedChunk(text: text, language: language, fontSize: fontSize)
+            return attributedChunk(text: text, language: language, fontSize: fontSize, theme: theme)
         }
         let source = text as NSString
         let result = NSMutableAttributedString(string: "")
@@ -1100,13 +1126,13 @@ enum SyntaxHighlighter {
                 location: offset, length: min(16 * 1024, source.length - offset)
             )))
             result.append(attributedChunk(text: source.substring(with: NSRange(location: offset, length: end - offset)),
-                language: language, fontSize: fontSize))
+                language: language, fontSize: fontSize, theme: theme))
             offset = end
         }
         return result
     }
 
-    private static func attributedChunk(text: String, language: SyntaxLanguage, fontSize: Double) -> NSAttributedString {
+    private static func attributedChunk(text: String, language: SyntaxLanguage, fontSize: Double, theme: ResolvedTheme) -> NSAttributedString {
         let paragraph = NSMutableParagraphStyle()
         paragraph.lineSpacing = CodeEditorMetrics.lineSpacing(fontSize)
         paragraph.lineBreakMode = .byCharWrapping
@@ -1114,7 +1140,7 @@ enum SyntaxHighlighter {
             string: text,
             attributes: [
                 .font: NSFont.monospacedSystemFont(ofSize: fontSize, weight: .regular),
-                .foregroundColor: NSColor.labelColor,
+                .foregroundColor: theme.definition.syntaxPunctuation.nsColor,
                 .paragraphStyle: paragraph,
             ]
         )
@@ -1150,19 +1176,19 @@ enum SyntaxHighlighter {
 
         switch language {
         case .json:
-            apply(#"\b(true|false)\b"#, color: WireboltTheme.nsJSONBoolean, to: result)
-            apply(#"\bnull\b"#, color: WireboltTheme.nsJSONNull, to: result)
-            apply(#"-?\b\d+(?:\.\d+)?\b"#, color: WireboltTheme.nsJSONNumber, to: result)
-            apply(#"\"(?:\\.|[^\"\\])*\""#, color: WireboltTheme.nsJSONString, to: result)
-            apply(#"\"(?:\\.|[^\"\\])*\"(?=\s*:)"#, color: WireboltTheme.nsJSONKey, to: result)
+            apply(#"\b(true|false)\b"#, color: theme.definition.syntaxKeyword.nsColor, to: result)
+            apply(#"\bnull\b"#, color: theme.definition.syntaxKeyword.nsColor, to: result)
+            apply(#"-?\b\d+(?:\.\d+)?\b"#, color: theme.definition.syntaxNumber.nsColor, to: result)
+            apply(#"\"(?:\\.|[^\"\\])*\""#, color: theme.definition.syntaxString.nsColor, to: result)
+            apply(#"\"(?:\\.|[^\"\\])*\"(?=\s*:)"#, color: theme.definition.syntaxKey.nsColor, to: result)
             applyURL(to: result)
         case .xml, .html:
-            apply(#"</?[A-Za-z][^>]*>"#, color: .systemTeal, to: result)
-            apply(#"\"[^\"]*\""#, color: .systemOrange, to: result)
+            apply(#"</?[A-Za-z][^>]*>"#, color: theme.definition.syntaxKey.nsColor, to: result)
+            apply(#"\"[^\"]*\""#, color: theme.definition.syntaxString.nsColor, to: result)
         case .http:
-            apply(#"(?m)^[A-Z]+\s+\S+\s+HTTP/\d(?:\.\d)?$"#, color: .systemGreen, to: result)
-            apply(#"(?m)^[A-Za-z0-9-]+(?=:)"#, color: .systemTeal, to: result)
-            apply(#"•+"#, color: .systemOrange, to: result)
+            apply(#"(?m)^[A-Z]+\s+\S+\s+HTTP/\d(?:\.\d)?$"#, color: theme.definition.syntaxKeyword.nsColor, to: result)
+            apply(#"(?m)^[A-Za-z0-9-]+(?=:)"#, color: theme.definition.syntaxKey.nsColor, to: result)
+            apply(#"•+"#, color: theme.definition.syntaxString.nsColor, to: result)
         case .plain:
             break
         }

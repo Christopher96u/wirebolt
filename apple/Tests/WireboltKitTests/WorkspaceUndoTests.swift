@@ -24,6 +24,29 @@ struct WorkspaceUndoTests {
         await model.finishUndoWork()
     }
 
+    @Test("Environment changes and deletion undo without serializing secret material")
+    func environmentUndo() async {
+        let (model, _, manager) = makeModel()
+        let original = EnvironmentDraft(id: "local", name: "Local", variables: [
+            EnvironmentVariableDraft(id: "token", key: "token", value: .secret("env.local.token")),
+        ])
+        let other = EnvironmentDraft(id: "production", name: "Production")
+        model.workspace.environments = [original, other]
+        var changed = original
+        changed.name = "Development"
+        changed.variables.append(EnvironmentVariableDraft(id: "host", key: "host", value: .literal("localhost")))
+        #expect(await model.saveEnvironment(changed))
+        #expect(model.workspace.environments == [changed, other])
+        await undo(model, manager)
+        #expect(model.workspace.environments == [original, other])
+        await redo(model, manager)
+        #expect(model.workspace.environments == [changed, other])
+        #expect(await model.deleteEnvironment(id: original.id))
+        await undo(model, manager)
+        #expect(model.workspace.environments == [changed, other])
+        #expect(model.workspace.environments[0].variables[0].value == .secret("env.local.token"))
+    }
+
     private var nested: CollectionDraft {
         CollectionDraft(id: "api", name: "API", order: 3, groups: [
             GroupDraft(id: "child", name: "Child", parentID: "parent", order: 1),

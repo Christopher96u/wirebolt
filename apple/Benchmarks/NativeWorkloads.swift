@@ -22,6 +22,16 @@ private struct NotesFixture: View {
     @Bindable var fixture: TextFixture
     var body: some View { NotesEditor(text: $fixture.text, preview: $fixture.preview) }
 }
+@MainActor @Observable private final class TreeThemeFixture {
+    var theme = ResolvedTheme(preset: .black)
+    let nodes = JSONNode.makeRoot(from: #"{"group":{"message":"hello","count":2}}"#)
+}
+private struct TreeFixture: View {
+    @Bindable var fixture: TreeThemeFixture
+    var body: some View {
+        JSONTreeView(nodes: fixture.nodes, revision: 1).environment(\.wireboltTheme, fixture.theme)
+    }
+}
 final class ProbeWindow: NSWindow { override var canBecomeKey: Bool { true } }
 
 @main @MainActor struct NativeWorkloads {
@@ -372,6 +382,125 @@ final class ProbeWindow: NSWindow { override var canBecomeKey: Bool { true } }
         return [current] + (value("accessibilityChildren") as? [Any] ?? []).flatMap { elements($0, depth: depth + 1) }
     }
 
+    static func verifyRedesignFlows(root: URL) async throws {
+        let persistence = try RustWorkspacePersistence(path: root.appending(path: "redesign-flows"))
+        let model = WireboltModel(runner: OfflineRunner(), persistence: persistence,
+            history: HistoryRepository(root: root.appending(path: "flow-history")), cookieJar: CookieJar())
+        await model.loadWorkspace()
+        let interface = WorkspaceUIState(defaults: fixtureDefaults)
+        let (window, host, _) = mount(ContentView(model: model, interface: interface, loadsWorkspace: false))
+        defer { window.close() }
+        window.makeKey()
+        interface.makeNewRequest(model: model)
+        var focusedURL = false
+        for _ in 0..<200 {
+            try await Task.sleep(for: .milliseconds(5)); flush(host)
+            if let editor = window.firstResponder as? NSTextView, editor.isFieldEditor,
+               let field = editor.delegate as? NSTextField, field.accessibilityLabel() == "Request URL" {
+                focusedURL = true
+                break
+            }
+        }
+        precondition(focusedURL && interface.renamingRequestID == nil, "New Request must focus the URL without entering sidebar rename")
+        guard let first = model.sessions.activeSession else { preconditionFailure("New request is missing") }
+        first.draft.url = "https://example.invalid/saved-by-close"
+        guard let other = await model.createRequest() else { preconditionFailure("Second request is missing") }
+        other.draft.url = "https://example.invalid/keep-dirty"
+        model.sessions.select(tabID: first.id)
+        interface.synchronizeSelection(model: model)
+        interface.close(.one(first.id), model: model)
+        precondition(interface.dirtyCloseRequest?.documentIDs == [first.id])
+        interface.saveDirtyClose(model: model)
+        for _ in 0..<200 where model.sessions.session(id: first.id) != nil {
+            try await Task.sleep(for: .milliseconds(5)); flush(host)
+        }
+        precondition(model.sessions.session(id: first.id) == nil, "Save and Close must close the successfully saved tab")
+        precondition(model.sessions.session(id: other.id) === other && other.isDirty, "Save and Close must leave unrelated dirty tabs intact")
+        precondition(model.workspace.location(collectionID: first.collectionID!, requestID: first.requestID)?.request.url == first.draft.url)
+        print("new_request_url_focus_and_scoped_save_close=passed")
+        func fields(_ view: NSView) -> [NSTextField] {
+            (view as? NSTextField).map { [$0] } ?? view.subviews.flatMap { fields($0) }
+        }
+        func stageVariable(_ key: String) async throws {
+            interface.isShowingEnvironmentInspector = true
+            for _ in 0..<100 where interface.saveEnvironmentEdits == nil {
+                try await Task.sleep(for: .milliseconds(5)); flush(host)
+            }
+            guard let field = fields(host).first(where: { $0.placeholderString == "New key" }) else {
+                preconditionFailure("Inspector's new-key field must remain reachable")
+            }
+            for label in ["Sidebar width", "Environment inspector width"] {
+                // Split dividers deliberately keep a narrow grab strip so they do not
+                // cover adjacent editor controls; their full-height AX target is named.
+                precondition(elements(host).contains { $0.name == label && $0.frame.width > 0 && $0.frame.height >= 28 },
+                    "Resize dividers must expose a named, full-height accessibility target")
+            }
+            window.makeFirstResponder(field)
+            guard let editor = field.currentEditor() as? NSTextView else { preconditionFailure("Variable entry must accept keyboard focus") }
+            editor.insertText(key, replacementRange: NSRange(location: 0, length: 0))
+            for _ in 0..<100 where !interface.hasEnvironmentEdits {
+                try await Task.sleep(for: .milliseconds(5)); flush(host)
+            }
+            precondition(interface.hasEnvironmentEdits, "Staged inspector edits must participate in exit protection")
+        }
+        try await stageVariable("preview_only")
+        precondition(model.workspace.environments.isEmpty, "Typing must not persist staged variables")
+        guard let save = interface.saveEnvironmentEdits else { preconditionFailure("Inspector apply action must be installed") }
+        let applied = await save()
+        precondition(applied, "Inspector must apply valid staged edits")
+        flush(host)
+        precondition(model.workspace.environments.first?.variables.first?.key == "preview_only")
+        model.undoManager?.undo()
+        await model.finishUndoWork()
+        precondition(model.workspace.environments.isEmpty, "Applying environments must support workspace undo")
+        // Let the old inspector detach before opening a fresh editing session.
+        try await Task.sleep(for: .milliseconds(20)); flush(host)
+        try await stageVariable("discard_me")
+        for (response, expected) in [(NSApplication.ModalResponse.alertSecondButtonReturn, false), (.alertThirdButtonReturn, true)] {
+            let decision = Task { await confirmEnvironmentEdits(interface: interface, in: window) }
+            for _ in 0..<100 where window.attachedSheet == nil {
+                try await Task.sleep(for: .milliseconds(5))
+            }
+            guard let sheet = window.attachedSheet else { preconditionFailure("Pending environment edits must show an exit decision") }
+            window.endSheet(sheet, returnCode: response)
+            spin(0.04)
+            let result = await decision.value
+            precondition(result == expected)
+            if !expected { precondition(interface.hasEnvironmentEdits && interface.isShowingEnvironmentInspector) }
+            try await Task.sleep(for: .milliseconds(20)); flush(host)
+        }
+        precondition(!interface.hasEnvironmentEdits && !interface.isShowingEnvironmentInspector)
+        precondition(model.workspace.environments.isEmpty, "Discarding must not persist a staged variable")
+        print("environment_staging_undo_exit_guards=passed")
+
+    }
+
+    static func verifyTreeTheme() {
+        let fixture = TreeThemeFixture()
+        let (window, host, _) = mount(TreeFixture(fixture: fixture))
+        defer { window.close(); fixtureDefaults.set(12.0, forKey: "editor.fontSize") }
+        func outline(in view: NSView) -> NSOutlineView? {
+            (view as? NSOutlineView) ?? view.subviews.lazy.compactMap { outline(in: $0) }.first
+        }
+        spin(); flush(host)
+        guard let tree = outline(in: host), let group = tree.item(atRow: 1) else { preconditionFailure("Tree must display the response") }
+        tree.expandItem(group)
+        tree.selectRowIndexes(IndexSet(integer: 2), byExtendingSelection: false)
+        for (index, preset) in ThemePreset.allCases.enumerated() {
+            fixture.theme = ResolvedTheme(preset: preset, revision: UInt64(200 + index))
+            spin(); flush(host)
+            let key = tree.view(atColumn: 0, row: 2, makeIfNecessary: true) as? NSTextField
+            precondition(key?.textColor == fixture.theme.definition.syntaxKey.nsColor, "Tree cells must follow theme revisions")
+            precondition(tree.backgroundColor == fixture.theme.definition.window.nsColor)
+            precondition(tree.isItemExpanded(group) && tree.selectedRow == 2, "Theme changes must preserve tree expansion and selection")
+        }
+        fixtureDefaults.set(18.0, forKey: "editor.fontSize")
+        spin(); flush(host)
+        precondition((tree.view(atColumn: 1, row: 2, makeIfNecessary: true) as? NSTextField)?.font?.pointSize == 18,
+            "Tree must honor the editor font-size preference")
+        print("json_tree_theme_font_and_selection=passed")
+    }
+
     static func verifyInterface(root: URL) throws {
         let model = WireboltModel(runner: OfflineRunner(), history: HistoryRepository(root: root.appending(path: "history")),
             cookieJar: CookieJar(storageURL: root.appending(path: "cookies.json")))
@@ -504,7 +633,7 @@ final class ProbeWindow: NSWindow { override var canBecomeKey: Bool { true } }
             host.cacheDisplay(in: host.bounds, to: bitmap)
             try bitmap.representation(using: .png, properties: [:])!.write(to: output.appending(path: name + ".png"))
         }
-        try capture(WireboltSettingsView(model: model), name: "01-app-default", width: 620, height: 570)
+        try capture(WireboltSettingsView(model: model), name: "01-app-default", width: 1248, height: 900)
         try capture(WorkspaceNetworkSettings(model: model), name: "02-workspace-inherited", width: 590, height: 580)
         model.workspace.proxy = manual
         try capture(WorkspaceNetworkSettings(model: model), name: "03-workspace-manual", width: 590, height: 680)
@@ -520,6 +649,147 @@ final class ProbeWindow: NSWindow { override var canBecomeKey: Bool { true } }
         session.draft.proxy = .manual(.manual(routes: [ProxyRouteDocument(destination: "all", endpoint: "socks5h://localhost:1080", credentials: credentials)]))
         try capture(NetworkSettingsPage(model: model, scope: .request, session: session), name: "06-request-authentication", width: 590, height: 680)
         print("native_proxy_screenshots=written")
+    }
+
+    static func settingsUI(root: URL) throws {
+        let preferences = ProxyPreferences(defaults: fixtureDefaults)
+        let original = ProxyDocument.manual(routes: [ProxyRouteDocument(destination: "all", endpoint: "http://localhost:8080")])
+        try preferences.save(original)
+        let model = WireboltModel(runner: OfflineRunner(), history: HistoryRepository(root: root.appending(path: "history")),
+            cookieJar: CookieJar(), proxyPreferences: preferences)
+        let interface = WorkspaceUIState(defaults: fixtureDefaults)
+        _ = model.sessions.open(draft: RequestDraft(url: "https://example.invalid"))
+        interface.synchronizeSelection(model: model)
+        let (window, host, _) = mount(ContentView(model: model, interface: interface, loadsWorkspace: false), width: 1248, height: 900)
+        defer { window.close() }
+        window.makeKey()
+        NSApp.accessibilitySetValue(true, forAttribute: NSAccessibility.Attribute(rawValue: "AXEnhancedUserInterface"))
+        NSApp.accessibilitySetValue(true, forAttribute: NSAccessibility.Attribute(rawValue: "AXManualAccessibility"))
+        spin(); flush(host)
+        func press(_ title: String, in targetWindow: NSWindow? = nil) {
+            let targetWindow = targetWindow ?? window
+            let targetHost = targetWindow.contentView!
+            guard let button = elements(targetHost).first(where: { $0.role == "AXButton" && $0.name == title }) else {
+                preconditionFailure("Missing settings action: \(title)")
+            }
+            precondition(button.frame.height >= 28, "Settings actions must keep their minimum hit height")
+            let frame = targetWindow.convertFromScreen(button.frame)
+            for type in [NSEvent.EventType.leftMouseDown, .leftMouseUp] {
+                let event = NSEvent.mouseEvent(with: type, location: NSPoint(x: frame.midX, y: frame.midY), modifierFlags: [],
+                    timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: targetWindow.windowNumber,
+                    context: nil, eventNumber: 1, clickCount: 1, pressure: type == .leftMouseDown ? 1 : 0)!
+                targetWindow.sendEvent(event)
+            }
+            spin(); flush(host)
+        }
+        func fields(_ view: NSView) -> [NSTextField] {
+            (view as? NSTextField).map { [$0] } ?? view.subviews.flatMap { fields($0) }
+        }
+        guard let urlField = fields(host).first(where: { $0.accessibilityLabel() == "Request URL" }) else {
+            preconditionFailure("The workspace URL must remain reachable before opening Settings")
+        }
+        window.makeFirstResponder(urlField)
+        (urlField.currentEditor() as? NSTextView)?.setSelectedRange(NSRange(location: 2, length: 4))
+        presentAppSettings(model)
+        spin(0.1); flush(host)
+        precondition(model.settingsTab == "appearance")
+        precondition(!elements(host).contains { $0.name == "Request URL" }, "The settings modal must hide background controls from accessibility")
+        guard let searchEditor = window.firstResponder as? NSTextView, let searchField = searchEditor.delegate as? NSTextField,
+              searchField.placeholderString == "Search" else { preconditionFailure("Opening Settings must focus its search field") }
+        let navigation = ["General", "Appearance", "Network", "Keyboard", "Privacy"]
+        let buttons = elements(host).filter { $0.role == "AXButton" && navigation.contains($0.name) }
+        precondition(buttons.count == navigation.count && buttons.allSatisfy { $0.frame.width >= 180 && $0.frame.height >= 28 },
+            "Settings must use the approved sidebar, with every section reachable")
+        press("Network")
+        precondition(model.settingsTab == "network")
+        guard let field = fields(host).first(where: { $0.isEditable && $0.stringValue == "localhost" }) else {
+            preconditionFailure("Network settings must preserve the native editable proxy form")
+        }
+        field.selectText(nil)
+        guard let editor = field.currentEditor() as? NSTextView else { preconditionFailure("Proxy host must accept keyboard input") }
+        editor.insertText("edited.proxy.invalid", replacementRange: NSRange(location: 0, length: editor.string.utf16.count))
+        window.makeFirstResponder(nil)
+        spin(); flush(host)
+        press("Appearance")
+        precondition(model.settingsTab == "appearance")
+        precondition(!elements(host).contains { $0.name == "Proxy host" }, "Hidden settings pages must leave the accessibility tree")
+        press("General")
+        precondition(elements(host).contains { $0.name == "Word wrap" })
+        press("Keyboard")
+        precondition(elements(host).contains { $0.name == "Send request or message" })
+        press("Privacy")
+        press("Privacy Policy")
+        for _ in 0..<100 where window.attachedSheet == nil { spin(0.002) }
+        guard let sheet = window.attachedSheet else { preconditionFailure("Privacy Policy must open its content") }
+        press("Done", in: sheet)
+        for _ in 0..<100 where window.attachedSheet != nil { spin(0.002) }
+        precondition(window.attachedSheet == nil)
+        press("Network")
+        precondition(fields(host).contains { $0.isEditable && $0.stringValue == "edited.proxy.invalid" },
+            "Switching settings sections must preserve unapplied proxy edits")
+        precondition(preferences.configuration == original, "Navigation must not save a staged proxy edit")
+        press("Back to workspace")
+        precondition(window.isVisible && !model.isShowingAppSettings, "Closing Settings must leave the workspace window open")
+        precondition(urlField.currentEditor() === window.firstResponder && (window.firstResponder as? NSTextView)?.selectedRange() == NSRange(location: 2, length: 4),
+            "Closing Settings must restore the previous URL focus and selection")
+        precondition(elements(host).contains { $0.name == "Request URL" }, "Closing the modal must restore access to the workspace")
+        presentAppSettings(model)
+        spin(0.1); flush(host)
+        precondition(fields(host).contains { $0.isEditable && $0.stringValue == "edited.proxy.invalid" },
+            "Closing and reopening Settings must preserve unapplied proxy edits")
+        press("Reset")
+        precondition(fields(host).contains { $0.isEditable && $0.stringValue == "localhost" })
+        window.makeFirstResponder(searchField)
+        guard let editor = searchField.currentEditor() as? NSTextView else { preconditionFailure("Search must remain editable") }
+        editor.insertText("theme", replacementRange: NSRange(location: 0, length: editor.string.utf16.count))
+        spin(); flush(host)
+        precondition(model.settingsTab == "appearance" && !elements(host).contains { $0.role == "AXButton" && $0.name == "Network" },
+            "Searching settings must filter and select matching sections")
+        press("Clear settings search")
+        precondition(elements(host).filter { $0.role == "AXButton" && navigation.contains($0.name) }.count == navigation.count)
+        press("Close Settings")
+        precondition(window.isVisible && !model.isShowingAppSettings)
+        model.settingsTab = "network"
+        presentAppSettings(model)
+        spin(0.1); flush(host)
+        precondition(model.settingsTab == "network" && elements(host).filter { $0.role == "AXButton" && navigation.contains($0.name) }.count == navigation.count,
+            "Reopening a settings destination must clear the old search filter")
+        press("Close Settings")
+        print("settings_modal_search_navigation_staged_proxy_and_privacy=passed")
+    }
+
+    static func composerFocus(root: URL) {
+        let model = WireboltModel(runner: OfflineRunner(), history: HistoryRepository(root: root.appending(path: "history")), cookieJar: CookieJar())
+        let interface = WorkspaceUIState(defaults: fixtureDefaults)
+        let session = model.sessions.open(draft: RequestDraft(url: "https://example.invalid/products"))
+        interface.synchronizeSelection(model: model)
+        let (window, host, _) = mount(ContentView(model: model, interface: interface, loadsWorkspace: false))
+        defer { window.close() }
+        window.makeKey()
+        spin(); flush(host)
+        func fields(_ view: NSView) -> [NSTextField] {
+            (view as? NSTextField).map { [$0] } ?? view.subviews.flatMap { fields($0) }
+        }
+        guard let field = fields(host).first(where: { $0.accessibilityLabel() == "Request URL" }) else {
+            preconditionFailure("The composer must expose its URL field")
+        }
+        window.makeFirstResponder(field)
+        spin(); flush(host)
+        guard let editor = field.currentEditor() as? NSTextView else { preconditionFailure("URL input must accept native editing focus") }
+        guard field.focusRingType == .none, !field.isBordered, !field.isBezeled else {
+            fputs("composer_focus: unexpected rectangular field chrome, ring=\(field.focusRingType.rawValue) border=\(field.isBordered) bezel=\(field.isBezeled)\n", stderr)
+            exit(1)
+        }
+        editor.setSelectedRange(NSRange(location: 8, length: 7))
+        editor.insertText("wirebolt", replacementRange: editor.selectedRange())
+        spin(); flush(host)
+        precondition(session.draft.url == "https://wirebolt.invalid/products", "Focus styling must preserve native URL editing")
+        window.makeFirstResponder(nil)
+        spin(); flush(host)
+        interface.focusURLTrigger += 1
+        spin(); flush(host)
+        precondition(field.currentEditor() === window.firstResponder, "Edit URL must retain its keyboard focus route")
+        print("composer_focus_native_editing_and_keyboard=passed")
     }
 
     static func proxySettings(root: URL) throws {
@@ -644,7 +914,7 @@ final class ProbeWindow: NSWindow { override var canBecomeKey: Bool { true } }
         let model = WireboltModel(runner: OfflineRunner(), history: HistoryRepository(root: root.appending(path: "history")), cookieJar: CookieJar())
         let interface = WorkspaceUIState(defaults: fixtureDefaults)
         let note = String(repeating: "# Hidden note\n\n", count: noteBytes / 15)
-        let requests = (0..<(tabs ? max(2, tabCount) : 20)).map { RequestLocation(collectionID: "clicks", request: RequestDraft(id: "r\($0)", name: "Click Request \($0)", url: "https://example.invalid/\($0)", note: note)) }
+        let requests = (0..<(tabs ? max(2, tabCount) : 20)).map { RequestLocation(collectionID: "clicks", order: $0, request: RequestDraft(id: "r\($0)", name: "Click Request \($0)", url: "https://example.invalid/\($0)", note: note)) }
         model.workspace.collections = [CollectionDraft(id: "clicks", name: "Click Audit", requests: requests)]
         if tabs {
             for request in requests { interface.activateSavedRequest(request, model: model, preview: false) }
@@ -779,7 +1049,7 @@ final class ProbeWindow: NSWindow { override var canBecomeKey: Bool { true } }
         let root=URL(fileURLWithPath:args[3]).deletingLastPathComponent().appending(path:"fixture-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at:root,withIntermediateDirectories:true)
         defer { try? FileManager.default.removeItem(at:root) }
-        let watchdog=DispatchWorkItem { exit(86) }
+        let watchdog=DispatchWorkItem { @Sendable in exit(86) }
         DispatchQueue.global().asyncAfter(deadline:.now()+120,execute:watchdog)
         defer { watchdog.cancel() }
         if mode=="notes-ui" { try await verifyNotes() }
@@ -787,7 +1057,7 @@ final class ProbeWindow: NSWindow { override var canBecomeKey: Bool { true } }
         else if mode=="editor" { try editor(size) }
         else if mode=="workspace" { try workspace(size,root:root) }
         else if mode=="response" { try response(size) }
-        else if mode=="interface" { try verifyInterface(root: root) }
+        else if mode=="interface" { try verifyInterface(root: root); try await verifyRedesignFlows(root: root); verifyTreeTheme() }
         else if mode=="request-click-notes" || mode=="tab-click-notes" {
             try requestClicks(root: root, tabs: mode=="tab-click-notes", tabCount: 5, noteBytes: size)
             let count = await MarkdownPreviewCache.shared.parseCount
@@ -797,6 +1067,8 @@ final class ProbeWindow: NSWindow { override var canBecomeKey: Bool { true } }
         else if mode=="sidebar-reorder" { try sidebarReorder(root: root) }
         else if mode=="proxy-screenshots" { try proxyScreenshots(root: root) }
         else if mode=="proxy-settings" { try proxySettings(root: root) }
+        else if mode=="settings-ui" { try settingsUI(root: root) }
+        else if mode=="composer-focus" { composerFocus(root: root) }
         else if mode=="tab-click" { try requestClicks(root: root, tabs: true, tabCount: size) }
         else { preconditionFailure("unknown mode") }
         var usage=rusage(); getrusage(RUSAGE_SELF,&usage)

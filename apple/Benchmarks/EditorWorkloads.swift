@@ -8,12 +8,13 @@ import SwiftUI
 private final class EditorDocument {
     var text: String
     var language: SyntaxLanguage = .json
+    var theme = ResolvedTheme(preset: .black)
     init(_ text: String) { self.text = text }
 }
 
 private struct EditorFixture: View {
     @Bindable var document: EditorDocument
-    var body: some View { NativeCodeEditor(text: $document.text, language: document.language) }
+    var body: some View { NativeCodeEditor(text: $document.text, language: document.language).environment(\.wireboltTheme, document.theme) }
 }
 
 private final class ScrollFixtureView: NSView {
@@ -55,6 +56,7 @@ private struct EditorWorkloads {
         verifyFontFallback()
         verifyIndexedLineClipping()
         verifyFieldHeights()
+        verifyThemeChanges(document: document, editor: editor, host: host)
         verifySyntaxChunks()
         verifyScrollRestoration(scroll)
         verifyViewportHighlighting(document: document, editor: editor, host: host)
@@ -216,16 +218,51 @@ private struct EditorWorkloads {
         }
     }
 
-    @MainActor private static func verifyFieldHeights() {
-        // Measured narrow and wide columns, including a soft-wrap boundary.
-        for (value, narrow) in [("abcdef", 20.0), ("abcdefg", 34.0), ("abcdefgh", 34.0),
-            ("abcdefghijkl", 34.0), ("abcdefghijklmnopqrstuvwxyz", 76.0)] {
-            precondition(FieldEditorMetrics.height(for: value, width: 75) == narrow)
-            precondition(FieldEditorMetrics.height(for: value, width: 274) == 20)
+    @MainActor private static func verifyThemeChanges(document: EditorDocument, editor: NSTextView, host: NSView) {
+        let originalText = document.text, originalLanguage = document.language, originalTheme = document.theme
+        defer {
+            document.text = originalText; document.language = originalLanguage; document.theme = originalTheme
+            host.layoutSubtreeIfNeeded(); host.displayIfNeeded()
+            RunLoop.current.run(until: Date().addingTimeInterval(0.02))
         }
-        precondition(FieldEditorMetrics.height(for: "first\nsecond", width: 274) == 34)
-        precondition(FieldEditorMetrics.height(for: "10", width: 1) == 34)
-        precondition(FieldEditorMetrics.height(for: "wirebolt", width: 1) == 118)
+        document.text = "{\"theme\": true}"
+        document.language = .json
+        host.layoutSubtreeIfNeeded(); host.displayIfNeeded()
+        RunLoop.current.run(until: Date().addingTimeInterval(0.02))
+        let selection = NSRange(location: 1, length: 7)
+        editor.setSelectedRange(selection)
+        for (index, preset) in ThemePreset.allCases.enumerated() {
+            let theme = ResolvedTheme(preset: preset, revision: UInt64(index + 100))
+            document.theme = theme
+            host.layoutSubtreeIfNeeded(); host.displayIfNeeded()
+            RunLoop.current.run(until: Date().addingTimeInterval(0.02))
+            let key = editor.textStorage?.attribute(.foregroundColor, at: 2, effectiveRange: nil) as? NSColor
+            if key != theme.definition.syntaxKey.nsColor { fputs("native_theme preset=\(preset) actual=\(String(describing: key)) expected=\(theme.definition.syntaxKey.nsColor)\n", stderr) }
+            precondition(key == theme.definition.syntaxKey.nsColor, "A theme revision must replace retained native syntax colors")
+            precondition(editor.backgroundColor == theme.definition.window.nsColor)
+            precondition(editor.selectedRange() == selection, "Theme changes must preserve native selection")
+        }
+        document.theme = ResolvedTheme(preset: .black, revision: 104)
+        print("native_theme_revisions_and_selection=passed")
+    }
+
+    @MainActor private static func verifyFieldHeights() {
+        ThemeStore.shared.update(selection: "black", systemIsDark: true, increasedContrast: false, density: .compact)
+        defer { ThemeStore.shared.update(selection: "black", systemIsDark: true, increasedContrast: false, density: .comfortable) }
+        func expectHeight(_ value: String, _ width: Double, _ expected: Double) {
+            let actual = FieldEditorMetrics.height(for: value, width: width)
+            if actual != expected { fputs("field_height value=\(value) width=\(width) actual=\(actual) expected=\(expected)\n", stderr) }
+            precondition(actual == expected)
+        }
+        // Existing compact wrapping boundaries, with the approved 28-point control minimum.
+        for (value, narrow) in [("abcdef", 28.0), ("abcdefg", 34.0), ("abcdefgh", 34.0),
+            ("abcdefghijkl", 34.0), ("abcdefghijklmnopqrstuvwxyz", 76.0)] {
+            expectHeight(value, 75, narrow)
+            expectHeight(value, 274, 28)
+        }
+        expectHeight("first\nsecond", 274, 34)
+        expectHeight("10", 1, 34)
+        expectHeight("wirebolt", 1, 118)
     }
 
     @MainActor private static func verifyScrollRestoration(_ native: NSScrollView) {

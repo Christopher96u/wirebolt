@@ -7,6 +7,7 @@ wirebolt_app_inputs=(
   apple/Sources/WireboltKit/ProxyConnectionTest.swift
   apple/Sources/WireboltKit/ProxySettings.swift
   apple/Sources/WireboltKit/MarkdownPreview.swift
+  apple/Sources/WireboltKit/ThemeDefinition.swift
   apple/Sources/WireboltKit/SemanticPalette.swift
   apple/Sources/WireboltKit/Models.swift
   apple/Sources/WireboltKit/CurlExport.swift
@@ -30,6 +31,11 @@ wirebolt_app_inputs=(
   apple/WireboltApp/ContentView.swift
   apple/WireboltApp/WorkspaceActions.swift
   apple/WireboltApp/ImportSummaryView.swift
+  apple/WireboltApp/AppearanceSettingsView.swift
+  apple/WireboltApp/WireboltSettingsView.swift
+  apple/WireboltApp/SettingsModal.swift
+  apple/WireboltApp/SettingsPageComponents.swift
+  apple/WireboltApp/SettingsPages.swift
   apple/WireboltApp/NetworkSettingsView.swift
   apple/WireboltApp/NotesEditor.swift
   apple/WireboltApp/EnvironmentEditor.swift

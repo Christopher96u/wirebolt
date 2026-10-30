@@ -9,6 +9,8 @@ public actor ResponseBodyStore {
     private let ownsFile: Bool
     private var handle: FileHandle?
     private var byteCount: UInt64 = 0
+    private var previewBytes = Data()
+    private var decodedPreview: (data: Data, text: String)?
     /// Formatted presentations keyed by whether `\uXXXX` escapes are decoded; `.some(nil)` means not JSON.
     private var jsonDocuments: [Bool: JSONResponseDocument?] = [:]
 
@@ -36,8 +38,40 @@ public actor ResponseBodyStore {
 
     public func append(_ data: Data) throws {
         jsonDocuments = [:]
-        try handle?.write(contentsOf: data)
+        guard let handle else { throw CocoaError(.fileWriteUnknown) }
+        try handle.write(contentsOf: data)
         byteCount += UInt64(data.count)
+        if previewBytes.count < Self.viewportByteCount {
+            previewBytes.append(data.prefix(Self.viewportByteCount - previewBytes.count))
+            decodedPreview = nil
+        }
+    }
+
+    public struct Progress: Sendable {
+        public let bytes: UInt64
+        public let data: Data
+        public let text: String
+        public let truncated: Bool
+    }
+
+    /// Called at display cadence, independently of file writes. Never decode an
+    /// unfinished UTF-8 scalar at the end of the bounded preview.
+    public func progress() -> Progress {
+        if let decodedPreview {
+            return Progress(bytes: byteCount, data: decodedPreview.data, text: decodedPreview.text, truncated: byteCount > UInt64(decodedPreview.data.count))
+        }
+        var end = previewBytes.count
+        if end > 0 {
+            var lead = end - 1
+            while lead > 0, previewBytes[lead] & 0xc0 == 0x80 { lead -= 1 }
+            let byte = previewBytes[lead]
+            let expected = byte & 0xf8 == 0xf0 ? 4 : byte & 0xf0 == 0xe0 ? 3 : byte & 0xe0 == 0xc0 ? 2 : 1
+            if end - lead < expected { end = lead }
+        }
+        let data = Data(previewBytes.prefix(end))
+        let text = String(decoding: data, as: UTF8.self)
+        decodedPreview = (data, text)
+        return Progress(bytes: byteCount, data: data, text: text, truncated: byteCount > UInt64(end))
     }
 
     public func finish() throws {

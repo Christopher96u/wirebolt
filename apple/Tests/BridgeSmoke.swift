@@ -34,6 +34,8 @@ enum BridgeSmoke {
             fatalError("unexpected bridge error: \(error)")
         }
 
+        do { try await verifySlowStreaming(runner) } catch { fatalError("streaming bridge smoke failed: \(error)") }
+
         let temporaryWorkspace = FileManager.default.temporaryDirectory
             .appending(path: "wirebolt-open-smoke-\(UUID().uuidString)", directoryHint: .isDirectory)
         defer { try? FileManager.default.removeItem(at: temporaryWorkspace) }

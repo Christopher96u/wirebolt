@@ -51,7 +51,7 @@
 | Focus sidebar | ⌘0 |
 | Focus response | ⌥⌘0 |
 | Request section: Params, Headers, Body, Auth, Note, Settings | ⌥⌘1 – ⌥⌘6 |
-| Response section: Headers, Body, Cookies, Raw, Request | ⌃⌘1 – ⌃⌘5 |
+| Response section: Headers, Body, Cookies, Raw HTTP, Request | ⌃⌘1 – ⌃⌘5 |
 | Show next tab | ⌘} (⇧⌘] on a U.S. keyboard) or ⌃Tab |
 | Show previous tab | ⌘{ (⇧⌘[ on a U.S. keyboard) or ⌃⇧Tab |
 | Select tab 1–9 | ⌘1 – ⌘9 |
@@ -68,6 +68,7 @@ For a WebSocket request, ⌥⌘3 opens **Message**. Response sections apply to H
 
 ## In context
 
-- **Environment editor:** ⇧⌘K adds a variable entry; Return saves and Esc cancels.
+- **Settings modal:** ⌘F focuses settings search; Esc or ⌘W returns to the workspace.
+- **Environment editor:** ⇧⌘K adds a variable entry; Return applies and Esc cancels.
 - **Find in a response or editor:** ⌘F opens the find bar; Return and ⇧Return go to the next and previous match; ⌥⌘C, ⌥⌘W and ⌥⌘R toggle Match Case, Whole Word and Regular Expression; ⌥⌘L finds in the selection; Esc closes the bar.
 - **Focused sidebar:** arrow keys move through rows (**←** / **→** collapse and expand), typing a name jumps to it, **Return** renames, **⌘↓** moves to the request's URL and **Delete** deletes. See [Workspaces](workspaces.md#keyboard).

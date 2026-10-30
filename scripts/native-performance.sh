@@ -19,6 +19,8 @@ build/native-performance/workloads markdown 1000000 build/native-performance/mar
 build/native-performance/workloads request-click-notes 1000000 build/native-performance/markdown-hidden-requests.json
 build/native-performance/workloads tab-click-notes 1000000 build/native-performance/markdown-hidden-tabs.json
 build/native-performance/workloads interface 1 build/native-performance/interface.json
+build/native-performance/workloads settings-ui 1 build/native-performance/settings-ui.json
+build/native-performance/workloads composer-focus 1 build/native-performance/composer-focus.json
 build/native-performance/workloads proxy-settings 1 build/native-performance/proxy-settings.json
 build/native-performance/workloads request-click 20 build/native-performance/request-click.json
 build/native-performance/workloads sidebar-reorder 1 build/native-performance/sidebar-reorder.json
