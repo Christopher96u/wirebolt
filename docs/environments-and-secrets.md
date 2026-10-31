@@ -18,9 +18,9 @@ Use variables in request fields with double braces:
 {{base_url}}/products?category={{category}}
 ```
 
-Global variables apply across environments. The selected environment overrides matching Global keys. A disabled row is omitted from resolution. If a variable fails to resolve, check spelling, enabled state and the selected environment before sending again.
+Outside editing, the URL shows each reference as a chip with just the variable name, red when no active environment defines it; click the URL to edit the raw `{{name}}` text. Global variables apply across environments. The selected environment overrides matching Global keys. A disabled row is omitted from resolution. If a variable fails to resolve, check spelling, enabled state and the selected environment before sending again.
 
-Selecting an environment in the editor chooses what you edit; selecting it in the main toolbar chooses what requests use.
+Selecting an environment in the editor chooses what you edit; selecting it in the request composer chooses what requests use.
 
 ## Credentials and secret references
 

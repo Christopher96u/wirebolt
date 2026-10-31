@@ -144,10 +144,10 @@ struct NetworkSettingsPage: View {
                                     Button("Edit workspace settings") { model.isShowingWorkspaceSettings = true }
                                 }
                                 Button("Edit app default", action: openAppSettings)
-                            }.buttonStyle(.link).font(.caption)
+                            }.buttonStyle(.link).tint(WireboltTheme.secondary).font(.caption)
                         }
                     }.padding(16).frame(maxWidth: .infinity, alignment: .leading)
-                        .background(theme.definition.variableForeground.color.opacity(0.055), in: .rect(cornerRadius: theme.geometry.card))
+                        .background(theme.definition.tabActive.color, in: .rect(cornerRadius: theme.geometry.card))
                 }
                 if let saveError { Label(saveError, systemImage: "exclamationmark.circle").font(.caption).foregroundStyle(WireboltTheme.danger) }
                 if let session, session.kind == .webSocket, session.socket.status != .disconnected {
@@ -239,7 +239,7 @@ struct NetworkSettingsPage: View {
             Spacer()
             if changed { Button("Reset") { form = baseline; saveError = nil } }
             Button(scope == .request ? "Apply to request" : "Save") { Task { await save() } }
-                .buttonStyle(.borderedProminent).disabled(!changed || validation != nil || saving)
+                .buttonStyle(.borderedProminent).tint(WireboltTheme.controlAccent).disabled(!changed || validation != nil || saving)
         }
         .padding(.horizontal, WireboltTheme.Spacing.xxLarge).padding(.vertical, WireboltTheme.Spacing.large)
     }
@@ -253,7 +253,7 @@ struct NetworkSettingsPage: View {
             }
             .keyboardShortcut(.cancelAction)
             Button("Save") { Task { await saveAndClose() } }
-                .keyboardShortcut(.defaultAction)
+                .keyboardShortcut(.defaultAction).tint(WireboltTheme.controlAccent)
                 .disabled(validation != nil || saving)
         }
         .controlSize(.regular)
@@ -333,7 +333,7 @@ private struct ProxyRouteFields: View {
                     TextField("8080", text: $route.port).accessibilityLabel("Proxy port").frame(width: 65)
                 }
             }.textFieldStyle(.roundedBorder)
-            Toggle("Proxy authentication", isOn: $route.authenticated)
+            Toggle("Proxy authentication", isOn: $route.authenticated).tint(WireboltTheme.controlAccent)
             if route.authenticated {
                 if route.credentials != nil && !route.replaceCredentials {
                     HStack {
@@ -398,7 +398,7 @@ struct ProxyConnectionIndicator: View {
                         Text(last.summary(for: session.preparedRun?.url)).font(.caption)
                         Text("Source: \(last.source.title)").font(.caption).foregroundStyle(.secondary)
                     }
-                }.buttonStyle(.link).padding(18).frame(minWidth: 300, alignment: .leading)
+                }.buttonStyle(.link).tint(WireboltTheme.secondary).padding(18).frame(minWidth: 300, alignment: .leading)
             }
     }
 }
@@ -426,15 +426,15 @@ struct TransportSettingsFields: View {
                     set: { value in
                         if !value { session.draft.transport = model.workspace.transport }
                         session.draft.inheritsWorkspaceTransport = value
-                    }))
+                    })).tint(WireboltTheme.controlAccent)
                 if inherited {
                     Text("Using workspace defaults. Turn off inheritance to edit only this request.").font(.caption).foregroundStyle(.secondary)
                     Button("Edit workspace settings") { model.isShowingWorkspaceSettings = true }
                 }
             }
             Group {
-                Toggle("Validate TLS certificates", isOn: transport.validateTLS)
-                Toggle("Follow redirects", isOn: transport.followRedirects)
+                Toggle("Validate TLS certificates", isOn: transport.validateTLS).tint(WireboltTheme.controlAccent)
+                Toggle("Follow redirects", isOn: transport.followRedirects).tint(WireboltTheme.controlAccent)
                 Stepper("Maximum redirects: \(transport.wrappedValue.maximumRedirects)", value: transport.maximumRedirects, in: 0...10)
                     .disabled(!transport.wrappedValue.followRedirects)
                 LabeledContent("Total timeout (ms)") { TextField("0 = no limit", value: transport.totalTimeoutMS, format: .number).frame(width: 110) }

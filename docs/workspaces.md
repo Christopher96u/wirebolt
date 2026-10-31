@@ -24,7 +24,7 @@ Moving an open request keeps its document session associated with its new collec
 
 ### Keyboard
 
-When the sidebar has focus, its selection is drawn in the accent color:
+When the sidebar has focus, its selection is outlined:
 
 - **↑ / ↓** move through every visible row, including collections and folders. Selecting a request opens it.
 - **→** expands a collection or folder, then moves to its first item; **←** collapses it, or moves to the enclosing folder.

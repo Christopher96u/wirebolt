@@ -171,7 +171,7 @@ struct EnvironmentEditor: View {
                 Menu("Variable Actions", systemImage: "ellipsis") {
                     Button("New Entry", action: addRow)
                     Button("Clear All") { selected.variables.wrappedValue = [] }
-                }.menuStyle(.borderlessButton).menuIndicator(.hidden).labelStyle(.iconOnly)
+                }.ghostMenuStyle().menuIndicator(.hidden).labelStyle(.iconOnly)
                 Button("New Entry", systemImage: "plus", action: addRow)
                     .labelStyle(.iconOnly).buttonStyle(GhostIconStyle())
             }

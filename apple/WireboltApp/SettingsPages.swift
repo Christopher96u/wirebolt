@@ -22,13 +22,13 @@ struct GeneralSettingsPage: View {
             }
             SettingsCard {
                 SettingsRow(title: "Word wrap", detail: "Wrap long lines in request and response editors.") {
-                    Toggle("Word wrap", isOn: $wraps).labelsHidden().toggleStyle(.switch)
+                    Toggle("Word wrap", isOn: $wraps).labelsHidden().toggleStyle(.wireboltSwitch)
                 }
                 SettingsRow(title: "Show invisible characters", detail: "Display spaces, tabs and line breaks.") {
-                    Toggle("Show invisible characters", isOn: $invisibles).labelsHidden().toggleStyle(.switch)
+                    Toggle("Show invisible characters", isOn: $invisibles).labelsHidden().toggleStyle(.wireboltSwitch)
                 }
                 SettingsRow(title: "Scroll beyond the last line", detail: "Keep the last lines of an editor near the top of the viewport.", last: true) {
-                    Toggle("Scroll beyond the last line", isOn: $beyond).labelsHidden().toggleStyle(.switch)
+                    Toggle("Scroll beyond the last line", isOn: $beyond).labelsHidden().toggleStyle(.wireboltSwitch)
                 }
             }
         }
@@ -103,7 +103,7 @@ struct PrivacySettingsPage: View {
                 Text("Wirebolt stores your workspace on this Mac. It does not automatically send analytics, identifiers, crash reports or diagnostics.")
                 Text("Requests connect to the addresses you choose and may use your configured proxy. Sign-in and Git sync connect to their services when you use those features.")
                 Text("You control which workspace files or diagnostic details you share with others.")
-                HStack { Spacer(); Button("Done") { showingPolicy = false }.keyboardShortcut(.defaultAction) }
+                HStack { Spacer(); Button("Done") { showingPolicy = false }.keyboardShortcut(.defaultAction).tint(WireboltTheme.controlAccent) }
             }
             .font(.system(size: theme.typography.settingsLabel))
             .controlSize(.large)

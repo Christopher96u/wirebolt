@@ -17,6 +17,8 @@ Changes under **Unreleased** are on `main` but not in a published build yet. Dow
 - **⌘N** focuses the new request's URL.
 - The response renderer **Raw** is now **Text**, and the **Raw** response section is now **Raw HTTP**.
 - Tabs fit their titles and show the request method. The toolbar shows the workspace name instead of repeating the active request.
+- Controls are monochrome: color now marks only methods, statuses and variables, and settings switches follow the design.
+- Variables in the URL show as chips with the variable name; editing shows the raw `{{name}}`.
 - The composer's method and authentication are menus. **Edit Long URL…** and **History** moved to its **⋯** menu, and the proxy shows only when the workspace or the request overrides the app default.
 
 ### Fixed
