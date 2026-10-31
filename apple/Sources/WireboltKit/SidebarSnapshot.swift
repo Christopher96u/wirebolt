@@ -24,18 +24,30 @@ public struct SidebarSnapshot: Sendable {
             let content: Content
             let ancestors: [Int]
             let search: String
-            init(content: Content, ancestors: [Int], search: String) {
+            let requestPath: String
+            let collectionName: String
+            init(content: Content, ancestors: [Int], search: String, collectionName: String) {
                 self.content = content
                 self.ancestors = ancestors
                 self.search = search
+                self.collectionName = collectionName
+                if case .request(let location) = content {
+                    requestPath = SidebarSnapshot.requestPath(from: location.request.url)
+                } else { requestPath = "" }
             }
         }
 
-        init(id: String, depth: Int, content: Content, parentID: String?, ancestors: [Int], search: String) {
+        init(id: String, depth: Int, content: Content, parentID: String?, ancestors: [Int], search: String, collectionName: String = "") {
             self.id = id
             self.depth = depth
             self.parentID = parentID
-            storage = Storage(content: content, ancestors: ancestors, search: search)
+            storage = Storage(content: content, ancestors: ancestors, search: search, collectionName: collectionName)
+        }
+
+        /// Cache request details with the snapshot; rendering never parses URLs or looks up collections.
+        public func secondaryText(filtering: Bool) -> String {
+            guard case .request = content else { return "" }
+            return filtering ? storage.collectionName : storage.requestPath
         }
 
         public var title: String {
@@ -129,13 +141,37 @@ public struct SidebarSnapshot: Sendable {
                     }
                     let position = rows.count
                     rows.append(Row(id: rowID, depth: ancestors.count, content: content, parentID: ancestors.last.map { rows[$0].id },
-                                    ancestors: ancestors, search: Self.normalize(search)))
+                                    ancestors: ancestors, search: Self.normalize(search), collectionName: collection.name))
                     if case .group(_, let group) = content { append(parent: group.id, ancestors: ancestors + [position]) }
                 }
             }
             append(parent: "", ancestors: ancestors)
         }
         self.rows = rows
+    }
+
+    /// A best-effort path for display, preserving escapes and unresolved path variables.
+    /// This strips the authority without resolving templates or validating a request URL.
+    public static func requestPath(from url: String) -> String {
+        let text = url.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty else { return "" }
+        var path = text.prefix { $0 != "?" && $0 != "#" }
+        if path.hasPrefix("{{"), let end = path.range(of: "}}") {
+            path = path[end.upperBound...]
+        } else {
+            let authority: Substring
+            if let scheme = path.range(of: "://") {
+                guard !path[..<scheme.lowerBound].isEmpty else { return "" }
+                authority = path[scheme.upperBound...]
+            } else if path.hasPrefix("//") {
+                authority = path.dropFirst(2)
+            } else {
+                return path.hasPrefix("/") ? String(path) : ""
+            }
+            guard !authority.isEmpty, authority.first != "/" else { return "" }
+            path = authority.firstIndex(of: "/").map { authority[$0...] } ?? ""
+        }
+        return path.isEmpty ? "/" : String(path)
     }
 
     public func visible(query: String, collapsedCollections: Set<String>, expandedGroups: Set<String>) -> [Row] {

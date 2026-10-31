@@ -14,6 +14,7 @@ Changes under **Unreleased** are on `main` but not in a published build yet. Dow
 
 ### Changed
 
+- Sidebar requests show URL paths, folders are quieter, activity columns align, and History shows the active request’s entry count.
 - Redesigned sidebar, request composer and response bar. Environments are edited in a side inspector instead of a sheet.
 - **⌘N** focuses the new request's URL.
 - The response renderer **Raw** is now **Text**, and the **Raw** response section is now **Raw HTTP**.

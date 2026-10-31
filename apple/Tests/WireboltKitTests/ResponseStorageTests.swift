@@ -69,6 +69,8 @@ struct ResponseStorageTests {
         let reloaded = HistoryRepository(root: root)
         let entries = await reloaded.list(requestID: "health")
         #expect(entries.count == HistoryRepository.maximumEntriesPerRequest)
+        #expect(await reloaded.count(requestID: "health") == HistoryRepository.maximumEntriesPerRequest)
+        #expect(await reloaded.count(requestID: "missing") == 0)
         #expect(entries.allSatisfy { FileManager.default.fileExists(atPath: $0.bodyPath) })
     }
 
