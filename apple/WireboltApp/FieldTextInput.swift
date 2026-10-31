@@ -29,10 +29,9 @@ extension EnvironmentValues {
     @Entry var variableCatalog: VariableCatalog? = nil
 }
 
-/// Key and value cells. Values containing `{{name}}` show defined variables in the accent
-/// color and undefined ones in red while not editing, list their values in the help tag,
-/// and typing `{{` offers the active variables (↑↓ to choose, Return or Tab to insert,
-/// Esc to dismiss).
+/// Key and value cells. While not editing, `{{name}}` references show as chips with the
+/// name (red when undefined), like the URL; the help tag lists their values, and typing
+/// `{{` offers the active variables (↑↓ to choose, Return or Tab to insert, Esc to dismiss).
 struct FieldTextInput: View {
     let placeholder: String
     @Binding var text: String
@@ -65,8 +64,9 @@ struct FieldTextInput: View {
             .focused($isFocused)
             .overlay(alignment: .topLeading) {
                 if highlights, let variables {
-                    Text(VariableHighlighting.attributed(text, catalog: variables, theme: theme))
+                    VariableHighlighting.chipText(text, catalog: variables, theme: theme)
                         .font(WireboltTheme.Typography.field)
+                        .textRenderer(VariableChipRenderer(background: theme.definition.variableBackground.color))
                         .frame(maxWidth: .infinity, alignment: .topLeading)
                         .allowsHitTesting(false)
                         .accessibilityHidden(true)
@@ -123,15 +123,21 @@ struct FieldTextInput: View {
 /// Highlighting and completion edits shared by the URL field and key/value cells.
 @MainActor
 enum VariableHighlighting {
-    static func attributed(_ text: String, catalog: VariableCatalog, theme: ResolvedTheme) -> AttributedString {
-        var attributed = AttributedString(text)
-        for reference in VariableTemplate.references(in: text) {
-            guard let stringRange = Range(reference.range, in: text),
-                  let range = Range(stringRange, in: attributed) else { continue }
-            attributed[range].foregroundColor = catalog.entry(named: reference.name) == nil ? theme.definition.error.color : theme.definition.variableForeground.color
-            attributed[range].backgroundColor = theme.definition.variableBackground.color
+    /// A cell's value with each reference as a chip run showing only the name.
+    static func chipText(_ text: String, catalog: VariableCatalog, theme: ResolvedTheme) -> Text {
+        var result = Text(verbatim: "")
+        for segment in VariableDisplaySegment.segments(of: text) {
+            switch segment {
+            case let .text(plain):
+                result = Text("\(result)\(Text(verbatim: plain))")
+            case let .variable(name):
+                let color = catalog.entry(named: name) == nil ? theme.definition.error.color : theme.definition.variableForeground.color
+                // The spaces pad the chip; the renderer trims part of them back.
+                let chip = Text(verbatim: " \(name) ").foregroundStyle(color).customAttribute(VariableChipRun())
+                result = Text("\(result)\(chip)")
+            }
         }
-        return attributed
+        return result
     }
 
     /// Colors references in place; used on the field editor while the URL is edited.
@@ -165,6 +171,27 @@ enum VariableHighlighting {
 
     private static func color(for reference: VariableReference, catalog: VariableCatalog, theme: ResolvedTheme) -> NSColor {
         catalog.entry(named: reference.name) == nil ? theme.definition.error.nsColor : theme.definition.variableForeground.nsColor
+    }
+}
+
+/// Marks the runs of a cell's text that draw as variable chips.
+struct VariableChipRun: TextAttribute {}
+
+/// Draws a rounded chip behind each variable run, matching the URL field's chips.
+struct VariableChipRenderer: TextRenderer {
+    let background: Color
+
+    func draw(layout: Text.Layout, in context: inout GraphicsContext) {
+        for line in layout {
+            for run in line {
+                if run[VariableChipRun.self] != nil {
+                    // The run includes a padding space on each side; keep about half of each.
+                    let chip = run.typographicBounds.rect.insetBy(dx: 3, dy: 0)
+                    context.fill(Path(roundedRect: chip, cornerRadius: 4), with: .color(background))
+                }
+                context.draw(run)
+            }
+        }
     }
 }
 
@@ -206,13 +233,16 @@ struct VariableCompletionList: View {
 }
 
 struct FieldCheckbox: View {
+    static let width: CGFloat = 28
+    /// Centers the box on a cell's first line of text in top-aligned rows.
+    static let firstLineHeight: CGFloat = 20
     @Binding var isOn: Bool
     /// Names the row for VoiceOver, for example "Enable header Accept".
     var label = "Enabled"
 
     var body: some View {
         NativeCheckbox(isOn: $isOn, label: label)
-            .frame(width: 28, height: 28)
+            .frame(width: Self.width, height: 28)
     }
 
     private struct NativeCheckbox: NSViewRepresentable {

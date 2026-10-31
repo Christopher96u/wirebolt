@@ -69,17 +69,11 @@ public extension EffectiveProxy {
     }
 }
 
-public extension VariableReference {
-    /// The markup a variable chip hides, as UTF-16 ranges: `{{` and any space before the
-    /// name, and any space after it with `}}`. The text itself keeps them, so editing,
-    /// copying and VoiceOver still see the raw reference.
-    func delimiterRanges(in text: String) -> (open: NSRange, close: NSRange) {
-        let inner = NSRange(location: range.location + 2, length: range.length - 4)
-        let nameOffset = ((text as NSString).substring(with: inner) as NSString).range(of: name).location
-        let nameStart = inner.location + (nameOffset == NSNotFound ? 0 : nameOffset)
-        let nameEnd = nameStart + (name as NSString).length
-        return (NSRange(location: range.location, length: nameStart - range.location),
-                NSRange(location: nameEnd, length: NSMaxRange(range) - nameEnd))
+public extension Array where Element == RequestField {
+    /// The rows a section tab counts: enabled and named. A row still being typed counts
+    /// once it has a name; a disabled or nameless row does not.
+    var activeCount: Int {
+        count { $0.enabled && !$0.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
     }
 }
 

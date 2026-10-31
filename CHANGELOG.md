@@ -19,11 +19,14 @@ Changes under **Unreleased** are on `main` but not in a published build yet. Dow
 - Tabs fit their titles and show the request method. The toolbar shows the workspace name instead of repeating the active request.
 - Controls are monochrome: color now marks only methods, statuses and variables, and settings switches follow the design.
 - Variables in the URL show as chips with the variable name; editing shows the raw `{{name}}`.
+- Params and Headers read as a list: no header row, hairline separators, a remove button on hover, dimmed disabled rows and variable chips in cells.
+- Section tab counts are plain numbers and count only enabled, named rows. Before the first send, the response area shows a one-line hint.
 - The composer's method and authentication are menus. **Edit Long URL…** and **History** moved to its **⋯** menu, and the proxy shows only when the workspace or the request overrides the app default.
 
 ### Fixed
 
 - The composer showed the request's own timeout when the request used the workspace's, and **0 s** for no limit.
+- Variables in query parameters showed percent-encoded in the URL, and typing `{{` in a URL whose query had encoded values encoded them twice.
 
 ## 1.0.0-rc.1
 

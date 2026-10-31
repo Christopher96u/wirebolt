@@ -14,6 +14,20 @@ struct RequestURLTests {
         #expect(!session.isDirty)
     }
 
+    @Test("Variables in query values show as references in the URL and survive editing it")
+    func variableQueryValues() {
+        var draft = RequestDraft(url: "{{base_url}}/products", query: [
+            RequestField(name: "category", value: .literal("{{category}}")),
+            RequestField(name: "q", value: .literal("a b&c")),
+        ])
+        #expect(draft.displayURL == "{{base_url}}/products?category={{category}}&q=a%20b%26c")
+        draft.editURL(draft.displayURL)
+        #expect(draft.query.map(\.value) == [.literal("{{category}}"), .literal("a b&c")])
+        // Literal braces that are not a reference keep their encoding.
+        let literal = RequestDraft(url: "https://example.com", query: [RequestField(name: "json", value: .literal("{a}"))])
+        #expect(literal.displayURL == "https://example.com?json=%7Ba%7D")
+    }
+
     @Test("Typing a query never feeds an encoded value back into the key")
     func incrementalTyping() {
         let text = "http://127.0.0.1:48173/json?limit=10&search=wirebolt"

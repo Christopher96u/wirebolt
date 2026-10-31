@@ -47,7 +47,7 @@ struct ResponseViewer: View {
                     .id(session.id)
                     .transition(.opacity)
             } else {
-                NoResponseState(session: session, canSend: send != nil) { send?() }
+                NoResponseState(session: session)
             }
         }
         // Phase changes of one document animate; switching documents does not.
@@ -286,7 +286,7 @@ private struct ResponseSourceView: View {
                 Button("Find", systemImage: "magnifyingglass") { find.isVisible = true }
                     .labelStyle(.iconOnly).buttonStyle(.borderless)
                     .help("Find (⌘F)")
-                Menu("Actions", systemImage: "ellipsis.circle") {
+                Menu("Actions", systemImage: "ellipsis") {
                     Button("Copy") {
                         Task {
                             let value: String
@@ -498,27 +498,31 @@ private struct ResponseSectionBar: View {
     }
 }
 
-/// The empty response pane. Its own view: it reads the URL, so typing re-renders only this
-/// rather than the whole response viewer.
+/// The empty response pane: one quiet hint, since Send is already in the composer. Its own
+/// view: it reads the URL, so typing re-renders only this rather than the whole viewer.
 private struct NoResponseState: View {
     let session: DocumentSession
-    let canSend: Bool
-    let send: () -> Void
+    @Environment(\.wireboltTheme) private var theme
 
     var body: some View {
-        let hasURL = !session.draft.url.isEmpty
-        ContentUnavailableView {
-            Label("No Response", systemImage: "paperplane")
-        } description: {
-            Text(hasURL ? "Send the request (⌘↩) to see the response here."
-                : "Enter a URL, then send the request (⌘↩) to see the response here.")
-        } actions: {
-            if canSend {
-                Button("Send Request", action: send)
-                    .disabled(!hasURL)
-                    .help("Send Request (⌘↩)")
+        HStack(spacing: WireboltTheme.Spacing.small) {
+            if session.draft.url.isEmpty {
+                Text("Enter a URL to send the request")
+            } else {
+                Text("Press")
+                Text("⌘↩")
+                    .font(.system(size: theme.typography.detail, weight: .medium))
+                    .padding(.horizontal, WireboltTheme.Spacing.small)
+                    .padding(.vertical, WireboltTheme.Spacing.xxSmall)
+                    .overlay { RoundedRectangle(cornerRadius: theme.geometry.chip).strokeBorder(theme.cardBorder.color) }
+                    .accessibilityLabel("Command Return")
+                Text("to send the request")
             }
         }
+        .font(WireboltTheme.Typography.tab)
+        .foregroundStyle(theme.muted.color)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .accessibilityElement(children: .combine)
     }
 }
 
