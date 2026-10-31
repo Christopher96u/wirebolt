@@ -523,9 +523,12 @@ final class ProbeWindow: NSWindow { override var canBecomeKey: Bool { true } }
                 window.setContentSize(NSSize(width: width, height: 580))
                 spin(); flush(host)
                 let tree = elements(host)
-                for name in ["Send Request", "Edit Long URL", "Params", "Headers", "Body", "Auth", "Note", "Format Body"] {
+                for name in ["Send Request", "Params", "Headers", "Body", "Auth", "Note", "Format Body"] {
                     precondition(tree.contains { $0.role == "AXButton" && $0.name == name }, "Missing accessible button: \(name)")
                 }
+                // Edit Long URL and History live in the composer's overflow menu at every width.
+                precondition(tree.contains { ["AXButton", "AXMenuButton", "AXPopUpButton"].contains($0.role) && $0.name == "Request Actions" },
+                    "Missing accessible menu: Request Actions")
                 let context = "\(orientation) at \(Int(width)) pt"
                 checkSectionBar(tree, selected: .body, context: context, clipped: "Clipped request control")
                 // Every section stays reachable: selecting it scrolls its tab fully into view,

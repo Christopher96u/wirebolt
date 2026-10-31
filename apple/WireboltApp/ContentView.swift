@@ -132,6 +132,9 @@ struct ContentView: View {
         .tint(WireboltTheme.primaryAccent)
         .toolbar(id: "workspace-toolbar") { workspaceToolbar }
         .toolbar(removing: .sidebarToggle)
+        // The window keeps "<Workspace> — <Request>" for the Window menu; the toolbar shows
+        // the workspace alone (WorkspaceToolbarTitle).
+        .toolbar(removing: .title)
         .background(WindowConfigurator(
             sidebarWidth: model.isShowingAppSettings || interface.columnVisibility == .detailOnly ? 0 : sidebarWidth,
             isWorkspaceWindow: loadsWorkspace,
@@ -290,6 +293,9 @@ struct ContentView: View {
                 .sharedBackgroundVisibility(.hidden)
             ToolbarItem(id: "new", placement: .navigation) { CollectionActionMenu(model: model, interface: interface).frame(width: 28, height: 30) }
                 .sharedBackgroundVisibility(.hidden)
+            ToolbarItem(id: "title", placement: .navigation) { WorkspaceToolbarTitle(model: model) }
+                .sharedBackgroundVisibility(.hidden)
+                .customizationBehavior(.disabled)
             // Pins the window actions to the trailing edge when no title pushes them over.
             ToolbarSpacer(.flexible, placement: .primaryAction)
             ToolbarItem(id: "environment-inspector", placement: .primaryAction) { environmentInspectorButton }
@@ -301,6 +307,8 @@ struct ContentView: View {
         } else {
             ToolbarItem(id: "sidebar", placement: .navigation) { sidebarToggle }
             ToolbarItem(id: "new", placement: .navigation) { CollectionActionMenu(model: model, interface: interface).frame(width: 28, height: 30) }
+            ToolbarItem(id: "title", placement: .navigation) { WorkspaceToolbarTitle(model: model) }
+                .customizationBehavior(.disabled)
             ToolbarItem(id: "environment-inspector", placement: .primaryAction) { environmentInspectorButton }
             ToolbarItem(id: "workspace-settings", placement: .primaryAction) { workspaceSettingsButton }
             ToolbarItem(id: "response-placement", placement: .primaryAction) { ResponsePlacementButton(model: model, interface: interface) }
@@ -387,16 +395,28 @@ private struct UndoManagerBridge: View {
 }
 
 /// Names the window "<Workspace> — <Request>" for the Window menu, Mission Control and
-/// VoiceOver. Isolated so title changes do not re-render the workspace.
+/// VoiceOver. The toolbar hides this title and shows only the workspace (see
+/// `WorkspaceToolbarTitle`). Isolated so title changes do not re-render the workspace.
 private struct WorkspaceWindowTitle: View {
     let model: WireboltModel
 
     var body: some View {
-        // Never empty: an untitled window has no name in the Window menu or Mission Control.
-        let workspace = model.workspace.name.isEmpty ? "Wirebolt" : model.workspace.name
-        let request = model.sessions.activeSession?.title ?? ""
         Color.clear
-            .navigationTitle(request.isEmpty ? workspace : "\(workspace) — \(request)")
+            .navigationTitle(WorkspaceWindowName.title(workspace: model.workspace.name, request: model.sessions.activeSession?.title))
+            .accessibilityHidden(true)
+    }
+}
+
+/// The workspace name in the toolbar. The active tab already names the request.
+private struct WorkspaceToolbarTitle: View {
+    let model: WireboltModel
+
+    var body: some View {
+        Text(WorkspaceWindowName.workspace(model.workspace.name))
+            .font(.headline)
+            .lineLimit(1)
+            .padding(.horizontal, WireboltTheme.Spacing.xSmall)
+            // The window title already names the workspace for VoiceOver.
             .accessibilityHidden(true)
     }
 }
@@ -1750,9 +1770,6 @@ private struct DocumentTabBar: View {
     // No @State here: this bar re-renders on every tab switch, and a stateful body makes
     // that update measurably slower. The strip's overflow state lives in TabStripScroller.
 
-    /// Tabs shrink to this width before the strip starts scrolling.
-    private static let minimumTabWidth = 96.0
-
     var body: some View {
         HStack(spacing: 0) {
             if model.sessions.groups.count > 1 {
@@ -1778,10 +1795,10 @@ private struct DocumentTabBar: View {
                 .disabled(group?.forwardTabIDs.isEmpty != false)
                 .help("Forward (⌃⌘→)")
 
-            GeometryReader { geometry in
             ScrollViewReader { scroll in
             TabStripScroller {
-            HStack(spacing: 0) {
+            // Tabs are as wide as their titles and start at the leading edge, like pills.
+            HStack(spacing: WireboltTheme.Spacing.xxSmall) {
                 ForEach(tabs) { tab in
                     DocumentTabButton(
                         tab: tab,
@@ -1807,19 +1824,17 @@ private struct DocumentTabBar: View {
                             interface.close(.all, model: model, in: groupID)
                         }
                     )
-                        .frame(width: max(Self.minimumTabWidth, geometry.size.width / Double(max(1, tabs.count))))
                         .id(tab.id)
                 }
             }
-            .padding(.top, WireboltTheme.Spacing.xxSmall)
+            .padding(.horizontal, WireboltTheme.Spacing.xSmall)
             }
             .onChange(of: group?.selectedTabID) { _, selected in
                 if let selected { scroll.scrollTo(selected, anchor: .center) }
             }
             }
-            }
             .padding(.trailing, WireboltTheme.Spacing.xSmall)
-            .frame(maxWidth: .infinity)
+            .frame(maxWidth: .infinity, alignment: .leading)
 
             Button("Open in New Split", systemImage: "rectangle.split.2x1") {
                 if let selected = group?.selectedTabID {
@@ -1911,33 +1926,36 @@ private struct DocumentTabButton: View {
 
     var body: some View {
         let isDirty = tab.isDirty
-        HStack(spacing: WireboltTheme.Spacing.xxSmall) {
-            DocumentTabCloseSlot(
-                title: tab.title,
-                isDirty: isDirty,
-                isRevealed: isHovered || (isSelected && !isDirty),
-                isRenaming: isRenaming,
-                onClose: onClose
-            )
-
+        let isWebSocket = tab.kind == .webSocket
+        HStack(spacing: 0) {
             if isRenaming {
-                InlineSidebarName(title: tab.title, isEditing: $isRenaming, save: onRename)
-                    .font(WireboltTheme.Typography.tab)
-                    .frame(height: 28)
-                    .accessibilityLabel("Request Name")
+                HStack(spacing: WireboltTheme.Spacing.small) {
+                    MethodChip(method: tab.draft.method, webSocket: isWebSocket)
+                    InlineSidebarName(title: tab.title, isEditing: $isRenaming, save: onRename)
+                        .font(WireboltTheme.Typography.tab)
+                        // The strip proposes no width, so the field needs its own.
+                        .frame(width: Self.maximumTitleWidth, height: Self.height)
+                        .accessibilityLabel("Request Name")
+                }
+                .padding(.leading, WireboltTheme.Spacing.medium)
             } else {
                 Button(action: onSelect) {
-                    DocumentTabLabel(title: tab.title, italic: isPreview)
-                        .frame(height: 28)
-                        .frame(maxWidth: .infinity)
-                        .offset(y: -1)
-                        .allowsHitTesting(false)
-                        .accessibilityHidden(true)
-                        .contentShape(.rect)
+                    HStack(spacing: WireboltTheme.Spacing.small) {
+                        MethodChip(method: tab.draft.method, webSocket: isWebSocket)
+                        CappedWidth(maximum: Self.maximumTitleWidth) {
+                            DocumentTabLabel(title: tab.title, italic: isPreview)
+                        }
+                    }
+                    .padding(.leading, WireboltTheme.Spacing.medium)
+                    .frame(height: Self.height)
+                    .allowsHitTesting(false)
+                    .accessibilityHidden(true)
+                    .contentShape(.rect)
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel(tab.title)
-                .accessibilityValue([isDirty ? "Edited" : nil, isPreview ? "Preview" : nil].compactMap(\.self).joined(separator: ", "))
+                .accessibilityValue(DocumentTabDescription.accessibilityValue(
+                    method: tab.draft.method, webSocket: isWebSocket, isDirty: isDirty, isPreview: isPreview))
                 .accessibilityAction(named: "Close Tab", onClose)
                 .help(isPreview ? "\(tab.title) — Preview. Double-click to keep open." : tab.title)
                 // Select immediately while still recognizing a double-click, which keeps a
@@ -1946,16 +1964,21 @@ private struct DocumentTabButton: View {
                     if isPreview { onPin() } else { beginRenaming() }
                 })
             }
-            // Balances the close slot so the title stays centered.
-            Color.clear.frame(width: 28, height: 28)
+            DocumentTabCloseSlot(
+                title: tab.title,
+                isDirty: isDirty,
+                isRevealed: isHovered || (isSelected && !isDirty),
+                isRenaming: isRenaming,
+                onClose: onClose
+            )
         }
-        .padding(.horizontal, WireboltTheme.Spacing.small)
-        .frame(minWidth: 28, minHeight: 28)
-        // Only the selected tab draws a capsule; the others add no shapes.
-        .background { if isSelected { RoundedRectangle(cornerRadius: WireboltTheme.Radius.control).fill(WireboltTheme.tabBackground) } }
-        .overlay {
-            if isSelected {
-                RoundedRectangle(cornerRadius: WireboltTheme.Radius.control).stroke(WireboltTheme.separator.opacity(0.65), lineWidth: 0.5)
+        .padding(.trailing, WireboltTheme.Spacing.xxSmall)
+        .foregroundStyle(isSelected ? WireboltTheme.primary : WireboltTheme.muted)
+        // Only the selected or hovered tab draws a pill; the others add no shapes.
+        .background {
+            if isSelected || isHovered {
+                RoundedRectangle(cornerRadius: WireboltTheme.Radius.control)
+                    .fill(WireboltTheme.tabBackground.opacity(isSelected ? 1 : 0.5))
             }
         }
         .onHover { isHovered = $0 }
@@ -1979,6 +2002,27 @@ private struct DocumentTabButton: View {
     private func beginRenaming() {
         onSelect()
         isRenaming = true
+    }
+
+    static let height: CGFloat = 26
+    /// Longer titles truncate; the tooltip and VoiceOver keep the full name.
+    static let maximumTitleWidth: CGFloat = 200
+}
+
+/// Sizes its content to its ideal width, up to `maximum`. A horizontal scroll view proposes
+/// no width, so a flexible frame alone would let a long title run past the tab.
+private struct CappedWidth: Layout {
+    let maximum: CGFloat
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache _: inout ()) -> CGSize {
+        guard let content = subviews.first else { return .zero }
+        let ideal = content.sizeThatFits(.unspecified)
+        return content.sizeThatFits(ProposedViewSize(width: min(ideal.width, maximum), height: proposal.height))
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal _: ProposedViewSize, subviews: Subviews, cache _: inout ()) {
+        subviews.first?.place(at: CGPoint(x: bounds.minX, y: bounds.midY), anchor: .leading,
+            proposal: ProposedViewSize(width: bounds.width, height: bounds.height))
     }
 }
 
@@ -2004,7 +2048,7 @@ private struct DocumentTabCloseSlot: View {
             Button(action: onClose) {
                 Image(systemName: "xmark")
                     .font(.system(size: 9, weight: .semibold))
-                    .frame(width: 28, height: 28)
+                    .frame(width: 24, height: DocumentTabButton.height)
                     .contentShape(.rect)
             }
             .buttonStyle(.plain)
@@ -2016,7 +2060,7 @@ private struct DocumentTabCloseSlot: View {
             .accessibilityHidden(isRenaming)
             .help("Close Tab (⌘W)")
         }
-        .frame(width: 28, height: 28)
+        .frame(width: 24, height: DocumentTabButton.height)
     }
 }
 
@@ -2398,39 +2442,26 @@ private struct RequestURLBar: View {
                 EnvironmentPopup(model: model, interface: interface)
                     .frame(maxWidth: isCompact ? 120 : 210)
                 if !isCompact {
-                Button { interface.presentation(for: session).requestSection = .auth } label: {
-                    Label(authenticationTitle, systemImage: "lock")
-                }
-                .buttonStyle(.plain).labelStyle(ComposerLabelStyle(compact: isCompact)).frame(minHeight: 28).help("Edit Authentication")
-                Button { interface.presentation(for: session).requestSection = .settings } label: {
-                    Label("\(session.draft.transport.totalTimeoutMS / 1000) s", systemImage: "gauge")
-                }
-                .buttonStyle(.plain).labelStyle(ComposerLabelStyle(compact: isCompact)).frame(minHeight: 28).help("Edit Timeout and Network Settings")
+                    authenticationMenu
+                    ComposerTimeoutButton(model: model, session: session) { openSection(.settings) }
                 }
                 Spacer(minLength: 0)
-                if isCompact {
-                    Button("Edit Long URL", systemImage: "rectangle.expand.vertical") { isEditingLongURL = true }
-                        .labelStyle(.iconOnly).buttonStyle(GhostIconStyle()).help("Edit Long URL")
-                    Menu("Request Actions", systemImage: "ellipsis") {
-                        Button("Authentication") { interface.presentation(for: session).requestSection = .auth }
-                        Button("Network Settings") { interface.presentation(for: session).requestSection = .settings }
-                        if session.kind == .http {
-                            Button("Attach File", action: attachFile)
-                            RequestHistoryMenu(model: model, session: session)
-                        }
-                    }.menuStyle(.borderlessButton).menuIndicator(.hidden).labelStyle(.iconOnly).frame(width: 28, height: 28)
-                } else {
-                    ProxyConnectionIndicator(model: model, session: session, compact: true) {
-                        interface.presentation(for: session).requestSection = .settings
-                    }
-                    Button("Edit Long URL", systemImage: "rectangle.expand.vertical") { isEditingLongURL = true }
-                        .labelStyle(.iconOnly).buttonStyle(GhostIconStyle()).help("Edit Long URL")
+                // The row keeps only the frequent actions; the rest are in the overflow menu.
+                if !isCompact {
+                    ProxyConnectionIndicator(model: model, session: session) { openSection(.settings) }
                     if session.kind == .http {
-                        RequestHistoryMenu(model: model, session: session).frame(minWidth: 28, minHeight: 28)
                         Button("Attach File", systemImage: "paperclip", action: attachFile)
                             .labelStyle(.iconOnly).buttonStyle(GhostIconStyle()).help("Attach a File as the Request Body")
                     }
                 }
+                RequestActionsMenu(
+                    model: model,
+                    session: session,
+                    includesComposerControls: isCompact,
+                    openSection: openSection,
+                    editLongURL: { isEditingLongURL = true },
+                    attachFile: attachFile
+                )
                 primaryAction
             }
             .font(WireboltTheme.Typography.tab)
@@ -2489,27 +2520,42 @@ private struct RequestURLBar: View {
                     isEnteringCustomMethod = true
                 }
             } label: {
-                Text(session.draft.method.rawValue)
-                    .font(WireboltTheme.Typography.tab.weight(.semibold))
-                    .foregroundStyle(WireboltTheme.requestBarMethodColor(session.draft.method))
+                ComposerMenuLabel(title: session.draft.method.rawValue,
+                    titleColor: WireboltTheme.requestBarMethodColor(session.draft.method))
+                    .fontWeight(.semibold)
             }
-            .menuStyle(.borderlessButton)
-            .menuIndicator(.hidden)
-            .frame(minWidth: 42, minHeight: 28)
-            .fixedSize()
-            .offset(x: 2, y: -1)
+            .composerMenuStyle()
             .accessibilityLabel("HTTP method, \(session.draft.method.rawValue)")
-
     }
 
-    private var authenticationTitle: String {
-        switch session.draft.authentication {
-        case .none: "No auth"
-        case .basic: "Basic"
-        case .bearer: "Bearer"
-        case .apiKey: "API key"
-        case .oauth2: "OAuth 2"
+    /// Picks the authentication kind in place; Edit Authentication… opens its credentials.
+    private var authenticationMenu: some View {
+        let kind = session.draft.authentication.kind
+        return Menu {
+            Picker("Authentication", selection: Binding(
+                get: { kind },
+                set: { selected in
+                    session.draft.authentication = session.draft.authentication.switching(to: selected)
+                    // A new kind needs credentials before it can be sent.
+                    if selected != .none { openSection(.auth) }
+                }
+            )) {
+                ForEach(AuthenticationKind.allCases, id: \.self) { Text($0.title).tag($0) }
+            }
+            .pickerStyle(.inline).labelsHidden()
+            Divider()
+            Button("Edit Authentication…") { openSection(.auth) }
+        } label: {
+            ComposerMenuLabel(systemImage: "lock", title: kind.composerTitle)
         }
+        .composerMenuStyle()
+        .help("Authentication")
+        .accessibilityLabel("Authentication")
+        .accessibilityValue(kind.title)
+    }
+
+    private func openSection(_ section: RequestPanelSection) {
+        interface.presentation(for: session).requestSection = section
     }
 
     private func attachFile() {
@@ -2574,13 +2620,138 @@ private struct RequestURLBar: View {
 
 }
 
-private struct ComposerLabelStyle: LabelStyle {
-    let compact: Bool
-    func makeBody(configuration: Configuration) -> some View {
+/// A composer control: an optional icon and its value, then a chevron when it opens a menu.
+private struct ComposerMenuLabel: View {
+    var systemImage: String?
+    let title: String
+    var titleColor: Color?
+    var showsChevron = true
+
+    var body: some View {
         HStack(spacing: WireboltTheme.Spacing.small) {
-            configuration.icon
-            if !compact { configuration.title }
-        }.frame(minWidth: 28)
+            if let systemImage { Image(systemName: systemImage) }
+            Text(title).foregroundStyle(titleColor ?? WireboltTheme.muted)
+            if showsChevron {
+                Image(systemName: "chevron.down")
+                    .font(.system(size: 9, weight: .semibold))
+                    .padding(.leading, -WireboltTheme.Spacing.xxSmall)
+            }
+        }
+        .lineLimit(1)
+        .foregroundStyle(WireboltTheme.muted)
+        .frame(minHeight: 28)
+        .contentShape(.rect)
+    }
+}
+
+private extension View {
+    /// Draws a composer menu's label as given, without the system pop-up chrome or arrow.
+    func composerMenuStyle() -> some View {
+        menuStyle(.button).buttonStyle(.plain).menuIndicator(.hidden).fixedSize()
+    }
+}
+
+/// The effective total timeout; opens the request's network settings. Its own view: it
+/// reads the workspace's transport, which the rest of the composer does not depend on.
+private struct ComposerTimeoutButton: View {
+    let model: WireboltModel
+    let session: DocumentSession
+    let action: () -> Void
+
+    var body: some View {
+        let title = model.effectiveTransport(for: session.draft).totalTimeoutTitle()
+        Button(action: action) {
+            ComposerMenuLabel(systemImage: "timer", title: title, showsChevron: false)
+        }
+        .buttonStyle(.plain)
+        .help("Total Timeout · Edit Network Settings")
+        .accessibilityLabel("Total timeout")
+        .accessibilityValue(title)
+    }
+}
+
+/// The composer's overflow: rarely used request actions and the run history. It loads the
+/// history itself because the menu's contents cannot run tasks or present alerts.
+private struct RequestActionsMenu: View {
+    @Bindable var model: WireboltModel
+    @Bindable var session: DocumentSession
+    /// Narrow bars hide authentication, timeout and attach; the menu offers them instead.
+    let includesComposerControls: Bool
+    let openSection: (RequestPanelSection) -> Void
+    let editLongURL: () -> Void
+    let attachFile: () -> Void
+    @State private var loaded = LoadedHistory()
+    @State private var isClearing = false
+
+    /// Entries loaded for a document; the menu stays mounted across tab switches.
+    private struct LoadedHistory {
+        var documentID: String?
+        var entries: [RunHistoryEntry] = []
+    }
+
+    private struct LoadKey: Equatable {
+        let revision: Int
+        let documentID: String
+    }
+
+    /// Only this document's entries: another document's never show while its own load.
+    private var entries: [RunHistoryEntry] { loaded.documentID == session.id ? loaded.entries : [] }
+
+    var body: some View {
+        Menu {
+            if includesComposerControls {
+                Button("Authentication") { openSection(.auth) }
+                Button("Network Settings") { openSection(.settings) }
+                if session.kind == .http { Button("Attach File…", action: attachFile) }
+                Divider()
+            }
+            Button("Edit Long URL…", action: editLongURL)
+            if session.kind == .http {
+                Divider()
+                Menu("History") {
+                    if entries.isEmpty { Text("No History") }
+                    ForEach(entries) { entry in
+                        Button {
+                            Task { await model.restoreHistory(entry, into: session) }
+                        } label: {
+                            HStack(spacing: 8) {
+                                Text(entry.createdAt, style: .relative)
+                                Text(entry.responseHead.map { String($0.status) } ?? "Error")
+                                if let completion = entry.completion {
+                                    Text("\(completion.totalTimeNS / 1_000_000) ms")
+                                    Text(String(format: "%.3f KB", Double(completion.bytesReceived) / 1000))
+                                }
+                            }
+                        }
+                    }
+                    Divider()
+                    Button("Clear History…") { isClearing = true }.disabled(entries.isEmpty)
+                }
+            }
+        } label: {
+            Image(systemName: "ellipsis")
+        }
+        .menuStyle(.button).buttonStyle(GhostIconStyle()).menuIndicator(.hidden).fixedSize()
+        .help("More Request Actions")
+        .accessibilityLabel("Request Actions")
+        .task(id: LoadKey(revision: model.historyRevision, documentID: session.id)) {
+            guard session.kind == .http else { return }
+            let session = session
+            let entries = await model.historyEntries(for: session)
+            guard !Task.isCancelled else { return }
+            loaded = LoadedHistory(documentID: session.id, entries: entries)
+        }
+        .onChange(of: session.id) { if isClearing { isClearing = false } }
+        .alert("Clear History?", isPresented: $isClearing) {
+            Button("Cancel", role: .cancel) {}
+            Button("Clear", role: .destructive) {
+                let session = session
+                Task {
+                    await model.clearHistory(for: session)
+                    if loaded.documentID == session.id { loaded.entries = [] }
+                }
+            }
+        }
     }
 }
 
@@ -2753,68 +2924,6 @@ private struct WebSocketResponseView: View {
     private static let time: DateFormatter = {
         let formatter = DateFormatter(); formatter.dateFormat = "HH:mm:ss.SSS"; return formatter
     }()
-}
-
-private struct RequestHistoryMenu: View {
-    @Bindable var model: WireboltModel
-    @Bindable var session: DocumentSession
-    @State private var loaded = LoadedHistory()
-    @State private var isClearing = false
-
-    /// Entries loaded for a document; the menu stays mounted across tab switches.
-    private struct LoadedHistory {
-        var documentID: String?
-        var entries: [RunHistoryEntry] = []
-    }
-
-    private struct LoadKey: Equatable {
-        let revision: Int
-        let documentID: String
-    }
-
-    /// Only this document's entries: another document's never show while its own load.
-    private var entries: [RunHistoryEntry] { loaded.documentID == session.id ? loaded.entries : [] }
-
-    var body: some View {
-        Menu("Request History", systemImage: "clock.arrow.circlepath") {
-            Button("Clear History") { isClearing = true }.disabled(entries.isEmpty)
-            Divider()
-            if entries.isEmpty { Text("No History") }
-            ForEach(entries) { entry in
-                Button {
-                    Task { await model.restoreHistory(entry, into: session) }
-                } label: {
-                    HStack(spacing: 8) {
-                        Text(entry.createdAt, style: .relative)
-                        Text(entry.responseHead.map { String($0.status) } ?? "Error")
-                        if let completion = entry.completion {
-                            Text("\(completion.totalTimeNS / 1_000_000) ms")
-                            Text(String(format: "%.3f KB", Double(completion.bytesReceived) / 1000))
-                        }
-                    }
-                }
-            }
-        }
-        .menuStyle(.borderlessButton).menuIndicator(.hidden).labelStyle(.iconOnly)
-        .foregroundStyle(.secondary).help("Request History")
-        .task(id: LoadKey(revision: model.historyRevision, documentID: session.id)) {
-            let session = session
-            let entries = await model.historyEntries(for: session)
-            guard !Task.isCancelled else { return }
-            loaded = LoadedHistory(documentID: session.id, entries: entries)
-        }
-        .onChange(of: session.id) { if isClearing { isClearing = false } }
-        .alert("Clear History?", isPresented: $isClearing) {
-            Button("Cancel", role: .cancel) {}
-            Button("Clear", role: .destructive) {
-                let session = session
-                Task {
-                    await model.clearHistory(for: session)
-                    if loaded.documentID == session.id { loaded.entries = [] }
-                }
-            }
-        }
-    }
 }
 
 private struct LongURLEditor: View {
@@ -3972,7 +4081,7 @@ private struct AuthenticationTypePicker: View {
             get: { authentication.kind },
             set: { kind in
                 guard kind != authentication.kind else { return }
-                authentication = .new(kind)
+                authentication = authentication.switching(to: kind)
             }
         )
     }

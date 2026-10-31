@@ -15,6 +15,8 @@ Create an HTTP request with **File → New Request** (**⌘N**), the toolbar **+
 | Note | Markdown documentation saved with the request |
 | Settings | Request proxy policy and transport overrides |
 
+Below the URL, the composer sets the method, the environment and the authentication kind, and shows the total timeout; click the timeout to open **Settings**. A proxy appears there only when the workspace or the request overrides the app default, or when its configuration is invalid. **Edit Long URL…** and **History** are in the **⋯** menu beside Send; in a narrow editor it also offers Authentication, Network Settings and Attach File.
+
 Switch panels with **⌥⌘1** – **⌥⌘6** (**Navigate → Request Section**). **Request → Add Key** (**⇧⌘K**) adds a Params or Headers row; from any other panel it switches to Params first.
 
 For multipart uploads, choose text or file parts and select the local files. File bodies refer to local paths: sharing a workspace does not upload the file or make that path exist on another Mac.
@@ -41,10 +43,10 @@ The HTML source view and Webview serve different purposes. Open a Webview only f
 
 ## Tabs, split editors and history
 
-Clicking a request in the sidebar opens it in a *preview* tab (italic title) that the next click reuses. Editing or sending the request, double-clicking the tab or ⌘-clicking the sidebar row keeps it open. A dot replaces the close button on tabs with unsaved edits. Switch tabs with **⇧⌘]** / **⇧⌘[**, **⌃Tab** / **⌃⇧Tab** or **⌘1** – **⌘9**.
+Tabs show each request's method and name. Clicking a request in the sidebar opens it in a *preview* tab (italic title) that the next click reuses. Editing or sending the request, double-clicking the tab or ⌘-clicking the sidebar row keeps it open. A dot replaces the close button on tabs with unsaved edits. Switch tabs with **⇧⌘]** / **⇧⌘[**, **⌃Tab** / **⌃⇧Tab** or **⌘1** – **⌘9**.
 
 Open multiple requests in tabs. **Navigate → Split Right** (**⇧⌘D**) creates a second editor group for comparison. Drafts and responses are independent between document sessions. Save each edited draft you want to retain. Wirebolt reopens your tabs and the latest response of each request at the next launch.
 
-For HTTP requests, use **Request History** beside the request controls to inspect available prior runs. History is local runtime data, subject to storage limits, and is not included in workspace exports or Git commits.
+For HTTP requests, open **History** in the composer's **⋯** menu to inspect available prior runs. History is local runtime data, subject to storage limits, and is not included in workspace exports or Git commits.
 
 Use **Request → Copy cURL** to copy a command representation. Keychain-backed values, including secret variables and proxy credentials, aren't copied: the command reads them with `security find-generic-password` when it runs, so macOS may ask to allow access, and it works only on a Mac that has those Keychain items. Review the clipboard content before sharing: URLs, bodies and other text you typed are copied as is.

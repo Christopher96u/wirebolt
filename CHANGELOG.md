@@ -16,6 +16,12 @@ Changes under **Unreleased** are on `main` but not in a published build yet. Dow
 - Redesigned sidebar, request composer and response bar. Environments are edited in a side inspector instead of a sheet.
 - **⌘N** focuses the new request's URL.
 - The response renderer **Raw** is now **Text**, and the **Raw** response section is now **Raw HTTP**.
+- Tabs fit their titles and show the request method. The toolbar shows the workspace name instead of repeating the active request.
+- The composer's method and authentication are menus. **Edit Long URL…** and **History** moved to its **⋯** menu, and the proxy shows only when the workspace or the request overrides the app default.
+
+### Fixed
+
+- The composer showed the request's own timeout when the request used the workspace's, and **0 s** for no limit.
 
 ## 1.0.0-rc.1
 
