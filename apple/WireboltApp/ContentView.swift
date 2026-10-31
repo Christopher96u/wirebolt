@@ -935,8 +935,7 @@ private struct SidebarOutlineRow: View {
             case .group(let collection, let group):
                 SavedGroupRow(row: row, collection: collection, group: group, model: model, interface: interface)
             case .request(let location):
-                SavedRequestRow(model: model, interface: interface, location: location, depth: row.depth,
-                                secondaryText: row.secondaryText(filtering: interface.isFilteringSidebar))
+                SavedRequestRow(model: model, interface: interface, location: location, depth: row.depth, path: row.requestPath)
             }
         }
         .padding(.leading, Double(row.depth) * 14)
@@ -1094,11 +1093,11 @@ private struct SavedRequestRow: View {
     let interface: WorkspaceUIState
     let location: RequestLocation
     let depth: Int
-    let secondaryText: String
+    let path: String
 
     // Only decides the selection; the row builds its actions itself, so this stays cheap.
     var body: some View {
-        SidebarRequestButton(model: model, interface: interface, location: location, depth: depth, secondaryText: secondaryText,
+        SidebarRequestButton(model: model, interface: interface, location: location, depth: depth, path: path,
             isSelected: interface.sidebarCursor == nil && model.isSelectedRequest(location)
         ).equatable()
     }
@@ -1433,7 +1432,7 @@ private struct SidebarRequestButton: View, @MainActor Equatable {
 
     static func == (lhs: Self, rhs: Self) -> Bool {
         lhs.model === rhs.model && lhs.interface === rhs.interface && lhs.location == rhs.location
-            && lhs.isSelected == rhs.isSelected && lhs.depth == rhs.depth && lhs.secondaryText == rhs.secondaryText
+            && lhs.isSelected == rhs.isSelected && lhs.depth == rhs.depth && lhs.path == rhs.path
     }
 
     @Bindable var model: WireboltModel
@@ -1444,7 +1443,8 @@ private struct SidebarRequestButton: View, @MainActor Equatable {
 
     let location: RequestLocation
     let depth: Int
-    let secondaryText: String
+    /// The URL path shown beside the method; the collection is already the row's parent.
+    let path: String
     let isSelected: Bool
 
     private func action() {
@@ -1491,7 +1491,7 @@ private struct SidebarRequestButton: View, @MainActor Equatable {
             if theme.density == .comfortable {
                 HStack(spacing: WireboltTheme.Spacing.medium) {
                     MethodChip(method: location.request.method, webSocket: location.request.webSocket)
-                    Text(secondaryText)
+                    Text(path)
                         .font(WireboltTheme.Typography.detail).foregroundStyle(WireboltTheme.muted).lineLimit(1)
                     Spacer(minLength: 0)
                     ZStack(alignment: .trailing) {
@@ -1569,7 +1569,7 @@ private struct SidebarRequestButton: View, @MainActor Equatable {
             Button("Delete", role: .destructive, action: onDelete)
         }
         .accessibilityLabel("\(location.request.webSocket ? "WebSocket" : location.request.method.rawValue) request, \(location.request.name)")
-        .accessibilityValue(secondaryText.isEmpty ? "level \(depth + 1)" : "\(secondaryText), level \(depth + 1)")
+        .accessibilityValue(path.isEmpty ? "level \(depth + 1)" : "\(path), level \(depth + 1)")
         .accessibilityAddTraits(isSelected ? .isSelected : [])
         .modifier(SidebarAccessibilityActions(actions: SidebarRowActions(
             newRequest: { interface.makeNewRequest(model: model, collectionID: location.collectionID, groupID: location.groupID) },
@@ -1622,7 +1622,8 @@ private struct SidebarHistoryLabel: View {
         HStack {
             Text("History")
             Spacer()
-            if loadedSessionID == model.sessions.activeSession?.id {
+            // No count without an open request: History then lists nothing to count.
+            if let active = model.sessions.activeSession?.id, loadedSessionID == active {
                 Text(count, format: .number)
             }
         }

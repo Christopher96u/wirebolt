@@ -31,20 +31,18 @@ import Testing
         #expect(SidebarSnapshot.requestPath(from: url) == expected)
     }
 
-    @Test func requestSecondaryTextUsesPathInTreeAndCollectionWhenFiltering() throws {
+    @Test("Request rows carry their URL path; containers carry none")
+    func requestRowsCarryTheirPath() throws {
         let snapshot = SidebarSnapshot(collections: [fixture()])
         let request = try #require(snapshot.rows.first { $0.id == "request:c/inside" })
-        #expect(request.secondaryText(filtering: false) == "/needle")
-        #expect(request.secondaryText(filtering: true) == "Collection")
-        #expect(snapshot.rows.first?.secondaryText(filtering: false) == "")
-        #expect(snapshot.rows.first?.secondaryText(filtering: true) == "")
+        #expect(request.requestPath == "/needle")
+        #expect(snapshot.rows.first?.requestPath == "")
 
         var collection = fixture()
         collection.id = WorkspaceDraft.rootCollectionID
         collection.requests = [RequestLocation(collectionID: collection.id, request: RequestDraft(id: "empty", url: ""))]
         let rootRequest = try #require(SidebarSnapshot(collections: [collection]).rows.first { !$0.isContainer })
-        #expect(rootRequest.secondaryText(filtering: false) == "")
-        #expect(rootRequest.secondaryText(filtering: true) == "Collection")
+        #expect(rootRequest.requestPath == "")
     }
 
     private func fixture() -> CollectionDraft {

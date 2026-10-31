@@ -25,30 +25,27 @@ public struct SidebarSnapshot: Sendable {
             let ancestors: [Int]
             let search: String
             let requestPath: String
-            let collectionName: String
-            init(content: Content, ancestors: [Int], search: String, collectionName: String) {
+            init(content: Content, ancestors: [Int], search: String) {
                 self.content = content
                 self.ancestors = ancestors
                 self.search = search
-                self.collectionName = collectionName
                 if case .request(let location) = content {
                     requestPath = SidebarSnapshot.requestPath(from: location.request.url)
                 } else { requestPath = "" }
             }
         }
 
-        init(id: String, depth: Int, content: Content, parentID: String?, ancestors: [Int], search: String, collectionName: String = "") {
+        init(id: String, depth: Int, content: Content, parentID: String?, ancestors: [Int], search: String) {
             self.id = id
             self.depth = depth
             self.parentID = parentID
-            storage = Storage(content: content, ancestors: ancestors, search: search, collectionName: collectionName)
+            storage = Storage(content: content, ancestors: ancestors, search: search)
         }
 
-        /// Cache request details with the snapshot; rendering never parses URLs or looks up collections.
-        public func secondaryText(filtering: Bool) -> String {
-            guard case .request = content else { return "" }
-            return filtering ? storage.collectionName : storage.requestPath
-        }
+        /// A request's URL path for display (empty for containers). Parsed once with the
+        /// snapshot, so rendering never parses URLs. Filtered results keep their collection
+        /// and folder rows, so the path is shown there too.
+        public var requestPath: String { storage.requestPath }
 
         public var title: String {
             switch content {
@@ -141,7 +138,7 @@ public struct SidebarSnapshot: Sendable {
                     }
                     let position = rows.count
                     rows.append(Row(id: rowID, depth: ancestors.count, content: content, parentID: ancestors.last.map { rows[$0].id },
-                                    ancestors: ancestors, search: Self.normalize(search), collectionName: collection.name))
+                                    ancestors: ancestors, search: Self.normalize(search)))
                     if case .group(_, let group) = content { append(parent: group.id, ancestors: ancestors + [position]) }
                 }
             }
