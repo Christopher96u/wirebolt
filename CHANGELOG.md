@@ -6,6 +6,7 @@ Changes under **Unreleased** are on `main` but not in a published build yet. Dow
 
 ### Added
 
+- **QUERY** method (RFC 10008) in the method menu, with its own color.
 - Black, Paper and Ember themes with checked contrast, Compact and Comfortable density, and Increase Contrast support (Settings → Appearance).
 - Settings open in the workspace window (**⌘,**); Esc or **⌘W** closes them.
 - Streaming responses show a bounded partial preview while they arrive.
@@ -26,6 +27,7 @@ Changes under **Unreleased** are on `main` but not in a published build yet. Dow
 ### Fixed
 
 - The composer showed the request's own timeout when the request used the workspace's, and **0 s** for no limit.
+- With **Follow redirects**, a 301, 302, 307 or 308 that must resend the request content (for example a QUERY or PUT) was returned instead of followed. Content up to 64 KiB is now sent again.
 - Variables in query parameters showed percent-encoded in the URL, and typing `{{` in a URL whose query had encoded values encoded them twice.
 
 ## 1.0.0-rc.1

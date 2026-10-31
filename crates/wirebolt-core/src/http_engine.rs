@@ -154,6 +154,8 @@ impl Error for TlsConfigurationError {}
 #[derive(Clone)]
 pub struct HttpEngine {
     client: Client,
+    /// Whether the client follows redirects, so request content may be sent again.
+    follows_redirects: bool,
 }
 
 impl fmt::Debug for HttpEngine {
@@ -233,7 +235,10 @@ impl HttpEngine {
 
         builder
             .build()
-            .map(|client| Self { client })
+            .map(|client| Self {
+                client,
+                follows_redirects: config.maximum_redirects.is_some_and(|maximum| maximum > 0),
+            })
             .map_err(RunError::transport)
     }
 
@@ -329,7 +334,7 @@ impl HttpEngine {
         let progress = Arc::new(SendProgress::new(started));
         let mut request = reqwest::Request::new(method, url);
         *request.headers_mut() = headers;
-        *request.body_mut() = Some(upload_body(body, Arc::clone(&progress)).await?);
+        *request.body_mut() = Some(self.upload_body(body, Arc::clone(&progress)).await?);
 
         // One deadline timer and one cancellation future serve the whole run;
         // only the stall timer is re-armed as bytes move in either direction.
@@ -529,21 +534,39 @@ struct SendProgress {
     last_activity_nanos: AtomicU64,
 }
 
-async fn upload_body(
-    source: PreparedBodySource,
-    progress: Arc<SendProgress>,
-) -> Result<reqwest::Body, RunError> {
-    match source {
-        PreparedBodySource::Bytes(bytes) => Ok(reqwest::Body::wrap(RequestBody {
-            remaining: Bytes::from(bytes),
-            progress,
-        })),
-        PreparedBodySource::File { path, .. } => {
-            let file = tokio::fs::File::open(path)
-                .await
-                .map_err(RunError::upload)?;
-            let stream = ReaderStream::new(file).inspect_ok(move |_chunk| progress.touch());
-            Ok(reqwest::Body::wrap_stream(stream))
+/// Content up to one upload frame that a redirect may send again. A 307 or 308 (and a
+/// 301 or 302 for any method but POST, which includes QUERY per RFC 10008) repeats the
+/// request with its content; only reusable bytes can be replayed. One frame was sent in
+/// one piece before too, so marking progress up front keeps stall detection the same.
+/// Larger content and files keep streaming, and such a redirect is returned unfollowed.
+const REPLAYABLE_BODY_BYTES: usize = REQUEST_FRAME_BYTES;
+
+impl HttpEngine {
+    async fn upload_body(
+        &self,
+        source: PreparedBodySource,
+        progress: Arc<SendProgress>,
+    ) -> Result<reqwest::Body, RunError> {
+        match source {
+            PreparedBodySource::Bytes(bytes)
+                if self.follows_redirects
+                    && !bytes.is_empty()
+                    && bytes.len() <= REPLAYABLE_BODY_BYTES =>
+            {
+                progress.touch();
+                Ok(reqwest::Body::from(bytes))
+            }
+            PreparedBodySource::Bytes(bytes) => Ok(reqwest::Body::wrap(RequestBody {
+                remaining: Bytes::from(bytes),
+                progress,
+            })),
+            PreparedBodySource::File { path, .. } => {
+                let file = tokio::fs::File::open(path)
+                    .await
+                    .map_err(RunError::upload)?;
+                let stream = ReaderStream::new(file).inspect_ok(move |_chunk| progress.touch());
+                Ok(reqwest::Body::wrap_stream(stream))
+            }
         }
     }
 }

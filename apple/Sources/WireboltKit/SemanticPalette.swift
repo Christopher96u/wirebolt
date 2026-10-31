@@ -88,6 +88,7 @@ public enum SemanticPalette {
         case .delete: red
         case .head: teal
         case .options: pink
+        case .query: yellow
         default: neutral
         }
     }

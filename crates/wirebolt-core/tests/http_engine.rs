@@ -1648,3 +1648,123 @@ async fn concurrent_redirects_do_not_share_cookies_on_a_pooled_engine() {
     assert!(a.contains("cookie: isolated=a\r\n"));
     assert!(b.contains("cookie: isolated=b\r\n"));
 }
+
+/// Serves `responses` in order, one per connection, and returns the raw requests.
+async fn spawn_http1_sequence(
+    responses: Vec<&'static [u8]>,
+) -> (SocketAddr, JoinHandle<Vec<String>>) {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        let mut requests = Vec::new();
+        for response in responses {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            requests.push(String::from_utf8(read_http1_request(&mut stream).await).unwrap());
+            stream.write_all(response).await.unwrap();
+            stream.shutdown().await.unwrap();
+        }
+        requests
+    });
+    (address, server)
+}
+
+fn following_engine() -> HttpEngine {
+    HttpEngine::new(&HttpEngineConfig {
+        maximum_redirects: Some(5),
+        ..Default::default()
+    })
+    .unwrap()
+}
+
+fn request_with_content(
+    method: &str,
+    address: SocketAddr,
+    path: &str,
+    body: Vec<u8>,
+) -> wirebolt_core::PreparedRequest {
+    prepare_request(RequestDraft {
+        method: method.to_owned(),
+        url: format!("http://{address}{path}"),
+        headers: vec![HeaderField {
+            name: "content-type".to_owned(),
+            value: "application/json".to_owned(),
+        }],
+        body,
+    })
+    .expect("prepared request")
+}
+
+/// RFC 10008 Section 2.5: QUERY keeps its method and content across 301, 302, 307 and
+/// 308, and a 303 is completed with a plain GET.
+#[tokio::test]
+async fn query_keeps_its_method_and_content_across_redirects() {
+    let (address, server) = spawn_http1_sequence(vec![
+        b"HTTP/1.1 301 Moved Permanently\r\nLocation: /moved\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+        b"HTTP/1.1 302 Found\r\nLocation: /found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+        b"HTTP/1.1 307 Temporary Redirect\r\nLocation: /temporary\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+        b"HTTP/1.1 308 Permanent Redirect\r\nLocation: /permanent\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+        b"HTTP/1.1 303 See Other\r\nLocation: /result\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+        b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok",
+    ])
+    .await;
+    let query = r#"{"select":["id"],"where":{"in_stock":true}}"#;
+    let request = request_with_content("query", address, "/search", query.as_bytes().to_vec());
+
+    let run = following_engine()
+        .run(
+            request,
+            RunOptions::default(),
+            &RunCancellation::new(),
+            |_| StreamControl::Continue,
+        )
+        .await
+        .expect("QUERY run");
+
+    assert_eq!(run.status, 200);
+    let requests = server.await.unwrap();
+    for (request, path) in
+        requests
+            .iter()
+            .zip(["/search", "/moved", "/found", "/temporary", "/permanent"])
+    {
+        assert!(
+            request.starts_with(&format!("QUERY {path} HTTP/1.1\r\n")),
+            "{request}"
+        );
+        assert!(
+            request.contains("content-type: application/json\r\n"),
+            "{request}"
+        );
+        assert!(request.ends_with(&format!("\r\n\r\n{query}")), "{request}");
+    }
+    assert!(
+        requests[5].starts_with("GET /result HTTP/1.1\r\n"),
+        "{}",
+        requests[5]
+    );
+    assert!(!requests[5].contains("content-type:"), "{}", requests[5]);
+}
+
+/// Content larger than one upload frame streams with progress and is not replayed, so a
+/// redirect that would send it again is returned to the caller instead.
+#[tokio::test]
+async fn a_redirect_that_must_resend_large_content_is_returned() {
+    let (address, server) = spawn_http1_sequence(vec![
+        b"HTTP/1.1 307 Temporary Redirect\r\nLocation: /again\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+    ])
+    .await;
+    let request = request_with_content("PUT", address, "/upload", vec![b'x'; 64 * 1024 + 1]);
+
+    let run = following_engine()
+        .run(
+            request,
+            RunOptions::default(),
+            &RunCancellation::new(),
+            |_| StreamControl::Continue,
+        )
+        .await
+        .expect("PUT run");
+
+    assert_eq!(run.status, 307);
+    assert_eq!(server.await.unwrap().len(), 1);
+}
