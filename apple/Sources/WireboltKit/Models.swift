@@ -40,7 +40,9 @@ public struct HTTPMethod: RawRepresentable, CaseIterable, Codable, Hashable, Sen
     public static let delete = HTTPMethod("DELETE")
     public static let head = HTTPMethod("HEAD")
     public static let options = HTTPMethod("OPTIONS")
-    public static let allCases: [HTTPMethod] = [.get, .post, .put, .patch, .delete, .head, .options]
+    /// RFC 10008: a safe, idempotent request whose content (with its media type) is the query.
+    public static let query = HTTPMethod("QUERY")
+    public static let allCases: [HTTPMethod] = [.get, .post, .put, .patch, .delete, .head, .options, .query]
 }
 
 public enum ValueSource: Codable, Equatable, Hashable, Sendable {

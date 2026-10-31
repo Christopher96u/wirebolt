@@ -4,7 +4,7 @@
 
 ## Compose a request
 
-Create an HTTP request with **File → New Request** (**⌘N**), the toolbar **+** menu or a collection's context menu. Select a method and enter an `http://` or `https://` URL. Save with **⌘S** to persist the draft in a collection.
+Create an HTTP request with **File → New Request** (**⌘N**), the toolbar **+** menu or a collection's context menu. Select a method and enter an `http://` or `https://` URL. **QUERY** ([RFC 10008](https://www.rfc-editor.org/rfc/rfc10008.html)) is a safe, repeatable read that sends a body: put the query in **Body** and keep its content type, which servers require. **Custom…** accepts any other method token. The [quick-start server](examples/demo-server.py) answers `QUERY /products` with a JSON filter such as `{"max_price": 20}`. Save with **⌘S** to persist the draft in a collection.
 
 | Panel | Use it for |
 | --- | --- |
