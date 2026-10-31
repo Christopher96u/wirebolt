@@ -50,6 +50,30 @@ struct WorkspaceChromeTests {
         }
     }
 
+    @Test("Section tabs count enabled, named rows only")
+    func activeFieldCount() {
+        let fields = [
+            RequestField(name: "limit", value: .literal("20")),
+            RequestField(name: "page", value: .literal("2"), enabled: false),
+            RequestField(name: "  ", value: .literal("orphan value")),
+            RequestField(name: "", value: .literal("")),
+            RequestField(name: "Authorization", value: .literal("{{token}}")),
+        ]
+        #expect(fields.activeCount == 2)
+        #expect([RequestField]().activeCount == 0)
+    }
+
+    @Test("Cells show variables as names between plain text, without braces")
+    func displaySegments() {
+        #expect(VariableDisplaySegment.segments(of: "Bearer {{ token }}") == [.text("Bearer "), .variable("token")])
+        #expect(VariableDisplaySegment.segments(of: "{{a}}{{b}}") == [.variable("a"), .variable("b")])
+        #expect(VariableDisplaySegment.segments(of: "{{host}}:{{port}}/é") == [.variable("host"), .text(":"), .variable("port"), .text("/é")])
+        // An unclosed or empty reference stays plain text.
+        #expect(VariableDisplaySegment.segments(of: "{{open") == [.text("{{open")])
+        #expect(VariableDisplaySegment.segments(of: "x{{ }}y") == [.text("x{{ }}y")])
+        #expect(VariableDisplaySegment.segments(of: "") == [])
+    }
+
     @Test("Every authentication kind has a short composer label")
     func authenticationTitles() {
         #expect(AuthenticationKind.allCases.map(\.composerTitle) == ["No auth", "Basic", "Bearer", "API key", "OAuth 2"])

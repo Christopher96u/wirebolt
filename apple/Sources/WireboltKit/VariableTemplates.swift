@@ -128,3 +128,40 @@ public struct VariableCatalog: Equatable, Sendable {
         return lines.isEmpty ? nil : lines.joined(separator: "\n")
     }
 }
+
+/// A piece of a value as a key/value cell shows it: plain text, or a variable chip that
+/// shows only the name.
+public enum VariableDisplaySegment: Equatable, Sendable {
+    case text(String)
+    case variable(String)
+
+    /// Splits `text` at its references, dropping their braces and inner spaces.
+    public static func segments(of text: String) -> [Self] {
+        let source = text as NSString
+        var segments: [Self] = []
+        var location = 0
+        for reference in VariableTemplate.references(in: text) {
+            if reference.range.location > location {
+                segments.append(.text(source.substring(with: NSRange(location: location, length: reference.range.location - location))))
+            }
+            segments.append(.variable(reference.name))
+            location = NSMaxRange(reference.range)
+        }
+        if location < source.length { segments.append(.text(source.substring(from: location))) }
+        return segments
+    }
+}
+
+public extension VariableReference {
+    /// The markup a variable chip hides, as UTF-16 ranges: `{{` and any space before the
+    /// name, and any space after it with `}}`. The text itself keeps them, so editing,
+    /// copying and VoiceOver still see the raw reference.
+    func delimiterRanges(in text: String) -> (open: NSRange, close: NSRange) {
+        let inner = NSRange(location: range.location + 2, length: range.length - 4)
+        let nameOffset = ((text as NSString).substring(with: inner) as NSString).range(of: name).location
+        let nameStart = inner.location + (nameOffset == NSNotFound ? 0 : nameOffset)
+        let nameEnd = nameStart + (name as NSString).length
+        return (NSRange(location: range.location, length: nameStart - range.location),
+                NSRange(location: nameEnd, length: NSMaxRange(range) - nameEnd))
+    }
+}

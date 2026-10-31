@@ -588,7 +588,12 @@ public extension RequestDraft {
         let fragment = url.firstIndex(of: "#") ?? url.endIndex
         let prefix = String(url[..<fragment])
         let separator = prefix.contains("?") ? "&" : "?"
-        return prefix + separator + (components.percentEncodedQuery ?? "") + url[fragment...]
+        // Variable references stay readable (and show as chips); the run resolves and
+        // encodes them when it sends.
+        let query = (components.percentEncodedQuery ?? "")
+            .replacingOccurrences(of: "%7B%7B", with: "{{")
+            .replacingOccurrences(of: "%7D%7D", with: "}}")
+        return prefix + separator + query + url[fragment...]
     }
 
     mutating func editURL(_ text: String) {
@@ -599,7 +604,12 @@ public extension RequestDraft {
             query.removeAll(where: \.enabled)
             return
         }
+        // `{{variable}}` braces are not valid URL characters; encode them so the parser
+        // does not re-encode the whole query (and every `%20` with it). Query items decode
+        // them back.
         let rawQuery = String(prefix[prefix.index(after: start)...])
+            .replacingOccurrences(of: "{", with: "%7B")
+            .replacingOccurrences(of: "}", with: "%7D")
         var components = URLComponents()
         // URLComponents(string:) accepts partially typed and Unicode query values.
         components = URLComponents(string: "https://query.invalid/?" + rawQuery) ?? components

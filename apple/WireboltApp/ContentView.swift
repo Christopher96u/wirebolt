@@ -2290,7 +2290,7 @@ private struct WebSocketRequestWorkspace: View {
                     AuthenticationTypePicker(authentication: $session.draft.authentication)
                 }
                 if interface.requestSection == .params || interface.requestSection == .headers {
-                    Menu("Section Actions", systemImage: "ellipsis.circle") {
+                    Menu("Section Actions", systemImage: "ellipsis") {
                         Button("New Entry") { interface.isBulkEditing = false; interface.focusNewKeyTrigger += 1 }
                         Divider()
                         Button("Key-Value Edit") { interface.isBulkEditing = false }
@@ -2299,7 +2299,7 @@ private struct WebSocketRequestWorkspace: View {
                     .ghostMenuStyle().menuIndicator(.hidden).labelStyle(.iconOnly).fixedSize()
                     .help("Section Actions")
                 } else {
-                    Menu("Message Actions", systemImage: "ellipsis.circle") { EditorPreferencesMenu() }
+                    Menu("Message Actions", systemImage: "ellipsis") { EditorPreferencesMenu() }
                         .ghostMenuStyle().menuIndicator(.hidden).labelStyle(.iconOnly).fixedSize()
                         .help("Message Actions")
                 }
@@ -2408,8 +2408,8 @@ private struct WebSocketRequestWorkspace: View {
 
     private func badge(for section: RequestPanelSection) -> Int? {
         switch section {
-        case .params: session.draft.query.filter(\.enabled).count
-        case .headers: session.draft.headers.filter(\.enabled).count
+        case .params: session.draft.query.activeCount
+        case .headers: session.draft.headers.activeCount
         case .body, .auth, .note, .settings: nil
         }
     }
@@ -3437,7 +3437,7 @@ private struct RequestSectionBar: View {
                 .labelStyle(.iconOnly).buttonStyle(.borderless).foregroundStyle(.secondary)
                 .help("Add Key (⇧⌘K)")
                 .frame(width: 30, height: 32)
-                Menu("Section Actions", systemImage: "ellipsis.circle") {
+                Menu("Section Actions", systemImage: "ellipsis") {
                     Button("New Entry") { interface.isBulkEditing = false; interface.focusNewKeyTrigger += 1 }
                     Divider()
                     Button("Key-Value Edit") { interface.isBulkEditing = false }
@@ -3455,8 +3455,8 @@ private struct RequestSectionBar: View {
 
     private func badge(for section: RequestPanelSection) -> Int? {
         switch section {
-        case .params: session.draft.query.filter(\.enabled).count
-        case .headers: session.draft.headers.filter(\.enabled).count
+        case .params: session.draft.query.activeCount
+        case .headers: session.draft.headers.activeCount
         case .auth, .body, .note, .settings: nil
         }
     }
@@ -3556,14 +3556,11 @@ struct PanelTabButton: View {
         Button(action: action) {
             HStack(spacing: WireboltTheme.Spacing.xSmall) {
                 Text(title)
-                // Neutral count capsule: counts are information, not success.
+                // A quiet count one step below the title: information, not a status.
                 if let badge, badge > 0 {
                     Text(badge, format: .number)
-                        .font(WireboltTheme.Typography.badge)
-                        .foregroundStyle(.primary.opacity(0.72))
-                        .padding(.horizontal, 5)
-                        .frame(minWidth: 16, minHeight: 14)
-                        .background(.quaternary, in: Capsule())
+                        .monospacedDigit()
+                        .foregroundStyle(isSelected ? WireboltTheme.muted : WireboltTheme.dim)
                 } else if indicator {
                     Circle().fill(.secondary).frame(width: 5, height: 5)
                 }
@@ -3610,9 +3607,6 @@ private struct FieldEditor: View {
         GeometryReader { geometry in
         let valueWidth = max(1, geometry.size.width - 225)
         VStack(alignment: .leading, spacing: 0) {
-            FieldTableHeader()
-                .frame(width: geometry.size.width, alignment: .leading)
-
             ScrollViewReader { proxy in
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 0) {
@@ -3644,24 +3638,30 @@ private struct FieldEditor: View {
     }
 }
 
-private struct FieldTableHeader: View {
+/// Rows have no header: the key and value columns read by position, like a list. A hairline
+/// starting at the key column separates rows.
+private struct FieldRowSeparator: View {
     var body: some View {
-        HStack(spacing: 0) {
-            Color.clear.frame(width: 27)
-            Divider().frame(height: 14)
-            Text("Key")
-                .frame(width: 177, alignment: .leading)
-                .padding(.leading, WireboltTheme.Spacing.small)
-            Divider().frame(height: 14)
-            Text("Value")
-                .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
-                .padding(.leading, WireboltTheme.Spacing.small)
-        }
-        .font(.system(size: 11, weight: .semibold))
-        .foregroundStyle(.primary)
-        .frame(height: 28)
-        .background(WireboltTheme.barBackground)
-        .overlay(alignment: .bottom) { Divider() }
+        Rectangle().fill(WireboltTheme.separator).frame(height: 1)
+            .padding(.leading, FieldCheckbox.width)
+            .accessibilityHidden(true)
+    }
+}
+
+/// Removes a row; shown while the row is hovered or holds focus.
+private struct FieldRemoveButton: View {
+    let title: String
+    let action: () -> Void
+
+    var body: some View {
+        Button(title, systemImage: "xmark", action: action)
+            .labelStyle(.iconOnly)
+            .buttonStyle(.plain)
+            .font(.system(size: 10, weight: .semibold))
+            .foregroundStyle(WireboltTheme.muted)
+            .frame(width: 28, height: 28)
+            .contentShape(.rect)
+            .help("Remove")
     }
 }
 
@@ -3678,32 +3678,33 @@ private struct FieldTableRow: View {
     var body: some View {
         HStack(alignment: .top, spacing: 0) {
             FieldCheckbox(isOn: $field.enabled, label: "Enable \(kind.noun) \(field.name)")
-            FieldTextInput("Key", text: $field.name, height: fieldHeight,
-                accessibilityLabel: field.name.isEmpty ? "\(kind.noun.capitalized) name" : "\(kind.noun.capitalized) name, \(field.name)")
-                .frame(width: 175)
-                .padding(.horizontal, WireboltTheme.Spacing.xSmall)
+                .frame(height: FieldCheckbox.firstLineHeight)
+            Group {
+                FieldTextInput("Key", text: $field.name, height: fieldHeight,
+                    accessibilityLabel: field.name.isEmpty ? "\(kind.noun.capitalized) name" : "\(kind.noun.capitalized) name, \(field.name)")
+                    .frame(width: 175)
+                    .padding(.horizontal, WireboltTheme.Spacing.xSmall)
 
-            Color.clear.frame(width: 1)
-            FieldTextInput("Value", text: literalBinding($field.value), height: fieldHeight,
-                accessibilityLabel: field.name.isEmpty ? "\(kind.noun.capitalized) value" : "Value of \(field.name)")
-                .frame(width: valueWidth)
-                .padding(.horizontal, WireboltTheme.Spacing.xSmall)
-                .padding(.trailing, 5)
+                Color.clear.frame(width: 1)
+                FieldTextInput("Value", text: literalBinding($field.value), height: fieldHeight,
+                    accessibilityLabel: field.name.isEmpty ? "\(kind.noun.capitalized) value" : "Value of \(field.name)")
+                    .frame(width: valueWidth)
+                    .padding(.horizontal, WireboltTheme.Spacing.xSmall)
+                    .padding(.trailing, 5)
+            }
+            // A disabled row is not sent; it reads as set aside.
+            .opacity(field.enabled ? 1 : 0.45)
         }
         .overlay(alignment: .topTrailing) {
-            Button("Remove \(field.name)", systemImage: "trash", action: onRemove)
-                .labelStyle(.iconOnly)
-                .buttonStyle(.borderless)
-                .foregroundStyle(.secondary)
-                .frame(width: 42, height: 28)
+            FieldRemoveButton(title: "Remove \(field.name)", action: onRemove)
                 .focused($containsFocus)
-                .help("Remove")
                 .opacity(isHovered || containsFocus ? 1 : 0)
                 .allowsHitTesting(isHovered || containsFocus)
         }
         .frame(height: fieldHeight)
         .padding(.vertical, WireboltTheme.Spacing.xSmall)
-        .background(isHovered ? Color.primary.opacity(0.035) : .clear)
+        .background(isHovered ? WireboltTheme.tabBackground.opacity(0.5) : .clear)
+        .overlay(alignment: .bottom) { FieldRowSeparator() }
         .onHover { isHovered = $0 }
         .contextMenu { Button("Remove \(field.name)", role: .destructive, action: onRemove) }
         .accessibilityAction(named: "Remove \(field.name)", onRemove)
@@ -3737,11 +3738,12 @@ private struct NewFieldTableRow: View {
         VStack(spacing: 0) {
             HStack(alignment: .top, spacing: 0) {
                 if name.isEmpty {
-                    Color.clear.frame(width: 28)
+                    Color.clear.frame(width: FieldCheckbox.width)
                 } else {
                     FieldCheckbox(isOn: $isEnabled, label: "Enable new \(kind.noun)")
+                        .frame(height: FieldCheckbox.firstLineHeight)
                 }
-                FieldTextInput("New Key", text: $name, height: fieldHeight, accessibilityLabel: "New \(kind.noun) name")
+                FieldTextInput("Add \(kind.noun)", text: $name, height: fieldHeight, accessibilityLabel: "New \(kind.noun) name")
                     .focused($focusedField, equals: .key)
                     .frame(width: 175)
                     .padding(.horizontal, WireboltTheme.Spacing.xSmall)
@@ -3755,7 +3757,7 @@ private struct NewFieldTableRow: View {
                         }
                     }
                 Color.clear.frame(width: 1)
-                FieldTextInput("New Value", text: $value, height: fieldHeight, accessibilityLabel: "New \(kind.noun) value")
+                FieldTextInput("Value", text: $value, height: fieldHeight, accessibilityLabel: "New \(kind.noun) value")
                     .focused($focusedField, equals: .value)
                     .frame(width: valueWidth)
                     .padding(.horizontal, WireboltTheme.Spacing.xSmall)
@@ -3772,20 +3774,15 @@ private struct NewFieldTableRow: View {
             }
             .overlay(alignment: .topTrailing) {
                 if !name.isEmpty {
-                    Button("Discard New Field", systemImage: "trash", action: discard)
-                        .labelStyle(.iconOnly)
-                        .buttonStyle(.borderless)
-                        .foregroundStyle(.secondary)
-                        .frame(width: 42, height: 20)
-                        .help("Discard New Field")
+                    FieldRemoveButton(title: "Discard New Field", action: discard)
                 }
             }
             .frame(height: fieldHeight)
             .padding(.vertical, WireboltTheme.Spacing.xSmall)
 
             if !name.isEmpty {
-                Color.clear.frame(width: 1)
-                EmptyNewFieldRow()
+                FieldRowSeparator()
+                EmptyNewFieldRow(kind: kind)
             }
         }
         .foregroundStyle(.secondary)
@@ -3855,15 +3852,16 @@ private struct NewFieldTableRow: View {
 }
 
 private struct EmptyNewFieldRow: View {
+    let kind: FieldEditorKind
+
     var body: some View {
         HStack(spacing: 0) {
-            Color.clear.frame(width: 27)
-            Color.clear.frame(width: 1)
-            Text("New Key")
+            Color.clear.frame(width: FieldCheckbox.width)
+            Text("Add \(kind.noun)")
                 .frame(width: 175, alignment: .leading)
                 .padding(.horizontal, WireboltTheme.Spacing.xSmall)
             Color.clear.frame(width: 1)
-            Text("New Value")
+            Text("Value")
                 .frame(minWidth: 50, maxWidth: .infinity, alignment: .leading)
                 .padding(.horizontal, WireboltTheme.Spacing.xSmall)
                 .padding(.trailing, 5)
@@ -4306,7 +4304,7 @@ private struct BodyTools: View {
                     .labelStyle(.iconOnly).buttonStyle(.borderless).disabled(!requestBody.canFormat)
                     .help("Format Body")
             }
-            Menu("Body Actions", systemImage: "ellipsis.circle") {
+            Menu("Body Actions", systemImage: "ellipsis") {
                 if case .multipart = requestBody {
                     Button("Add Part") {
                         if case let .multipart(parts) = requestBody { requestBody = .multipart(parts: parts + [MultipartPart()]) }
