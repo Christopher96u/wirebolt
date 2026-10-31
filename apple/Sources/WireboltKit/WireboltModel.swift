@@ -469,6 +469,10 @@ public final class WireboltModel {
         await history.list(requestID: session.requestID)
     }
 
+    public func historyCount(for session: DocumentSession) async -> Int {
+        await history.count(requestID: session.requestID)
+    }
+
     public func loadHistory(for session: DocumentSession) async {
         historyEntries = await history.list(requestID: session.requestID)
     }
@@ -505,6 +509,7 @@ public final class WireboltModel {
         try? await history.clear(requestID: session.requestID)
         historyEntries = []
         requestActivity[session.requestID] = nil
+        historyRevision += 1
     }
 
     private func recordHistory(session: DocumentSession, runID: RunID) async {

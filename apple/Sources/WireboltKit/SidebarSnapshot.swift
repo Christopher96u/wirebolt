@@ -24,10 +24,14 @@ public struct SidebarSnapshot: Sendable {
             let content: Content
             let ancestors: [Int]
             let search: String
+            let requestPath: String
             init(content: Content, ancestors: [Int], search: String) {
                 self.content = content
                 self.ancestors = ancestors
                 self.search = search
+                if case .request(let location) = content {
+                    requestPath = SidebarSnapshot.requestPath(from: location.request.url)
+                } else { requestPath = "" }
             }
         }
 
@@ -37,6 +41,11 @@ public struct SidebarSnapshot: Sendable {
             self.parentID = parentID
             storage = Storage(content: content, ancestors: ancestors, search: search)
         }
+
+        /// A request's URL path for display (empty for containers). Parsed once with the
+        /// snapshot, so rendering never parses URLs. Filtered results keep their collection
+        /// and folder rows, so the path is shown there too.
+        public var requestPath: String { storage.requestPath }
 
         public var title: String {
             switch content {
@@ -136,6 +145,30 @@ public struct SidebarSnapshot: Sendable {
             append(parent: "", ancestors: ancestors)
         }
         self.rows = rows
+    }
+
+    /// A best-effort path for display, preserving escapes and unresolved path variables.
+    /// This strips the authority without resolving templates or validating a request URL.
+    public static func requestPath(from url: String) -> String {
+        let text = url.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty else { return "" }
+        var path = text.prefix { $0 != "?" && $0 != "#" }
+        if path.hasPrefix("{{"), let end = path.range(of: "}}") {
+            path = path[end.upperBound...]
+        } else {
+            let authority: Substring
+            if let scheme = path.range(of: "://") {
+                guard !path[..<scheme.lowerBound].isEmpty else { return "" }
+                authority = path[scheme.upperBound...]
+            } else if path.hasPrefix("//") {
+                authority = path.dropFirst(2)
+            } else {
+                return path.hasPrefix("/") ? String(path) : ""
+            }
+            guard !authority.isEmpty, authority.first != "/" else { return "" }
+            path = authority.firstIndex(of: "/").map { authority[$0...] } ?? ""
+        }
+        return path.isEmpty ? "/" : String(path)
     }
 
     public func visible(query: String, collapsedCollections: Set<String>, expandedGroups: Set<String>) -> [Row] {

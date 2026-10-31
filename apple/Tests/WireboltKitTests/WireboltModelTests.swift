@@ -4,6 +4,26 @@ import Testing
 
 @Suite("Wirebolt model")
 struct WireboltModelTests {
+    @Test("History counts belong to each request and clearing invalidates sidebar history")
+    @MainActor func historyCountTracksRequestsAndClearRevision() async throws {
+        let root = FileManager.default.temporaryDirectory.appending(path: "wirebolt-history-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let model = WireboltModel(runner: InputCapturingRunner(), history: HistoryRepository(root: root))
+        let first = model.sessions.open(draft: RequestDraft(id: "first", url: "https://example.com/first"))
+        #expect(await model.historyCount(for: first) == 0)
+        await model.send()
+        await model.send()
+        let second = model.sessions.open(draft: RequestDraft(id: "second", url: "https://example.com/second"))
+        await model.send()
+        #expect(await model.historyCount(for: first) == 2)
+        #expect(await model.historyCount(for: second) == 1)
+        let revision = model.historyRevision
+        await model.clearHistory(for: first)
+        #expect(model.historyRevision == revision + 1)
+        #expect(await model.historyCount(for: first) == 0)
+        #expect(await model.historyCount(for: second) == 1)
+    }
+
     @Test("A workspace that cannot load leaves the current documents and edits intact")
     @MainActor func failedWorkspaceOpenPreservesDraft() async throws {
         let model = WireboltModel(runner: StubRunner(), persistence: MutationRecorder())

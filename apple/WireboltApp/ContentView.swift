@@ -487,8 +487,10 @@ private struct WorkspaceSidebar: View {
                             .frame(minHeight: theme.density.controlHeight)
                         }.buttonStyle(.plain)
                         WorkspaceSidebarOutline(model: model, interface: interface)
-                        DisclosureGroup("History", isExpanded: $historyExpanded) {
+                        DisclosureGroup(isExpanded: $historyExpanded) {
                             SidebarHistoryRows(model: model)
+                        } label: {
+                            SidebarHistoryLabel(model: model)
                         }
                         .font(WireboltTheme.Typography.detail)
                         .tint(WireboltTheme.muted)
@@ -933,7 +935,7 @@ private struct SidebarOutlineRow: View {
             case .group(let collection, let group):
                 SavedGroupRow(row: row, collection: collection, group: group, model: model, interface: interface)
             case .request(let location):
-                SavedRequestRow(model: model, interface: interface, location: location, depth: row.depth)
+                SavedRequestRow(model: model, interface: interface, location: location, depth: row.depth, path: row.requestPath)
             }
         }
         .padding(.leading, Double(row.depth) * 14)
@@ -1091,10 +1093,11 @@ private struct SavedRequestRow: View {
     let interface: WorkspaceUIState
     let location: RequestLocation
     let depth: Int
+    let path: String
 
     // Only decides the selection; the row builds its actions itself, so this stays cheap.
     var body: some View {
-        SidebarRequestButton(model: model, interface: interface, location: location, depth: depth,
+        SidebarRequestButton(model: model, interface: interface, location: location, depth: depth, path: path,
             isSelected: interface.sidebarCursor == nil && model.isSelectedRequest(location)
         ).equatable()
     }
@@ -1129,9 +1132,10 @@ private struct SidebarContainerRow<Name: View, Actions: View>: View {
             .help(isExpanded ? "Collapse" : "Expand")
             let label = HStack(spacing: 6) {
                 Image(systemName: "folder.fill")
-                name
+                    .foregroundStyle(WireboltTheme.muted)
+                name.fontWeight(.regular)
             }
-            .foregroundStyle(WireboltTheme.primary)
+            .foregroundStyle(WireboltTheme.secondary)
             .frame(maxWidth: .infinity, minHeight: WireboltTheme.current.density.controlHeight, alignment: .leading)
             .contentShape(.rect)
             if isEditing {
@@ -1424,9 +1428,11 @@ private struct RelativeActivityTime: View {
 }
 
 private struct SidebarRequestButton: View, @MainActor Equatable {
+    private static let activityColumnWidth: CGFloat = 32
+
     static func == (lhs: Self, rhs: Self) -> Bool {
         lhs.model === rhs.model && lhs.interface === rhs.interface && lhs.location == rhs.location
-            && lhs.isSelected == rhs.isSelected && lhs.depth == rhs.depth
+            && lhs.isSelected == rhs.isSelected && lhs.depth == rhs.depth && lhs.path == rhs.path
     }
 
     @Bindable var model: WireboltModel
@@ -1437,6 +1443,8 @@ private struct SidebarRequestButton: View, @MainActor Equatable {
 
     let location: RequestLocation
     let depth: Int
+    /// The URL path shown beside the method; the collection is already the row's parent.
+    let path: String
     let isSelected: Bool
 
     private func action() {
@@ -1483,12 +1491,13 @@ private struct SidebarRequestButton: View, @MainActor Equatable {
             if theme.density == .comfortable {
                 HStack(spacing: WireboltTheme.Spacing.medium) {
                     MethodChip(method: location.request.method, webSocket: location.request.webSocket)
-                    Text(model.workspace.collections.first { $0.id == location.collectionID }?.name ?? "Workspace")
+                    Text(path)
                         .font(WireboltTheme.Typography.detail).foregroundStyle(WireboltTheme.muted).lineLimit(1)
                     Spacer(minLength: 0)
-                    if let activity {
-                        RelativeActivityTime(date: activity.date)
+                    ZStack(alignment: .trailing) {
+                        if let activity { RelativeActivityTime(date: activity.date) }
                     }
+                    .frame(width: Self.activityColumnWidth, alignment: .trailing)
                 }
             }
             HStack(spacing: WireboltTheme.Spacing.medium) {
@@ -1504,14 +1513,17 @@ private struct SidebarRequestButton: View, @MainActor Equatable {
                 ), renameOnDoubleClick: true, save: onRename)
                     .lineLimit(1).foregroundStyle(WireboltTheme.primary)
                 Spacer(minLength: 0)
-                if let status = activity?.status {
-                    Group {
-                        if differentiateWithoutColor { Image(systemName: WireboltTheme.statusSymbol(status)).font(WireboltTheme.Typography.badge) }
-                        else { Circle().frame(width: 7, height: 7) }
+                ZStack(alignment: .trailing) {
+                    if let status = activity?.status {
+                        Group {
+                            if differentiateWithoutColor { Image(systemName: WireboltTheme.statusSymbol(status)).font(WireboltTheme.Typography.badge) }
+                            else { Circle().frame(width: 7, height: 7) }
+                        }
+                        .foregroundStyle(WireboltTheme.statusColor(status))
+                        .accessibilityLabel(ResponseFormatting.statusLine(status))
                     }
-                    .foregroundStyle(WireboltTheme.statusColor(status))
-                    .accessibilityLabel(ResponseFormatting.statusLine(status))
                 }
+                .frame(width: Self.activityColumnWidth, alignment: .trailing)
             }
         }
         .font(WireboltTheme.Typography.body)
@@ -1557,7 +1569,7 @@ private struct SidebarRequestButton: View, @MainActor Equatable {
             Button("Delete", role: .destructive, action: onDelete)
         }
         .accessibilityLabel("\(location.request.webSocket ? "WebSocket" : location.request.method.rawValue) request, \(location.request.name)")
-        .accessibilityValue("level \(depth + 1)")
+        .accessibilityValue(path.isEmpty ? "level \(depth + 1)" : "\(path), level \(depth + 1)")
         .accessibilityAddTraits(isSelected ? .isSelected : [])
         .modifier(SidebarAccessibilityActions(actions: SidebarRowActions(
             newRequest: { interface.makeNewRequest(model: model, collectionID: location.collectionID, groupID: location.groupID) },
@@ -1597,6 +1609,34 @@ private struct SidebarSearchRow: View {
         .font(WireboltTheme.Typography.body)
         .padding(.horizontal, WireboltTheme.Spacing.large)
         .frame(height: WireboltTheme.current.density == .compact ? 36 : 46)
+    }
+}
+
+/// Count loading and active-tab observation stay in the disclosure label, off the sidebar's render path.
+private struct SidebarHistoryLabel: View {
+    let model: WireboltModel
+    @State private var count = 0
+    @State private var loadedSessionID: String?
+
+    var body: some View {
+        HStack {
+            Text("History")
+            Spacer()
+            // No count without an open request: History then lists nothing to count.
+            if let active = model.sessions.activeSession?.id, loadedSessionID == active {
+                Text(count, format: .number)
+            }
+        }
+        .foregroundStyle(WireboltTheme.muted)
+        .task(id: "\(model.sessions.activeSession?.id ?? ""):\(model.historyRevision)") {
+            let session = model.sessions.activeSession
+            await Task.yield()
+            guard !Task.isCancelled else { return }
+            let count = if let session { await model.historyCount(for: session) } else { 0 }
+            guard !Task.isCancelled else { return }
+            self.count = count
+            loadedSessionID = session?.id
+        }
     }
 }
 

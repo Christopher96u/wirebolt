@@ -3,6 +3,48 @@ import Testing
 @testable import WireboltKit
 
 @Suite struct SidebarSnapshotTests {
+    @Test(arguments: [
+        ("{{base_url}}/products?limit=20", "/products"),
+        ("{{ base_url }}/products/{{id}}?limit=20#details", "/products/{{id}}"),
+        ("{{base_url}}", "/"),
+        ("{{base_url}}?limit=20#details", "/"),
+        ("https://api.example.com/v1/users/42", "/v1/users/42"),
+        ("https://api.example.com?redirect=/elsewhere#details", "/"),
+        ("https://api.example.com/v1/#details?limit=20", "/v1/"),
+        ("http://localhost:8080/health?full=true", "/health"),
+        ("https://[2001:db8::1]:8443/v1/users#details", "/v1/users"),
+        ("http://[::1]:8080", "/"),
+        ("ws://127.0.0.1:18990/events", "/events"),
+        ("wss://[::1]:18990/events?token=secret", "/events"),
+        ("https://{{host}}:{{port}}/users/{{id}}", "/users/{{id}}"),
+        ("https://example.com/a%2Fb/%23tag?q=%2F", "/a%2Fb/%23tag"),
+        ("//example.com:8080/products", "/products"),
+        ("/products?limit=20#details", "/products"),
+        ("  https://example.com/products  \n", "/products"),
+        ("", ""),
+        (" \n ", ""),
+        ("not a URL", ""),
+        ("{{unfinished", ""),
+        ("://invalid", "")
+    ])
+    func displayedRequestPath(url: String, expected: String) {
+        #expect(SidebarSnapshot.requestPath(from: url) == expected)
+    }
+
+    @Test("Request rows carry their URL path; containers carry none")
+    func requestRowsCarryTheirPath() throws {
+        let snapshot = SidebarSnapshot(collections: [fixture()])
+        let request = try #require(snapshot.rows.first { $0.id == "request:c/inside" })
+        #expect(request.requestPath == "/needle")
+        #expect(snapshot.rows.first?.requestPath == "")
+
+        var collection = fixture()
+        collection.id = WorkspaceDraft.rootCollectionID
+        collection.requests = [RequestLocation(collectionID: collection.id, request: RequestDraft(id: "empty", url: ""))]
+        let rootRequest = try #require(SidebarSnapshot(collections: [collection]).rows.first { !$0.isContainer })
+        #expect(rootRequest.requestPath == "")
+    }
+
     private func fixture() -> CollectionDraft {
         CollectionDraft(id: "c", name: "Collection", groups: [
             GroupDraft(id: "nested", name: "Nested", parentID: "folder"),

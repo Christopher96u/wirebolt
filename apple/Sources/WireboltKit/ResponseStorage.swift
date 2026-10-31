@@ -227,6 +227,10 @@ public actor HistoryRepository {
         entries.filter { $0.requestID == requestID }.sorted { $0.createdAt > $1.createdAt }
     }
 
+    public func count(requestID: String) -> Int {
+        entries.count { $0.requestID == requestID }
+    }
+
     public func clear(requestID: String) throws {
         let removed = entries.filter { $0.requestID == requestID }
         entries.removeAll { $0.requestID == requestID }
