@@ -355,8 +355,6 @@ private struct ProxyRouteFields: View {
 struct ProxyConnectionIndicator: View {
     @Bindable var model: WireboltModel
     let session: DocumentSession
-    /// Icon only, for narrow URL bars; the mode stays in the help tag and accessibility label.
-    var compact = false
     let openRequestSettings: () -> Void
     @State private var showsDetails = false
     private var effective: EffectiveProxy { model.effectiveProxy(for: session.draft) }
@@ -369,13 +367,18 @@ struct ProxyConnectionIndicator: View {
         }
     }
     var body: some View {
+        // The app default applies everywhere; only overrides and errors show in the composer.
+        if effective.needsIndicator || showsDetails { indicator }
+    }
+
+    /// Styled like the composer's other controls: icon and value, no chrome.
+    private var indicator: some View {
         Button { showsDetails.toggle() } label: {
-            Group {
-                if compact { Image(systemName: "network") } else { Label(label, systemImage: "network") }
-            }
-                .font(.system(size: 10, weight: .medium)).lineLimit(1)
-                .frame(width: compact ? 26 : 68, height: 24)
-                .background(.quaternary.opacity(0.4), in: Capsule())
+            Label(label, systemImage: "network")
+                .font(WireboltTheme.Typography.tab).lineLimit(1)
+                .foregroundStyle(label == "Error" ? WireboltTheme.danger : WireboltTheme.muted)
+                .frame(minHeight: 28)
+                .contentShape(.rect)
         }.buttonStyle(.plain).accessibilityLabel("Proxy connection: \(label)")
             .help("\(label): " + effective.summary(for: session.draft.url) + " · " + effective.source.title)
             // The URL bar stays mounted across tab switches; close the previous document's details.

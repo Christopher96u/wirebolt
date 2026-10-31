@@ -27,6 +27,7 @@ wirebolt_app_inputs=(
   apple/Sources/WireboltKit/WireboltModel.swift
   apple/Sources/WireboltKit/SidebarSnapshot.swift
   apple/Sources/WireboltKit/VariableTemplates.swift
+  apple/Sources/WireboltKit/WorkspaceChrome.swift
   apple/WireboltApp/WorkspaceUIState.swift
   apple/WireboltApp/ContentView.swift
   apple/WireboltApp/WorkspaceActions.swift
