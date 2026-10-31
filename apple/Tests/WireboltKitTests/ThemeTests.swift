@@ -16,6 +16,23 @@ struct ThemeTests {
         }
     }
 
+    @Test("Native controls are neutral, visible on every surface and keep white glyphs legible")
+    func neutralControlFill() {
+        let white = PaletteColor(hex: 0xffffff)
+        for preset in ThemePreset.allCases {
+            let definition = ThemeDefinition.preset(preset)
+            let control = definition.control
+            for surface in [definition.window, definition.sidebar, definition.card] {
+                #expect(control.contrast(with: surface) >= 3)
+            }
+            // Checkmarks, selected segment labels and default button titles are white.
+            #expect(white.contrast(with: control) >= 4.5)
+            // Monochrome: no channel strays far from the others, unlike the variable accent.
+            let channels = [control.red, control.green, control.blue].map(Int.init)
+            #expect(channels.max()! - channels.min()! <= 32)
+        }
+    }
+
     @Test @MainActor func resolutionAndRevision() {
         let store = ThemeStore()
         store.update(selection: "system", systemIsDark: false, increasedContrast: false, density: .comfortable)

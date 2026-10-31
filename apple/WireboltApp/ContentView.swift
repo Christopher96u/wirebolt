@@ -129,7 +129,7 @@ struct ContentView: View {
                 if fitted != storedSidebarWidth { storedSidebarWidth = fitted }
             }
         }
-        .tint(WireboltTheme.primaryAccent)
+        .tint(WireboltTheme.muted)
         .toolbar(id: "workspace-toolbar") { workspaceToolbar }
         .toolbar(removing: .sidebarToggle)
         // The window keeps "<Workspace> — <Request>" for the Window menu; the toolbar shows
@@ -153,7 +153,7 @@ struct ContentView: View {
         .overlay {
             if isDropTargeted {
                 RoundedRectangle(cornerRadius: WireboltTheme.Radius.group)
-                    .strokeBorder(Color.accentColor, lineWidth: 3)
+                    .strokeBorder(WireboltTheme.primary, lineWidth: 3)
                     .padding(WireboltTheme.Spacing.xSmall)
                     .allowsHitTesting(false)
                     .accessibilityHidden(true)
@@ -714,7 +714,7 @@ private struct WorkspaceNameEditor: View {
                 Button("Cancel", role: .cancel) { dismiss() }
                     .keyboardShortcut(.cancelAction)
                 Button("Save", action: save)
-                    .keyboardShortcut(.defaultAction)
+                    .keyboardShortcut(.defaultAction).tint(WireboltTheme.controlAccent)
                     .disabled(trimmedName.isEmpty)
             }
         }
@@ -805,7 +805,7 @@ private struct CurlImportSheet: View {
                         }
                     }
                 }
-                .keyboardShortcut(.defaultAction)
+                .keyboardShortcut(.defaultAction).tint(WireboltTheme.controlAccent)
                 .disabled(!source.contains("curl") || model.isImporting)
             }
         }
@@ -846,7 +846,7 @@ private struct CollectionActionMenu: View {
             Image(systemName: "plus")
                 .frame(width: 18, height: 18)
         }
-        .menuStyle(.borderlessButton)
+        .ghostMenuStyle()
         .menuIndicator(.hidden)
         .foregroundStyle(.secondary)
         .tint(.secondary)
@@ -989,10 +989,10 @@ private struct SidebarReorderTarget: ViewModifier {
                 .overlay(alignment: position == .after ? .bottom : .top) {
                     if let position {
                         if position == .inside {
-                            RoundedRectangle(cornerRadius: WireboltTheme.Radius.small).stroke(Color.accentColor, lineWidth: 2)
+                            RoundedRectangle(cornerRadius: WireboltTheme.Radius.small).stroke(WireboltTheme.primary, lineWidth: 2)
                                 .allowsHitTesting(false)
                         } else {
-                            Rectangle().fill(Color.accentColor).frame(height: 2)
+                            Rectangle().fill(WireboltTheme.primary).frame(height: 2)
                                 .allowsHitTesting(false)
                         }
                     }
@@ -2277,7 +2277,7 @@ private struct WebSocketRequestWorkspace: View {
                     } label: {
                         Text(messageKind.wrappedValue.rawValue)
                     }
-                    .menuStyle(.borderlessButton).controlSize(.small).fixedSize()
+                    .ghostMenuStyle().controlSize(.small).fixedSize()
                     .accessibilityLabel("Content Type")
                     .accessibilityValue(messageKind.wrappedValue.rawValue)
                     .help("Content Type")
@@ -2296,11 +2296,11 @@ private struct WebSocketRequestWorkspace: View {
                         Button("Key-Value Edit") { interface.isBulkEditing = false }
                         Button("Bulk Edit") { interface.isBulkEditing = true }
                     }
-                    .menuStyle(.borderlessButton).menuIndicator(.hidden).labelStyle(.iconOnly).fixedSize()
+                    .ghostMenuStyle().menuIndicator(.hidden).labelStyle(.iconOnly).fixedSize()
                     .help("Section Actions")
                 } else {
                     Menu("Message Actions", systemImage: "ellipsis.circle") { EditorPreferencesMenu() }
-                        .menuStyle(.borderlessButton).menuIndicator(.hidden).labelStyle(.iconOnly).fixedSize()
+                        .ghostMenuStyle().menuIndicator(.hidden).labelStyle(.iconOnly).fixedSize()
                         .help("Message Actions")
                 }
             }
@@ -2868,7 +2868,7 @@ private struct WebSocketResponseView: View {
             Picker("Show", selection: $filter) {
                 ForEach(WebSocketMessageFilter.allCases) { Text($0.rawValue).tag($0) }
             }
-            .pickerStyle(.segmented).labelsHidden().controlSize(.small).fixedSize()
+            .pickerStyle(.segmented).tint(WireboltTheme.controlAccent).labelsHidden().controlSize(.small).fixedSize()
             .help("Show all, sent, or received messages")
             Spacer(minLength: WireboltTheme.Spacing.xSmall)
             if isSearching {
@@ -2889,7 +2889,7 @@ private struct WebSocketResponseView: View {
                     Text("Hex").tag(true)
                 }.pickerStyle(.inline)
             }
-            .menuStyle(.borderlessButton).menuIndicator(.hidden).labelStyle(.iconOnly).fixedSize()
+            .ghostMenuStyle().menuIndicator(.hidden).labelStyle(.iconOnly).fixedSize()
             .help("View Options")
             Button("Copy Message", systemImage: "doc.on.doc") {
                 NSPasteboard.general.clearContents()
@@ -3009,9 +3009,9 @@ private struct RequestURLField: View {
     }
 }
 
-/// The URL text field. `{{name}}` references are colored (accent when defined, red when
-/// not) while viewing and editing, the help tag lists their values, and typing `{{`
-/// offers the active variables (↑↓ to choose, Return or Tab to insert, Esc to dismiss).
+/// The URL text field. `{{name}}` references show as chips while viewing and as colored
+/// raw text while editing (red when undefined); the help tag lists their values, and typing
+/// `{{` offers the active variables (↑↓ to choose, Return or Tab to insert, Esc to dismiss).
 private struct NativeRequestURLField: NSViewRepresentable {
     @Environment(\.wireboltTheme) private var theme
     @Binding var text: String
@@ -3021,11 +3021,19 @@ private struct NativeRequestURLField: NSViewRepresentable {
     var variables: VariableCatalog?
     let submit: () -> Void
 
-    private static let font = NSFont.monospacedSystemFont(ofSize: 13, weight: .regular)
+    static let font = NSFont.monospacedSystemFont(ofSize: 13, weight: .regular)
+    /// The hidden braces keep their characters but shrink to nothing, then kern open the
+    /// chip's horizontal padding.
+    private static let delimiterFont = NSFont.monospacedSystemFont(ofSize: 0.1, weight: .regular)
+    private static let chipPadding: CGFloat = 6
+    static let chipHeight = (font.ascender - font.descender + 3).rounded()
 
     func makeCoordinator() -> Coordinator { Coordinator(self) }
     func makeNSView(context: Context) -> NSTextField {
-        let field = NSTextField()
+        let field = VariableChipTextField()
+        field.willBeginEditing = { [weak field, weak coordinator = context.coordinator] in
+            if let field { coordinator?.showRawReferences(field) }
+        }
         field.isBordered = false
         field.isBezeled = false
         field.focusRingType = .none
@@ -3067,6 +3075,22 @@ private struct NativeRequestURLField: NSViewRepresentable {
     }
     static func dismantleNSView(_: NSTextField, coordinator: Coordinator) { coordinator.closeCompletions() }
 
+    /// The URL as the field shows it while not editing: each reference becomes a chip that
+    /// the cell draws, with its braces collapsed into the chip's padding.
+    static func chipped(_ text: String, catalog: VariableCatalog, theme: ResolvedTheme) -> NSMutableAttributedString {
+        let result = NSMutableAttributedString(attributedString: VariableHighlighting.attributedString(text, font: font, catalog: catalog, theme: theme))
+        result.removeAttribute(.backgroundColor, range: NSRange(location: 0, length: result.length))
+        for reference in VariableTemplate.references(in: text) where NSMaxRange(reference.range) <= result.length {
+            result.addAttribute(.variableChip, value: VariableChip(color: theme.definition.variableBackground.nsColor), range: reference.range)
+            let delimiters = reference.delimiterRanges(in: text)
+            for range in [delimiters.open, delimiters.close] where range.length > 0 {
+                result.addAttributes([.font: delimiterFont, .foregroundColor: NSColor.clear,
+                    .kern: chipPadding / CGFloat(range.length)], range: range)
+            }
+        }
+        return result
+    }
+
     @MainActor
     final class Coordinator: NSObject, NSTextFieldDelegate {
         var parent: NativeRequestURLField
@@ -3081,6 +3105,15 @@ private struct NativeRequestURLField: NSViewRepresentable {
         private var isInserting = false
 
         init(_ parent: NativeRequestURLField) { self.parent = parent; focusTrigger = parent.focusTrigger }
+
+        /// Replaces the chips with raw references before the field editor copies the text,
+        /// so the caret moves over the braces the user types.
+        func showRawReferences(_ field: NSTextField) {
+            guard let variables = parent.variables, field.stringValue.contains("{{") else { return }
+            highlightedState = nil
+            field.attributedStringValue = VariableHighlighting.attributedString(field.stringValue,
+                font: NativeRequestURLField.font, catalog: variables, theme: parent.theme)
+        }
 
         func controlTextDidBeginEditing(_ notification: Notification) {
             parent.isEditing = true
@@ -3145,9 +3178,16 @@ private struct NativeRequestURLField: NSViewRepresentable {
                 return
             }
             if let storage = editor?.textStorage {
+                // The raw text is restored before editing starts; never edit collapsed braces.
+                let full = NSRange(location: 0, length: storage.length)
+                var hasCollapsedBraces = false
+                storage.enumerateAttribute(.kern, in: full) { value, _, stop in
+                    if value != nil { hasCollapsedBraces = true; stop.pointee = true }
+                }
+                if hasCollapsedBraces { storage.setAttributes([.font: NativeRequestURLField.font], range: full) }
                 VariableHighlighting.apply(to: storage, catalog: variables, baseColor: parent.theme.primary.nsColor, theme: parent.theme)
             } else {
-                let highlighted = NSMutableAttributedString(attributedString: VariableHighlighting.attributedString(text, font: NativeRequestURLField.font, catalog: variables, theme: parent.theme))
+                let highlighted = NativeRequestURLField.chipped(text, catalog: variables, theme: parent.theme)
                 let paragraph = NSMutableParagraphStyle()
                 paragraph.lineBreakMode = .byTruncatingTail
                 highlighted.addAttribute(.paragraphStyle, value: paragraph, range: NSRange(location: 0, length: highlighted.length))
@@ -3222,6 +3262,59 @@ private struct NativeRequestURLField: NSViewRepresentable {
     }
 }
 
+private extension NSAttributedString.Key {
+    /// A variable chip the URL field's cell draws behind a reference.
+    static let variableChip = NSAttributedString.Key("WireboltVariableChip")
+}
+
+/// One chip's background. A distinct object per reference, so adjacent references never
+/// merge into one attribute run (and one chip).
+private final class VariableChip: NSObject {
+    let color: NSColor
+    init(color: NSColor) { self.color = color }
+}
+
+/// The URL field, whose cell draws variable chips. It shows raw references again before
+/// editing starts.
+private final class VariableChipTextField: NSTextField {
+    override class var cellClass: AnyClass? {
+        get { VariableChipCell.self }
+        set { super.cellClass = newValue }
+    }
+
+    var willBeginEditing: (() -> Void)?
+
+    override func becomeFirstResponder() -> Bool {
+        willBeginEditing?()
+        return super.becomeFirstResponder()
+    }
+}
+
+private final class VariableChipCell: NSTextFieldCell {
+    /// NSTextFieldCell draws its text this far inside the title rect.
+    private static let textInset: CGFloat = 2
+
+    override func drawInterior(withFrame cellFrame: NSRect, in controlView: NSView) {
+        let text = attributedStringValue
+        if text.length > 0 {
+            let bounds = titleRect(forBounds: cellFrame)
+            let height = min(cellFrame.height, NativeRequestURLField.chipHeight)
+            NSGraphicsContext.saveGraphicsState()
+            NSBezierPath(rect: bounds).addClip()
+            text.enumerateAttribute(.variableChip, in: NSRange(location: 0, length: text.length)) { value, range, _ in
+                guard let chip = value as? VariableChip else { return }
+                let x = bounds.minX + Self.textInset + text.attributedSubstring(from: NSRange(location: 0, length: range.location)).size().width
+                let width = text.attributedSubstring(from: range).size().width
+                chip.color.setFill()
+                NSBezierPath(roundedRect: NSRect(x: x, y: bounds.midY - height / 2, width: width, height: height),
+                    xRadius: 5, yRadius: 5).fill()
+            }
+            NSGraphicsContext.restoreGraphicsState()
+        }
+        super.drawInterior(withFrame: cellFrame, in: controlView)
+    }
+}
+
 private struct RequestSectionBar: View {
     @Bindable var interface: DocumentPresentationState
     @Bindable var session: DocumentSession
@@ -3269,7 +3362,7 @@ private struct RequestSectionBar: View {
                         Button(section.rawValue) { interface.requestSection = section }
                     }
                 }
-                .menuStyle(.borderlessButton).menuIndicator(.hidden)
+                .ghostMenuStyle().menuIndicator(.hidden)
                 .labelStyle(.iconOnly).foregroundStyle(.secondary).fixedSize()
                 .help("More Sections")
             }
@@ -3352,7 +3445,7 @@ private struct RequestSectionBar: View {
                     Divider()
                     Button("Clear All", action: clearFields)
                 }
-                .menuStyle(.borderlessButton).menuIndicator(.hidden)
+                .ghostMenuStyle().menuIndicator(.hidden)
                 .labelStyle(.iconOnly).foregroundStyle(.secondary).fixedSize()
                 .frame(width: 30, height: 32)
                 .help("Section Actions")
@@ -4070,7 +4163,7 @@ private struct AuthenticationTypePicker: View {
         } label: {
             Text(authentication.kind.title)
         }
-        .menuStyle(.borderlessButton).controlSize(.small).fixedSize()
+        .ghostMenuStyle().controlSize(.small).fixedSize()
         .accessibilityLabel("Auth Type")
         .accessibilityValue(authentication.kind.title)
         .help("Auth Type")
@@ -4177,7 +4270,7 @@ private struct BodyEditor: View {
                     headers[index].enabled = true
                 } else { headers.append(RequestField(name: "Content-Type", value: .literal(mime))) }
                 pendingContentType = nil
-            }.keyboardShortcut(.defaultAction)
+            }.keyboardShortcut(.defaultAction).tint(WireboltTheme.controlAccent)
         } message: { Text("Do you want to set Content-Type: \(pendingContentType ?? "")") }
     }
 
@@ -4200,7 +4293,7 @@ private struct BodyTools: View {
             } label: {
                 Text(kindBinding.wrappedValue.title)
             }
-            .menuStyle(.borderlessButton).controlSize(.small).fixedSize()
+            .ghostMenuStyle().controlSize(.small).fixedSize()
             .accessibilityLabel("Content Type")
             .accessibilityValue(kindBinding.wrappedValue.title)
             .help("Content Type")
@@ -4221,7 +4314,7 @@ private struct BodyTools: View {
                     Button("Clear All") { requestBody = .multipart(parts: []) }
                 }
                 EditorPreferencesMenu()
-            }.menuStyle(.borderlessButton).menuIndicator(.hidden).labelStyle(.iconOnly).fixedSize()
+            }.ghostMenuStyle().menuIndicator(.hidden).labelStyle(.iconOnly).fixedSize()
             .help("Body Actions")
         }.fixedSize()
     }
@@ -4455,7 +4548,7 @@ private struct MultipartPartEditor: View {
             HStack {
                 Button("Delete this Part", systemImage: "trash", action: remove)
                 Spacer()
-                Button("OK") { dismiss() }.keyboardShortcut(.defaultAction)
+                Button("OK") { dismiss() }.keyboardShortcut(.defaultAction).tint(WireboltTheme.controlAccent)
             }.controlSize(.small)
         }.font(WireboltTheme.Typography.tab).padding(WireboltTheme.Spacing.xxLarge).frame(width: 510, height: 298)
             .sheet(isPresented: $isEditingValue) {
@@ -4471,7 +4564,7 @@ private struct MultipartPartEditor: View {
                             } else { part.kind = .text; part.filePath = nil; part.value = .literal(text) }
                             isEditingValue = false
                         }
-                            .keyboardShortcut(.defaultAction)
+                            .keyboardShortcut(.defaultAction).tint(WireboltTheme.controlAccent)
                     }
                 }.padding(WireboltTheme.Spacing.xLarge).frame(width: 566, height: 362)
             }
@@ -4578,7 +4671,7 @@ private struct NoOpenRequestPlaceholder: View {
                 Text("Create a request, or import a cURL command, HAR file, Postman, Insomnia or Bruno collection or Wirebolt JSON. You can also drop one of those files, or a Bruno collection folder, on this window.")
             } actions: {
                 Button("New Request") { interface.makeNewRequest(model: model) }
-                    .buttonStyle(.borderedProminent)
+                    .buttonStyle(.borderedProminent).tint(WireboltTheme.controlAccent)
                     .help("New Request (⌘N)")
                 WorkspaceImportMenu(interface: interface)
                     .fixedSize()
@@ -4668,7 +4761,7 @@ private struct EnvironmentPopup: View {
                 .lineLimit(1).font(WireboltTheme.Typography.tab).foregroundStyle(WireboltTheme.muted)
                 .frame(minHeight: 28)
         }
-        .menuStyle(.borderlessButton)
+        .ghostMenuStyle()
         .accessibilityLabel("Environment")
         .accessibilityValue(selectedEnvironment?.name ?? "Globals")
     }

@@ -14,7 +14,7 @@ struct NotesEditor: View {
                 Picker("Notes mode", selection: $preview) {
                     Text("Edit").tag(false)
                     Text("Preview").tag(true)
-                }.pickerStyle(.segmented).frame(width: 150)
+                }.pickerStyle(.segmented).tint(WireboltTheme.controlAccent).frame(width: 150)
             }.frame(height: 24).padding(.horizontal, 12).padding(.vertical, 6)
             Divider()
             if preview {

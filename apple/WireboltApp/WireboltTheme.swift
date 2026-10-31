@@ -29,7 +29,10 @@ struct ThemeScope: ViewModifier {
             .environment(\.wireboltTheme, store.resolved)
             .environment(\.wireboltReduceMotion, systemReduceMotion || reducesMotion)
             .foregroundStyle(store.resolved.primary.color)
-            .tint(store.resolved.definition.variableForeground.color)
+            // Neutral: color is reserved for methods, statuses and variables. macOS 26 tints
+            // pop-up and menu titles, so the window tint is the muted text color; filled
+            // controls (checkboxes, segments, default buttons) opt into `controlAccent`.
+            .tint(store.resolved.muted.color)
             .background(store.resolved.definition.window.color)
             .transaction { if systemReduceMotion || reducesMotion { $0.animation = nil } }
             .onAppear(perform: resolve)
@@ -51,7 +54,9 @@ struct ThemeScope: ViewModifier {
 @MainActor
 enum WireboltTheme {
     static var current: ResolvedTheme { ThemeStore.shared.resolved }
-    static var primaryAccent: Color { current.definition.variableForeground.color }
+    /// Fill for checkboxes, selected segments and default buttons, which opt in with
+    /// `.tint(WireboltTheme.controlAccent)`. Neutral by design (see `ThemeDefinition.control`).
+    static var controlAccent: Color { current.definition.control.color }
     static var paneBackground: Color { current.definition.window.color }
     static var sidebarBackground: Color { current.definition.sidebar.color }
     static var cardBackground: Color { current.definition.card.color }
@@ -150,6 +155,47 @@ struct MethodChip: View {
             .background(colors.background.color, in: .rect(cornerRadius: theme.geometry.chip))
             .fixedSize()
     }
+}
+
+extension View {
+    /// A borderless menu drawn like the other ghost controls: its title and icon take the
+    /// muted text color whatever tint the surrounding view sets.
+    func ghostMenuStyle() -> some View {
+        menuStyle(.borderlessButton).tint(WireboltTheme.muted)
+    }
+}
+
+/// The settings switch from the design: a primary track with a canvas knob when on, a
+/// dim track when off. VoiceOver and Full Keyboard Access see a native toggle.
+struct WireboltSwitchStyle: ToggleStyle {
+    @Environment(\.wireboltTheme) private var theme
+    @Environment(\.isEnabled) private var isEnabled
+    @Environment(\.controlSize) private var controlSize
+    @Environment(\.labelsVisibility) private var labelsVisibility
+
+    func makeBody(configuration: Configuration) -> some View {
+        let small = controlSize == .small || controlSize == .mini
+        HStack(spacing: WireboltTheme.Spacing.medium) {
+            if labelsVisibility != .hidden { configuration.label }
+            Button { configuration.isOn.toggle() } label: {
+                Capsule()
+                    .fill(configuration.isOn ? theme.primary.color : theme.definition.dim.color)
+                    .overlay(alignment: configuration.isOn ? .trailing : .leading) {
+                        Circle().fill(theme.definition.window.color).padding(2)
+                    }
+                    .frame(width: small ? 30 : 36, height: small ? 17 : 20)
+                    .animation(.snappy(duration: 0.15), value: configuration.isOn)
+                    .contentShape(.capsule)
+            }
+            .buttonStyle(.plain)
+        }
+        .opacity(isEnabled ? 1 : 0.4)
+        .accessibilityRepresentation { Toggle(isOn: configuration.$isOn) { configuration.label } }
+    }
+}
+
+extension ToggleStyle where Self == WireboltSwitchStyle {
+    static var wireboltSwitch: WireboltSwitchStyle { WireboltSwitchStyle() }
 }
 
 struct GhostIconStyle: ButtonStyle {

@@ -253,7 +253,7 @@ private struct ResponseFailureView: View {
             HStack(spacing: 8) {
                 if let retry {
                     Button(message.category == .cancelled ? "Send Again" : "Retry", action: retry)
-                        .buttonStyle(.borderedProminent)
+                        .buttonStyle(.borderedProminent).tint(WireboltTheme.controlAccent)
                         .help("Send the request again (⌘↩)")
                 }
                 if message.suggestsNetworkSettings {
@@ -300,7 +300,7 @@ private struct ResponseSourceView: View {
                     }
                     Divider()
                     EditorPreferencesMenu()
-                }.menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize().labelStyle(.iconOnly)
+                }.ghostMenuStyle().menuIndicator(.hidden).fixedSize().labelStyle(.iconOnly)
                 .help("Actions")
             }.font(.system(size: 13)).padding(.horizontal, 12).frame(height: 27)
                 .background(WireboltTheme.barBackground)
@@ -445,7 +445,7 @@ private struct ResponseSectionBar: View {
                 Text(interface.responseRenderer.rawValue)
                     .font(WireboltTheme.Typography.tab).foregroundStyle(WireboltTheme.muted)
             }
-            .menuStyle(.borderlessButton).fixedSize()
+            .ghostMenuStyle().fixedSize()
             .frame(minHeight: 28).help("Response Renderer")
             .accessibilityLabel("Response renderer")
             .accessibilityValue(interface.responseRenderer.rawValue)
@@ -462,7 +462,7 @@ private struct ResponseSectionBar: View {
             EditorPreferencesMenu()
             Menu("Open With") { OpenWithMenuItems(store: session.bodyStore) }.disabled(session.isRunning)
         }
-        .menuStyle(.borderlessButton).menuIndicator(.hidden).labelStyle(.iconOnly)
+        .ghostMenuStyle().menuIndicator(.hidden).labelStyle(.iconOnly)
         .frame(minWidth: 28, minHeight: 28).help("Response Actions")
         }
     }

@@ -64,7 +64,7 @@ private struct EditorFindBar: View {
             .padding(.leading, 5).padding(.trailing, 2)
             .frame(height: 24)
             .background(Color(nsColor: .textBackgroundColor))
-            .overlay { Rectangle().stroke(state.error == nil ? (focused ? WireboltTheme.primaryAccent : Color(nsColor: .separatorColor)) : .red, lineWidth: 1) }
+            .overlay { Rectangle().stroke(state.error == nil ? (focused ? WireboltTheme.current.focusBorder.color : Color(nsColor: .separatorColor)) : .red, lineWidth: 1) }
             .help(state.error ?? "Find")
             Text(state.countLabel).font(.system(size: 12)).lineLimit(1).frame(width: 69, alignment: .leading)
             Button("Previous Match", systemImage: "arrow.up") { state.move(-1) }.disabled(state.matchCount == 0)
@@ -74,7 +74,7 @@ private struct EditorFindBar: View {
             Button("Find in Selection", systemImage: "line.3.horizontal.decrease") { state.selectionOnly.toggle() }
                 .disabled(!state.hasSelection)
                 .help("Find in Selection (⌥⌘L)")
-                .background(state.selectionOnly ? WireboltTheme.primaryAccent.opacity(0.25) : .clear)
+                .background(state.selectionOnly ? WireboltTheme.selectedBackground : .clear)
                 .keyboardShortcut("l", modifiers: [.command, .option])
                 .accessibilityRepresentation { Toggle("Find in Selection", isOn: $state.selectionOnly).disabled(!state.hasSelection) }
             Button("Close Find", systemImage: "xmark") { state.isVisible = false }
@@ -96,7 +96,7 @@ private struct EditorFindBar: View {
         Button { value.wrappedValue.toggle() } label: {
             Text(text).font(.system(size: 11)).underline(underline)
                 .frame(width: 20, height: 20)
-                .background(value.wrappedValue ? WireboltTheme.primaryAccent.opacity(0.3) : .clear, in: .rect(cornerRadius: 2))
+                .background(value.wrappedValue ? WireboltTheme.selectedBackground : .clear, in: .rect(cornerRadius: 2))
         }
         .buttonStyle(.plain)
         .help(label)

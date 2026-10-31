@@ -42,7 +42,7 @@ struct ImportSummaryView: View {
             HStack {
                 Spacer()
                 Button("Done", action: done)
-                    .keyboardShortcut(.defaultAction)
+                    .keyboardShortcut(.defaultAction).tint(WireboltTheme.controlAccent)
             }
         }
     }

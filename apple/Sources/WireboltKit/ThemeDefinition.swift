@@ -28,6 +28,10 @@ public struct ThemeDefinition: Equatable, Sendable {
     public let syntaxKey, syntaxString, syntaxNumber, syntaxKeyword, syntaxPunctuation: PaletteColor
     public let success, warning, error: PaletteColor
     public let methodBackgrounds, methodForegrounds: [PaletteColor]
+    /// Fill for native controls (checkboxes, switches, selected segments, default buttons).
+    /// Neutral, so color stays reserved for methods, statuses and variables, and dark
+    /// enough that white glyphs on it stay legible.
+    public let control: PaletteColor
 
     public static func preset(_ preset: ThemePreset) -> Self {
         let values: [UInt32]
@@ -38,28 +42,31 @@ public struct ThemeDefinition: Equatable, Sendable {
                 0x363636, 0xededed, 0x1d1e24, 0xa8b4ff, 0x79c0ff, 0xa5d6ff, 0xffa657, 0xff7b72, 0xc9d1d9,
                 0x4ade80, 0xffd426, 0xff7b7b,
                 0x0f2a1b, 0x0f2233, 0x2e1d0c, 0x2e1214, 0x1e1838,
-                0x4ade80, 0x4aa3ff, 0xffa24d, 0xff7b7b, 0xa5a0ff]
+                0x4ade80, 0x4aa3ff, 0xffa24d, 0xff7b7b, 0xa5a0ff,
+                0x666666]
         case .paper:
             values = [0xfcfcfd, 0xf4f4f5, 0xffffff, 0xffffff, 0xededf0, 0xffffff,
                 0xe4e4e7, 0xe4e4e7, 0x18181b, 0x3f3f46, 0x71717a, 0xa1a1aa, 0xc4c4cc,
                 0x18181b, 0xffffff, 0xeef0ff, 0x4338ca, 0x0550ae, 0x0a3069, 0x953800, 0xcf222e, 0x24292f,
                 0x15803d, 0xa16207, 0xb91c1c,
                 0xdcfce7, 0xdbeafe, 0xffedd5, 0xfee2e2, 0xede9fe,
-                0x15803d, 0x1d4ed8, 0xc2410c, 0xb91c1c, 0x6d28d9]
+                0x15803d, 0x1d4ed8, 0xc2410c, 0xb91c1c, 0x6d28d9,
+                0x52525b]
         case .ember:
             values = [0x120d0b, 0x150f0c, 0x1c1512, 0x2e221c, 0x261c17, 0x1a1310,
                 0x2a1f1a, 0x302722, 0xf6ede7, 0xdccbc2, 0xb5a299, 0x7d6b62, 0x5a4a42,
                 0xf97316, 0x1a0e07, 0x2e1e15, 0xfdba74, 0xfdba74, 0xfde2c4, 0xfca5a5, 0xf97316, 0xe7d8cf,
                 0x4ade80, 0xfbbf24, 0xff8a80,
                 0x132a18, 0x14212e, 0x33200e, 0x331517, 0x241c33,
-                0x4ade80, 0x60b0ff, 0xffb066, 0xff8a80, 0xb8b0ff]
+                0x4ade80, 0x60b0ff, 0xffb066, 0xff8a80, 0xb8b0ff,
+                0x7d6b62]
         }
         let c = values.map(PaletteColor.init(hex:))
         return Self(preset: preset, window: c[0], sidebar: c[1], card: c[2], selected: c[3], tabActive: c[4], overlay: c[5],
             hairline: c[6], cardBorder: c[7], primary: c[8], secondary: c[9], muted: c[10], dim: c[11], lineNumber: c[12],
             sendBackground: c[13], sendForeground: c[14], variableBackground: c[15], variableForeground: c[16],
             syntaxKey: c[17], syntaxString: c[18], syntaxNumber: c[19], syntaxKeyword: c[20], syntaxPunctuation: c[21],
-            success: c[22], warning: c[23], error: c[24], methodBackgrounds: Array(c[25..<30]), methodForegrounds: Array(c[30..<35]))
+            success: c[22], warning: c[23], error: c[24], methodBackgrounds: Array(c[25..<30]), methodForegrounds: Array(c[30..<35]), control: c[35])
     }
 }
 

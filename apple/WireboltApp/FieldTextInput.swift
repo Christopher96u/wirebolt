@@ -192,7 +192,7 @@ struct VariableCompletionList: View {
                     .foregroundStyle(index == selectedIndex ? Color.white : Color.primary)
                     .padding(.horizontal, WireboltTheme.Spacing.medium)
                     .frame(maxWidth: .infinity, minHeight: 22, alignment: .leading)
-                    .background(index == selectedIndex ? Color.accentColor : .clear, in: .rect(cornerRadius: WireboltTheme.Radius.small))
+                    .background(index == selectedIndex ? WireboltTheme.controlAccent : .clear, in: .rect(cornerRadius: WireboltTheme.Radius.small))
                     .contentShape(.rect)
                 }
                 .buttonStyle(.plain)
@@ -233,7 +233,7 @@ struct FieldCheckbox: View {
             if button.accessibilityLabel() != label { button.setAccessibilityLabel(label) }
             button.state = isOn ? .on : .off
             button.isEnabled = isEnabled
-            button.contentTintColor = NSColor(WireboltTheme.primaryAccent)
+            button.contentTintColor = NSColor(WireboltTheme.controlAccent)
         }
 
         @MainActor final class Coordinator: NSObject {

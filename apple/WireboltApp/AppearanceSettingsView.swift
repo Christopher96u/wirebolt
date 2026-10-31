@@ -23,7 +23,7 @@ struct AppearanceSettingsView: View {
                 Spacer()
                 Toggle("Follow System", isOn: Binding(get: { selection == "system" },
                     set: { selection = $0 ? "system" : theme.definition.preset.rawValue }))
-                    .toggleStyle(.switch).controlSize(.small)
+                    .toggleStyle(.wireboltSwitch).controlSize(.small)
                     .font(.system(size: theme.typography.settingsDetail))
             }
             LazyVGrid(columns: [GridItem(.adaptive(minimum: 172, maximum: 172), spacing: 14)], alignment: .leading, spacing: 20) {
@@ -33,7 +33,7 @@ struct AppearanceSettingsView: View {
                 customThemeCard
             }
             SettingsCard {
-                SettingsRow(title: "Canvas & accent", detail: "Preset colors. Custom themes are not available yet.") {
+                SettingsRow(title: "Canvas & variables", detail: "Preset colors; controls stay neutral. Custom themes are not available yet.") {
                     HStack(spacing: WireboltTheme.Spacing.xLarge) {
                         swatch(theme.definition.window)
                         swatch(theme.definition.variableForeground)
@@ -54,18 +54,18 @@ struct AppearanceSettingsView: View {
                     Picker("Density", selection: $density) {
                         Text("Compact").tag("compact")
                         Text("Comfortable").tag("comfortable")
-                    }.labelsHidden().pickerStyle(.segmented).frame(width: 220)
+                    }.labelsHidden().pickerStyle(.segmented).tint(WireboltTheme.controlAccent).frame(width: 220)
                 }
                 SettingsRow(title: "Editor font", detail: "Request and response editors.") {
                     HStack(spacing: WireboltTheme.Spacing.medium) {
                         Text("System monospaced").foregroundStyle(theme.definition.secondary.color)
                         Picker("Editor font size", selection: $fontSize) {
                             ForEach(Array(10...20) + [24, 28], id: \.self) { Text("\($0) pt").tag(Double($0)) }
-                        }.labelsHidden().pickerStyle(.menu).frame(width: 90)
+                        }.labelsHidden().pickerStyle(.menu).tint(WireboltTheme.muted).frame(width: 90)
                     }
                 }
                 SettingsRow(title: "Reduce motion", detail: "macOS Reduce Motion always takes priority.", last: true) {
-                    Toggle("Reduce motion", isOn: $reducesMotion).labelsHidden().toggleStyle(.switch)
+                    Toggle("Reduce motion", isOn: $reducesMotion).labelsHidden().toggleStyle(.wireboltSwitch)
                 }
             }
         }

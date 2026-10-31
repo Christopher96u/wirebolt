@@ -49,7 +49,7 @@ struct CookiesView: View {
             }
             Divider()
             HStack {
-                Toggle("Show Values", isOn: $showsValues)
+                Toggle("Show Values", isOn: $showsValues).tint(WireboltTheme.controlAccent)
                 Spacer()
                 Text(cookies.count == 1 ? "1 cookie" : "\(cookies.count) cookies")
                     .foregroundStyle(.secondary)

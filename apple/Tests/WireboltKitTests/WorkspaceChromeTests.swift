@@ -34,6 +34,22 @@ struct WorkspaceChromeTests {
         #expect(RequestAuthentication.none.switching(to: .apiKey).kind == .apiKey)
     }
 
+    @Test("A variable chip hides the braces and the spaces around the name, nothing else")
+    func chipDelimiters() {
+        let text = "{{base_url}}/orders?limit={{ page_size }}&q=é"
+        let references = VariableTemplate.references(in: text)
+        #expect(references.map(\.name) == ["base_url", "page_size"])
+        let source = text as NSString
+        let delimiters = references.map { $0.delimiterRanges(in: text) }
+        #expect(delimiters.map { source.substring(with: $0.open) } == ["{{", "{{ "])
+        #expect(delimiters.map { source.substring(with: $0.close) } == ["}}", " }}"])
+        // What stays visible inside each chip is exactly the name.
+        for (reference, ranges) in zip(references, delimiters) {
+            let name = NSRange(location: NSMaxRange(ranges.open), length: ranges.close.location - NSMaxRange(ranges.open))
+            #expect(source.substring(with: name) == reference.name)
+        }
+    }
+
     @Test("Every authentication kind has a short composer label")
     func authenticationTitles() {
         #expect(AuthenticationKind.allCases.map(\.composerTitle) == ["No auth", "Basic", "Bearer", "API key", "OAuth 2"])
