@@ -1395,11 +1395,11 @@ public enum GitRepositoryProblem: Equatable, Sendable {
     case gitUnavailable
 
     public init?(kind: String) {
-        switch kind {
-        case "not_repository": self = .notRepository
-        case "workspace_not_repository_root": self = .notRepositoryRoot
-        case "git_unavailable": self = .gitUnavailable
-        default: return nil
+        switch workspaceRepositoryProblem(kind: kind) {
+        case .notRepository: self = .notRepository
+        case .notRepositoryRoot: self = .notRepositoryRoot
+        case .gitUnavailable: self = .gitUnavailable
+        case nil: return nil
         }
     }
 }

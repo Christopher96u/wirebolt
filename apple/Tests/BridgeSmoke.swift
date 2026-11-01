@@ -71,6 +71,7 @@ enum BridgeSmoke {
             _ = try await persistence.apply(.saveWorkspaceProxy(nil))
             let inherited = try await persistence.load()
             precondition(inherited.proxy == nil, "resetting workspace proxy must restore inheritance")
+            await verifyWorkspaceOperations(persistence)
 
         } catch {
             fatalError("workspace open smoke failed: \(error)")
@@ -80,6 +81,24 @@ enum BridgeSmoke {
 
         print("bridge_smoke=passed core=\(handshake.coreVersion) stream_abi=\(streamABIVersion)")
     }
+    @MainActor
+    private static func verifyWorkspaceOperations(_ persistence: RustWorkspacePersistence) async {
+        let model = WireboltModel(runner: RustRequestRunner(), persistence: persistence, gitCollaboration: persistence)
+        let undo = UndoManager(); undo.groupsByEvent = false; model.undoManager = undo
+        await model.loadWorkspace()
+        precondition(model.hasLoadedWorkspace && !model.isLoadingWorkspace)
+        guard let session = await model.createRequest(collectionID: "custom", groupID: "folder") else { fatalError("workspace command did not create request") }
+        session.draft.url = "https://example.invalid/workspace-bridge"
+        let saved = await model.save(session, fallbackCollectionID: nil)
+        precondition(saved)
+        undo.undo(); await model.finishUndoWork()
+        precondition(model.workspace.location(collectionID: "custom", requestID: session.requestID) == nil)
+        undo.redo(); await model.finishUndoWork()
+        precondition(model.workspace.location(collectionID: "custom", requestID: session.requestID)?.request.url == "https://example.invalid/workspace-bridge")
+        let exported = await model.exportCollection(id: "custom")
+        precondition(exported?.contains("workspace-bridge") == true)
+    }
+
     @MainActor
     private static func verifySessionBridge() async {
         let store = DocumentSessionStore()
