@@ -67,8 +67,8 @@ extension TextSearchTests {
         let worker = responseTask(priority: .userInitiated) {
             try TextSearchQuery(text: "(a|aa)+$", regularExpression: true).matches(in: String(repeating: "a", count: 2000) + "!")
         }
-        try await Task.sleep(for: .milliseconds(2))
-        worker.cancel()
+        // GCD delivers the cancellation even while the search occupies a cooperative thread.
+        DispatchQueue.global().asyncAfter(deadline: .now() + .milliseconds(2)) { worker.cancel() }
         await #expect(throws: CancellationError.self) { try await worker.value }
     }
 }
