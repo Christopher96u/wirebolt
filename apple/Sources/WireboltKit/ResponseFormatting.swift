@@ -23,7 +23,9 @@ public enum ResponseFormatting {
 
     public static func statusLine(_ status: UInt16) -> String { appStatusLine(status: status) }
     public static func reasonPhrase(for status: UInt16) -> String { appReasonPhrase(status: status) }
-    public static func completionSummary(status: UInt16?, totalTimeNS: UInt64?, bytes: UInt64, locale: Locale = .autoupdatingCurrent) -> String {
+    public static func completionSummary(status: UInt16?, totalTimeNS: UInt64?, bytes: UInt64, locale: Locale = .autoupdatingCurrent)
+        -> String
+    {
         appCompletionSummary(status: status, nanoseconds: totalTimeNS, formattedBytes: byteCount(bytes, locale: locale))
     }
 }
@@ -39,15 +41,22 @@ public enum RunOutcomeBadge: Equatable, Sendable {
     /// A failure wins over a status: it is the latest outcome, and the response pane shows
     /// the failure too. Nil when nothing has run yet.
     public init?(status: UInt16?, failure: RunFailure?, host: String? = nil) {
-        guard let result = appResponseBadge(status: status, failure: failure?.kind, issues: failure?.issues.map(\.responseIssue) ?? [], host: host) else { return nil }
+        guard
+            let result = appResponseBadge(
+                status: status, failure: failure?.kind, issues: failure?.issues.map(\.responseIssue) ?? [], host: host)
+        else { return nil }
         switch result {
-        case let .status(status): self = .status(status)
-        case let .failed(title): self = .failed(title: title)
+        case .status(let status): self = .status(status)
+        case .failed(let title): self = .failed(title: title)
         case .cancelled: self = .cancelled
         }
     }
     private var rust: ResponseBadge {
-        switch self { case let .status(status): .status(status: status); case let .failed(title): .failed(title: title); case .cancelled: .cancelled }
+        switch self {
+        case .status(let status): .status(status: status)
+        case .failed(let title): .failed(title: title)
+        case .cancelled: .cancelled
+        }
     }
     public var label: String { appResponseBadgeLabel(badge: rust) }
     public var detail: String { appResponseBadgeDetail(badge: rust) }
@@ -63,13 +72,16 @@ public struct RunFailureMessage: Equatable, Sendable {
     public let suggestsNetworkSettings: Bool
     public init(_ failure: RunFailure, host: String? = nil) {
         let result = appFailureMessage(kind: failure.kind, issues: failure.issues.map(\.responseIssue), host: host)
-        category = result.category; title = result.title; message = result.message
-        systemImage = result.systemImage; suggestsNetworkSettings = result.suggestsNetworkSettings
+        category = result.category
+        title = result.title
+        message = result.message
+        systemImage = result.systemImage
+        suggestsNetworkSettings = result.suggestsNetworkSettings
     }
     public static func host(from url: String?) -> String? { appFailureHost(url: url) }
     static func describe(_ issue: RequestIssue) -> String { appDescribeIssue(issue: issue.responseIssue) }
     static func sentence(_ kind: String) -> String { appFailureSentence(kind: kind) }
 }
-private extension RequestIssue {
-    var responseIssue: FailureIssue { FailureIssue(path: path, kind: kind, reference: reference) }
+extension RequestIssue {
+    fileprivate var responseIssue: FailureIssue { FailureIssue(path: path, kind: kind, reference: reference) }
 }

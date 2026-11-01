@@ -8,9 +8,11 @@ public enum ProxyScope: String, CaseIterable, Sendable {
     }
 }
 
-public struct EffectiveProxy: Codable, Equatable, Sendable {
+public struct EffectiveProxy: Equatable, Sendable {
     public enum Source: String, Codable, Sendable {
-        case request, workspace, appDefault = "app_default", systemDefault = "system_default"
+        case request, workspace
+        case appDefault = "app_default"
+        case systemDefault = "system_default"
         public var title: String {
             domainProxyScopeTitle(scope: rawValue)
         }
@@ -28,12 +30,22 @@ public struct EffectiveProxy: Codable, Equatable, Sendable {
     }
 }
 
-public extension ProxySelection {
-    var document: ProxyDocument? {
-        switch self { case .inherit: nil; case .direct: .direct; case .system: .system; case let .manual(value): value }
+extension ProxySelection {
+    public var document: ProxyDocument? {
+        switch self {
+        case .inherit: nil
+        case .direct: .direct
+        case .system: .system
+        case .manual(let value): value
+        }
     }
-    init(document: ProxyDocument?) {
-        switch document { case nil: self = .inherit; case .direct: self = .direct; case .system: self = .system; case let .manual(routes): self = .manual(.manual(routes: routes)) }
+    public init(document: ProxyDocument?) {
+        switch document {
+        case nil: self = .inherit
+        case .direct: self = .direct
+        case .system: self = .system
+        case .manual(let routes): self = .manual(.manual(routes: routes))
+        }
     }
 }
 
@@ -44,11 +56,12 @@ public final class ProxyPreferences {
     public static let key = "network.appProxy"
     public init(defaults: UserDefaults? = nil) {
         self.defaults = defaults
-        configuration = defaults?.data(forKey: Self.key).flatMap { try? JSONDecoder().decode(ProxyDocument.self, from: $0) } ?? .system
+        configuration =
+            defaults?.data(forKey: Self.key).flatMap { try? sessionDecodeProxy(data: $0) }.map(ProxyDocument.init(domain:)) ?? .system
     }
     public func save(_ configuration: ProxyDocument) throws {
         try configuration.validate()
-        let data = try JSONEncoder().encode(configuration)
+        let data = try sessionEncodeProxy(value: configuration.domain)
         defaults?.set(data, forKey: Self.key)
         self.configuration = configuration
     }
@@ -60,10 +73,9 @@ public struct ProxyValidationError: LocalizedError, Equatable {
     public init(_ message: String) { self.message = message }
 }
 
-public extension ProxyDocument {
-    func validate() throws {
-        do { try domainValidateProxy(configuration: domain) }
-        catch let DomainError.Invalid(reason) { throw ProxyValidationError(reason) }
+extension ProxyDocument {
+    public func validate() throws {
+        do { try domainValidateProxy(configuration: domain) } catch let DomainError.Invalid(reason) { throw ProxyValidationError(reason) }
     }
 }
 
@@ -71,14 +83,38 @@ public struct ProxyRouteDraft: Identifiable, Equatable {
     var domain: ProxyRouteInput
     public static let protocols = ["http", "https", "socks4", "socks4a", "socks5", "socks5h"]
     public var id: UUID { UUID(uuidString: domain.id)! }
-    public var destination: String { get { domain.destination } set { domain.destination = newValue } }
-    public var scheme: String { get { domain.scheme } set { domain.scheme = newValue } }
-    public var host: String { get { domain.host } set { domain.host = newValue } }
-    public var port: String { get { domain.port } set { domain.port = newValue } }
-    public var authenticated: Bool { get { domain.authenticated } set { domain.authenticated = newValue } }
-    public var replaceCredentials: Bool { get { domain.replaceCredentials } set { domain.replaceCredentials = newValue } }
-    public var username: String { get { domain.username } set { domain.username = newValue } }
-    public var password: String { get { domain.password } set { domain.password = newValue } }
+    public var destination: String {
+        get { domain.destination }
+        set { domain.destination = newValue }
+    }
+    public var scheme: String {
+        get { domain.scheme }
+        set { domain.scheme = newValue }
+    }
+    public var host: String {
+        get { domain.host }
+        set { domain.host = newValue }
+    }
+    public var port: String {
+        get { domain.port }
+        set { domain.port = newValue }
+    }
+    public var authenticated: Bool {
+        get { domain.authenticated }
+        set { domain.authenticated = newValue }
+    }
+    public var replaceCredentials: Bool {
+        get { domain.replaceCredentials }
+        set { domain.replaceCredentials = newValue }
+    }
+    public var username: String {
+        get { domain.username }
+        set { domain.username = newValue }
+    }
+    public var password: String {
+        get { domain.password }
+        set { domain.password = newValue }
+    }
     public var credentials: ProxyCredentialsDocument? {
         get { domain.credentials.map(ProxyCredentialsDocument.init(domain:)) }
         set { domain.credentials = newValue?.domain }
@@ -90,8 +126,9 @@ public struct ProxyRouteDraft: Identifiable, Equatable {
         domainProxyCredentialReferences(input: domain).map(ProxyCredentialsDocument.init(domain:))
     }
     public func document() throws -> ProxyRouteDocument {
-        do { return ProxyRouteDocument(domain: try domainProxyRouteDocument(input: domain)) }
-        catch let DomainError.Invalid(reason) { throw ProxyValidationError(reason) }
+        do { return ProxyRouteDocument(domain: try domainProxyRouteDocument(input: domain)) } catch let DomainError.Invalid(reason) {
+            throw ProxyValidationError(reason)
+        }
     }
     public var secrets: [String: String] { domainProxyRouteSecrets(input: domain) }
 }
@@ -99,19 +136,22 @@ public struct ProxyRouteDraft: Identifiable, Equatable {
 public struct ProxyFormDraft: Equatable {
     public enum Mode: String, CaseIterable { case inherit, system, direct, manual }
     private var domain: ProxyFormInput
-    public var mode: Mode { get { Mode(rawValue: domain.mode)! } set { domain.mode = newValue.rawValue } }
+    public var mode: Mode {
+        get { Mode(rawValue: domain.mode)! }
+        set { domain.mode = newValue.rawValue }
+    }
     public var routes: [ProxyRouteDraft] {
         get { domain.routes.map { ProxyRouteDraft(domain: $0) } }
         set { domain.routes = newValue.map(\.domain) }
     }
     public init(configuration: ProxyDocument?) { domain = domainProxyForm(configuration: configuration?.domain) }
     public func document() throws -> ProxyDocument? {
-        do { return try domainProxyFormDocument(input: domain).map(ProxyDocument.init(domain:)) }
-        catch let DomainError.Invalid(reason) { throw ProxyValidationError(reason) }
+        do { return try domainProxyFormDocument(input: domain).map(ProxyDocument.init(domain:)) } catch let DomainError.Invalid(reason) {
+            throw ProxyValidationError(reason)
+        }
     }
     public var secrets: [String: String] { domainProxyFormSecrets(input: domain) }
 }
-
 
 /// A TLS client identity in the PEM form the transport accepts: one or more certificates
 /// (leaf first) and one unencrypted private key. The combined text is stored in Keychain;

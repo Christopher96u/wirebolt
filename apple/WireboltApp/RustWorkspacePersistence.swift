@@ -43,9 +43,9 @@ struct RustWorkspacePersistence: WorkspacePersistence, GitCollaboration {
     }
 
     func save(request: RequestDraft, in collectionID: String) async throws {
-        _ = try await apply(.saveRequest(collectionID: collectionID, location: RequestLocation(collectionID: collectionID, request: request)))
+        _ = try await apply(.saveRequest(location: RequestLocation(collectionID: collectionID, request: request).domain))
     }
-    func save(environment: EnvironmentDraft) async throws { _ = try await apply(.saveEnvironment(environment)) }
+    func save(environment: EnvironmentDraft) async throws { _ = try await apply(.saveEnvironment(environment: environment.domain)) }
 
     func readSecret(name: String) async throws -> String? {
         let bridge = bridge
@@ -68,11 +68,11 @@ struct RustWorkspacePersistence: WorkspacePersistence, GitCollaboration {
         }.value
     }
 
-    func apply(_ command: WorkspaceCommand) async throws -> WorkspaceDelta {
+    func apply(_ command: SessionWorkspaceCommand) async throws -> WorkspaceDelta {
         let bridge = bridge
         return try await Task.detached(priority: .userInitiated) {
-            let delta = try bridge.applySessionCommand(command: command.sessionRecord)
-            return WorkspaceDelta(version: delta.version, kind: WorkspaceNodeKind(rawValue: delta.kind)!, affectedIDs: delta.affectedIds)
+            let delta = try bridge.applySessionCommand(command: command)
+            return WorkspaceDelta(version: delta.version, kind: delta.kind, affectedIDs: delta.affectedIds)
         }.value
     }
     func applySessionCommands(_ commands: [SessionWorkspaceCommand]) async -> SessionCommandBatchResult {
@@ -80,131 +80,29 @@ struct RustWorkspacePersistence: WorkspacePersistence, GitCollaboration {
         return await Task.detached(priority: .userInitiated) { bridge.executeSessionCommands(commands: commands) }.value
     }
 
-        func previewImport(format: ImportFormat, source: String) async throws -> ImportPreview {
-        let bridge = bridge
-        return try await Task.detached(priority: .userInitiated) {
-            let json = try Self.importDocument { try bridge.previewImport(format: format.rawValue, source: source) }
-            return try JSONDecoder().decode(ImportPreview.self, from: Data(json.utf8))
-        }.value
-    }
-
-    func commitImport(format: ImportFormat, source: String) async throws -> ImportResult {
-        let bridge = bridge
-        return try await Task.detached(priority: .userInitiated) {
-            let json = try Self.importDocument { try bridge.commitImport(format: format.rawValue, source: source) }
-            return try JSONDecoder().decode(ImportResult.self, from: Data(json.utf8))
-        }.value
-    }
-
-    func commitImportFile(format: ImportFormat, source: String, name: String) async throws -> ImportResult {
-        let bridge = bridge
-        return try await Task.detached(priority: .userInitiated) {
-            let json = try Self.importDocument {
-                try bridge.commitImportFile(format: format.rawValue, source: source, name: name)
-            }
-            return try JSONDecoder().decode(ImportResult.self, from: Data(json.utf8))
-        }.value
-    }
-
-    /// Keeps the importer's user-facing reason, which never quotes the source.
-    private static func importDocument(_ operation: () throws -> String) throws -> String {
-        do { return try operation() }
-        catch let WorkspaceBridgeError.OperationFailed(reason) {
-            throw ImportFailure(reason: reason)
+    private func execute(_ request: WorkspaceIo) async throws -> WorkspaceReply {
+        let reply = await sessionWorkspacePlatform.execute(request: request)
+        if case .failed(let failure) = reply {
+            throw GitFailure(kind: failure.kind, reason: failure.reason)
         }
+        return reply
     }
-
-    private struct ImportFailure: LocalizedError {
-        let reason: String
-        var errorDescription: String? { reason }
-    }
-
-    func exportWorkspace() async throws -> String {
-        let bridge = bridge
-        return try await Task.detached(priority: .userInitiated) {
-            try Self.exportDocument { try bridge.exportWorkspaceJson() }
-        }.value
-    }
-
-    func exportCollection(id: String) async throws -> String {
-        let bridge = bridge
-        return try await Task.detached(priority: .userInitiated) {
-            try Self.exportDocument { try bridge.exportCollectionJson(id: id) }
-        }.value
-    }
-
-    func exportRequest(collectionID: String, id: String) async throws -> String {
-        let bridge = bridge
-        return try await Task.detached(priority: .userInitiated) {
-            try Self.exportDocument { try bridge.exportRequestJson(collectionId: collectionID, id: id) }
-        }.value
-    }
-
-    private static func exportDocument(_ operation: () throws -> String) throws -> String {
-        do { return try operation() }
-        catch let WorkspaceBridgeError.OperationFailed(reason) {
-            throw ExportError(reason: reason)
-        }
-    }
-
-    private struct ExportError: LocalizedError {
-        let reason: String
-        var errorDescription: String? { reason }
-    }
-
     func status() async throws -> GitStatusSnapshot {
-        let bridge = bridge
-        return try await Task.detached(priority: .userInitiated) {
-            try Self.decodeGitDocument(GitStatusSnapshot.self) {
-                try bridge.gitStatusJson()
-            }
-        }.value
+        guard case .gitStatus(let status) = try await execute(.git(action: .status)) else { throw WorkspaceMutationError.unsupported }
+        return GitStatusSnapshot(status)
     }
-
-    func pull() async throws -> GitOperationSnapshot {
-        let bridge = bridge
-        return try await Task.detached(priority: .userInitiated) {
-            try Self.decodeGitDocument(GitOperationSnapshot.self) {
-                try bridge.gitPullJson()
-            }
-        }.value
-    }
-
-    func commit(message: String) async throws -> GitOperationSnapshot {
-        let bridge = bridge
-        return try await Task.detached(priority: .userInitiated) {
-            try Self.decodeGitDocument(GitOperationSnapshot.self) {
-                try bridge.gitCommitJson(message: message)
-            }
-        }.value
-    }
-
-    func push() async throws -> GitOperationSnapshot {
-        let bridge = bridge
-        return try await Task.detached(priority: .userInitiated) {
-            try Self.decodeGitDocument(GitOperationSnapshot.self) {
-                try bridge.gitPushJson()
-            }
-        }.value
-    }
-
-    func abortMerge() async throws -> GitOperationSnapshot {
-        let bridge = bridge
-        return try await Task.detached(priority: .userInitiated) {
-            try Self.decodeGitDocument(GitOperationSnapshot.self) {
-                try bridge.gitAbortMergeJson()
-            }
-        }.value
-    }
-
     func initializeRepository() async throws -> GitStatusSnapshot {
-        let bridge = bridge
-        return try await Task.detached(priority: .userInitiated) {
-            try Self.decodeGitDocument(GitStatusSnapshot.self) {
-                try bridge.gitInitializeJson()
-            }
-        }.value
+        guard case .gitStatus(let status) = try await execute(.git(action: .initialize)) else { throw WorkspaceMutationError.unsupported }
+        return GitStatusSnapshot(status)
     }
+    private func git(_ action: WorkspaceGitAction) async throws -> GitOperationSnapshot {
+        guard case .gitOperation(let operation) = try await execute(.git(action: action)) else { throw WorkspaceMutationError.unsupported }
+        return GitOperationSnapshot(operation)
+    }
+    func pull() async throws -> GitOperationSnapshot { try await git(.pull) }
+    func commit(message: String) async throws -> GitOperationSnapshot { try await git(.commit(message: message)) }
+    func push() async throws -> GitOperationSnapshot { try await git(.push) }
+    func abortMerge() async throws -> GitOperationSnapshot { try await git(.abort) }
 
     static var defaultWorkspaceURL: URL {
         let arguments = ProcessInfo.processInfo.arguments
@@ -223,27 +121,13 @@ struct RustWorkspacePersistence: WorkspacePersistence, GitCollaboration {
             for: .applicationSupportDirectory,
             in: .userDomainMask
         )[0]
-        return applicationSupport
+        return
+            applicationSupport
             .appending(path: "Wirebolt", directoryHint: .isDirectory)
             .appending(path: "Workspaces", directoryHint: .isDirectory)
             .appending(path: "Default", directoryHint: .isDirectory)
     }
 
-    private static func decodeGitDocument<Value: Decodable>(
-        _ type: Value.Type,
-        operation: () throws -> String
-    ) throws -> Value {
-        do {
-            let json = try operation()
-            return try JSONDecoder().decode(type, from: Data(json.utf8))
-        } catch let GitBridgeError.OperationFailed(kind, reason) {
-            throw GitFailure(kind: kind, reason: reason)
-        } catch let error as GitFailure {
-            throw error
-        } catch {
-            throw GitFailure(kind: "invalid_bridge_response", reason: "Git returned an invalid response.")
-        }
-    }
 }
 
 enum WorkspaceOpenMode: String {

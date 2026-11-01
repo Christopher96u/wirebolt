@@ -48,7 +48,7 @@ struct AuthenticationReferenceTests {
     func apiKeyEncodesOnlyReference() throws {
         var draft = RequestDraft(url: "https://api.example.com/v1/orders")
         draft.authentication = .new(.apiKey)
-        let encoded = String(decoding: try JSONEncoder().encode(RunInput(draft: draft, variables: [:])), as: UTF8.self)
+        let encoded = String(decoding: try encodeDomain(RunInput(draft: draft, variables: [:])), as: UTF8.self)
         let name = try #require(references(draft.authentication).first)
         #expect(encoded.contains(#""kind":"api_key""#))
         #expect(encoded.contains(name))
@@ -79,7 +79,7 @@ actor KeychainRecorder: WorkspacePersistence {
     private(set) var saved: [String: String] = [:]
     private(set) var deleted: [String] = []
     private(set) var environments: [EnvironmentDraft] = []
-    private(set) var commands: [WorkspaceCommand] = []
+    private(set) var commands: [SessionWorkspaceCommand] = []
     var failsSecrets = false
     nonisolated let location: URL?
     private let workspace: WorkspaceDraft
@@ -104,9 +104,9 @@ actor KeychainRecorder: WorkspacePersistence {
     }
     func failSecrets() { failsSecrets = true }
 
-    func apply(_ command: WorkspaceCommand) async throws -> WorkspaceDelta {
+    func apply(_ command: SessionWorkspaceCommand) async throws -> WorkspaceDelta {
         commands.append(command)
-        if case let .saveEnvironment(environment) = command { environments.append(environment) }
+        if case let .saveEnvironment(environment) = command { environments.append(EnvironmentDraft(domain: environment)) }
         return WorkspaceDelta(version: UInt64(commands.count), kind: .workspace, affectedIDs: [])
     }
 }

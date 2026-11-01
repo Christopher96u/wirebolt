@@ -12,12 +12,15 @@ public struct OpenVariableReference: Equatable, Sendable {
 }
 public enum VariableTemplate {
     public static func references(in text: String) -> [VariableReference] {
-        domainTemplateReferences(text: text).map { VariableReference(name: $0.name, range: NSRange(location: Int($0.location), length: Int($0.length))) }
+        domainTemplateReferences(text: text).map {
+            VariableReference(name: $0.name, range: NSRange(location: Int($0.location), length: Int($0.length)))
+        }
     }
     public static func openReference(in text: String, caret: Int) -> OpenVariableReference? {
         guard caret >= 0 else { return nil }
         return domainOpenReference(text: text, caret: UInt64(caret)).map {
-            OpenVariableReference(prefix: $0.prefix, replacementRange: NSRange(location: Int($0.location), length: Int($0.length)), isClosed: $0.isClosed)
+            OpenVariableReference(
+                prefix: $0.prefix, replacementRange: NSRange(location: Int($0.location), length: Int($0.length)), isClosed: $0.isClosed)
         }
     }
 }
@@ -35,7 +38,8 @@ public struct VariableCatalog: Equatable, Sendable {
     private let index: DomainCatalog
     private let byName: [String: Entry]
     public init(environments: [EnvironmentDraft], selectedEnvironmentID: String?) {
-        let index = DomainCatalog(environments: environments.map(\.domain), selected: selectedEnvironmentID, comparison: NativeVariableComparison())
+        let index = DomainCatalog(
+            environments: environments.map(\.domain), selected: selectedEnvironmentID, comparison: NativeVariableComparison())
         self.index = index
         entries = index.entries().map { Entry(domain: $0) }
         byName = Dictionary(entries.map { ($0.name, $0) }, uniquingKeysWith: { _, newest in newest })
@@ -54,13 +58,16 @@ public enum VariableDisplaySegment: Equatable, Sendable {
     case variable(String)
     public static func segments(of text: String) -> [Self] {
         domainTemplateSegments(text: text).map { segment in
-            switch segment { case let .text(value): .text(value); case let .variable(name): .variable(name) }
+            switch segment {
+            case .text(let value): .text(value)
+            case .variable(let name): .variable(name)
+            }
         }
     }
 }
-public extension VariableReference {
+extension VariableReference {
     /// Native ranges used to hide chip delimiters while preserving editable source text.
-    func delimiterRanges(in text: String) -> (open: NSRange, close: NSRange) {
+    public func delimiterRanges(in text: String) -> (open: NSRange, close: NSRange) {
         let ranges = domainDelimiterRanges(text: text, location: UInt64(range.location), length: UInt64(range.length), name: name)
         return (NSRange(location: Int(ranges[0]), length: Int(ranges[1])), NSRange(location: Int(ranges[2]), length: Int(ranges[3])))
     }
@@ -72,7 +79,10 @@ private final class NativeVariableComparison: VariableComparisonServices, Sendab
         names.sorted { $0.localizedStandardCompare($1) == .orderedAscending }
     }
     func nameMatches(names: [String], prefix: String) -> [NameMatch] {
-        names.map { NameMatch(hasPrefix: $0.range(of: prefix, options: [.caseInsensitive, .anchored]) != nil,
-                              contains: $0.localizedCaseInsensitiveContains(prefix)) }
+        names.map {
+            NameMatch(
+                hasPrefix: $0.range(of: prefix, options: [.caseInsensitive, .anchored]) != nil,
+                contains: $0.localizedCaseInsensitiveContains(prefix))
+        }
     }
 }

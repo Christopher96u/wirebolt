@@ -53,7 +53,8 @@ public struct ThemeDefinition: Equatable, Sendable {
     public var methodBackgrounds: [PaletteColor] { domain.methodBackgrounds }
     public var methodForegrounds: [PaletteColor] { domain.methodForegrounds }
     public var control: PaletteColor { domain.control }
-    private static let presets = Dictionary(uniqueKeysWithValues: ThemePreset.allCases.map { ($0, Self(domain: domainTheme(preset: $0.rawValue))) })
+    private static let presets = Dictionary(
+        uniqueKeysWithValues: ThemePreset.allCases.map { ($0, Self(domain: domainTheme(preset: $0.rawValue))) })
     public static func preset(_ preset: ThemePreset) -> Self { presets[preset]! }
 }
 
@@ -101,7 +102,9 @@ public struct ResolvedTheme: Equatable, Sendable {
         definition = .preset(preset)
         geometry = definition.geometry
         typography = ThemeTypography(density: density)
-        self.revision = revision; self.density = density; self.increasedContrast = increasedContrast
+        self.revision = revision
+        self.density = density
+        self.increasedContrast = increasedContrast
     }
     public func method(_ method: HTTPMethod, webSocket: Bool = false) -> (background: PaletteColor, foreground: PaletteColor) {
         let chip = tokens.chips[webSocket ? "WS" : method.rawValue] ?? tokens.chips["CUSTOM"]!
@@ -118,7 +121,9 @@ public final class ThemeStore {
 
     public func update(selection: String, systemIsDark: Bool, increasedContrast: Bool, density: InterfaceDensity) {
         let preset = ThemePreset(rawValue: domainSelectPreset(selection: selection, dark: systemIsDark))!
-        guard resolved.definition.preset != preset || resolved.increasedContrast != increasedContrast || resolved.density != density else { return }
+        guard resolved.definition.preset != preset || resolved.increasedContrast != increasedContrast || resolved.density != density else {
+            return
+        }
         resolved = ResolvedTheme(preset: preset, density: density, increasedContrast: increasedContrast, revision: resolved.revision &+ 1)
     }
 }

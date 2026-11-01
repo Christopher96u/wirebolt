@@ -6,14 +6,10 @@ import Testing
 struct ImportSummaryTests {
     @Test("A committed import decodes its delta and summary from one bridge document")
     func decodesCommitDocument() throws {
-        let json = #"""
-        {"version":7,"kind":"collection","affected_ids":["import-1-0"],
-         "summary":{"collection_name":"Shop API","collection_names":["Shop API"],"request_count":9,"group_count":3,
-                    "environments":[{"id":"import-1-env-0","name":"Shop API"}],
-                    "warnings":["Scripts aren't supported and weren't imported: Shop API (pre-request)."]}}
-        """#
-        let result = try JSONDecoder().decode(ImportResult.self, from: Data(json.utf8))
-
+        let result = ImportResult(delta: WorkspaceDelta(version: 7, kind: .collection, affectedIDs: ["import-1-0"]),
+            summary: ImportSummary(WorkspaceImportSummary(collectionNames: ["Shop API"], requestCount: 9, groupCount: 3,
+                environments: [WorkspaceImportedEnvironment(id: "import-1-env-0", name: "Shop API")],
+                warnings: ["Scripts aren't supported and weren't imported: Shop API (pre-request)."])))
         #expect(result.delta.affectedIDs == ["import-1-0"])
         #expect(result.summary.requestCount == 9)
         #expect(result.summary.environments == [.init(id: "import-1-env-0", name: "Shop API")])

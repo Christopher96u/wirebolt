@@ -35,9 +35,10 @@ versioned deltas; a routine mutation must not reload the entire tree.
   the transport received after variable, authentication, proxy, and TLS
   resolution. Later draft edits cannot change it.
 
-Preparing a run crosses the coarse workspace bridge once. Streaming response
-events use the narrow C ABI and are routed by `RunID`; cancellation is scoped to
-that run rather than to the active tab or the whole application.
+Preparing and executing a run stays inside the Rust application runtime. Typed
+UniFFI commands and snapshots cross the interface; isolated proxy probes and
+WebSockets use typed event callbacks. Cancellation is scoped by `RunID` to the
+run that started it. The C surface only warms the runtime and reports its ABI version.
 
 ## Runtime storage
 
@@ -63,8 +64,8 @@ its workspace. Runtime storage remains outside Git-visible workspace files.
   editing/release, proxy/transport writes, OAuth acquisition and cURL coordination.
 - Swift projects typed Rust records and owns macOS interaction,
   window composition, native response rendering and font measurement, Keychain
-  platform adapters, and observation facades. Remaining model orchestration is
-  tracked in `docs/specs/rust-app-core.md`.
+  platform adapters, and observation facades. The complete native ownership audit is
+  recorded in `docs/specs/rust-app-core.md`.
 - `WireboltModel` publishes small presentation state and relays runtime commands;
   Rust requests the latest native editor projection after credential flushing.
   Views do not parse imports, resolve secrets, or assemble transport requests themselves.

@@ -91,20 +91,13 @@ fn external_file_queue_retains_order_filters_nonfiles_and_drains_once() {
 #[derive(Debug)]
 struct NoSecrets;
 impl crate::session::persistence::WorkspaceSecrets for NoSecrets {
-    fn read(
-        &self,
-        _: &str,
-    ) -> Result<Option<String>, crate::session::persistence::WorkspaceBridgeError> {
+    fn read(&self, _: &str) -> Result<Option<String>, crate::session::persistence::WorkspaceError> {
         Ok(None)
     }
-    fn save(
-        &self,
-        _: &str,
-        _: &str,
-    ) -> Result<(), crate::session::persistence::WorkspaceBridgeError> {
+    fn save(&self, _: &str, _: &str) -> Result<(), crate::session::persistence::WorkspaceError> {
         Ok(())
     }
-    fn remove(&self, _: &str) -> Result<(), crate::session::persistence::WorkspaceBridgeError> {
+    fn remove(&self, _: &str) -> Result<(), crate::session::persistence::WorkspaceError> {
         Ok(())
     }
 }

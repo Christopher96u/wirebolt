@@ -9,12 +9,12 @@ public protocol RequestRunner: Sendable {
     func resolveValues(_ values: [ValueSource], variables: [String: ValueSource]) async throws -> [String]
 }
 
-public extension RequestRunner {
-    var sessionTransport: AppRuntimeTransport { AppRuntimeTransport.foreign(platform: RuntimeRunnerAdapter(runner: self)) }
-    func proxySettingsChanged() {}
-    func resolveValues(_ values: [ValueSource], variables: [String: ValueSource]) async throws -> [String] {
+extension RequestRunner {
+    public var sessionTransport: AppRuntimeTransport { AppRuntimeTransport.foreign(platform: RuntimeRunnerAdapter(runner: self)) }
+    public func proxySettingsChanged() {}
+    public func resolveValues(_ values: [ValueSource], variables: [String: ValueSource]) async throws -> [String] {
         try values.map { value in
-            guard case let .literal(text) = value, !text.contains("{{") else {
+            guard case .literal(let text) = value, !text.contains("{{") else {
                 throw RunFailure(kind: "invalid_request", issues: [RequestIssue(path: "values", kind: "unresolved_value", reference: nil)])
             }
             return text
@@ -31,10 +31,9 @@ public protocol WorkspacePersistence: Sendable {
     func readSecret(name: String) async throws -> String?
     /// Removes a Keychain item. Deleting a missing item succeeds.
     func deleteSecret(name: String) async throws
-    func apply(_ command: WorkspaceCommand) async throws -> WorkspaceDelta
+    func apply(_ command: SessionWorkspaceCommand) async throws -> WorkspaceDelta
     func applySessionCommands(_ commands: [SessionWorkspaceCommand]) async -> SessionCommandBatchResult
-    func previewImport(format: ImportFormat, source: String) async throws -> ImportPreview
-        func commitImport(format: ImportFormat, source: String) async throws -> ImportResult
+    func commitImport(format: ImportFormat, source: String) async throws -> ImportResult
     func commitImportFile(format: ImportFormat, source: String, name: String) async throws -> ImportResult
     func exportCollection(id: String) async throws -> String
     func exportWorkspace() async throws -> String
@@ -46,52 +45,53 @@ public protocol WorkspacePersistence: Sendable {
     var runtimeWorkspaceBridge: WorkspaceBridge? { get }
 }
 
-public extension WorkspacePersistence {
-    var sessionWorkspacePlatform: AppWorkspacePlatform { .foreign(platform: WorkspacePlatformAdapter(persistence: self)) }
-    func loadSession(_ application: AppWorkspaceSession) async throws -> WorkspaceDraft {
-        let workspace = try await load(); application.replace(workspace: workspace.domain); return workspace
+extension WorkspacePersistence {
+    public var sessionWorkspacePlatform: AppWorkspacePlatform { .foreign(platform: WorkspacePlatformAdapter(persistence: self)) }
+    public func loadSession(_ application: AppWorkspaceSession) async throws -> WorkspaceDraft {
+        let workspace = try await load()
+        application.replace(workspace: workspace.domain)
+        return workspace
     }
-    var location: URL? { nil }
-    var runtimeWorkspaceBridge: WorkspaceBridge? { nil }
-    var sessionSecretPlatform: AppSecretPlatform { AppSecretPlatform.foreign(platform: SessionSecretAdapter(persistence: self)) }
-    func readSecret(name _: String) async throws -> String? { nil }
-    func deleteSecret(name _: String) async throws {}
-    func apply(_ command: WorkspaceCommand) async throws -> WorkspaceDelta {
+    public var location: URL? { nil }
+    public var runtimeWorkspaceBridge: WorkspaceBridge? { nil }
+    public var sessionSecretPlatform: AppSecretPlatform { AppSecretPlatform.foreign(platform: SessionSecretAdapter(persistence: self)) }
+    public func readSecret(name _: String) async throws -> String? { nil }
+    public func deleteSecret(name _: String) async throws {}
+    public func apply(_ command: SessionWorkspaceCommand) async throws -> WorkspaceDelta {
         switch command {
-        case let .saveRequest(collectionID, location):
-            try await save(request: location.request, in: collectionID)
-            return WorkspaceDelta(version: 0, kind: .request, affectedIDs: [location.id])
-        case let .saveEnvironment(environment):
-            try await save(environment: environment)
+        case .saveRequest(let location):
+            try await save(request: RequestDraft(domain: location.request), in: location.collectionId)
+            return WorkspaceDelta(version: 0, kind: .request, affectedIDs: [RequestLocation(domain: location).id])
+        case .saveEnvironment(let environment):
+            try await save(environment: EnvironmentDraft(domain: environment))
             return WorkspaceDelta(version: 0, kind: .environment, affectedIDs: [environment.id])
         default:
             throw WorkspaceMutationError.unsupported
         }
     }
 
-    func applySessionCommands(_ commands: [SessionWorkspaceCommand]) async -> SessionCommandBatchResult {
+    public func applySessionCommands(_ commands: [SessionWorkspaceCommand]) async -> SessionCommandBatchResult {
         var completed: UInt64 = 0
         do {
-            for command in commands { _ = try await apply(WorkspaceCommand(command)); completed += 1 }
+            for command in commands {
+                _ = try await apply(command)
+                completed += 1
+            }
             return SessionCommandBatchResult(completed: completed, failureReason: nil)
         } catch { return SessionCommandBatchResult(completed: completed, failureReason: error.localizedDescription) }
     }
 
-    func previewImport(format _: ImportFormat, source _: String) async throws -> ImportPreview {
+    public func commitImport(format _: ImportFormat, source _: String) async throws -> ImportResult {
         throw WorkspaceMutationError.unsupported
     }
 
-        func commitImport(format _: ImportFormat, source _: String) async throws -> ImportResult {
-        throw WorkspaceMutationError.unsupported
-    }
-
-    func commitImportFile(format: ImportFormat, source: String, name _: String) async throws -> ImportResult {
+    public func commitImportFile(format: ImportFormat, source: String, name _: String) async throws -> ImportResult {
         try await commitImport(format: format, source: source)
     }
 
-    func exportCollection(id _: String) async throws -> String { throw WorkspaceMutationError.unsupported }
-    func exportWorkspace() async throws -> String { throw WorkspaceMutationError.unsupported }
-    func exportRequest(collectionID _: String, id _: String) async throws -> String {
+    public func exportCollection(id _: String) async throws -> String { throw WorkspaceMutationError.unsupported }
+    public func exportWorkspace() async throws -> String { throw WorkspaceMutationError.unsupported }
+    public func exportRequest(collectionID _: String, id _: String) async throws -> String {
         throw WorkspaceMutationError.unsupported
     }
 }
@@ -110,13 +110,13 @@ public protocol GitCollaboration: Sendable {
     func initializeRepository() async throws -> GitStatusSnapshot
 }
 
-public extension GitCollaboration {
-    var sessionGitPlatform: AppWorkspacePlatform { .foreign(platform: WorkspacePlatformAdapter(git: self)) }
-    func abortMerge() async throws -> GitOperationSnapshot {
+extension GitCollaboration {
+    public var sessionGitPlatform: AppWorkspacePlatform { .foreign(platform: WorkspacePlatformAdapter(git: self)) }
+    public func abortMerge() async throws -> GitOperationSnapshot {
         throw GitFailure(kind: "unsupported", reason: "This workspace cannot abort a merge.")
     }
 
-    func initializeRepository() async throws -> GitStatusSnapshot {
+    public func initializeRepository() async throws -> GitStatusSnapshot {
         throw GitFailure(kind: "unsupported", reason: "This workspace cannot create a Git repository.")
     }
 }
@@ -127,14 +127,20 @@ public final class WireboltModel {
     public static let previewByteLimit = DocumentSession.previewByteLimit
 
     public var workspace = WorkspaceDraft(name: "Wirebolt") {
-        didSet { sidebarSnapshot = nil; sidebarVisibleCache = nil; sidebarUnfilteredCache = nil; if !mirroringWorkspace { workspaceNeedsSynchronization = true } }
+        didSet {
+            sidebarSnapshot = nil
+            sidebarVisibleCache = nil
+            sidebarUnfilteredCache = nil
+            if !mirroringWorkspace { workspaceNeedsSynchronization = true }
+        }
     }
     @ObservationIgnored private let rustWorkspace: AppWorkspaceSession
     @ObservationIgnored private let rustOperations: AppWorkspaceOperations
     @ObservationIgnored private var mirroringWorkspace = false
     @ObservationIgnored private var workspaceNeedsSynchronization = true
     @ObservationIgnored private var sidebarSnapshot: SidebarSnapshot?
-    @ObservationIgnored private var sidebarVisibleCache: (query: String, collapsed: Set<String>, expanded: Set<String>, rows: [SidebarSnapshot.Row])?
+    @ObservationIgnored private var sidebarVisibleCache:
+        (query: String, collapsed: Set<String>, expanded: Set<String>, rows: [SidebarSnapshot.Row])?
     /// The unfiltered outline, kept apart from the last filter's rows so clearing a filter
     /// (or deleting its last character) shows the outline without recomputing it.
     @ObservationIgnored private var sidebarUnfilteredCache: (collapsed: Set<String>, expanded: Set<String>, rows: [SidebarSnapshot.Row])?
@@ -142,11 +148,17 @@ public final class WireboltModel {
     public func sidebarRows(query: String, collapsed: Set<String>, expanded: Set<String>) -> [SidebarSnapshot.Row] {
         let collections = workspace.collections
         let filtering = !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-        if filtering, let cache = sidebarVisibleCache, cache.query == query, cache.collapsed == collapsed, cache.expanded == expanded { return cache.rows }
+        if filtering, let cache = sidebarVisibleCache, cache.query == query, cache.collapsed == collapsed, cache.expanded == expanded {
+            return cache.rows
+        }
         if !filtering, let cache = sidebarUnfilteredCache, cache.collapsed == collapsed, cache.expanded == expanded { return cache.rows }
         if sidebarSnapshot == nil { sidebarSnapshot = SidebarSnapshot(collections: collections) }
         let rows = sidebarSnapshot!.visible(query: query, collapsedCollections: collapsed, expandedGroups: expanded)
-        if filtering { sidebarVisibleCache = (query, collapsed, expanded, rows) } else { sidebarUnfilteredCache = (collapsed, expanded, rows) }
+        if filtering {
+            sidebarVisibleCache = (query, collapsed, expanded, rows)
+        } else {
+            sidebarUnfilteredCache = (collapsed, expanded, rows)
+        }
         return rows
     }
     public var selectedEnvironmentID: String? { didSet { runtime.selectEnvironment(id: selectedEnvironmentID) } }
@@ -160,7 +172,7 @@ public final class WireboltModel {
     public private(set) var gitFailure: GitFailure?
     public private(set) var isGitBusy = false
     public private(set) var isImporting = false
-        public var importFailureMessage: String?
+    public var importFailureMessage: String?
     /// The last successful import, until the user dismisses its summary.
     public var importSummary: ImportSummary?
     public private(set) var historyEntries: [RunHistoryEntry] = []
@@ -253,7 +265,7 @@ public final class WireboltModel {
 
     public var selectedRequestID: String? {
         guard let session = sessions.activeSession,
-              let collectionID = session.collectionID
+            let collectionID = session.collectionID
         else { return nil }
         return "\(collectionID)/\(session.requestID)"
     }
@@ -293,7 +305,8 @@ public final class WireboltModel {
 
     /// Dirty documents in tab order, for quit and window-close confirmation.
     public var dirtySessions: [DocumentSession] {
-        workspaceDirtyIds(groups: sessions.groups.map(\.workspaceRecord), documents: sessions.sessions.values.map(\.tabProjection)).compactMap { sessions.session(id: $0) }
+        workspaceDirtyIds(groups: sessions.groups.map(\.workspaceRecord), documents: sessions.sessions.values.map(\.tabProjection))
+            .compactMap { sessions.session(id: $0) }
     }
 
     /// Saves every dirty document. Stops at the first failure so the caller can keep
@@ -307,16 +320,22 @@ public final class WireboltModel {
     public func saveDocuments(_ ids: [String], flushTransport: Bool = false, retainingDocuments: Bool = false) async -> Bool {
         guard let persistence else { return ids.isEmpty }
         let targets = Dictionary(uniqueKeysWithValues: ids.compactMap { id in sessions.session(id: id).map { (id, $0) } })
-        let documents = AppWorkspaceDocuments.foreign(platform: WorkspaceDocumentAdapter(read: { id in
-            let session = retainingDocuments ? targets[id] : self.sessions.session(id: id)
-            guard let session else { return nil }
-            self.synchronizeWorkspace(); session.synchronizeDraft()
-            return session.rust.document()
-        }, saved: { result in
-            self.applySave(result, session: retainingDocuments ? targets[result.documentId] : nil)
-            self.mirrorSecretEdits(); self.mirrorWorkspacePresentation()
-        }))
-        let succeeded = await rustOperations.saveAllLive(ids: ids, platform: persistence.sessionWorkspacePlatform,
+        let documents = AppWorkspaceDocuments.foreign(
+            platform: WorkspaceDocumentAdapter(
+                read: { id in
+                    let session = retainingDocuments ? targets[id] : self.sessions.session(id: id)
+                    guard let session else { return nil }
+                    self.synchronizeWorkspace()
+                    session.synchronizeDraft()
+                    return session.rust.document()
+                },
+                saved: { result in
+                    self.applySave(result, session: retainingDocuments ? targets[result.documentId] : nil)
+                    self.mirrorSecretEdits()
+                    self.mirrorWorkspacePresentation()
+                }))
+        let succeeded = await rustOperations.saveAllLive(
+            ids: ids, platform: persistence.sessionWorkspacePlatform,
             documents: documents, secrets: rustSecrets, secretPlatform: persistence.sessionSecretPlatform)
         if succeeded, flushTransport { await flushWorkspaceTransport() }
         return succeeded
@@ -324,8 +343,10 @@ public final class WireboltModel {
 
     private func applySave(_ result: WorkspaceSave, session target: DocumentSession? = nil) {
         guard let session = target ?? sessions.session(id: result.documentId) else { return }
-        let authentication = RequestAuthentication(domain: workspaceSavedAuthentication(current: session.draft.authentication.domain,
-            original: result.originalAuthentication, saved: result.draft.authentication))
+        let authentication = RequestAuthentication(
+            domain: workspaceSavedAuthentication(
+                current: session.draft.authentication.domain,
+                original: result.originalAuthentication, saved: result.draft.authentication))
         if authentication != session.draft.authentication { session.draft.authentication = authentication }
         if let location = result.location {
             session.recordSavedDraft(RequestDraft(domain: location.request))
@@ -335,11 +356,19 @@ public final class WireboltModel {
 
     /// Reverts every dirty document to its saved state; never-saved documents close.
     public func discardUnsavedChanges() {
-        let documents = dirtySessions.map { session in session.synchronizeDraft(); return session.rust.document() }
+        let documents = dirtySessions.map { session in
+            session.synchronizeDraft()
+            return session.rust.document()
+        }
         for effect in workspaceDiscard(documents: documents) {
             guard let session = sessions.session(id: effect.id) else { continue }
-            if let saved = effect.saved { session.markSaved(RequestDraft(domain: saved)) }
-            else { for group in sessions.groups where group.tabIDs.contains(session.id) { closeDocuments(.one(session.id), in: group.id, allowDirty: true) } }
+            if let saved = effect.saved {
+                session.markSaved(RequestDraft(domain: saved))
+            } else {
+                for group in sessions.groups where group.tabIDs.contains(session.id) {
+                    closeDocuments(.one(session.id), in: group.id, allowDirty: true)
+                }
+            }
         }
     }
 
@@ -347,25 +376,36 @@ public final class WireboltModel {
 
     public func requestMatches(_ location: RequestLocation, normalizedQuery: String) -> Bool {
         let request = location.request
-        return rustOperations.requestMatches(request: DomainSidebarRequest(id: request.id, collectionId: location.collectionID,
-            groupId: location.groupID, order: Int64(location.order), name: request.name, method: request.method.rawValue, url: request.url), normalized: normalizedQuery)
+        return rustOperations.requestMatches(
+            request: DomainSidebarRequest(
+                id: request.id, collectionId: location.collectionID,
+                groupId: location.groupID, order: Int64(location.order), name: request.name, method: request.method.rawValue,
+                url: request.url), normalized: normalizedQuery)
     }
 
     public func connectWebSocket(_ session: DocumentSession) async {
         guard let socketConnector else { return }
         do {
-            let input = try await rustSecrets.socketInput(draft: session.draft.domain, context: runtimeContext,
+            let input = try await rustSecrets.socketInput(
+                draft: session.draft.domain, context: runtimeContext,
                 platform: persistence?.sessionSecretPlatform, observer: runtimeObserver(for: session))
             mirrorSecretEdits()
             session.socket.connect(input: RunInput(domain: input), connector: socketConnector)
-        } catch { mirrorSecretEdits(); operationFailure = RunFailure(kind: "keychain", issues: []) }
+        } catch {
+            mirrorSecretEdits()
+            operationFailure = RunFailure(kind: "keychain", issues: [])
+        }
     }
 
     public func send(_ target: DocumentSession? = nil) async {
         let session = target ?? sessions.activeSession ?? sessions.openTemporary()
         switch sessionSendAction(kind: session.kind.rust, socket: session.socket.status.rust, running: session.isRunning) {
-        case .socketSend: await session.socket.send(body: session.draft.body); return
-        case .socketConnect: await connectWebSocket(session); return
+        case .socketSend:
+            await session.socket.send(body: session.draft.body)
+            return
+        case .socketConnect:
+            await connectWebSocket(session)
+            return
         case .ignore: return
         case .http: break
         }
@@ -373,11 +413,16 @@ public final class WireboltModel {
         session.synchronizeDraft()
         let runtime = runtime
         let failure = await withTaskCancellationHandler {
-            await runtime.send(document: session.rust, options: RuntimeRunOptions(context: runtimeContext, id: RunID().description,
-                directory: FileManager.default.temporaryDirectory.path), transport: runner.sessionTransport,
+            await runtime.send(
+                document: session.rust,
+                options: RuntimeRunOptions(
+                    context: runtimeContext, id: RunID().description,
+                    directory: FileManager.default.temporaryDirectory.path), transport: runner.sessionTransport,
                 observer: runtimeObserver(for: session, requireOpen: true),
                 secrets: rustSecrets, platform: persistence?.sessionSecretPlatform)
-        } onCancel: { runtime.cancel(document: session.rust) }
+        } onCancel: {
+            runtime.cancel(document: session.rust)
+        }
         if let failure { operationFailure = RunFailure(failure) }
         mirrorSecretEdits()
         session.mirror()
@@ -400,8 +445,11 @@ public final class WireboltModel {
     public func acquireOAuthToken(for session: DocumentSession) async {
         guard case .oauth2 = session.draft.authentication, let persistence else { return }
         session.synchronizeDraft()
-        await runtime.acquireToken(document: session.rust, secrets: rustSecrets, platform: persistence.sessionSecretPlatform,
-            authorizer: RuntimeOAuthAdapter(authorizer: oauth2) { [weak session] in session?.draft.authentication = .oauth2(configuration: $0) },
+        await runtime.acquireToken(
+            document: session.rust, secrets: rustSecrets, platform: persistence.sessionSecretPlatform,
+            authorizer: RuntimeOAuthAdapter(authorizer: oauth2) { [weak session] in
+                session?.draft.authentication = .oauth2(configuration: $0)
+            },
             observer: runtimeObserver(for: session, oauth: true))
         mirrorOAuthRuntime()
         mirrorSecretEdits()
@@ -440,12 +488,15 @@ public final class WireboltModel {
 
     public func exportCollection(id: String) async -> String? { await export(.collection(id: id)) }
 
-    public func exportRequest(collectionID: String, id: String) async -> String? { await export(.request(collectionId: collectionID, id: id)) }
+    public func exportRequest(collectionID: String, id: String) async -> String? {
+        await export(.request(collectionId: collectionID, id: id))
+    }
 
     private func export(_ target: WorkspaceExport) async -> String? {
         guard let persistence else { return nil }
         let result = await rustOperations.export(target: target, platform: persistence.sessionWorkspacePlatform)
-        mirrorWorkspacePresentation(); return result
+        mirrorWorkspacePresentation()
+        return result
     }
 
     public func loadWorkspace(restoring layout: SessionLayout? = nil) async {
@@ -463,21 +514,27 @@ public final class WireboltModel {
         gitCollaboration: (any GitCollaboration)? = nil,
         restoring layout: SessionLayout? = nil
     ) async -> Bool {
-        _ = rustOperations.beginLoad(configured: true); mirrorWorkspacePresentation()
+        _ = rustOperations.beginLoad(configured: true)
+        mirrorWorkspacePresentation()
         await flushWorkspaceTransport()
         guard let loaded = await rustOperations.load(platform: persistence.sessionWorkspacePlatform, switching: true) else {
-            mirrorWorkspacePresentation(); return false
+            mirrorWorkspacePresentation()
+            return false
         }
         for session in sessions.sessions.values { cancel(session) }
         sessions.removeAll()
         await purgeReleasedSecrets()
         rustSecrets.clearObserved()
         configurePersistence(persistence, gitCollaboration: gitCollaboration)
-        transportSave = nil; runtime.resetWorkspace()
-        oauthReceipts = [:]; historyEntries = []; requestActivity = [:]
+        transportSave = nil
+        runtime.resetWorkspace()
+        oauthReceipts = [:]
+        historyEntries = []
+        requestActivity = [:]
         applyLoadedWorkspace(loaded, restoring: layout)
         undoManager?.removeAllActions(withTarget: self)
-        mirrorWorkspacePresentation(); return true
+        mirrorWorkspacePresentation()
+        return true
     }
 
     public func refreshGitStatus() async { await performGitOperation(.status) }
@@ -502,7 +559,11 @@ public final class WireboltModel {
         synchronizeWorkspace()
         let name = await rustOperations.rename(proposed: proposedName, platform: persistence.sessionWorkspacePlatform)
         mirrorWorkspacePresentation()
-        if let name { mirroringWorkspace = true; workspace.name = name; mirroringWorkspace = false }
+        if let name {
+            mirroringWorkspace = true
+            workspace.name = name
+            mirroringWorkspace = false
+        }
         return name != nil
     }
 
@@ -510,8 +571,14 @@ public final class WireboltModel {
 
     /// The active workspace's cookies, most specific domain first.
     public func cookies() async -> [CookieSnapshot] { runtime.cookies().map(CookieSnapshot.init) }
-    public func deleteCookie(id: CookieSnapshot.ID) async { runtime.deleteCookie(id: id); mirrorRuntime() }
-    public func clearCookies() async { runtime.clearCookies(); mirrorRuntime() }
+    public func deleteCookie(id: CookieSnapshot.ID) async {
+        runtime.deleteCookie(id: id)
+        mirrorRuntime()
+    }
+    public func clearCookies() async {
+        runtime.clearCookies()
+        mirrorRuntime()
+    }
 
     /// Opens a saved request. `preview` reuses the group's preview tab instead of adding a tab.
     public func select(_ location: RequestLocation, preview: Bool = false) {
@@ -534,10 +601,13 @@ public final class WireboltModel {
     @discardableResult
     public func save(_ session: DocumentSession, fallbackCollectionID: String?) async -> Bool {
         guard let persistence else { return false }
-        synchronizeWorkspace(); session.synchronizeDraft()
-        let result = await rustOperations.save(document: session.rust.document(), fallback: fallbackCollectionID,
+        synchronizeWorkspace()
+        session.synchronizeDraft()
+        let result = await rustOperations.save(
+            document: session.rust.document(), fallback: fallbackCollectionID,
             platform: persistence.sessionWorkspacePlatform, secrets: rustSecrets, secretPlatform: persistence.sessionSecretPlatform)
-        mirrorSecretEdits(); mirrorWorkspacePresentation()
+        mirrorSecretEdits()
+        mirrorWorkspacePresentation()
         applySave(result, session: session)
         return result.succeeded
     }
@@ -557,10 +627,13 @@ public final class WireboltModel {
     }
 
     /// Validate and persist before publishing. Failed saves leave the active policy intact.
-    public func applyProxy(_ configuration: ProxyDocument?, scope: ProxyScope,
-                           session: DocumentSession? = nil, secrets: [String: String] = [:]) async throws {
+    public func applyProxy(
+        _ configuration: ProxyDocument?, scope: ProxyScope,
+        session: DocumentSession? = nil, secrets: [String: String] = [:]
+    ) async throws {
         do {
-            try await runtime.applyProxy(configuration: configuration?.domain, scope: scope.rust,
+            try await runtime.applyProxy(
+                configuration: configuration?.domain, scope: scope.rust,
                 hasSession: session != nil, secrets: secrets, secretPlatform: persistence?.sessionSecretPlatform,
                 platform: runtimeSettings())
             switch scope {
@@ -576,10 +649,13 @@ public final class WireboltModel {
         guard persistence != nil else { return }
         let generation = runtime.updateTransport(previous: workspace.transport.domain, value: value.domain)
         workspace.transport = value
-        let platform = runtimeSettings(), runtime = runtime
+        let platform = runtimeSettings()
+        let runtime = runtime
         transportSave = Task {
             if let result = await runtime.savePendingTransport(generation: generation, platform: platform) {
-                if workspace.transport != TransportSettings(domain: result.value) { workspace.transport = TransportSettings(domain: result.value) }
+                if workspace.transport != TransportSettings(domain: result.value) {
+                    workspace.transport = TransportSettings(domain: result.value)
+                }
                 if result.failed { operationFailure = RunFailure(kind: "workspace", issues: []) }
             }
         }
@@ -587,8 +663,9 @@ public final class WireboltModel {
     public func flushWorkspaceTransport() async { await transportSave?.value }
     public func saveWorkspaceTransport() async {
         guard persistence != nil else { return }
-        do { try await runtime.saveTransport(value: workspace.transport.domain, platform: runtimeSettings()) }
-        catch { operationFailure = RunFailure(kind: "workspace", issues: []) }
+        do { try await runtime.saveTransport(value: workspace.transport.domain, platform: runtimeSettings()) } catch {
+            operationFailure = RunFailure(kind: "workspace", issues: [])
+        }
     }
 
     @discardableResult
@@ -605,7 +682,10 @@ public final class WireboltModel {
         } catch let RuntimeRequestError.Failure(failure) {
             operationFailure = RunFailure(failure)
             return nil
-        } catch { operationFailure = (error as? RunFailure) ?? RunFailure(kind: "export", issues: []); return nil }
+        } catch {
+            operationFailure = (error as? RunFailure) ?? RunFailure(kind: "export", issues: [])
+            return nil
+        }
     }
     public func secretMaterial(for source: ValueSource) -> String {
         _ = editedSecrets
@@ -616,12 +696,17 @@ public final class WireboltModel {
         mirrorSecretEdits()
     }
     public func loadSecret(_ source: ValueSource) async {
-        guard case let .secret(name) = source, let persistence else { return }
-        do { _ = try await rustSecrets.load(name: name, platform: persistence.sessionSecretPlatform); mirrorSecretEdits() }
-        catch { operationFailure = RunFailure(kind: "keychain", issues: []) }
+        guard case .secret(let name) = source, let persistence else { return }
+        do {
+            _ = try await rustSecrets.load(name: name, platform: persistence.sessionSecretPlatform)
+            mirrorSecretEdits()
+        } catch { operationFailure = RunFailure(kind: "keychain", issues: []) }
     }
     private func flushSecrets() async throws {
-        guard let persistence else { if !rustSecrets.dirty().isEmpty { throw WorkspaceMutationError.unsupported }; return }
+        guard let persistence else {
+            if !rustSecrets.dirty().isEmpty { throw WorkspaceMutationError.unsupported }
+            return
+        }
         defer { mirrorSecretEdits() }
         try await rustSecrets.flush(platform: persistence.sessionSecretPlatform)
     }
@@ -638,8 +723,12 @@ public final class WireboltModel {
     /// discarded; items of deletions that can still be undone must stay.
     public func purgeReleasedSecrets() async {
         guard let persistence, rustSecrets.hasObserved() else { return }
-        let documents = sessions.sessions.values.map { session in session.synchronizeDraft(); return session.rust.document() }
-        await rustSecrets.purgeWorkspace(workspace: workspace.domain, documents: documents,
+        let documents = sessions.sessions.values.map { session in
+            session.synchronizeDraft()
+            return session.rust.document()
+        }
+        await rustSecrets.purgeWorkspace(
+            workspace: workspace.domain, documents: documents,
             current: workspaceLocation?.standardizedFileURL.path,
             others: knownWorkspaceLocations().map(\.standardizedFileURL.path), platform: persistence.sessionSecretPlatform)
         mirrorSecretEdits()
@@ -653,8 +742,10 @@ public final class WireboltModel {
     /// Copies Keychain values from old to new names. Missing values stay missing.
     private func copySecrets(_ renames: [String: String]) async throws {
         guard let persistence else { throw WorkspaceMutationError.unsupported }
-        do { _ = try await rustSecrets.copy(renames: renames, platform: persistence.sessionSecretPlatform) }
-        catch { mirrorSecretEdits(); throw error }
+        do { _ = try await rustSecrets.copy(renames: renames, platform: persistence.sessionSecretPlatform) } catch {
+            mirrorSecretEdits()
+            throw error
+        }
         mirrorSecretEdits()
     }
 
@@ -666,8 +757,13 @@ public final class WireboltModel {
         guard let persistence else { return false }
         do {
             try await rustSecrets.save(values: values, platform: persistence.sessionSecretPlatform)
-            mirrorSecretEdits(); return true
-        } catch { mirrorSecretEdits(); operationFailure = RunFailure(kind: "keychain", issues: []); return false }
+            mirrorSecretEdits()
+            return true
+        } catch {
+            mirrorSecretEdits()
+            operationFailure = RunFailure(kind: "keychain", issues: [])
+            return false
+        }
     }
 
     public func saveSecret(name: String, value: String) async {
@@ -686,23 +782,28 @@ public final class WireboltModel {
         }.value
         switch input {
         case .bruno: await importBrunoCollection(at: url)
-        case let .document(source, format):
+        case .document(let source, let format):
             guard let format = ImportFormat(rawValue: format) else { return }
             await importDocument(source: source, format: format, url: url)
-        case let .failure(message): importFailureMessage = message
+        case .failure(let message): importFailureMessage = message
         }
     }
 
     public func importDocument(url: URL, format: ImportFormat) async {
         guard beginImport() else { return }
         let source = await Task.detached(priority: .userInitiated) { workspaceReadDocument(path: url.path) }.value
-        guard let source else { finishImportFailure(ImportFormat.unreadableMessage(fileName: url.lastPathComponent)); return }
-        _ = await commitDocument(source: source, format: format, fileName: url.deletingPathExtension().lastPathComponent, displayName: url.lastPathComponent)
+        guard let source else {
+            finishImportFailure(ImportFormat.unreadableMessage(fileName: url.lastPathComponent))
+            return
+        }
+        _ = await commitDocument(
+            source: source, format: format, fileName: url.deletingPathExtension().lastPathComponent, displayName: url.lastPathComponent)
     }
 
     public func importDocument(source: String, format: ImportFormat, url: URL) async {
         guard beginImport() else { return }
-        _ = await commitDocument(source: source, format: format, fileName: url.deletingPathExtension().lastPathComponent, displayName: url.lastPathComponent)
+        _ = await commitDocument(
+            source: source, format: format, fileName: url.deletingPathExtension().lastPathComponent, displayName: url.lastPathComponent)
     }
 
     public func importDocument(source: String, format: ImportFormat) async {
@@ -714,9 +815,11 @@ public final class WireboltModel {
         guard beginImport() else { return }
         do {
             let source = try await Task.detached(priority: .userInitiated) { try BrunoCollectionSource.bundle(at: url) }.value
-            _ = await commitDocument(source: source, format: .brunoFolder, fileName: url.deletingPathExtension().lastPathComponent, displayName: url.lastPathComponent)
-        } catch BrunoCollectionSource.ReadError.tooLarge { finishImportFailure("“\(url.lastPathComponent)” is too large to import.") }
-        catch { finishImportFailure("“\(url.lastPathComponent)” isn’t a Bruno collection or couldn’t be read.") }
+            _ = await commitDocument(
+                source: source, format: .brunoFolder, fileName: url.deletingPathExtension().lastPathComponent,
+                displayName: url.lastPathComponent)
+        } catch BrunoCollectionSource.ReadError.tooLarge { finishImportFailure("“\(url.lastPathComponent)” is too large to import.") } catch
+        { finishImportFailure("“\(url.lastPathComponent)” isn’t a Bruno collection or couldn’t be read.") }
     }
 
     public func importPastedDocument(source: String, format: ImportFormat) async -> String? {
@@ -727,18 +830,24 @@ public final class WireboltModel {
     private func beginImport(pasted: Bool = false) -> Bool {
         let begin = rustOperations.beginImport(configured: persistence != nil, pasted: pasted)
         if begin, !pasted { importFailureMessage = nil }
-        mirrorWorkspacePresentation(); return begin
+        mirrorWorkspacePresentation()
+        return begin
     }
     private func finishImportFailure(_ message: String, pasted: Bool = false) {
         _ = rustOperations.finishImportFailure(message: message, pasted: pasted)
         if !pasted { importFailureMessage = message }
         mirrorWorkspacePresentation()
     }
-    private func commitDocument(source: String, format: ImportFormat, fileName: String? = nil, displayName: String? = nil, pasted: Bool = false) async -> String? {
+    private func commitDocument(
+        source: String, format: ImportFormat, fileName: String? = nil, displayName: String? = nil, pasted: Bool = false
+    ) async -> String? {
         guard let persistence else { return nil }
-        await flushWorkspaceTransport(); synchronizeWorkspace()
-        let loaded = await rustOperations.import(request: WorkspaceImport(source: source, format: format.rawValue, name: fileName,
-            displayName: displayName, selected: selectedEnvironmentID, pasted: pasted), platform: persistence.sessionWorkspacePlatform)
+        await flushWorkspaceTransport()
+        synchronizeWorkspace()
+        let loaded = await rustOperations.import(
+            request: WorkspaceImport(
+                source: source, format: format.rawValue, name: fileName,
+                displayName: displayName, selected: selectedEnvironmentID, pasted: pasted), platform: persistence.sessionWorkspacePlatform)
         let value = rustOperations.presentation()
         if let loaded {
             applyLoadedWorkspace(loaded)
@@ -765,7 +874,8 @@ public final class WireboltModel {
     public func createRequest(kind: DocumentKind = .http, collectionID: String? = nil, groupID: String? = nil) async -> DocumentSession? {
         let result = await perform(.createRequest(webSocket: kind == .webSocket, collectionId: collectionID, groupId: groupID))
         guard result.succeeded, let id = result.createdId,
-              let location = result.plan?.collections.flatMap(\.requests).first(where: { $0.request.id == id }) else { return nil }
+            let location = result.plan?.collections.flatMap(\.requests).first(where: { $0.request.id == id })
+        else { return nil }
         return sessions.open(draft: RequestDraft(domain: location.request), collectionID: location.collectionId, kind: kind)
     }
 
@@ -773,7 +883,9 @@ public final class WireboltModel {
         await createGroup(collectionID: WorkspaceDraft.rootCollectionID, name: "Untitled Folder")
     }
     public func createCollection(name: String = "New Collection") async { await perform(.createCollection(name: name)) }
-    public func renameRequest(collectionID: String, requestID: String, name: String) async { await perform(.renameRequest(collectionId: collectionID, id: requestID, name: name)) }
+    public func renameRequest(collectionID: String, requestID: String, name: String) async {
+        await perform(.renameRequest(collectionId: collectionID, id: requestID, name: name))
+    }
     public func renameCollection(id: String, name: String) async { await perform(.renameCollection(id: id, name: name)) }
     public func deleteCollection(id: String) async { await perform(.deleteCollection(id: id)) }
     @discardableResult
@@ -781,23 +893,32 @@ public final class WireboltModel {
         let result = await perform(.createGroup(collectionId: collectionID, parentId: parentID, name: name))
         return result.succeeded ? result.createdId : nil
     }
-    public func renameGroup(collectionID: String, id: String, name: String) async { await perform(.renameGroup(collectionId: collectionID, id: id, name: name)) }
+    public func renameGroup(collectionID: String, id: String, name: String) async {
+        await perform(.renameGroup(collectionId: collectionID, id: id, name: name))
+    }
     public func deleteGroup(collectionID: String, id: String) async { await perform(.deleteGroup(collectionId: collectionID, id: id)) }
-    public func deleteRequest(collectionID: String, requestID: String) async { await perform(.deleteRequest(collectionId: collectionID, id: requestID)) }
-    public func duplicateRequest(collectionID: String, requestID: String) async { await perform(.duplicateRequest(collectionId: collectionID, id: requestID)) }
+    public func deleteRequest(collectionID: String, requestID: String) async {
+        await perform(.deleteRequest(collectionId: collectionID, id: requestID))
+    }
+    public func duplicateRequest(collectionID: String, requestID: String) async {
+        await perform(.duplicateRequest(collectionId: collectionID, id: requestID))
+    }
 
     public func canReorderSidebar(_ identifier: String, relativeTo target: String, collectionID: String, parentID: String?) -> Bool {
         synchronizeWorkspace()
         return rustOperations.canReorder(identifier: identifier, target: target, collectionId: collectionID, parent: parentID)
     }
-    public func reorderSidebar(_ identifier: String, relativeTo target: String, after: Bool, collectionID: String, parentID: String?) async {
+    public func reorderSidebar(_ identifier: String, relativeTo target: String, after: Bool, collectionID: String, parentID: String?) async
+    {
         await perform(.reorder(identifier: identifier, target: target, after: after, collectionId: collectionID, parentId: parentID))
     }
     public func canMoveSidebarItem(_ identifier: String, by delta: Int) -> Bool {
         if sidebarSnapshot == nil { sidebarSnapshot = SidebarSnapshot(collections: workspace.collections) }
         return sidebarSnapshot?.canMove(identifier, by: delta) ?? false
     }
-    public func moveSidebarItem(_ identifier: String, by delta: Int) async { await perform(.moveBy(identifier: identifier, delta: Int64(delta))) }
+    public func moveSidebarItem(_ identifier: String, by delta: Int) async {
+        await perform(.moveBy(identifier: identifier, delta: Int64(delta)))
+    }
     public func canMoveSidebarItem(_ identifier: String, toCollectionID collectionID: String, parentID: String?) -> Bool {
         synchronizeWorkspace()
         return rustOperations.canMoveTo(identifier: identifier, collectionId: collectionID, parent: parentID)
@@ -806,19 +927,25 @@ public final class WireboltModel {
         await perform(.moveTo(identifier: identifier, collectionId: collectionID, parentId: parentID))
     }
     public func nextChildOrder(collectionID: String, parentID: String?) -> Int {
-        synchronizeWorkspace(); return Int(rustOperations.nextOrder(collectionId: collectionID, parent: parentID))
+        synchronizeWorkspace()
+        return Int(rustOperations.nextOrder(collectionId: collectionID, parent: parentID))
     }
     public func moveRequest(fromCollectionID: String, requestID: String, toCollectionID: String, groupID: String?, order: Int) async {
-        await perform(.moveRequest(fromCollectionId: fromCollectionID, id: requestID, toCollectionId: toCollectionID, groupId: groupID, order: Int64(order)))
+        await perform(
+            .moveRequest(
+                fromCollectionId: fromCollectionID, id: requestID, toCollectionId: toCollectionID, groupId: groupID, order: Int64(order)))
     }
     public func moveGroup(collectionID: String, id: String, parentID: String?, order: Int) async {
         await perform(.moveGroup(collectionId: collectionID, id: id, parentId: parentID, order: Int64(order)))
     }
 
     private func applyLoadedWorkspace(_ loaded: WorkspaceLoad, restoring layout: SessionLayout? = nil) {
-        mirroringWorkspace = true; workspace = WorkspaceDraft(domain: loaded.workspace); mirroringWorkspace = false
+        mirroringWorkspace = true
+        workspace = WorkspaceDraft(domain: loaded.workspace)
+        mirroringWorkspace = false
         workspaceNeedsSynchronization = false
-        observeSecrets(workspace.secretReferences); runtime.resetTransport()
+        observeSecrets(workspace.secretReferences)
+        runtime.resetTransport()
         selectedEnvironmentID = loaded.selectedEnvironmentId
         let restored = sessions.restoreWorkspace(rustOperations, layout: layout)
         restoreLatestResponses(for: restored)
@@ -842,7 +969,10 @@ public final class WireboltModel {
     }
 
     public func deleteConsequences(_ target: SessionDeleteTarget) -> String {
-        if workspaceNeedsSynchronization { rustWorkspace.replace(workspace: workspace.domain); workspaceNeedsSynchronization = false }
+        if workspaceNeedsSynchronization {
+            rustWorkspace.replace(workspace: workspace.domain)
+            workspaceNeedsSynchronization = false
+        }
         return rustWorkspace.deleteConsequences(target: target, documents: sessions.sessions.values.map(\.tabProjection))
     }
 
@@ -850,7 +980,7 @@ public final class WireboltModel {
         for group in sessions.groups {
             let ids = group.tabIDs.filter { id in
                 guard let session = sessions.session(id: id),
-                      session.collectionID == collectionID
+                    session.collectionID == collectionID
                 else { return false }
                 return requestID == nil || session.requestID == requestID
             }
@@ -865,7 +995,8 @@ public final class WireboltModel {
         mirrorWorkspacePresentation()
         guard begin, let gitCollaboration else { return }
         if case .pull = action { await flushWorkspaceTransport() }
-        let loaded = await rustOperations.git(action: action, platform: gitCollaboration.sessionGitPlatform,
+        let loaded = await rustOperations.git(
+            action: action, platform: gitCollaboration.sessionGitPlatform,
             persistence: persistence?.sessionWorkspacePlatform)
         if let loaded {
             applyLoadedWorkspace(loaded)
@@ -876,7 +1007,10 @@ public final class WireboltModel {
     }
 
     private func synchronizeWorkspace() {
-        if workspaceNeedsSynchronization { rustWorkspace.replace(workspace: workspace.domain); workspaceNeedsSynchronization = false }
+        if workspaceNeedsSynchronization {
+            rustWorkspace.replace(workspace: workspace.domain)
+            workspaceNeedsSynchronization = false
+        }
     }
 
     private func mirrorWorkspacePresentation() {
@@ -903,9 +1037,12 @@ extension WireboltModel {
         await undoWork?.value
         guard let persistence else { return WorkspaceMutation(succeeded: false, plan: nil, undo: nil, createdId: nil, root: nil) }
         synchronizeWorkspace()
-        let result = await rustOperations.mutate(command: command, selected: selectedEnvironmentID,
+        let result = await rustOperations.mutate(
+            command: command, selected: selectedEnvironmentID,
             platform: persistence.sessionWorkspacePlatform, secrets: rustSecrets, secretPlatform: persistence.sessionSecretPlatform)
-        mirrorSecretEdits(); applyMutation(result); mirrorWorkspacePresentation()
+        mirrorSecretEdits()
+        applyMutation(result)
+        mirrorWorkspacePresentation()
         if let token = result.undo, let undoManager {
             let opensGroup = !undoManager.isUndoing && !undoManager.isRedoing
             if opensGroup { undoManager.beginUndoGrouping() }
@@ -920,7 +1057,10 @@ extension WireboltModel {
     func finishUndoWork() async { await undoWork?.value }
 
     private func runUndoStep(_ token: WorkspaceUndoToken) {
-        guard let reverse = rustOperations.reverseToken(token: token.token) else { undoManager?.removeAllActions(withTarget: self); return }
+        guard let reverse = rustOperations.reverseToken(token: token.token) else {
+            undoManager?.removeAllActions(withTarget: self)
+            return
+        }
         undoManager?.registerUndo(withTarget: self) { $0.runUndoStep(reverse) }
         undoManager?.setActionName(token.name)
         let previous = undoWork
@@ -928,9 +1068,13 @@ extension WireboltModel {
             await previous?.value
             guard let self, let persistence = self.persistence else { return }
             self.synchronizeWorkspace()
-            let result = await self.rustOperations.undo(token: token.token, reverse: reverse.token, selected: self.selectedEnvironmentID,
-                platform: persistence.sessionWorkspacePlatform, secrets: self.rustSecrets, secretPlatform: persistence.sessionSecretPlatform)
-            self.mirrorSecretEdits(); self.applyMutation(result); self.mirrorWorkspacePresentation()
+            let result = await self.rustOperations.undo(
+                token: token.token, reverse: reverse.token, selected: self.selectedEnvironmentID,
+                platform: persistence.sessionWorkspacePlatform, secrets: self.rustSecrets, secretPlatform: persistence.sessionSecretPlatform
+            )
+            self.mirrorSecretEdits()
+            self.applyMutation(result)
+            self.mirrorWorkspacePresentation()
             if !result.succeeded { self.undoManager?.removeAllActions(withTarget: self) }
         }
     }
@@ -938,24 +1082,32 @@ extension WireboltModel {
     private func applyMutation(_ result: WorkspaceMutation) {
         mirroringWorkspace = true
         defer { mirroringWorkspace = false }
-        if let root = result.root, !workspace.collections.contains(where: { $0.id == root.id }) { workspace.collections.insert(CollectionDraft(domain: root), at: 0) }
+        if let root = result.root, !workspace.collections.contains(where: { $0.id == root.id }) {
+            workspace.collections.insert(CollectionDraft(domain: root), at: 0)
+        }
         guard let plan = result.plan else { return }
         workspace.collections.removeAll { plan.removedCollectionIds.contains($0.id) }
         for collection in plan.collections {
             let projected = CollectionDraft(domain: collection)
             if let index = workspace.collections.firstIndex(where: { $0.id == collection.id }) {
                 if workspace.collections[index] != projected { workspace.collections[index] = projected }
-            } else { workspace.collections.append(projected) }
+            } else {
+                workspace.collections.append(projected)
+            }
         }
         if let environments = plan.environments { workspace.environments = environments.map(EnvironmentDraft.init(domain:)) }
         if plan.changesEnvironmentSelection { selectedEnvironmentID = plan.selectedEnvironmentId }
         for effect in plan.effects {
             switch effect {
-            case let .close(collectionID, requestID): closeSessions(collectionID: collectionID, requestID: requestID)
-            case let .rename(collectionID, requestID, name):
-                for session in sessions.sessions.values where session.collectionID == collectionID && session.requestID == requestID { session.renameSavedRequest(name) }
-            case let .relocate(collectionID, requestID, destination):
-                for session in sessions.sessions.values where session.collectionID == collectionID && session.requestID == requestID { session.relocate(to: destination) }
+            case .close(let collectionID, let requestID): closeSessions(collectionID: collectionID, requestID: requestID)
+            case .rename(let collectionID, let requestID, let name):
+                for session in sessions.sessions.values where session.collectionID == collectionID && session.requestID == requestID {
+                    session.renameSavedRequest(name)
+                }
+            case .relocate(let collectionID, let requestID, let destination):
+                for session in sessions.sessions.values where session.collectionID == collectionID && session.requestID == requestID {
+                    session.relocate(to: destination)
+                }
                 sessions.refreshActiveRequest()
             }
         }
@@ -1014,26 +1166,26 @@ public final class WorkspaceCommandState {
     }
 }
 
-public extension ImportFormat {
+extension ImportFormat {
     /// The name used in menus and messages.
-    var displayName: String { workspaceImportDisplayName(format: rawValue) }
+    public var displayName: String { workspaceImportDisplayName(format: rawValue) }
 
     /// Explains a failed import with the importer's reason when it has one.
-    static func failureMessage(for error: any Error, fileName: String?) -> String {
+    public static func failureMessage(for error: any Error, fileName: String?) -> String {
         workspaceImportFailure(reason: (error as? LocalizedError)?.errorDescription, name: fileName)
     }
 
-    static func unreadableMessage(fileName: String) -> String { workspaceImportUnreadable(name: fileName) }
+    public static func unreadableMessage(fileName: String) -> String { workspaceImportUnreadable(name: fileName) }
 
-    static func unrecognizedMessage(fileName: String, contents: String) -> String {
+    public static func unrecognizedMessage(fileName: String, contents: String) -> String {
         workspaceImportUnrecognized(name: fileName, contents: contents, formats: localizedFormats)
     }
-    static var localizedFormats: String {
+    public static var localizedFormats: String {
         ListFormatter.localizedString(byJoining: allCases.filter { $0 != .brunoFolder }.map(\.displayName))
     }
 
     /// Infers the importer for a file opened from Finder or dropped on the window.
-    static func detect(fileExtension: String, contents: String) -> ImportFormat? {
+    public static func detect(fileExtension: String, contents: String) -> ImportFormat? {
         domainDetectImport(extension: fileExtension, contents: contents).flatMap(ImportFormat.init(rawValue:))
     }
 }
@@ -1046,105 +1198,79 @@ public enum WorkspaceSecretScan {
     }
 }
 
-extension WorkspaceCommand {
-    init(_ record: SessionWorkspaceCommand) {
-        switch record {
-        case let .saveWorkspaceProxy(value): self = .saveWorkspaceProxy(value.map(ProxyDocument.init(domain:)))
-        case let .saveWorkspaceSettings(value): self = .saveWorkspaceSettings(TransportSettings(domain: value))
-        case let .renameWorkspace(name): self = .renameWorkspace(name: name)
-        case let .saveEnvironment(value): self = .saveEnvironment(EnvironmentDraft(domain: value))
-        case let .deleteEnvironment(id): self = .deleteEnvironment(id: id)
-        case let .saveRequest(value): self = .saveRequest(collectionID: value.collectionId, location: RequestLocation(domain: value))
-        case let .deleteRequest(collection, id): self = .deleteRequest(collectionID: collection, id: id)
-        case let .duplicateRequest(collection, id, newID, name): self = .duplicateRequest(collectionID: collection, id: id, newID: newID, name: name)
-        case let .createGroup(collection, group): self = .createGroup(collectionID: collection, group: GroupDraft(domain: group))
-        case let .deleteGroup(collection, id): self = .deleteGroup(collectionID: collection, id: id)
-        case let .createCollection(value): self = .createCollection(CollectionDraft(domain: value))
-        case let .deleteCollection(id): self = .deleteCollection(id: id)
-        case let .renameGroup(collection, id, name): self = .renameGroup(collectionID: collection, id: id, name: name)
-        case let .renameCollection(id, name): self = .renameCollection(id: id, name: name)
-        case let .moveRequest(from, id, to, group, order): self = .moveRequest(fromCollectionID: from, requestID: id, toCollectionID: to, groupID: group, order: Int(order))
-        case let .moveGroup(collection, id, parent, order): self = .moveGroup(collectionID: collection, id: id, parentID: parent, order: Int(order))
-        case let .reorderChildren(collection, parent, items): self = .reorderChildren(collectionID: collection, parentID: parent, items: items)
-        }
-    }
-}
-
-extension WorkspaceCommand {
-    var sessionRecord: SessionWorkspaceCommand {
-        switch self {
-        case let .saveWorkspaceProxy(value): .saveWorkspaceProxy(proxy: value?.domain)
-        case let .saveWorkspaceSettings(value): .saveWorkspaceSettings(transport: value.domain)
-        case let .renameWorkspace(name): .renameWorkspace(name: name)
-        case let .saveEnvironment(value): .saveEnvironment(environment: value.domain)
-        case let .deleteEnvironment(id): .deleteEnvironment(id: id)
-        case let .saveRequest(_, value): .saveRequest(location: value.domain)
-        case let .deleteRequest(collection, id): .deleteRequest(collectionId: collection, id: id)
-        case let .duplicateRequest(collection, id, newID, name): .duplicateRequest(collectionId: collection, id: id, newId: newID, name: name)
-        case let .createGroup(collection, group): .createGroup(collectionId: collection, group: group.domain)
-        case let .deleteGroup(collection, id): .deleteGroup(collectionId: collection, id: id)
-        case let .createCollection(value): .createCollection(collection: value.domain)
-        case let .deleteCollection(id): .deleteCollection(id: id)
-        case let .renameGroup(collection, id, name): .renameGroup(collectionId: collection, id: id, name: name)
-        case let .renameCollection(id, name): .renameCollection(id: id, name: name)
-        case let .moveRequest(from, id, to, group, order): .moveRequest(fromCollectionId: from, requestId: id, toCollectionId: to, groupId: group, order: Int64(order))
-        case let .moveGroup(collection, id, parent, order): .moveGroup(collectionId: collection, id: id, parentId: parent, order: Int64(order))
-        case let .reorderChildren(collection, parent, items): .reorderChildren(collectionId: collection, parentId: parent, items: items)
-        }
-    }
-}
-
 private final class SessionSecretAdapter: SessionSecretPlatform {
     let persistence: any WorkspacePersistence
     init(persistence: any WorkspacePersistence) { self.persistence = persistence }
-    func execute(operation: String, name: String, value: String?, reply: SessionSecretReply) {
+    func execute(operation: SessionSecretOperation, name: String, value: String?, reply: SessionSecretReply) {
         Task {
             do {
                 let result: String?
                 switch operation {
-                case "read": result = try await persistence.readSecret(name: name)
-                case "save": try await persistence.saveSecret(name: name, value: value ?? ""); result = nil
-                default: try await persistence.deleteSecret(name: name); result = nil
+                case .read: result = try await persistence.readSecret(name: name)
+                case .save:
+                    try await persistence.saveSecret(name: name, value: value ?? "")
+                    result = nil
+                case .remove:
+                    try await persistence.deleteSecret(name: name)
+                    result = nil
                 }
                 reply.finish(value: result, failed: false)
             } catch { reply.finish(value: nil, failed: true) }
         }
     }
 }
-private extension WireboltModel {
-    var runtimeContext: RuntimeContext {
-        RuntimeContext(transport: workspace.transport.domain, workspaceProxy: workspace.proxy?.domain,
+extension WireboltModel {
+    fileprivate var runtimeContext: RuntimeContext {
+        RuntimeContext(
+            transport: workspace.transport.domain, workspaceProxy: workspace.proxy?.domain,
             appProxy: proxyPreferences.configuration.domain, variables: activeVariables.mapValues(\.domain))
     }
-    func runtimeObserver(for session: DocumentSession, requireOpen: Bool = false, oauth: Bool = false) -> RuntimePresentationObserver {
-        RuntimePresentationObserver(update: { [weak self, weak session] in session?.mirror(); self?.mirrorCookieRevision(); if oauth { self?.mirrorOAuthRuntime() } }, input: { [weak self, weak session] in
-            guard let self, let session, !requireOpen || self.sessions.session(id: session.id) === session else { return nil }
-            return RuntimeInput(draft: session.draft.domain, context: self.runtimeContext)
-        })
+    fileprivate func runtimeObserver(for session: DocumentSession, requireOpen: Bool = false, oauth: Bool = false)
+        -> RuntimePresentationObserver
+    {
+        RuntimePresentationObserver(
+            update: { [weak self, weak session] in
+                session?.mirror()
+                self?.mirrorCookieRevision()
+                if oauth { self?.mirrorOAuthRuntime() }
+            },
+            input: { [weak self, weak session] in
+                guard let self, let session, !requireOpen || self.sessions.session(id: session.id) === session else { return nil }
+                return RuntimeInput(draft: session.draft.domain, context: self.runtimeContext)
+            })
     }
-    func mirrorSecretEdits() { let values = rustSecrets.cached(); if editedSecrets != values { editedSecrets = values } }
-    func mirrorOAuthRuntime() {
+    fileprivate func mirrorSecretEdits() {
+        let values = rustSecrets.cached()
+        if editedSecrets != values { editedSecrets = values }
+    }
+    fileprivate func mirrorOAuthRuntime() {
         let state = runtime.oauthSnapshot()
         if isOAuthBusy != state.busy { isOAuthBusy = state.busy }
         let failure = state.failure.map { runtimeError($0).localizedDescription }
         if oauthFailureMessage != failure { oauthFailureMessage = failure }
-        let receipts = state.receipts.mapValues { OAuth2TokenReceipt(expiresAt: $0.expiresAt.map(Date.init(timeIntervalSince1970:)), scope: $0.scope) }
+        let receipts = state.receipts.mapValues {
+            OAuth2TokenReceipt(expiresAt: $0.expiresAt.map(Date.init(timeIntervalSince1970:)), scope: $0.scope)
+        }
         if oauthReceipts != receipts { oauthReceipts = receipts }
     }
-    func mirrorCookieRevision() {
+    fileprivate func mirrorCookieRevision() {
         let value = Int(clamping: runtime.cookieRevision())
         if cookieRevision != value { cookieRevision = value }
     }
-    func mirrorRuntime() {
+    fileprivate func mirrorRuntime() {
         let state = runtime.snapshot()
         let entries = state.historyEntries.map(RunHistoryEntry.init)
         if historyEntries != entries { historyEntries = entries }
         if historyRevision != Int(clamping: state.historyRevision) { historyRevision = Int(clamping: state.historyRevision) }
         if cookieRevision != Int(clamping: state.cookieRevision) { cookieRevision = Int(clamping: state.cookieRevision) }
-        let activity = state.requestActivity.mapValues { RequestActivity(date: Date(timeIntervalSinceReferenceDate: $0.date), status: $0.status) }
+        let activity = state.requestActivity.mapValues {
+            RequestActivity(date: Date(timeIntervalSinceReferenceDate: $0.date), status: $0.status)
+        }
         if requestActivity != activity { requestActivity = activity }
     }
-    func runtimeSettings() -> AppRuntimeSettings {
-        AppRuntimeSettings(bridge: persistence?.runtimeWorkspaceBridge, platform: RuntimeSettingsAdapter(persistence: persistence, preferences: proxyPreferences))
+    fileprivate func runtimeSettings() -> AppRuntimeSettings {
+        AppRuntimeSettings(
+            bridge: persistence?.runtimeWorkspaceBridge,
+            platform: RuntimeSettingsAdapter(persistence: persistence, preferences: proxyPreferences))
     }
 }

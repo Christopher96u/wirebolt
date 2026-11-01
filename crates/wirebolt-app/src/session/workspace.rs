@@ -7,6 +7,7 @@ pub mod interface;
 pub mod io;
 pub mod lifecycle;
 pub mod operations;
+pub mod presentation;
 use crate::domain::{
     DomainCollection, DomainEnvironment, DomainGroup, DomainLocation, DomainProxy, DomainTransport,
     DomainWorkspace,

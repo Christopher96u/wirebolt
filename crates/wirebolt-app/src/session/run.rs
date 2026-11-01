@@ -60,9 +60,17 @@ pub struct SessionPreparedBody {
     pub redacted: bool,
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SessionProxySource {
+    Request,
+    Workspace,
+    AppDefault,
+    SystemDefault,
+}
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SessionProxy {
     pub configuration: DomainProxy,
-    pub source: String,
+    pub source: SessionProxySource,
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SessionPrepared {
@@ -279,8 +287,79 @@ impl DocumentRun {
         self.publication = None;
     }
 }
-pub(crate) fn lock<T>(value: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+pub fn lock<T>(value: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     value
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+impl TryFrom<&super::transport::PreparedRunSnapshotDocument> for SessionPrepared {
+    type Error = serde_json::Error;
+    fn try_from(
+        snapshot: &super::transport::PreparedRunSnapshotDocument,
+    ) -> Result<Self, Self::Error> {
+        Ok(Self {
+            proxy: serde_json::from_value(snapshot.proxy.clone())?,
+            method: snapshot.method.clone(),
+            url: snapshot.url.clone(),
+            headers: snapshot
+                .headers
+                .iter()
+                .map(|h| SessionPreparedHeader {
+                    name: h.name.clone(),
+                    value: h.value.clone(),
+                    redacted: h.redacted,
+                })
+                .collect(),
+            body: SessionPreparedBody {
+                byte_count: snapshot.body.byte_count,
+                content_type: snapshot.body.content_type.clone(),
+                text_preview: snapshot.body.text_preview.clone(),
+                redacted: snapshot.body.redacted,
+            },
+            transport: super::conversions::transport_from_core(snapshot.transport.clone()),
+        })
+    }
+}
+impl From<&wirebolt_core::RunHead> for SessionHead {
+    fn from(head: &wirebolt_core::RunHead) -> Self {
+        Self {
+            status: head.status,
+            version: super::transport::http_version(head.version).into(),
+            headers: head
+                .headers
+                .iter()
+                .map(|(name, value)| ResponseHeaderValue {
+                    name: name.to_string(),
+                    value: String::from_utf8_lossy(value.as_bytes()).into_owned(),
+                })
+                .collect(),
+            time_to_headers_ns: super::transport::duration_ns(head.time_to_headers),
+        }
+    }
+}
+impl From<&super::transport::RunFailureDocument> for SessionFailure {
+    fn from(failure: &super::transport::RunFailureDocument) -> Self {
+        Self {
+            kind: failure.kind.into(),
+            issues: failure
+                .issues
+                .iter()
+                .map(|i| SessionIssue {
+                    path: i.path.clone(),
+                    kind: i.kind.into(),
+                    reference: i.reference.clone(),
+                })
+                .collect(),
+        }
+    }
+}
+impl SessionCompletion {
+    #[must_use]
+    pub fn from_transport(bytes_received: u64, total_time: Duration) -> Self {
+        Self {
+            bytes_received,
+            total_time_ns: super::transport::duration_ns(total_time),
+        }
+    }
 }

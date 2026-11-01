@@ -21,13 +21,13 @@ use wirebolt_core::{
 pub trait WorkspaceSecrets: fmt::Debug + Send + Sync {
     /// # Errors
     /// Returns a storage error if credentials cannot be read.
-    fn read(&self, name: &str) -> Result<Option<String>, WorkspaceBridgeError>;
+    fn read(&self, name: &str) -> Result<Option<String>, WorkspaceError>;
     /// # Errors
     /// Returns a storage error if credentials cannot be saved.
-    fn save(&self, name: &str, value: &str) -> Result<(), WorkspaceBridgeError>;
+    fn save(&self, name: &str, value: &str) -> Result<(), WorkspaceError>;
     /// # Errors
     /// Returns a storage error if credentials cannot be deleted.
-    fn remove(&self, name: &str) -> Result<(), WorkspaceBridgeError>;
+    fn remove(&self, name: &str) -> Result<(), WorkspaceError>;
 }
 const fn empty_body() -> RequestBody {
     RequestBody::Empty
@@ -36,11 +36,11 @@ const fn default_inherits_workspace_transport() -> bool {
     true
 }
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub enum WorkspaceBridgeError {
+pub enum WorkspaceError {
     OperationFailed { reason: String },
 }
 
-impl fmt::Display for WorkspaceBridgeError {
+impl fmt::Display for WorkspaceError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::OperationFailed { reason } => formatter.write_str(reason),
@@ -48,14 +48,14 @@ impl fmt::Display for WorkspaceBridgeError {
     }
 }
 
-impl Error for WorkspaceBridgeError {}
+impl Error for WorkspaceError {}
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub enum GitBridgeError {
+pub enum WorkspaceGitError {
     OperationFailed { kind: String, reason: String },
 }
 
-impl fmt::Display for GitBridgeError {
+impl fmt::Display for WorkspaceGitError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::OperationFailed { reason, .. } => formatter.write_str(reason),
@@ -63,7 +63,7 @@ impl fmt::Display for GitBridgeError {
     }
 }
 
-impl Error for GitBridgeError {}
+impl Error for WorkspaceGitError {}
 
 #[derive(Debug)]
 pub struct SessionPersistence {
@@ -279,10 +279,19 @@ struct SavedGroupDocument {
     order: i64,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SessionWorkspaceNodeKind {
+    Workspace,
+    Collection,
+    Group,
+    Request,
+    Environment,
+}
 #[derive(Debug, Serialize)]
 struct WorkspaceDeltaDocument {
     version: u64,
-    kind: &'static str,
+    kind: SessionWorkspaceNodeKind,
     affected_ids: Vec<String>,
 }
 
@@ -354,22 +363,22 @@ impl SessionPersistence {
     ///
     /// # Errors
     ///
-    /// Returns [`WorkspaceBridgeError`] when storage cannot be initialized.
+    /// Returns [`WorkspaceError`] when storage cannot be initialized.
     pub fn open_or_create(
         path: String,
         name: String,
         secrets: Arc<dyn WorkspaceSecrets>,
-    ) -> Result<Arc<Self>, WorkspaceBridgeError> {
+    ) -> Result<Arc<Self>, WorkspaceError> {
         let root = PathBuf::from(path);
         let store = if root.join("wirebolt.toml").is_file() {
             WorkspaceStore::open(root)
         } else {
             WorkspaceStore::create(root, &Workspace::new(name))
         }
-        .map_err(|_| WorkspaceBridgeError::operation("workspace could not be opened"))?;
+        .map_err(|_| WorkspaceError::operation("workspace could not be opened"))?;
         store
             .migrate()
-            .map_err(|_| WorkspaceBridgeError::operation("workspace could not be migrated"))?;
+            .map_err(|_| WorkspaceError::operation("workspace could not be migrated"))?;
         Ok(Arc::new(Self {
             store,
             secrets,
@@ -381,27 +390,27 @@ impl SessionPersistence {
     ///
     /// # Errors
     ///
-    /// Returns [`WorkspaceBridgeError`] when the workspace cannot be loaded.
-    pub fn snapshot_json(&self) -> Result<String, WorkspaceBridgeError> {
+    /// Returns [`WorkspaceError`] when the workspace cannot be loaded.
+    pub fn snapshot_json(&self) -> Result<String, WorkspaceError> {
         let snapshot = self
             .store
             .load()
-            .map_err(|_| WorkspaceBridgeError::operation("workspace could not be loaded"))?;
+            .map_err(|_| WorkspaceError::operation("workspace could not be loaded"))?;
         serde_json::to_string(&WorkspaceSnapshotDocument::from(&snapshot))
-            .map_err(|_| WorkspaceBridgeError::operation("workspace snapshot could not be encoded"))
+            .map_err(|_| WorkspaceError::operation("workspace snapshot could not be encoded"))
     }
 
     /// Exports the complete saved workspace with secret references intact.
     ///
     /// # Errors
-    /// Returns [`WorkspaceBridgeError`] if loading or encoding fails.
-    pub fn export_workspace_json(&self) -> Result<String, WorkspaceBridgeError> {
+    /// Returns [`WorkspaceError`] if loading or encoding fails.
+    pub fn export_workspace_json(&self) -> Result<String, WorkspaceError> {
         let snapshot = self
             .store
             .load()
-            .map_err(|_| WorkspaceBridgeError::operation("workspace could not be loaded"))?;
+            .map_err(|_| WorkspaceError::operation("workspace could not be loaded"))?;
         wirebolt_core::export_legacy_v1_workspace(&snapshot)
-            .map_err(|error| WorkspaceBridgeError::operation(&error.to_string()))
+            .map_err(|error| WorkspaceError::operation(&error.to_string()))
     }
 
     /// Exports one collection and all of its requests as a portable JSON document.
@@ -409,62 +418,62 @@ impl SessionPersistence {
     ///
     /// # Errors
     ///
-    /// Returns [`WorkspaceBridgeError`] if the collection is absent or cannot be encoded.
-    pub fn export_collection_json(&self, id: &str) -> Result<String, WorkspaceBridgeError> {
+    /// Returns [`WorkspaceError`] if the collection is absent or cannot be encoded.
+    pub fn export_collection_json(&self, id: &str) -> Result<String, WorkspaceError> {
         let id = document_id(id.to_owned())?;
         let snapshot = self
             .store
             .load()
-            .map_err(|_| WorkspaceBridgeError::operation("workspace could not be loaded"))?
+            .map_err(|_| WorkspaceError::operation("workspace could not be loaded"))?
             .collections
             .into_iter()
             .find(|collection| collection.collection.id == id)
-            .ok_or_else(|| WorkspaceBridgeError::operation("collection does not exist"))?;
+            .ok_or_else(|| WorkspaceError::operation("collection does not exist"))?;
         wirebolt_core::export_legacy_v1_collection(&snapshot.collection, &snapshot.requests)
-            .map_err(|error| WorkspaceBridgeError::operation(&error.to_string()))
+            .map_err(|error| WorkspaceError::operation(&error.to_string()))
     }
 
     /// Exports one saved request as portable JSON with secret references intact.
     ///
     /// # Errors
     ///
-    /// Returns [`WorkspaceBridgeError`] if the request is absent or cannot be encoded.
+    /// Returns [`WorkspaceError`] if the request is absent or cannot be encoded.
     pub fn export_request_json(
         &self,
         collection_id: &str,
         id: &str,
-    ) -> Result<String, WorkspaceBridgeError> {
+    ) -> Result<String, WorkspaceError> {
         let request = self.request(collection_id, id)?;
         wirebolt_core::export_legacy_v1_request(&request)
-            .map_err(|error| WorkspaceBridgeError::operation(&error.to_string()))
+            .map_err(|error| WorkspaceError::operation(&error.to_string()))
     }
 
     /// Creates or updates a collection.
     ///
     /// # Errors
     ///
-    /// Returns [`WorkspaceBridgeError`] for invalid IDs or storage failures.
-    pub fn save_collection(&self, id: String, name: String) -> Result<(), WorkspaceBridgeError> {
+    /// Returns [`WorkspaceError`] for invalid IDs or storage failures.
+    pub fn save_collection(&self, id: String, name: String) -> Result<(), WorkspaceError> {
         let id = document_id(id)?;
         self.store
             .save(&WorkspaceDocument::Collection(Collection::new(id, name)))
             .map(|_| ())
-            .map_err(|_| WorkspaceBridgeError::operation("collection could not be saved"))
+            .map_err(|_| WorkspaceError::operation("collection could not be saved"))
     }
 
     /// Creates or updates one request from a bridge JSON document.
     ///
     /// # Errors
     ///
-    /// Returns [`WorkspaceBridgeError`] for invalid input or storage failures.
+    /// Returns [`WorkspaceError`] for invalid input or storage failures.
     pub fn save_request(
         &self,
         collection_id: String,
         request_json: &str,
-    ) -> Result<(), WorkspaceBridgeError> {
+    ) -> Result<(), WorkspaceError> {
         let collection_id = document_id(collection_id)?;
         let document: SavedRequestDocument = serde_json::from_str(request_json)
-            .map_err(|_| WorkspaceBridgeError::operation("request document is invalid"))?;
+            .map_err(|_| WorkspaceError::operation("request document is invalid"))?;
         let request = request_from_document(document)?;
         self.store
             .save(&WorkspaceDocument::Request {
@@ -472,37 +481,34 @@ impl SessionPersistence {
                 request,
             })
             .map(|_| ())
-            .map_err(|_| WorkspaceBridgeError::operation("request could not be saved"))
+            .map_err(|_| WorkspaceError::operation("request could not be saved"))
     }
 
     /// Creates or updates one environment from a bridge JSON document.
     ///
     /// # Errors
     ///
-    /// Returns [`WorkspaceBridgeError`] for invalid input or storage failures.
-    pub fn save_environment(&self, environment_json: &str) -> Result<(), WorkspaceBridgeError> {
+    /// Returns [`WorkspaceError`] for invalid input or storage failures.
+    pub fn save_environment(&self, environment_json: &str) -> Result<(), WorkspaceError> {
         let document: SavedEnvironmentDocument = serde_json::from_str(environment_json)
-            .map_err(|_| WorkspaceBridgeError::operation("environment document is invalid"))?;
+            .map_err(|_| WorkspaceError::operation("environment document is invalid"))?;
         let environment =
             Environment::from_rows(document_id(document.id)?, document.name, document.variables);
         self.store
             .save(&WorkspaceDocument::Environment(environment))
             .map(|_| ())
-            .map_err(|_| WorkspaceBridgeError::operation("environment could not be saved"))
+            .map_err(|_| WorkspaceError::operation("environment could not be saved"))
     }
 
     /// Applies one versioned workspace mutation and returns a compact delta.
     ///
     /// # Errors
     ///
-    /// Returns [`WorkspaceBridgeError`] when the command is malformed, references
+    /// Returns [`WorkspaceError`] when the command is malformed, references
     /// a missing document, creates a group cycle, or cannot be persisted.
-    pub fn apply_workspace_command(
-        &self,
-        command_json: &str,
-    ) -> Result<String, WorkspaceBridgeError> {
+    pub fn apply_workspace_command(&self, command_json: &str) -> Result<String, WorkspaceError> {
         let command: WorkspaceCommandDocument = serde_json::from_str(command_json)
-            .map_err(|_| WorkspaceBridgeError::operation("workspace command is invalid"))?;
+            .map_err(|_| WorkspaceError::operation("workspace command is invalid"))?;
         let (kind, affected_ids) = self.apply_workspace_command_document(command)?;
         let delta = WorkspaceDeltaDocument {
             version: self.version.fetch_add(1, Ordering::Relaxed) + 1,
@@ -510,22 +516,18 @@ impl SessionPersistence {
             affected_ids,
         };
         serde_json::to_string(&delta)
-            .map_err(|_| WorkspaceBridgeError::operation("workspace delta could not be encoded"))
+            .map_err(|_| WorkspaceError::operation("workspace delta could not be encoded"))
     }
 
     /// Parses an import fully and returns its metadata without mutating storage.
     ///
     /// # Errors
     ///
-    /// Returns [`WorkspaceBridgeError`] for unsupported formats or invalid source.
-    pub fn preview_import(
-        &self,
-        format: &str,
-        source: &str,
-    ) -> Result<String, WorkspaceBridgeError> {
+    /// Returns [`WorkspaceError`] for unsupported formats or invalid source.
+    pub fn preview_import(&self, format: &str, source: &str) -> Result<String, WorkspaceError> {
         let imported = parse_import(format, source, None)?;
         serde_json::to_string(&ImportSummaryDocument::new(&imported))
-            .map_err(|_| WorkspaceBridgeError::operation("import preview could not be encoded"))
+            .map_err(|_| WorkspaceError::operation("import preview could not be encoded"))
     }
 
     /// Commits a fully parsed import: its collections, environments and
@@ -536,13 +538,9 @@ impl SessionPersistence {
     ///
     /// # Errors
     ///
-    /// Returns [`WorkspaceBridgeError`] with the import's user-facing reason
+    /// Returns [`WorkspaceError`] with the import's user-facing reason
     /// for parse failures, or a storage failure.
-    pub fn commit_import(
-        &self,
-        format: &str,
-        source: &str,
-    ) -> Result<String, WorkspaceBridgeError> {
+    pub fn commit_import(&self, format: &str, source: &str) -> Result<String, WorkspaceError> {
         self.commit_imported(parse_import(format, source, None)?)
     }
 
@@ -550,14 +548,14 @@ impl SessionPersistence {
     /// Wirebolt workspace export creates each of its collections and environments.
     ///
     /// # Errors
-    /// Returns [`WorkspaceBridgeError`] with the import's user-facing reason
+    /// Returns [`WorkspaceError`] with the import's user-facing reason
     /// for invalid source, or a storage failure.
     pub fn commit_import_file(
         &self,
         format: &str,
         source: &str,
         name: &str,
-    ) -> Result<String, WorkspaceBridgeError> {
+    ) -> Result<String, WorkspaceError> {
         self.commit_imported(parse_import(format, source, Some(name))?)
     }
 
@@ -565,8 +563,8 @@ impl SessionPersistence {
     ///
     /// # Errors
     ///
-    /// Returns [`WorkspaceBridgeError`] for invalid names or Keychain failures.
-    pub fn read_secret(&self, name: &str) -> Result<Option<String>, WorkspaceBridgeError> {
+    /// Returns [`WorkspaceError`] for invalid names or Keychain failures.
+    pub fn read_secret(&self, name: &str) -> Result<Option<String>, WorkspaceError> {
         self.secrets.read(name)
     }
 
@@ -574,8 +572,8 @@ impl SessionPersistence {
     ///
     /// # Errors
     ///
-    /// Returns [`WorkspaceBridgeError`] for invalid names or Keychain failures.
-    pub fn save_secret(&self, name: &str, value: &str) -> Result<(), WorkspaceBridgeError> {
+    /// Returns [`WorkspaceError`] for invalid names or Keychain failures.
+    pub fn save_secret(&self, name: &str, value: &str) -> Result<(), WorkspaceError> {
         self.secrets.save(name, value)
     }
 
@@ -584,8 +582,8 @@ impl SessionPersistence {
     ///
     /// # Errors
     ///
-    /// Returns [`WorkspaceBridgeError`] for invalid names or Keychain failures.
-    pub fn delete_secret(&self, name: &str) -> Result<(), WorkspaceBridgeError> {
+    /// Returns [`WorkspaceError`] for invalid names or Keychain failures.
+    pub fn delete_secret(&self, name: &str) -> Result<(), WorkspaceError> {
         self.secrets.remove(name)
     }
 
@@ -593,9 +591,9 @@ impl SessionPersistence {
     ///
     /// # Errors
     ///
-    /// Returns [`GitBridgeError`] when this workspace is not a repository or
+    /// Returns [`WorkspaceGitError`] when this workspace is not a repository or
     /// Git cannot inspect it.
-    pub fn git_status_json(&self) -> Result<String, GitBridgeError> {
+    pub fn git_status_json(&self) -> Result<String, WorkspaceGitError> {
         let status = self.git_workspace()?.status()?;
         encode_git_document(&GitStatusDocument::from(&status))
     }
@@ -604,8 +602,8 @@ impl SessionPersistence {
     ///
     /// # Errors
     ///
-    /// Returns [`GitBridgeError`] when Git rejects or cannot run the pull.
-    pub fn git_pull_json(&self) -> Result<String, GitBridgeError> {
+    /// Returns [`WorkspaceGitError`] when Git rejects or cannot run the pull.
+    pub fn git_pull_json(&self) -> Result<String, WorkspaceGitError> {
         let operation = self.git_workspace()?.pull()?;
         encode_git_document(&GitOperationDocument::from(&operation))
     }
@@ -614,9 +612,9 @@ impl SessionPersistence {
     ///
     /// # Errors
     ///
-    /// Returns [`GitBridgeError`] for invalid messages, missing Git identity,
+    /// Returns [`WorkspaceGitError`] for invalid messages, missing Git identity,
     /// or another failed Git operation.
-    pub fn git_commit_json(&self, message: &str) -> Result<String, GitBridgeError> {
+    pub fn git_commit_json(&self, message: &str) -> Result<String, WorkspaceGitError> {
         let operation = self.git_workspace()?.commit(message)?;
         encode_git_document(&GitOperationDocument::from(&operation))
     }
@@ -625,9 +623,9 @@ impl SessionPersistence {
     ///
     /// # Errors
     ///
-    /// Returns [`GitBridgeError`] when the repository has no usable branch or
+    /// Returns [`WorkspaceGitError`] when the repository has no usable branch or
     /// remote, authentication fails, or the update is rejected.
-    pub fn git_push_json(&self) -> Result<String, GitBridgeError> {
+    pub fn git_push_json(&self) -> Result<String, WorkspaceGitError> {
         let operation = self.git_workspace()?.push()?;
         encode_git_document(&GitOperationDocument::from(&operation))
     }
@@ -636,8 +634,8 @@ impl SessionPersistence {
     ///
     /// # Errors
     ///
-    /// Returns [`GitBridgeError`] when no merge is in progress or Git cannot abort it.
-    pub fn git_abort_merge_json(&self) -> Result<String, GitBridgeError> {
+    /// Returns [`WorkspaceGitError`] when no merge is in progress or Git cannot abort it.
+    pub fn git_abort_merge_json(&self) -> Result<String, WorkspaceGitError> {
         let operation = self.git_workspace()?.abort_merge()?;
         encode_git_document(&GitOperationDocument::from(&operation))
     }
@@ -647,9 +645,9 @@ impl SessionPersistence {
     ///
     /// # Errors
     ///
-    /// Returns [`GitBridgeError`] when the workspace is inside another
+    /// Returns [`WorkspaceGitError`] when the workspace is inside another
     /// repository or Git cannot initialize it.
-    pub fn git_initialize_json(&self) -> Result<String, GitBridgeError> {
+    pub fn git_initialize_json(&self) -> Result<String, WorkspaceGitError> {
         let status = GitWorkspace::initialize(self.store.root())?.status()?;
         encode_git_document(&GitStatusDocument::from(&status))
     }
@@ -660,11 +658,11 @@ impl SessionPersistence {
     fn commit_imported(
         &self,
         imported: wirebolt_core::ParsedImport,
-    ) -> Result<String, WorkspaceBridgeError> {
+    ) -> Result<String, WorkspaceError> {
         let sequence = self.version.load(Ordering::Relaxed) + 1;
         let timestamp = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .map_err(|_| WorkspaceBridgeError::operation("import identifier could not be created"))?
+            .map_err(|_| WorkspaceError::operation("import identifier could not be created"))?
             .as_nanos();
         let prefix = format!("import-{timestamp:x}-{:x}-{sequence:x}", std::process::id());
         let mut summary = ImportSummaryDocument::new(&imported);
@@ -687,7 +685,7 @@ impl SessionPersistence {
 
         let delta = WorkspaceDeltaDocument {
             version: self.version.fetch_add(1, Ordering::Relaxed) + 1,
-            kind: "collection",
+            kind: SessionWorkspaceNodeKind::Collection,
             affected_ids: created
                 .collections
                 .iter()
@@ -695,7 +693,7 @@ impl SessionPersistence {
                 .collect(),
         };
         serde_json::to_string(&ImportCommitDocument { delta, summary })
-            .map_err(|_| WorkspaceBridgeError::operation("import delta could not be encoded"))
+            .map_err(|_| WorkspaceError::operation("import delta could not be encoded"))
     }
 
     fn save_imported(
@@ -703,7 +701,7 @@ impl SessionPersistence {
         prefix: &str,
         imported: wirebolt_core::ParsedImport,
         created: &mut CreatedImport,
-    ) -> Result<(), WorkspaceBridgeError> {
+    ) -> Result<(), WorkspaceError> {
         let wirebolt_core::ParsedImport { workspace, secrets } = imported;
         let wirebolt_core::ImportedWorkspace {
             collections,
@@ -713,14 +711,11 @@ impl SessionPersistence {
         // Placeholder references become unique Keychain names for this import.
         let mut keychain_names = BTreeMap::new();
         for secret in secrets {
-            let name = SecretName::new(format!("{prefix}-{}", secret.reference)).map_err(|_| {
-                WorkspaceBridgeError::operation("import credential name is invalid")
-            })?;
+            let name = SecretName::new(format!("{prefix}-{}", secret.reference))
+                .map_err(|_| WorkspaceError::operation("import credential name is invalid"))?;
             self.secrets
                 .save(name.as_str(), &secret.material)
-                .map_err(|_| {
-                    WorkspaceBridgeError::operation("import credentials could not be saved")
-                })?;
+                .map_err(|_| WorkspaceError::operation("import credentials could not be saved"))?;
             created.secrets.push(name.clone());
             keychain_names.insert(secret.reference, name);
         }
@@ -738,7 +733,7 @@ impl SessionPersistence {
             && self
                 .store
                 .load()
-                .map_err(|_| WorkspaceBridgeError::operation("workspace could not be loaded"))?
+                .map_err(|_| WorkspaceError::operation("workspace could not be loaded"))?
                 .environments
                 .iter()
                 .any(|environment| environment.id.as_str() == wirebolt_core::GLOBAL_ENVIRONMENT_ID);
@@ -761,9 +756,7 @@ impl SessionPersistence {
             created.environments.push(environment.id.clone());
             self.store
                 .save(&WorkspaceDocument::Environment(environment))
-                .map_err(|_| {
-                    WorkspaceBridgeError::operation("import environment could not be saved")
-                })?;
+                .map_err(|_| WorkspaceError::operation("import environment could not be saved"))?;
         }
         Ok(())
     }
@@ -778,7 +771,7 @@ impl SessionPersistence {
         >,
         keychain_names: &BTreeMap<SecretName, SecretName>,
         created: &mut CreatedImport,
-    ) -> Result<(), WorkspaceBridgeError> {
+    ) -> Result<(), WorkspaceError> {
         let mut group_ids = HashMap::new();
         for (index, group) in imported.groups.iter().enumerate() {
             group_ids.insert(
@@ -793,7 +786,7 @@ impl SessionPersistence {
             .map(|group| {
                 let parent_id = match group.parent_source_id {
                     Some(parent) => Some(group_ids.get(&parent).cloned().ok_or_else(|| {
-                        WorkspaceBridgeError::operation("import group hierarchy is invalid")
+                        WorkspaceError::operation("import group hierarchy is invalid")
                     })?),
                     None => None,
                 };
@@ -804,12 +797,10 @@ impl SessionPersistence {
                     group.order,
                 ))
             })
-            .collect::<Result<Vec<_>, WorkspaceBridgeError>>()?;
+            .collect::<Result<Vec<_>, WorkspaceError>>()?;
         self.store
             .save(&WorkspaceDocument::Collection(collection))
-            .map_err(|_| {
-                WorkspaceBridgeError::operation("import collection could not be created")
-            })?;
+            .map_err(|_| WorkspaceError::operation("import collection could not be created"))?;
         created.collections.push(collection_id.clone());
 
         for (index, imported_request) in imported.requests.into_iter().enumerate() {
@@ -836,9 +827,7 @@ impl SessionPersistence {
                     collection_id: collection_id.clone(),
                     request,
                 })
-                .map_err(|_| {
-                    WorkspaceBridgeError::operation("import request could not be saved")
-                })?;
+                .map_err(|_| WorkspaceError::operation("import request could not be saved"))?;
         }
         Ok(())
     }
@@ -860,83 +849,79 @@ impl SessionPersistence {
     fn apply_workspace_command_document(
         &self,
         command: WorkspaceCommandDocument,
-    ) -> Result<(&'static str, Vec<String>), WorkspaceBridgeError> {
+    ) -> Result<(SessionWorkspaceNodeKind, Vec<String>), WorkspaceError> {
         match command {
             WorkspaceCommandDocument::SaveWorkspaceProxy { proxy } => {
                 let mut workspace = self
                     .store
                     .load()
-                    .map_err(|_| WorkspaceBridgeError::operation("workspace could not be loaded"))?
+                    .map_err(|_| WorkspaceError::operation("workspace could not be loaded"))?
                     .workspace;
                 workspace.proxy = proxy;
                 self.store
                     .save(&WorkspaceDocument::Workspace(workspace))
-                    .map_err(|_| {
-                        WorkspaceBridgeError::operation("workspace proxy could not be saved")
-                    })?;
-                Ok(("workspace", vec!["proxy".to_owned()]))
+                    .map_err(|_| WorkspaceError::operation("workspace proxy could not be saved"))?;
+                Ok((
+                    SessionWorkspaceNodeKind::Workspace,
+                    vec!["proxy".to_owned()],
+                ))
             }
             WorkspaceCommandDocument::SaveWorkspaceSettings { transport } => {
                 let mut workspace = self
                     .store
                     .load()
-                    .map_err(|_| WorkspaceBridgeError::operation("workspace could not be loaded"))?
+                    .map_err(|_| WorkspaceError::operation("workspace could not be loaded"))?
                     .workspace;
                 workspace.transport = transport;
                 self.store
                     .save(&WorkspaceDocument::Workspace(workspace))
                     .map_err(|_| {
-                        WorkspaceBridgeError::operation("workspace settings could not be saved")
+                        WorkspaceError::operation("workspace settings could not be saved")
                     })?;
-                Ok(("workspace", vec!["transport".to_owned()]))
+                Ok((
+                    SessionWorkspaceNodeKind::Workspace,
+                    vec!["transport".to_owned()],
+                ))
             }
             WorkspaceCommandDocument::RenameWorkspace { name } => {
                 let name = name.trim();
                 if name.is_empty() {
-                    return Err(WorkspaceBridgeError::operation(
+                    return Err(WorkspaceError::operation(
                         "workspace name must not be empty",
                     ));
                 }
                 let mut workspace = self
                     .store
                     .load()
-                    .map_err(|_| WorkspaceBridgeError::operation("workspace could not be loaded"))?
+                    .map_err(|_| WorkspaceError::operation("workspace could not be loaded"))?
                     .workspace;
                 name.clone_into(&mut workspace.name);
                 self.store
                     .save(&WorkspaceDocument::Workspace(workspace))
-                    .map_err(|_| {
-                        WorkspaceBridgeError::operation("workspace could not be renamed")
-                    })?;
-                Ok(("workspace", vec!["name".to_owned()]))
+                    .map_err(|_| WorkspaceError::operation("workspace could not be renamed"))?;
+                Ok((SessionWorkspaceNodeKind::Workspace, vec!["name".to_owned()]))
             }
             WorkspaceCommandDocument::CreateCollection { id, name, order } => {
                 let mut collection = Collection::new(document_id(id.clone())?, name);
                 collection.order = order;
                 self.store
                     .save(&WorkspaceDocument::Collection(collection))
-                    .map_err(|_| {
-                        WorkspaceBridgeError::operation("collection could not be created")
-                    })?;
-                Ok(("collection", vec![id]))
+                    .map_err(|_| WorkspaceError::operation("collection could not be created"))?;
+                Ok((SessionWorkspaceNodeKind::Collection, vec![id]))
             }
             WorkspaceCommandDocument::RenameCollection { id, name } => {
                 let mut collection = self.collection(&id)?;
                 collection.name = name;
                 self.store
                     .save(&WorkspaceDocument::Collection(collection))
-                    .map_err(|_| {
-                        WorkspaceBridgeError::operation("collection could not be renamed")
-                    })?;
-                Ok(("collection", vec![id]))
+                    .map_err(|_| WorkspaceError::operation("collection could not be renamed"))?;
+                Ok((SessionWorkspaceNodeKind::Collection, vec![id]))
             }
             WorkspaceCommandDocument::DeleteCollection { id } => {
                 self.store
                     .delete_collection(&document_id(id.clone())?)
-                    .map_err(|_| {
-                        WorkspaceBridgeError::operation("collection could not be deleted")
-                    })?;
-                Ok(("collection", vec![id]))
+                    .map_err(|_| WorkspaceError::operation("collection could not be deleted"))?;
+                Ok((SessionWorkspaceNodeKind::Collection, vec![id]))
             }
             WorkspaceCommandDocument::CreateGroup {
                 collection_id,
@@ -951,22 +936,23 @@ impl SessionPersistence {
                         .iter()
                         .all(|existing| &existing.id != parent)
                 }) {
-                    return Err(WorkspaceBridgeError::operation(
-                        "parent group does not exist",
-                    ));
+                    return Err(WorkspaceError::operation("parent group does not exist"));
                 }
                 if collection
                     .groups
                     .iter()
                     .any(|existing| existing.id == group_id)
                 {
-                    return Err(WorkspaceBridgeError::operation("group already exists"));
+                    return Err(WorkspaceError::operation("group already exists"));
                 }
                 collection
                     .groups
                     .push(Group::new(group_id, group.name, parent_id, group.order));
                 self.save_collection_document(collection)?;
-                Ok(("group", vec![collection_id, group.id]))
+                Ok((
+                    SessionWorkspaceNodeKind::Group,
+                    vec![collection_id, group.id],
+                ))
             }
             WorkspaceCommandDocument::RenameGroup {
                 collection_id,
@@ -979,21 +965,22 @@ impl SessionPersistence {
                     .groups
                     .iter_mut()
                     .find(|group| group.id == group_id)
-                    .ok_or_else(|| WorkspaceBridgeError::operation("group does not exist"))?;
+                    .ok_or_else(|| WorkspaceError::operation("group does not exist"))?;
                 group.name = name;
                 self.save_collection_document(collection)?;
-                Ok(("group", vec![collection_id, id]))
+                Ok((SessionWorkspaceNodeKind::Group, vec![collection_id, id]))
             }
             WorkspaceCommandDocument::DeleteGroup { collection_id, id } => {
                 let mut collection = self.collection(&collection_id)?;
                 let group_id = document_id(id.clone())?;
                 let descendants = descendant_group_ids(&collection.groups, &group_id);
                 if descendants.is_empty() {
-                    return Err(WorkspaceBridgeError::operation("group does not exist"));
+                    return Err(WorkspaceError::operation("group does not exist"));
                 }
-                let snapshot = self.store.load().map_err(|_| {
-                    WorkspaceBridgeError::operation("workspace could not be loaded")
-                })?;
+                let snapshot = self
+                    .store
+                    .load()
+                    .map_err(|_| WorkspaceError::operation("workspace could not be loaded"))?;
                 if let Some(found) = snapshot
                     .collections
                     .iter()
@@ -1008,9 +995,7 @@ impl SessionPersistence {
                             self.store
                                 .delete_request(&collection.id, &request.id)
                                 .map_err(|_| {
-                                    WorkspaceBridgeError::operation(
-                                        "group requests could not be deleted",
-                                    )
+                                    WorkspaceError::operation("group requests could not be deleted")
                                 })?;
                         }
                     }
@@ -1019,7 +1004,7 @@ impl SessionPersistence {
                     .groups
                     .retain(|group| !descendants.contains(&group.id));
                 self.save_collection_document(collection)?;
-                Ok(("group", vec![collection_id, id]))
+                Ok((SessionWorkspaceNodeKind::Group, vec![collection_id, id]))
             }
             WorkspaceCommandDocument::ReorderChildren {
                 collection_id,
@@ -1027,7 +1012,7 @@ impl SessionPersistence {
                 items,
             } => {
                 self.reorder_children(&collection_id, parent_id, items)?;
-                Ok(("collection", vec![collection_id]))
+                Ok((SessionWorkspaceNodeKind::Collection, vec![collection_id]))
             }
             WorkspaceCommandDocument::MoveGroup {
                 collection_id,
@@ -1043,9 +1028,7 @@ impl SessionPersistence {
                     .as_ref()
                     .is_some_and(|parent| descendants.contains(parent))
                 {
-                    return Err(WorkspaceBridgeError::operation(
-                        "a group cannot contain itself",
-                    ));
+                    return Err(WorkspaceError::operation("a group cannot contain itself"));
                 }
                 if parent_id.as_ref().is_some_and(|parent| {
                     collection
@@ -1053,19 +1036,17 @@ impl SessionPersistence {
                         .iter()
                         .all(|existing| &existing.id != parent)
                 }) {
-                    return Err(WorkspaceBridgeError::operation(
-                        "parent group does not exist",
-                    ));
+                    return Err(WorkspaceError::operation("parent group does not exist"));
                 }
                 let group = collection
                     .groups
                     .iter_mut()
                     .find(|group| group.id == group_id)
-                    .ok_or_else(|| WorkspaceBridgeError::operation("group does not exist"))?;
+                    .ok_or_else(|| WorkspaceError::operation("group does not exist"))?;
                 group.parent_id = parent_id;
                 group.order = order;
                 self.save_collection_document(collection)?;
-                Ok(("group", vec![collection_id, id]))
+                Ok((SessionWorkspaceNodeKind::Group, vec![collection_id, id]))
             }
             WorkspaceCommandDocument::SaveRequest {
                 collection_id,
@@ -1078,8 +1059,8 @@ impl SessionPersistence {
                         collection_id: document_id(collection_id.clone())?,
                         request,
                     })
-                    .map_err(|_| WorkspaceBridgeError::operation("request could not be saved"))?;
-                Ok(("request", vec![collection_id, id]))
+                    .map_err(|_| WorkspaceError::operation("request could not be saved"))?;
+                Ok((SessionWorkspaceNodeKind::Request, vec![collection_id, id]))
             }
             WorkspaceCommandDocument::DeleteRequest { collection_id, id } => {
                 self.store
@@ -1087,8 +1068,8 @@ impl SessionPersistence {
                         &document_id(collection_id.clone())?,
                         &document_id(id.clone())?,
                     )
-                    .map_err(|_| WorkspaceBridgeError::operation("request could not be deleted"))?;
-                Ok(("request", vec![collection_id, id]))
+                    .map_err(|_| WorkspaceError::operation("request could not be deleted"))?;
+                Ok((SessionWorkspaceNodeKind::Request, vec![collection_id, id]))
             }
             WorkspaceCommandDocument::DuplicateRequest {
                 collection_id,
@@ -1106,10 +1087,11 @@ impl SessionPersistence {
                         collection_id: document_id(collection_id.clone())?,
                         request: duplicate,
                     })
-                    .map_err(|_| {
-                        WorkspaceBridgeError::operation("request could not be duplicated")
-                    })?;
-                Ok(("request", vec![collection_id, id, new_id]))
+                    .map_err(|_| WorkspaceError::operation("request could not be duplicated"))?;
+                Ok((
+                    SessionWorkspaceNodeKind::Request,
+                    vec![collection_id, id, new_id],
+                ))
             }
             WorkspaceCommandDocument::MoveRequest {
                 from_collection_id,
@@ -1127,7 +1109,7 @@ impl SessionPersistence {
                         collection_id: destination,
                         request,
                     })
-                    .map_err(|_| WorkspaceBridgeError::operation("request could not be moved"))?;
+                    .map_err(|_| WorkspaceError::operation("request could not be moved"))?;
                 if from_collection_id != to_collection_id {
                     self.store
                         .delete_request(
@@ -1135,11 +1117,11 @@ impl SessionPersistence {
                             &document_id(request_id.clone())?,
                         )
                         .map_err(|_| {
-                            WorkspaceBridgeError::operation("source request could not be removed")
+                            WorkspaceError::operation("source request could not be removed")
                         })?;
                 }
                 Ok((
-                    "request",
+                    SessionWorkspaceNodeKind::Request,
                     vec![from_collection_id, to_collection_id, request_id],
                 ))
             }
@@ -1152,18 +1134,14 @@ impl SessionPersistence {
                 );
                 self.store
                     .save(&WorkspaceDocument::Environment(environment))
-                    .map_err(|_| {
-                        WorkspaceBridgeError::operation("environment could not be saved")
-                    })?;
-                Ok(("environment", vec![id]))
+                    .map_err(|_| WorkspaceError::operation("environment could not be saved"))?;
+                Ok((SessionWorkspaceNodeKind::Environment, vec![id]))
             }
             WorkspaceCommandDocument::DeleteEnvironment { id } => {
                 self.store
                     .delete_environment(&document_id(id.clone())?)
-                    .map_err(|_| {
-                        WorkspaceBridgeError::operation("environment could not be deleted")
-                    })?;
-                Ok(("environment", vec![id]))
+                    .map_err(|_| WorkspaceError::operation("environment could not be deleted"))?;
+                Ok((SessionWorkspaceNodeKind::Environment, vec![id]))
             }
         }
     }
@@ -1173,17 +1151,17 @@ impl SessionPersistence {
         collection_id: &str,
         parent_id: Option<String>,
         items: Vec<String>,
-    ) -> Result<(), WorkspaceBridgeError> {
+    ) -> Result<(), WorkspaceError> {
         let id = document_id(collection_id.to_owned())?;
         let parent = parent_id.map(document_id).transpose()?;
         let mut snapshot = self
             .store
             .load()
-            .map_err(|_| WorkspaceBridgeError::operation("workspace could not be loaded"))?
+            .map_err(|_| WorkspaceError::operation("workspace could not be loaded"))?
             .collections
             .into_iter()
             .find(|entry| entry.collection.id == id)
-            .ok_or_else(|| WorkspaceBridgeError::operation("collection does not exist"))?;
+            .ok_or_else(|| WorkspaceError::operation("collection does not exist"))?;
         let expected: std::collections::HashSet<String> = snapshot
             .collection
             .groups
@@ -1200,7 +1178,7 @@ impl SessionPersistence {
             .collect();
         let supplied: std::collections::HashSet<String> = items.iter().cloned().collect();
         if supplied != expected || supplied.len() != items.len() {
-            return Err(WorkspaceBridgeError::operation(
+            return Err(WorkspaceError::operation(
                 "reorder must contain each sibling exactly once",
             ));
         }
@@ -1245,11 +1223,9 @@ impl SessionPersistence {
                 for (original, _) in changes[..index].iter().rev() {
                     self.store
                         .save(original)
-                        .map_err(|_| WorkspaceBridgeError::operation("reorder rollback failed"))?;
+                        .map_err(|_| WorkspaceError::operation("reorder rollback failed"))?;
                 }
-                return Err(WorkspaceBridgeError::operation(
-                    "items could not be reordered",
-                ));
+                return Err(WorkspaceError::operation("items could not be reordered"));
             }
         }
         Ok(())
@@ -1257,16 +1233,16 @@ impl SessionPersistence {
 
     /// # Errors
     /// Returns a missing collection or storage error.
-    pub fn collection(&self, id: &str) -> Result<Collection, WorkspaceBridgeError> {
+    pub fn collection(&self, id: &str) -> Result<Collection, WorkspaceError> {
         let id = document_id(id.to_owned())?;
         self.store
             .load()
-            .map_err(|_| WorkspaceBridgeError::operation("workspace could not be loaded"))?
+            .map_err(|_| WorkspaceError::operation("workspace could not be loaded"))?
             .collections
             .into_iter()
             .find(|snapshot| snapshot.collection.id == id)
             .map(|snapshot| snapshot.collection)
-            .ok_or_else(|| WorkspaceBridgeError::operation("collection does not exist"))
+            .ok_or_else(|| WorkspaceError::operation("collection does not exist"))
     }
 
     /// # Errors
@@ -1275,12 +1251,12 @@ impl SessionPersistence {
         &self,
         collection_id: &str,
         request_id: &str,
-    ) -> Result<Request, WorkspaceBridgeError> {
+    ) -> Result<Request, WorkspaceError> {
         let collection_id = document_id(collection_id.to_owned())?;
         let request_id = document_id(request_id.to_owned())?;
         self.store
             .load()
-            .map_err(|_| WorkspaceBridgeError::operation("workspace could not be loaded"))?
+            .map_err(|_| WorkspaceError::operation("workspace could not be loaded"))?
             .collections
             .into_iter()
             .find(|snapshot| snapshot.collection.id == collection_id)
@@ -1290,22 +1266,22 @@ impl SessionPersistence {
                     .into_iter()
                     .find(|request| request.id == request_id)
             })
-            .ok_or_else(|| WorkspaceBridgeError::operation("request does not exist"))
+            .ok_or_else(|| WorkspaceError::operation("request does not exist"))
     }
 
-    fn save_collection_document(&self, collection: Collection) -> Result<(), WorkspaceBridgeError> {
+    fn save_collection_document(&self, collection: Collection) -> Result<(), WorkspaceError> {
         self.store
             .save(&WorkspaceDocument::Collection(collection))
             .map(|_| ())
-            .map_err(|_| WorkspaceBridgeError::operation("collection could not be saved"))
+            .map_err(|_| WorkspaceError::operation("collection could not be saved"))
     }
 
-    fn git_workspace(&self) -> Result<GitWorkspace, GitBridgeError> {
+    fn git_workspace(&self) -> Result<GitWorkspace, WorkspaceGitError> {
         GitWorkspace::open(self.store.root()).map_err(Into::into)
     }
 }
 
-impl WorkspaceBridgeError {
+impl WorkspaceError {
     #[must_use]
     pub fn operation(reason: &str) -> Self {
         Self::OperationFailed {
@@ -1314,7 +1290,7 @@ impl WorkspaceBridgeError {
     }
 }
 
-impl From<GitError> for GitBridgeError {
+impl From<GitError> for WorkspaceGitError {
     fn from(error: GitError) -> Self {
         Self::OperationFailed {
             kind: git_error_kind(error.kind).to_owned(),
@@ -1359,8 +1335,8 @@ impl<'a> From<&'a GitOperation> for GitOperationDocument<'a> {
     }
 }
 
-fn encode_git_document(document: &impl Serialize) -> Result<String, GitBridgeError> {
-    serde_json::to_string(document).map_err(|_| GitBridgeError::OperationFailed {
+fn encode_git_document(document: &impl Serialize) -> Result<String, WorkspaceGitError> {
+    serde_json::to_string(document).map_err(|_| WorkspaceGitError::OperationFailed {
         kind: "encoding".to_owned(),
         reason: "Git result could not be encoded".to_owned(),
     })
@@ -1421,23 +1397,23 @@ const fn document_problem_kind(kind: DocumentProblemKind) -> &'static str {
     }
 }
 
-fn document_id(value: String) -> Result<DocumentId, WorkspaceBridgeError> {
-    DocumentId::new(value).map_err(|_| WorkspaceBridgeError::operation("document ID is invalid"))
+fn document_id(value: String) -> Result<DocumentId, WorkspaceError> {
+    DocumentId::new(value).map_err(|_| WorkspaceError::operation("document ID is invalid"))
 }
 
 fn parse_import(
     format: &str,
     source: &str,
     file_name: Option<&str>,
-) -> Result<wirebolt_core::ParsedImport, WorkspaceBridgeError> {
-    let format = ImportFormat::parse(format)
-        .map_err(|error| WorkspaceBridgeError::operation(error.reason()))?;
+) -> Result<wirebolt_core::ParsedImport, WorkspaceError> {
+    let format =
+        ImportFormat::parse(format).map_err(|error| WorkspaceError::operation(error.reason()))?;
     // Import reasons are user-facing and never quote the source.
     ImportEngine::parse_import(format, source, file_name)
-        .map_err(|error| WorkspaceBridgeError::operation(error.reason()))
+        .map_err(|error| WorkspaceError::operation(error.reason()))
 }
 
-fn request_from_document(document: SavedRequestDocument) -> Result<Request, WorkspaceBridgeError> {
+fn request_from_document(document: SavedRequestDocument) -> Result<Request, WorkspaceError> {
     let mut request = Request::new(
         document_id(document.id)?,
         document.name,
@@ -1553,12 +1529,12 @@ fn secure_import_authentication(
     prefix: &str,
     keychain_names: &BTreeMap<SecretName, SecretName>,
     created: &mut Vec<SecretName>,
-) -> Result<(), WorkspaceBridgeError> {
+) -> Result<(), WorkspaceError> {
     let secret_name = |label: &str| {
         SecretName::new(format!("{prefix}-{label}"))
-            .map_err(|_| WorkspaceBridgeError::operation("import credential name is invalid"))
+            .map_err(|_| WorkspaceError::operation("import credential name is invalid"))
     };
-    let mut store = |source: &mut ValueSource, label: &str| -> Result<(), WorkspaceBridgeError> {
+    let mut store = |source: &mut ValueSource, label: &str| -> Result<(), WorkspaceError> {
         let ValueSource::Literal(material) = source else {
             return Ok(());
         };
@@ -1566,9 +1542,9 @@ fn secure_import_authentication(
             return Ok(());
         }
         let name = secret_name(label)?;
-        secrets.save(name.as_str(), material).map_err(|_| {
-            WorkspaceBridgeError::operation("import credentials could not be saved")
-        })?;
+        secrets
+            .save(name.as_str(), material)
+            .map_err(|_| WorkspaceError::operation("import credentials could not be saved"))?;
         created.push(name.clone());
         *source = ValueSource::secret(name);
         Ok(())
@@ -1593,17 +1569,15 @@ fn secure_import_authentication(
     Ok(())
 }
 
-fn project<T: serde::de::DeserializeOwned>(
-    value: &impl Serialize,
-) -> Result<T, WorkspaceBridgeError> {
-    serde_json::to_value(value)
-        .and_then(serde_json::from_value)
-        .map_err(|_| WorkspaceBridgeError::operation("workspace snapshot could not be projected"))
-}
+use super::conversions::{
+    auth_to_core, body_to_core, environment_from_core, field_to_core, group_from_core,
+    header_to_core, proxy_from_core, proxy_to_core, request_from_core, transport_from_core,
+    transport_to_core, variable_to_core,
+};
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SessionWorkspaceDelta {
     pub version: u64,
-    pub kind: String,
+    pub kind: SessionWorkspaceNodeKind,
     pub affected_ids: Vec<String>,
 }
 impl SessionPersistence {
@@ -1613,30 +1587,25 @@ impl SessionPersistence {
     pub fn apply_session_command(
         &self,
         command: super::workspace::SessionWorkspaceCommand,
-    ) -> Result<SessionWorkspaceDelta, WorkspaceBridgeError> {
+    ) -> Result<SessionWorkspaceDelta, WorkspaceError> {
         use super::workspace::SessionWorkspaceCommand as C;
         use WorkspaceCommandDocument as D;
         let command = match command {
             C::SaveWorkspaceProxy { proxy } => D::SaveWorkspaceProxy {
-                proxy: project(&proxy)?,
+                proxy: proxy.map(proxy_to_core).transpose()?,
             },
             C::SaveWorkspaceSettings { transport } => D::SaveWorkspaceSettings {
-                transport: project(&transport)?,
+                transport: transport_to_core(transport)?,
             },
             C::RenameWorkspace { name } => D::RenameWorkspace { name },
             C::SaveEnvironment { environment } => D::SaveEnvironment {
-                environment: project(&environment)?,
+                environment: saved_environment(environment)?,
             },
             C::DeleteEnvironment { id } => D::DeleteEnvironment { id },
-            C::SaveRequest { location } => {
-                let mut request: SavedRequestDocument = project(&location.request)?;
-                request.group_id = location.group_id;
-                request.order = location.order;
-                D::SaveRequest {
-                    collection_id: location.collection_id,
-                    request: Box::new(request),
-                }
-            }
+            C::SaveRequest { location } => D::SaveRequest {
+                collection_id: location.collection_id.clone(),
+                request: Box::new(saved_request(location)?),
+            },
             C::DeleteRequest { collection_id, id } => D::DeleteRequest { collection_id, id },
             C::DuplicateRequest {
                 collection_id,
@@ -1654,7 +1623,7 @@ impl SessionPersistence {
                 group,
             } => D::CreateGroup {
                 collection_id,
-                group: project(&group)?,
+                group: saved_group(group),
             },
             C::DeleteGroup { collection_id, id } => D::DeleteGroup { collection_id, id },
             C::CreateCollection { collection } => D::CreateCollection {
@@ -1710,7 +1679,7 @@ impl SessionPersistence {
         let (kind, affected_ids) = self.apply_workspace_command_document(command)?;
         Ok(SessionWorkspaceDelta {
             version: self.version.fetch_add(1, Ordering::Relaxed) + 1,
-            kind: kind.into(),
+            kind,
             affected_ids,
         })
     }
@@ -1720,7 +1689,7 @@ impl SessionPersistence {
     pub fn apply_session_commands(
         &self,
         commands: Vec<super::workspace::SessionWorkspaceCommand>,
-    ) -> Result<(), WorkspaceBridgeError> {
+    ) -> Result<(), WorkspaceError> {
         for command in commands {
             self.apply_session_command(command)?;
         }
@@ -1732,27 +1701,24 @@ impl SessionPersistence {
     /// Loads typed application records.
     /// # Errors
     /// Returns a storage or projection error.
-    pub fn domain_snapshot(&self) -> Result<crate::domain::DomainWorkspace, WorkspaceBridgeError> {
-        use crate::domain::{
-            self, DomainCollection, DomainLocation, DomainRequestDraft, DomainWorkspace,
-        };
+    pub fn domain_snapshot(&self) -> Result<crate::domain::DomainWorkspace, WorkspaceError> {
+        use crate::domain::{DomainCollection, DomainLocation, DomainWorkspace};
 
         let snapshot = self
             .store
             .load()
-            .map_err(|_| WorkspaceBridgeError::operation("workspace could not be loaded"))?;
+            .map_err(|_| WorkspaceError::operation("workspace could not be loaded"))?;
         let mut collections = vec![];
         for c in snapshot.collections {
             let mut requests = vec![];
             for r in c.requests {
-                let mut draft: DomainRequestDraft = project(&r)?;
-                draft.method = domain::request::normalize_method(&draft.method)
-                    .unwrap_or_else(|| "GET".into());
-                draft.proxy = project(&r.proxy_override)?;
+                let group_id = r.group_id.as_ref().map(ToString::to_string);
+                let order = r.order;
+                let draft = request_from_core(r);
                 requests.push(DomainLocation {
                     collection_id: c.collection.id.to_string(),
-                    group_id: r.group_id.map(|id| id.to_string()),
-                    order: r.order,
+                    group_id,
+                    order,
                     request: draft,
                 });
             }
@@ -1760,16 +1726,25 @@ impl SessionPersistence {
                 id: c.collection.id.to_string(),
                 name: c.collection.name,
                 order: c.collection.order,
-                groups: project(&c.collection.groups)?,
+                groups: c
+                    .collection
+                    .groups
+                    .into_iter()
+                    .map(group_from_core)
+                    .collect(),
                 requests,
             });
         }
         Ok(DomainWorkspace {
             name: snapshot.workspace.name,
-            proxy: project(&snapshot.workspace.proxy)?,
-            transport: project(&snapshot.workspace.transport)?,
+            proxy: snapshot.workspace.proxy.map(proxy_from_core),
+            transport: transport_from_core(snapshot.workspace.transport),
             collections,
-            environments: project(&snapshot.environments)?,
+            environments: snapshot
+                .environments
+                .into_iter()
+                .map(environment_from_core)
+                .collect(),
         })
     }
 }
@@ -1787,7 +1762,7 @@ impl SessionPersistence {
         for command in commands {
             match self.apply_session_command(command) {
                 Ok(_) => completed += 1,
-                Err(WorkspaceBridgeError::OperationFailed { reason }) => {
+                Err(WorkspaceError::OperationFailed { reason }) => {
                     return SessionCommandBatchResult {
                         completed,
                         failure_reason: Some(reason),
@@ -1799,5 +1774,61 @@ impl SessionPersistence {
             completed,
             failure_reason: None,
         }
+    }
+}
+
+fn saved_request(
+    location: crate::domain::DomainLocation,
+) -> Result<SavedRequestDocument, WorkspaceError> {
+    let r = location.request;
+    let mut request = SavedRequestDocument {
+        id: r.id,
+        name: r.name,
+        group_id: None,
+        order: 0,
+        method: r.method,
+        url: r.url,
+        web_socket: r.web_socket,
+        note: r.note,
+        query: r
+            .query
+            .into_iter()
+            .map(field_to_core)
+            .collect::<Result<_, _>>()?,
+        headers: r
+            .headers
+            .into_iter()
+            .map(header_to_core)
+            .collect::<Result<_, _>>()?,
+        authentication: auth_to_core(r.authentication)?,
+        body: body_to_core(r.body)?,
+        proxy: r.proxy.map(proxy_to_core).transpose()?,
+        transport: transport_to_core(r.transport)?,
+        inherits_workspace_transport: r.inherits_workspace_transport,
+    };
+    request.group_id = location.group_id;
+    request.order = location.order;
+    Ok(request)
+}
+
+fn saved_environment(
+    e: crate::domain::DomainEnvironment,
+) -> Result<SavedEnvironmentDocument, WorkspaceError> {
+    Ok(SavedEnvironmentDocument {
+        id: e.id,
+        name: e.name,
+        variables: e
+            .variables
+            .into_iter()
+            .map(variable_to_core)
+            .collect::<Result<_, _>>()?,
+    })
+}
+fn saved_group(g: crate::domain::DomainGroup) -> SavedGroupDocument {
+    SavedGroupDocument {
+        id: g.id,
+        name: g.name,
+        parent_id: g.parent_id,
+        order: g.order,
     }
 }

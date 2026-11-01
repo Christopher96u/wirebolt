@@ -9,7 +9,7 @@ use crate::{
         },
         tabs::SessionDocument,
         transport::{
-            self, PreparedRunSnapshotDocument, RequestIssueDocument, RunFailureDocument,
+            PreparedRunSnapshotDocument, RequestIssueDocument, RunFailureDocument,
             TransportObserver,
         },
     },
@@ -348,9 +348,7 @@ impl RunObserver {
 impl TransportObserver for RunObserver {
     fn prepared(&self, snapshot: &PreparedRunSnapshotDocument) {
         // The existing redacted wire snapshot has diagnostic-only manual proxy routes.
-        if let Ok(snapshot) =
-            serde_json::to_value(snapshot).and_then(serde_json::from_value::<SessionPrepared>)
-        {
+        if let Ok(snapshot) = SessionPrepared::try_from(snapshot) {
             self.event(SessionRunEvent::Prepared { snapshot });
         } else {
             self.finish(Some(SessionFailure::new("bridge")));
@@ -358,19 +356,7 @@ impl TransportObserver for RunObserver {
     }
     fn head(&self, head: &wirebolt_core::RunHead, _: &[RequestIssueDocument]) {
         self.event(SessionRunEvent::Head {
-            head: SessionHead {
-                status: head.status,
-                version: transport::http_version(head.version).into(),
-                headers: head
-                    .headers
-                    .iter()
-                    .map(|(name, value)| ResponseHeaderValue {
-                        name: name.to_string(),
-                        value: String::from_utf8_lossy(value.as_bytes()).into_owned(),
-                    })
-                    .collect(),
-                time_to_headers_ns: transport::duration_ns(head.time_to_headers),
-            },
+            head: SessionHead::from(head),
         });
     }
     fn chunk(&self, bytes: &[u8]) -> bool {
@@ -387,25 +373,11 @@ impl TransportObserver for RunObserver {
     }
     fn complete(&self, bytes_received: u64, _: u64, total_time: Duration) {
         self.event(SessionRunEvent::Complete {
-            completion: SessionCompletion {
-                bytes_received,
-                total_time_ns: transport::duration_ns(total_time),
-            },
+            completion: SessionCompletion::from_transport(bytes_received, total_time),
         });
     }
     fn failure(&self, failure: &RunFailureDocument) {
-        self.finish(Some(SessionFailure {
-            kind: failure.kind.into(),
-            issues: failure
-                .issues
-                .iter()
-                .map(|i| crate::session::run::SessionIssue {
-                    path: i.path.clone(),
-                    kind: i.kind.into(),
-                    reference: i.reference.clone(),
-                })
-                .collect(),
-        }));
+        self.finish(Some(SessionFailure::from(failure)));
     }
 }
 

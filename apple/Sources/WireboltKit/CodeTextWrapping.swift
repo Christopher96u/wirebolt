@@ -7,17 +7,26 @@ public struct CodeTextWrapping: Hashable, Sendable {
     public let fontSize: Double
     public let width: Double
     public init(fontName: String, fontSize: Double, width: Double) {
-        self.fontName = fontName; self.fontSize = fontSize; self.width = max(1, width)
+        self.fontName = fontName
+        self.fontSize = fontSize
+        self.width = max(1, width)
     }
     public init(fontName: String, fontSize: Double, columns: Int) {
-        self.init(fontName: fontName, fontSize: fontSize, width: (Double(max(1, columns)) + 0.25) * Self.advance(fontName: fontName, fontSize: fontSize))
+        self.init(
+            fontName: fontName, fontSize: fontSize,
+            width: (Double(max(1, columns)) + 0.25) * Self.advance(fontName: fontName, fontSize: fontSize))
     }
     public static func advance(fontName: String, fontSize: Double) -> Double {
         let font = CTFontCreateWithName(fontName as CFString, fontSize, nil)
-        return CTLineGetTypographicBounds(CTLineCreateWithAttributedString(NSAttributedString(string: " ",
-            attributes: [NSAttributedString.Key(kCTFontAttributeName as String): font])), nil, nil, nil)
+        return CTLineGetTypographicBounds(
+            CTLineCreateWithAttributedString(
+                NSAttributedString(
+                    string: " ",
+                    attributes: [NSAttributedString.Key(kCTFontAttributeName as String): font])), nil, nil, nil)
     }
-    var rust: WrapLayout { WrapLayout(fontName: fontName, fontSize: fontSize, width: width, advance: Self.advance(fontName: fontName, fontSize: fontSize)) }
+    var rust: WrapLayout {
+        WrapLayout(fontName: fontName, fontSize: fontSize, width: width, advance: Self.advance(fontName: fontName, fontSize: fontSize))
+    }
     public static func breakLength(in source: NSString, start: Int, fitting: Int) -> Int {
         CodeWrapBreaks(source as String).length(start: start, fitting: fitting)
     }
@@ -47,17 +56,21 @@ final class NativeTextShaper: AppTextShaper {
             var setting = CTParagraphStyleSetting(spec: .defaultTabInterval, valueSize: MemoryLayout<Double>.size, value: pointer)
             return CTParagraphStyleCreate(&setting, 1)
         }
-        let attributes: [NSAttributedString.Key: Any] = [NSAttributedString.Key(kCTFontAttributeName as String): font,
-            NSAttributedString.Key(kCTParagraphStyleAttributeName as String): paragraph]
+        let attributes: [NSAttributedString.Key: Any] = [
+            NSAttributedString.Key(kCTFontAttributeName as String): font,
+            NSAttributedString.Key(kCTParagraphStyleAttributeName as String): paragraph,
+        ]
         var groupWidths: [String: [Double]] = [:]
         return requests.map { request in
             let source = request.text as NSString
-            let typesetter = CTTypesetterCreateWithAttributedStringAndOptions(NSAttributedString(string: request.text, attributes: attributes),
+            let typesetter = CTTypesetterCreateWithAttributedStringAndOptions(
+                NSAttributedString(string: request.text, attributes: attributes),
                 [kCTTypesetterOptionAllowUnboundedLayout: true] as CFDictionary)!
             let line = CTTypesetterCreateLine(typesetter, CFRange(location: 0, length: source.length))
             var widths = [Double](repeating: 0, count: max(0, request.boundaries.count - 1))
             var glyphStarts = [Bool](repeating: false, count: source.length + 1)
-            glyphStarts[0] = true; glyphStarts[source.length] = true
+            glyphStarts[0] = true
+            glyphStarts[source.length] = true
             var clusterAt = [Int](repeating: 0, count: source.length + 1)
             for cluster in 0..<max(0, request.boundaries.count - 1) {
                 let start = Int(clamping: request.boundaries[cluster])
@@ -83,26 +96,32 @@ final class NativeTextShaper: AppTextShaper {
             var groups: [ShapingGroup] = []
             var previous = 0
             for end in glyphStarts.indices.dropFirst() where glyphStarts[end] {
-                let start = previous; previous = end
+                let start = previous
+                previous = end
                 let first = clusterAt[start]
                 let last = clusterAt[end]
                 // CoreText can omit long runs of control characters. Never
                 // allocate a quadratic table for those non-glyph spans.
                 guard first < last, last - first > 1, last - first <= 32,
-                      request.boundaries[first] == UInt64(start), request.boundaries[last] == UInt64(end) else { continue }
+                    request.boundaries[first] == UInt64(start), request.boundaries[last] == UInt64(end)
+                else { continue }
                 let key = source.substring(with: NSRange(location: start, length: end - start))
                 let stride = last - first + 1
                 let measured: [Double]
-                if let cached = groupWidths[key] { measured = cached }
-                else {
+                if let cached = groupWidths[key] {
+                    measured = cached
+                } else {
                     var values = [Double](repeating: 0, count: stride * stride)
-                    for lower in 0..<(stride - 1) { for upper in (lower + 1)..<stride {
-                        let location = Int(clamping: request.boundaries[first + lower])
-                        let end = Int(clamping: request.boundaries[first + upper])
-                        let partial = CTTypesetterCreateLine(typesetter, CFRange(location: location, length: end - location))
-                        values[lower * stride + upper] = CTLineGetTypographicBounds(partial, nil, nil, nil)
-                    } }
-                    measured = values; groupWidths[key] = values
+                    for lower in 0..<(stride - 1) {
+                        for upper in (lower + 1)..<stride {
+                            let location = Int(clamping: request.boundaries[first + lower])
+                            let end = Int(clamping: request.boundaries[first + upper])
+                            let partial = CTTypesetterCreateLine(typesetter, CFRange(location: location, length: end - location))
+                            values[lower * stride + upper] = CTLineGetTypographicBounds(partial, nil, nil, nil)
+                        }
+                    }
+                    measured = values
+                    groupWidths[key] = values
                 }
                 groups.append(ShapingGroup(first: UInt64(first), count: UInt64(last - first), widths: measured))
             }
@@ -122,7 +141,9 @@ public enum InvisibleSpaces {
     public static func runs(in text: NSString) -> [NSRange] { appSpaceRuns(text: text as String).map(\.nsRange) }
 
     /// Replaces every space with the marker and applies `attributes` to the markers.
-    public static func marking(_ source: NSAttributedString, runs suppliedRuns: [NSRange]? = nil, attributes: [NSAttributedString.Key: Any]) -> NSAttributedString {
+    public static func marking(_ source: NSAttributedString, runs suppliedRuns: [NSRange]? = nil, attributes: [NSAttributedString.Key: Any])
+        -> NSAttributedString
+    {
         let runs = suppliedRuns ?? runs(in: source.string as NSString)
         guard !runs.isEmpty else { return source }
         let marked = NSMutableAttributedString(attributedString: source)

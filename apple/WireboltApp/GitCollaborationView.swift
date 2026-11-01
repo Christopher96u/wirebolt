@@ -84,7 +84,7 @@ struct GitCollaborationView: View {
                     .textSelection(.enabled)
                     .accessibilityLabel("Git error: \(failure.reason)")
             } else if let operation = model.gitOperation {
-                Label(operationLabel(operation.outcome), systemImage: operationIcon(operation.outcome))
+                Label(sessionGitOperationLabel(outcome: operation.outcome), systemImage: operationIcon(operation.outcome))
                     .foregroundStyle(operation.outcome == .conflicted ? WireboltTheme.danger : .secondary)
             }
 
@@ -136,9 +136,11 @@ struct GitCollaborationView: View {
             )
             .font(.headline)
             .foregroundStyle(WireboltTheme.danger)
-            Text("Resolve the conflicts in a text editor or Git tool and finish the merge there, or abort the merge to return to your last commit. Commit, Pull and Push are unavailable until then.")
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
+            Text(
+                "Resolve the conflicts in a text editor or Git tool and finish the merge there, or abort the merge to return to your last commit. Commit, Pull and Push are unavailable until then."
+            )
+            .foregroundStyle(.secondary)
+            .fixedSize(horizontal: false, vertical: true)
             HStack {
                 Button("Abort Merge…") { isConfirmingAbort = true }
                     .disabled(model.isGitBusy)
@@ -177,7 +179,9 @@ struct GitCollaborationView: View {
             ContentUnavailableView {
                 Label("Workspace Isn’t the Repository Root", systemImage: "folder.badge.questionmark")
             } description: {
-                Text("This workspace is inside a Git repository but isn’t its top folder. Wirebolt works with Git only when the folder containing wirebolt.toml is the repository root. Open the repository root as the workspace, or move the workspace into its own repository.")
+                Text(
+                    "This workspace is inside a Git repository but isn’t its top folder. Wirebolt works with Git only when the folder containing wirebolt.toml is the repository root. Open the repository root as the workspace, or move the workspace into its own repository."
+                )
             } actions: {
                 Button("Show in Finder") {
                     if let root = model.workspaceLocation { NSWorkspace.shared.activateFileViewerSelecting([root]) }
@@ -194,26 +198,26 @@ struct GitCollaborationView: View {
     }
 
     private func changeList(_ status: GitStatusSnapshot) -> some View {
-            List(status.changes) { change in
-                HStack(spacing: WireboltTheme.Spacing.medium) {
-                    Label(change.kind.rawValue, systemImage: symbol(for: change.kind))
-                        .font(.caption.weight(.medium))
-                        .foregroundStyle(color(for: change.kind))
-                        .frame(width: 104, alignment: .leading)
-                        .help(porcelainHelp(change))
-                    VStack(alignment: .leading, spacing: WireboltTheme.Spacing.xxSmall) {
-                        Text(change.path).lineLimit(1)
-                        if let previousPath = change.previousPath {
-                            Text("from \(previousPath)")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                                .lineLimit(1)
-                        }
+        List(status.changes) { change in
+            HStack(spacing: WireboltTheme.Spacing.medium) {
+                Label(change.kind.rawValue, systemImage: symbol(for: change.kind))
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(color(for: change.kind))
+                    .frame(width: 104, alignment: .leading)
+                    .help(porcelainHelp(change))
+                VStack(alignment: .leading, spacing: WireboltTheme.Spacing.xxSmall) {
+                    Text(change.path).lineLimit(1)
+                    if let previousPath = change.previousPath {
+                        Text("from \(previousPath)")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
                     }
-                    Spacer()
                 }
-                .accessibilityElement(children: .combine)
+                Spacer()
             }
+            .accessibilityElement(children: .combine)
+        }
     }
 
     private var actions: some View {
@@ -236,8 +240,10 @@ struct GitCollaborationView: View {
                     Task { await model.pullGit() }
                 }
                 .disabled(model.isGitBusy || model.gitStatus?.upstream == nil || model.hasUnsavedRequestChanges || isMerging)
-                .help(isMerging ? "Finish or abort the merge first."
-                    : "Pull the configured upstream. Conflicts are never resolved automatically.")
+                .help(
+                    isMerging
+                        ? "Finish or abort the merge first."
+                        : "Pull the configured upstream. Conflicts are never resolved automatically.")
 
                 pushButton
 
@@ -264,11 +270,13 @@ struct GitCollaborationView: View {
     }
 
     private func pushHelp(_ availability: GitPushAvailability) -> String {
-        switch availability {
-        case .push: "Push committed workspace documents to the upstream."
-        case let .publish(branch): "No upstream configured. Push \(branch) to origin and track it as the upstream."
-        case let .unavailable(reason): reason
-        }
+        let value: PushAvailability =
+            switch availability {
+            case .push: .push
+            case .publish(let branch): .publish(branch: branch)
+            case .unavailable(let reason): .unavailable(reason: reason)
+            }
+        return sessionGitPushHelp(availability: value)
     }
 
     private var trimmedCommitMessage: String {
@@ -308,38 +316,10 @@ struct GitCollaborationView: View {
 
     /// The Git porcelain code stays available for people who know it.
     private func porcelainHelp(_ change: GitChangeSnapshot) -> String {
-        let code = change.conflicted ? "UU" : shortLabel(change.staged) + shortLabel(change.unstaged)
-        return "Git status: \(code.replacingOccurrences(of: " ", with: "·"))"
-    }
-
-    private func shortLabel(_ delta: GitDeltaSnapshot) -> String {
-        switch delta {
-        case .none: " "
-        case .added: "A"
-        case .modified: "M"
-        case .deleted: "D"
-        case .renamed: "R"
-        case .copied: "C"
-        case .typeChanged: "T"
-        case .untracked: "?"
-        case .unmerged: "U"
-        }
-    }
-
-    private func operationLabel(_ outcome: GitOperationOutcome) -> String {
-        switch outcome {
-        case .nothingToCommit: "Nothing to commit"
-        case .committed: "Workspace documents committed"
-        case .updated: "Workspace updated from upstream"
-        case .upToDate: "Already up to date"
-        case .pushed: "Current branch pushed"
-        case .conflicted: "Pull stopped with conflicts"
-        case .mergeAborted: "Merge aborted; workspace restored to the last commit"
-        }
+        sessionGitPorcelain(staged: change.staged, unstaged: change.unstaged, conflicted: change.conflicted)
     }
 
     private func operationIcon(_ outcome: GitOperationOutcome) -> String {
         outcome == .conflicted ? "exclamationmark.triangle.fill" : "checkmark.circle"
     }
 }
-

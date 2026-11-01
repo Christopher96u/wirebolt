@@ -12,7 +12,7 @@ fn status() -> WorkspaceGitStatus {
 fn operation(outcome: &str) -> WorkspaceReply {
     WorkspaceReply::GitOperation {
         operation: WorkspaceGitOperation {
-            outcome: outcome.into(),
+            outcome: serde_json::from_str(&format!("\"{outcome}\"")).unwrap(),
             revision: Some("abc".into()),
             status: status(),
         },
@@ -261,7 +261,10 @@ fn git_merge_status_defaults_and_merge_abort_document_decode() {
         ["wirebolt.toml"]
     );
     let aborted:WorkspaceGitOperation=serde_json::from_str(r#"{"outcome":"merge_aborted","revision":"abc","status":{"branch":"main","upstream":null,"ahead":0,"behind":0,"changes":[],"merging":false}}"#).unwrap();
-    assert_eq!(aborted.outcome, "merge_aborted");
+    assert_eq!(
+        aborted.outcome,
+        super::super::io::WorkspaceGitOutcome::MergeAborted
+    );
 }
 #[tokio::test]
 async fn abort_reloads_and_initialize_clears_previous_operation() {
@@ -287,7 +290,7 @@ async fn abort_reloads_and_initialize_clears_previous_operation() {
     assert_eq!(loaded.workspace.name, "Reloaded");
     assert_eq!(
         h.ops.presentation().git_operation.unwrap().outcome,
-        "merge_aborted"
+        WorkspaceGitOutcome::MergeAborted
     );
     assert!(h.ops.begin_git(true, WorkspaceGitAction::Initialize, false));
     h.ops
@@ -324,7 +327,10 @@ async fn git_runs_only_when_requested_and_pull_reloads_only_updated_outcome() {
         lock(&h.store.replies).push_back(operation(outcome));
         assert!(h.ops.begin_git(true, action.clone(), false));
         assert!(h.ops.git(action, &h.store, Some(&h.store)).await.is_none());
-        assert_eq!(h.ops.presentation().git_operation.unwrap().outcome, outcome);
+        assert_eq!(
+            h.ops.presentation().git_operation.unwrap().outcome,
+            serde_json::from_str::<WorkspaceGitOutcome>(&format!("\"{outcome}\"")).unwrap()
+        );
     }
     let mut w = nested();
     w.name = "Updated".into();

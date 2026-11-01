@@ -2,23 +2,22 @@ uniffi::setup_scaffolding!();
 mod app_domain;
 mod app_response;
 mod app_session;
-mod websocket;
+mod native_transport;
+
 #[cfg(test)]
 use wirebolt_app::session::transport::{HttpEngineCache, timeout_from_millis};
 use wirebolt_app::session::transport::{
-    PreparedRunSnapshotDocument, RequestIssueDocument, RunFailureDocument, RunInput,
-    clear_manual_http_engines, duration_ns, http_version, shared_http_engine,
+    RunFailureDocument, clear_manual_http_engines, shared_http_engine,
 };
 
 use std::{
     collections::BTreeMap,
     error::Error,
-    ffi::c_void,
-    fmt, ptr,
-    sync::{Arc, LazyLock, Mutex, mpsc},
-    time::Duration,
+    fmt,
+    sync::{Arc, LazyLock},
 };
 
+#[cfg(test)]
 use serde::Serialize;
 #[cfg(not(target_vendor = "apple"))]
 use wirebolt_core::NoSecrets;
@@ -28,8 +27,8 @@ use wirebolt_core::{
     WorkspaceStore,
 };
 use wirebolt_core::{
-    DocumentId, Environment, HttpEngineConfig, ProxyMode, ProxyPolicy, RequestPipeline,
-    RunCancellation, RunHead, SecretName, SecretResolver, ValueSource,
+    DocumentId, Environment, HttpEngineConfig, ProxyMode, ProxyPolicy, RequestPipeline, SecretName,
+    ValueSource,
 };
 
 #[derive(Debug, Eq, PartialEq, uniffi::Record)]
@@ -77,7 +76,8 @@ impl fmt::Display for RequestPreparationError {
 impl Error for RequestPreparationError {}
 
 use wirebolt_app::session::persistence::{
-    GitBridgeError, SessionPersistence, WorkspaceBridgeError, WorkspaceSecrets,
+    SessionPersistence, WorkspaceError as WorkspaceBridgeError,
+    WorkspaceGitError as GitBridgeError, WorkspaceSecrets,
 };
 #[uniffi::remote(Error)]
 pub enum WorkspaceBridgeError {
@@ -105,85 +105,7 @@ impl WorkspaceBridge {
             )?,
         }))
     }
-    /// # Errors
-    /// Returns the application operation error.
-    pub fn snapshot_json(&self) -> Result<String, WorkspaceBridgeError> {
-        self.inner.snapshot_json()
-    }
-    /// # Errors
-    /// Returns the application operation error.
-    pub fn export_workspace_json(&self) -> Result<String, WorkspaceBridgeError> {
-        self.inner.export_workspace_json()
-    }
-    /// # Errors
-    /// Returns the application operation error.
-    pub fn export_collection_json(&self, id: &str) -> Result<String, WorkspaceBridgeError> {
-        self.inner.export_collection_json(id)
-    }
-    /// # Errors
-    /// Returns the application operation error.
-    pub fn export_request_json(
-        &self,
-        collection_id: &str,
-        id: &str,
-    ) -> Result<String, WorkspaceBridgeError> {
-        self.inner.export_request_json(collection_id, id)
-    }
-    /// # Errors
-    /// Returns the application operation error.
-    pub fn save_collection(&self, id: String, name: String) -> Result<(), WorkspaceBridgeError> {
-        self.inner.save_collection(id, name)
-    }
-    /// # Errors
-    /// Returns the application operation error.
-    pub fn save_request(
-        &self,
-        collection_id: String,
-        request_json: &str,
-    ) -> Result<(), WorkspaceBridgeError> {
-        self.inner.save_request(collection_id, request_json)
-    }
-    /// # Errors
-    /// Returns the application operation error.
-    pub fn save_environment(&self, environment_json: &str) -> Result<(), WorkspaceBridgeError> {
-        self.inner.save_environment(environment_json)
-    }
-    /// # Errors
-    /// Returns the application operation error.
-    pub fn apply_workspace_command(
-        &self,
-        command_json: &str,
-    ) -> Result<String, WorkspaceBridgeError> {
-        self.inner.apply_workspace_command(command_json)
-    }
-    /// # Errors
-    /// Returns the application operation error.
-    pub fn preview_import(
-        &self,
-        format: &str,
-        source: &str,
-    ) -> Result<String, WorkspaceBridgeError> {
-        self.inner.preview_import(format, source)
-    }
-    /// # Errors
-    /// Returns the application operation error.
-    pub fn commit_import(
-        &self,
-        format: &str,
-        source: &str,
-    ) -> Result<String, WorkspaceBridgeError> {
-        self.inner.commit_import(format, source)
-    }
-    /// # Errors
-    /// Returns the application operation error.
-    pub fn commit_import_file(
-        &self,
-        format: &str,
-        source: &str,
-        name: &str,
-    ) -> Result<String, WorkspaceBridgeError> {
-        self.inner.commit_import_file(format, source, name)
-    }
+
     /// # Errors
     /// Returns the application operation error.
     pub fn read_secret(&self, name: &str) -> Result<Option<String>, WorkspaceBridgeError> {
@@ -198,36 +120,6 @@ impl WorkspaceBridge {
     /// Returns the application operation error.
     pub fn delete_secret(&self, name: &str) -> Result<(), WorkspaceBridgeError> {
         self.inner.delete_secret(name)
-    }
-    /// # Errors
-    /// Returns the application operation error.
-    pub fn git_status_json(&self) -> Result<String, GitBridgeError> {
-        self.inner.git_status_json()
-    }
-    /// # Errors
-    /// Returns the application operation error.
-    pub fn git_pull_json(&self) -> Result<String, GitBridgeError> {
-        self.inner.git_pull_json()
-    }
-    /// # Errors
-    /// Returns the application operation error.
-    pub fn git_commit_json(&self, message: &str) -> Result<String, GitBridgeError> {
-        self.inner.git_commit_json(message)
-    }
-    /// # Errors
-    /// Returns the application operation error.
-    pub fn git_push_json(&self) -> Result<String, GitBridgeError> {
-        self.inner.git_push_json()
-    }
-    /// # Errors
-    /// Returns the application operation error.
-    pub fn git_abort_merge_json(&self) -> Result<String, GitBridgeError> {
-        self.inner.git_abort_merge_json()
-    }
-    /// # Errors
-    /// Returns the application operation error.
-    pub fn git_initialize_json(&self) -> Result<String, GitBridgeError> {
-        self.inner.git_initialize_json()
     }
 }
 #[derive(Debug)]
@@ -396,23 +288,6 @@ pub fn reset_http_engines() {
     wirebolt_app::session::transport::reset_http_engines();
 }
 
-#[repr(C)]
-#[derive(Clone, Copy, Debug)]
-pub struct WireboltRunCallbacks {
-    pub on_prepared: Option<extern "C" fn(*mut c_void, *const u8, usize)>,
-    pub on_head: Option<extern "C" fn(*mut c_void, *const u8, usize)>,
-    pub on_chunk: Option<extern "C" fn(*mut c_void, *const u8, usize) -> u8>,
-    pub on_complete: Option<extern "C" fn(*mut c_void, *const u8, usize)>,
-    pub on_error: Option<extern "C" fn(*mut c_void, *const u8, usize)>,
-    pub on_cookies: Option<extern "C" fn(*mut c_void, *const u8, usize)>,
-}
-
-#[derive(Debug)]
-pub struct WireboltRunSession {
-    cancellation: RunCancellation,
-    completion: Mutex<Option<mpsc::Receiver<()>>>,
-}
-
 static SHARED_RUNTIME: LazyLock<Option<tokio::runtime::Runtime>> = LazyLock::new(|| {
     tokio::runtime::Builder::new_multi_thread()
         .worker_threads(2)
@@ -421,276 +296,6 @@ static SHARED_RUNTIME: LazyLock<Option<tokio::runtime::Runtime>> = LazyLock::new
         .build()
         .ok()
 });
-
-#[derive(Debug, Serialize)]
-struct ResponseHeadDocument<'a> {
-    status: u16,
-    version: &'static str,
-    headers: Vec<ResponseHeaderDocument<'a>>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    remote_addr: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    content_encoding: Option<&'static str>,
-    warnings: &'a [RequestIssueDocument],
-    time_to_headers_ns: u64,
-}
-
-#[derive(Debug, Serialize)]
-struct ResponseHeaderDocument<'a> {
-    name: &'a str,
-    value: std::borrow::Cow<'a, str>,
-}
-
-#[derive(Debug, Serialize)]
-struct RunCompleteDocument {
-    bytes_received: u64,
-    bytes_decoded: u64,
-    total_time_ns: u64,
-}
-
-/// Starts one asynchronous HTTP run.
-///
-/// The input bytes are copied before this function returns. The callback
-/// context and callback functions must remain valid until a terminal callback
-/// has returned. Callback byte buffers are borrowed only during the callback.
-/// Do not call [`wirebolt_run_free`] from inside a callback.
-///
-/// # Safety
-///
-/// `input_json` must point to `input_length` readable bytes, unless the length
-/// is zero. `context` must satisfy the lifetime contract above. The returned
-/// pointer must be released exactly once with [`wirebolt_run_free`].
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn wirebolt_run_start(
-    input_json: *const u8,
-    input_length: usize,
-    callbacks: WireboltRunCallbacks,
-    context: *mut c_void,
-) -> *mut WireboltRunSession {
-    if callbacks.on_head.is_none()
-        || callbacks.on_chunk.is_none()
-        || callbacks.on_complete.is_none()
-        || callbacks.on_error.is_none()
-        || (input_json.is_null() && input_length != 0)
-    {
-        return ptr::null_mut();
-    }
-
-    let input = if input_length == 0 {
-        Vec::new()
-    } else {
-        // SAFETY: The caller promises a readable buffer for `input_length` bytes.
-        unsafe { std::slice::from_raw_parts(input_json, input_length) }.to_vec()
-    };
-    let Some(runtime) = SHARED_RUNTIME.as_ref() else {
-        return ptr::null_mut();
-    };
-    let cancellation = RunCancellation::new();
-    let worker_cancellation = cancellation.clone();
-    let context_address = context as usize;
-    let (completion_sender, completion) = mpsc::sync_channel(1);
-    runtime.spawn(async move {
-        // The run executes in its own task so that a panic anywhere inside
-        // it still ends with a terminal callback instead of a silent hang.
-        let worker = tokio::spawn(execute_run(
-            input,
-            worker_cancellation,
-            callbacks,
-            context_address,
-        ));
-        if worker.await.is_err() {
-            emit_failure(
-                &callbacks,
-                context_address,
-                &RunFailureDocument::new("internal"),
-            );
-        }
-        let _ = completion_sender.send(());
-    });
-
-    Box::into_raw(Box::new(WireboltRunSession {
-        cancellation,
-        completion: Mutex::new(Some(completion)),
-    }))
-}
-
-/// Requests cancellation of an active run.
-///
-/// # Safety
-///
-/// `session` must be null or a live pointer returned by
-/// [`wirebolt_run_start`] that has not been freed.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn wirebolt_run_cancel(session: *mut WireboltRunSession) {
-    // SAFETY: The caller owns a live session for the duration of this call.
-    if let Some(session) = unsafe { session.as_ref() } {
-        session.cancellation.cancel();
-    }
-}
-
-/// Cancels, joins, and releases one run session.
-///
-/// # Safety
-///
-/// `session` must be null or a live pointer returned by
-/// [`wirebolt_run_start`]. It must be passed to this function at most once and
-/// this function must not be called from a run callback.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn wirebolt_run_free(session: *mut WireboltRunSession) {
-    if session.is_null() {
-        return;
-    }
-    // SAFETY: Ownership is transferred back exactly once by the caller.
-    let session = unsafe { Box::from_raw(session) };
-    session.cancellation.cancel();
-    let completion = session
-        .completion
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .take();
-    if let Some(completion) = completion {
-        let _ = completion.recv();
-    }
-}
-
-async fn execute_run(
-    input: Vec<u8>,
-    cancellation: RunCancellation,
-    callbacks: WireboltRunCallbacks,
-    context: usize,
-) {
-    let parsed = serde_json::from_slice::<RunInput>(&input);
-    let Ok(input) = parsed else {
-        emit_failure(
-            &callbacks,
-            context,
-            &RunFailureDocument::new("invalid_input"),
-        );
-        return;
-    };
-
-    #[cfg(target_vendor = "apple")]
-    execute_run_with_secrets(
-        input,
-        cancellation,
-        callbacks,
-        context,
-        wirebolt_core::KeychainSecretResolver::default(),
-    )
-    .await;
-    #[cfg(not(target_vendor = "apple"))]
-    execute_run_with_secrets(input, cancellation, callbacks, context, NoSecrets).await;
-}
-
-async fn execute_run_with_secrets<R>(
-    input: RunInput,
-    cancellation: RunCancellation,
-    callbacks: WireboltRunCallbacks,
-    context: usize,
-    secrets: R,
-) where
-    R: SecretResolver + Clone + Send + 'static,
-{
-    wirebolt_app::session::transport::execute(
-        input,
-        cancellation,
-        Arc::new(NativeTransportObserver { callbacks, context }),
-        secrets,
-    )
-    .await;
-}
-#[derive(Debug)]
-struct NativeTransportObserver {
-    callbacks: WireboltRunCallbacks,
-    context: usize,
-}
-impl wirebolt_app::session::transport::TransportObserver for NativeTransportObserver {
-    fn prepared(&self, snapshot: &PreparedRunSnapshotDocument) {
-        emit_json(self.callbacks.on_prepared, self.context, snapshot);
-    }
-    fn head(&self, head: &RunHead, warnings: &[RequestIssueDocument]) {
-        emit_head(&self.callbacks, self.context, head, warnings);
-    }
-    fn chunk(&self, bytes: &[u8]) -> bool {
-        self.callbacks.on_chunk.is_some_and(|callback| {
-            callback(self.context as *mut c_void, bytes.as_ptr(), bytes.len()) != 0
-        })
-    }
-    fn cookies(&self, url: &str, headers: Vec<(String, String)>) {
-        let values: Vec<_> = headers
-            .iter()
-            .map(|(name, value)| ResponseHeaderDocument {
-                name,
-                value: std::borrow::Cow::Borrowed(value),
-            })
-            .collect();
-        emit_json(
-            self.callbacks.on_cookies,
-            self.context,
-            &serde_json::json!({"url":url,"headers":values}),
-        );
-    }
-    fn complete(&self, bytes_received: u64, bytes_decoded: u64, total_time: Duration) {
-        emit_json(
-            self.callbacks.on_complete,
-            self.context,
-            &RunCompleteDocument {
-                bytes_received,
-                bytes_decoded,
-                total_time_ns: duration_ns(total_time),
-            },
-        );
-    }
-    fn failure(&self, failure: &RunFailureDocument) {
-        emit_failure(&self.callbacks, self.context, failure);
-    }
-}
-
-fn emit_head(
-    callbacks: &WireboltRunCallbacks,
-    context: usize,
-    head: &RunHead,
-    warnings: &[RequestIssueDocument],
-) {
-    emit_json(
-        callbacks.on_head,
-        context,
-        &ResponseHeadDocument {
-            status: head.status,
-            version: http_version(head.version),
-            headers: head
-                .headers
-                .iter()
-                .map(|(name, value)| ResponseHeaderDocument {
-                    name: name.as_str(),
-                    value: String::from_utf8_lossy(value.as_bytes()),
-                })
-                .collect(),
-            remote_addr: head.remote_addr.map(|address| address.to_string()),
-            content_encoding: head
-                .content_encoding
-                .map(wirebolt_core::ContentEncoding::token),
-            warnings,
-            time_to_headers_ns: duration_ns(head.time_to_headers),
-        },
-    );
-}
-
-fn emit_failure(callbacks: &WireboltRunCallbacks, context: usize, failure: &RunFailureDocument) {
-    emit_json(callbacks.on_error, context, failure);
-}
-
-fn emit_json<T: Serialize>(
-    callback: Option<extern "C" fn(*mut c_void, *const u8, usize)>,
-    context: usize,
-    value: &T,
-) {
-    let Some(callback) = callback else { return };
-    let Ok(json) = serde_json::to_vec(value) else {
-        return;
-    };
-    callback(context as *mut c_void, json.as_ptr(), json.len());
-}
 
 impl From<wirebolt_core::CoreHandshake> for CoreHandshake {
     fn from(value: wirebolt_core::CoreHandshake) -> Self {
@@ -724,6 +329,116 @@ impl From<HeaderField> for wirebolt_core::HeaderField {
 
 #[cfg(test)]
 impl WorkspaceBridge {
+    /// # Errors
+    /// Returns the application operation error.
+    pub fn export_workspace_json(&self) -> Result<String, WorkspaceBridgeError> {
+        self.inner.export_workspace_json()
+    }
+    /// # Errors
+    /// Returns the application operation error.
+    pub fn export_collection_json(&self, id: &str) -> Result<String, WorkspaceBridgeError> {
+        self.inner.export_collection_json(id)
+    }
+    /// # Errors
+    /// Returns the application operation error.
+    pub fn export_request_json(
+        &self,
+        collection_id: &str,
+        id: &str,
+    ) -> Result<String, WorkspaceBridgeError> {
+        self.inner.export_request_json(collection_id, id)
+    }
+    /// # Errors
+    /// Returns the application operation error.
+    pub fn save_collection(&self, id: String, name: String) -> Result<(), WorkspaceBridgeError> {
+        self.inner.save_collection(id, name)
+    }
+    /// # Errors
+    /// Returns the application operation error.
+    pub fn save_request(
+        &self,
+        collection_id: String,
+        request_json: &str,
+    ) -> Result<(), WorkspaceBridgeError> {
+        self.inner.save_request(collection_id, request_json)
+    }
+    /// # Errors
+    /// Returns the application operation error.
+    pub fn save_environment(&self, environment_json: &str) -> Result<(), WorkspaceBridgeError> {
+        self.inner.save_environment(environment_json)
+    }
+    /// # Errors
+    /// Returns the application operation error.
+    pub fn apply_workspace_command(
+        &self,
+        command_json: &str,
+    ) -> Result<String, WorkspaceBridgeError> {
+        self.inner.apply_workspace_command(command_json)
+    }
+    /// # Errors
+    /// Returns the application operation error.
+    pub fn preview_import(
+        &self,
+        format: &str,
+        source: &str,
+    ) -> Result<String, WorkspaceBridgeError> {
+        self.inner.preview_import(format, source)
+    }
+    /// # Errors
+    /// Returns the application operation error.
+    pub fn commit_import(
+        &self,
+        format: &str,
+        source: &str,
+    ) -> Result<String, WorkspaceBridgeError> {
+        self.inner.commit_import(format, source)
+    }
+    /// # Errors
+    /// Returns the application operation error.
+    pub fn commit_import_file(
+        &self,
+        format: &str,
+        source: &str,
+        name: &str,
+    ) -> Result<String, WorkspaceBridgeError> {
+        self.inner.commit_import_file(format, source, name)
+    }
+    /// # Errors
+    /// Returns the application operation error.
+    pub fn git_status_json(&self) -> Result<String, GitBridgeError> {
+        self.inner.git_status_json()
+    }
+    /// # Errors
+    /// Returns the application operation error.
+    pub fn git_pull_json(&self) -> Result<String, GitBridgeError> {
+        self.inner.git_pull_json()
+    }
+    /// # Errors
+    /// Returns the application operation error.
+    pub fn git_commit_json(&self, message: &str) -> Result<String, GitBridgeError> {
+        self.inner.git_commit_json(message)
+    }
+    /// # Errors
+    /// Returns the application operation error.
+    pub fn git_push_json(&self) -> Result<String, GitBridgeError> {
+        self.inner.git_push_json()
+    }
+    /// # Errors
+    /// Returns the application operation error.
+    pub fn git_abort_merge_json(&self) -> Result<String, GitBridgeError> {
+        self.inner.git_abort_merge_json()
+    }
+    /// # Errors
+    /// Returns the application operation error.
+    pub fn git_initialize_json(&self) -> Result<String, GitBridgeError> {
+        self.inner.git_initialize_json()
+    }
+    /// # Errors
+    /// Returns the application operation error.
+    fn snapshot_document(&self) -> Result<String, WorkspaceBridgeError> {
+        self.inner.snapshot_json()
+    }
+
     fn request(&self, collection_id: &str, id: &str) -> Result<Request, WorkspaceBridgeError> {
         self.inner.request(collection_id, id)
     }
@@ -735,6 +450,141 @@ impl WorkspaceBridge {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::ffi::c_void;
+    use wirebolt_app::session::transport::{
+        PreparedRunSnapshotDocument, RequestIssueDocument, RunInput, duration_ns, http_version,
+    };
+    use wirebolt_core::{RunCancellation, RunHead};
+    #[repr(C)]
+    #[derive(Clone, Copy, Debug)]
+    pub struct TransportCallbacks {
+        pub prepared: Option<extern "C" fn(*mut c_void, *const u8, usize)>,
+        pub head: Option<extern "C" fn(*mut c_void, *const u8, usize)>,
+        pub chunk: Option<extern "C" fn(*mut c_void, *const u8, usize) -> u8>,
+        pub complete: Option<extern "C" fn(*mut c_void, *const u8, usize)>,
+        pub error: Option<extern "C" fn(*mut c_void, *const u8, usize)>,
+        pub cookies: Option<extern "C" fn(*mut c_void, *const u8, usize)>,
+    }
+
+    #[derive(Debug, Serialize)]
+    struct ResponseHeadDocument<'a> {
+        status: u16,
+        version: &'static str,
+        headers: Vec<ResponseHeaderDocument<'a>>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        remote_addr: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        content_encoding: Option<&'static str>,
+        warnings: &'a [RequestIssueDocument],
+        time_to_headers_ns: u64,
+    }
+
+    #[derive(Debug, Serialize)]
+    struct ResponseHeaderDocument<'a> {
+        name: &'a str,
+        value: std::borrow::Cow<'a, str>,
+    }
+
+    #[derive(Debug, Serialize)]
+    struct RunCompleteDocument {
+        bytes_received: u64,
+        bytes_decoded: u64,
+        total_time_ns: u64,
+    }
+
+    #[derive(Debug)]
+    struct NativeTransportObserver {
+        callbacks: TransportCallbacks,
+        context: usize,
+    }
+    impl wirebolt_app::session::transport::TransportObserver for NativeTransportObserver {
+        fn prepared(&self, snapshot: &PreparedRunSnapshotDocument) {
+            emit_json(self.callbacks.prepared, self.context, snapshot);
+        }
+        fn head(&self, head: &RunHead, warnings: &[RequestIssueDocument]) {
+            emit_head(&self.callbacks, self.context, head, warnings);
+        }
+        fn chunk(&self, bytes: &[u8]) -> bool {
+            self.callbacks.chunk.is_some_and(|callback| {
+                callback(self.context as *mut c_void, bytes.as_ptr(), bytes.len()) != 0
+            })
+        }
+        fn cookies(&self, url: &str, headers: Vec<(String, String)>) {
+            let values: Vec<_> = headers
+                .iter()
+                .map(|(name, value)| ResponseHeaderDocument {
+                    name,
+                    value: std::borrow::Cow::Borrowed(value),
+                })
+                .collect();
+            emit_json(
+                self.callbacks.cookies,
+                self.context,
+                &serde_json::json!({"url":url,"headers":values}),
+            );
+        }
+        fn complete(&self, bytes_received: u64, bytes_decoded: u64, total_time: Duration) {
+            emit_json(
+                self.callbacks.complete,
+                self.context,
+                &RunCompleteDocument {
+                    bytes_received,
+                    bytes_decoded,
+                    total_time_ns: duration_ns(total_time),
+                },
+            );
+        }
+        fn failure(&self, failure: &RunFailureDocument) {
+            emit_failure(&self.callbacks, self.context, failure);
+        }
+    }
+
+    fn emit_head(
+        callbacks: &TransportCallbacks,
+        context: usize,
+        head: &RunHead,
+        warnings: &[RequestIssueDocument],
+    ) {
+        emit_json(
+            callbacks.head,
+            context,
+            &ResponseHeadDocument {
+                status: head.status,
+                version: http_version(head.version),
+                headers: head
+                    .headers
+                    .iter()
+                    .map(|(name, value)| ResponseHeaderDocument {
+                        name: name.as_str(),
+                        value: String::from_utf8_lossy(value.as_bytes()),
+                    })
+                    .collect(),
+                remote_addr: head.remote_addr.map(|address| address.to_string()),
+                content_encoding: head
+                    .content_encoding
+                    .map(wirebolt_core::ContentEncoding::token),
+                warnings,
+                time_to_headers_ns: duration_ns(head.time_to_headers),
+            },
+        );
+    }
+
+    fn emit_failure(callbacks: &TransportCallbacks, context: usize, failure: &RunFailureDocument) {
+        emit_json(callbacks.error, context, failure);
+    }
+
+    fn emit_json<T: Serialize>(
+        callback: Option<extern "C" fn(*mut c_void, *const u8, usize)>,
+        context: usize,
+        value: &T,
+    ) {
+        let Some(callback) = callback else { return };
+        let Ok(json) = serde_json::to_vec(value) else {
+            return;
+        };
+        callback(context as *mut c_void, json.as_ptr(), json.len());
+    }
+
     use std::{
         io::{Read, Write},
         net::TcpListener,
@@ -771,7 +621,7 @@ mod tests {
             reopened.request("api", "b").unwrap().url,
             "https://example.com/b"
         );
-        let before = reopened.snapshot_json().unwrap();
+        let before = reopened.snapshot_document().unwrap();
         for invalid in [
             vec!["request:a"],
             vec!["request:a", "request:a", "group:folder"],
@@ -779,7 +629,7 @@ mod tests {
             vec!["request:a", "request:missing", "group:folder"],
         ] {
             assert!(reopened.apply_workspace_command(&serde_json::json!({"kind":"reorder_children","collection_id":"api","items":invalid}).to_string()).is_err());
-            assert_eq!(reopened.snapshot_json().unwrap(), before);
+            assert_eq!(reopened.snapshot_document().unwrap(), before);
         }
     }
 
@@ -930,14 +780,14 @@ mod tests {
             .unwrap();
         let reopened = WorkspaceBridge::open_or_create(path, "Proxy fixture".into()).unwrap();
         let snapshot: serde_json::Value =
-            serde_json::from_str(&reopened.snapshot_json().unwrap()).unwrap();
+            serde_json::from_str(&reopened.snapshot_document().unwrap()).unwrap();
         assert_eq!(snapshot["proxy"]["mode"], "manual");
         assert_eq!(snapshot["transport"]["total_timeout_ms"], 123);
         reopened
             .apply_workspace_command(r#"{"kind":"save_workspace_proxy","proxy":null}"#)
             .unwrap();
         let reset: serde_json::Value =
-            serde_json::from_str(&reopened.snapshot_json().unwrap()).unwrap();
+            serde_json::from_str(&reopened.snapshot_document().unwrap()).unwrap();
         assert!(reset["proxy"].is_null());
         assert_eq!(reset["transport"]["total_timeout_ms"], 123);
     }
@@ -1051,7 +901,7 @@ mod tests {
         .unwrap();
         assert_ne!(first_delta["affected_ids"], second_delta["affected_ids"]);
         let snapshot: serde_json::Value =
-            serde_json::from_str(&reopened.snapshot_json().unwrap()).unwrap();
+            serde_json::from_str(&reopened.snapshot_document().unwrap()).unwrap();
         assert_eq!(snapshot["collections"].as_array().unwrap().len(), 2);
         let serialized = snapshot.to_string();
         assert!(serialized.contains("https://example.com/first"));
@@ -1062,7 +912,8 @@ mod tests {
                 .is_err()
         );
         assert_eq!(
-            serde_json::from_str::<serde_json::Value>(&reopened.snapshot_json().unwrap()).unwrap(),
+            serde_json::from_str::<serde_json::Value>(&reopened.snapshot_document().unwrap())
+                .unwrap(),
             snapshot
         );
     }
@@ -1100,7 +951,7 @@ mod tests {
                 .any(|warning| warning.as_str().unwrap().contains("secret values"))
         );
         let snapshot: serde_json::Value =
-            serde_json::from_str(&bridge.snapshot_json().unwrap()).unwrap();
+            serde_json::from_str(&bridge.snapshot_document().unwrap()).unwrap();
         let serialized = snapshot["environments"].to_string();
         assert!(serialized.contains("http://127.0.0.1:18990"));
         assert!(serialized.contains("demo.local.token"));
@@ -1108,7 +959,7 @@ mod tests {
         assert!(snapshot["collections"].to_string().contains("{{token}}"));
         assert!(bridge.commit_import_file("bruno", "{}", "Broken").is_err());
         let after: serde_json::Value =
-            serde_json::from_str(&bridge.snapshot_json().unwrap()).unwrap();
+            serde_json::from_str(&bridge.snapshot_document().unwrap()).unwrap();
         assert_eq!(after["environments"], snapshot["environments"]);
     }
 
@@ -1149,7 +1000,7 @@ mod tests {
         );
         let environment_id = summary["environments"][0]["id"].as_str().unwrap();
         let snapshot: serde_json::Value =
-            serde_json::from_str(&bridge.snapshot_json().unwrap()).unwrap();
+            serde_json::from_str(&bridge.snapshot_document().unwrap()).unwrap();
         assert!(snapshot.to_string().contains(environment_id));
         assert!(snapshot.to_string().contains("https://api.example.test"));
         assert_eq!(committed["affected_ids"].as_array().unwrap().len(), 1);
@@ -1169,7 +1020,7 @@ mod tests {
             .unwrap();
 
         let snapshot: serde_json::Value =
-            serde_json::from_str(&bridge.snapshot_json().unwrap()).unwrap();
+            serde_json::from_str(&bridge.snapshot_document().unwrap()).unwrap();
         let request = &snapshot["collections"][0]["requests"][0];
         assert_eq!(request["url"], "https://api.example.test/items");
         assert_eq!(request["inherits_workspace_transport"], false);
@@ -1185,7 +1036,7 @@ mod tests {
             "Fixture".into(),
         )
         .unwrap();
-        let before = bridge.snapshot_json().unwrap();
+        let before = bridge.snapshot_document().unwrap();
         let reason = |result: Result<String, WorkspaceBridgeError>| match result {
             Err(WorkspaceBridgeError::OperationFailed { reason }) => reason,
             Ok(_) => panic!("import must fail"),
@@ -1201,7 +1052,7 @@ mod tests {
         );
         assert!(reason(bridge.commit_import("har", "{}")).contains("HAR"));
         assert!(reason(bridge.commit_import("yaml", "a: b")).contains("isn't supported"));
-        assert_eq!(bridge.snapshot_json().unwrap(), before);
+        assert_eq!(bridge.snapshot_document().unwrap(), before);
     }
 
     #[test]
@@ -1321,7 +1172,7 @@ mod tests {
         )
         .expect("write conflicted environment");
 
-        let snapshot = bridge.snapshot_json().expect("workspace snapshot");
+        let snapshot = bridge.snapshot_document().expect("workspace snapshot");
         let document: serde_json::Value = serde_json::from_str(&snapshot).expect("snapshot JSON");
 
         assert_eq!(
@@ -1338,7 +1189,7 @@ mod tests {
         )
         .expect("reopen");
         let restored: serde_json::Value =
-            serde_json::from_str(&reopened.snapshot_json().unwrap()).unwrap();
+            serde_json::from_str(&reopened.snapshot_document().unwrap()).unwrap();
         assert_eq!(
             restored["collections"][0]["requests"][0]["web_socket"],
             true
@@ -1434,7 +1285,7 @@ mod tests {
         assert_eq!(second["version"], 2);
 
         let snapshot: serde_json::Value =
-            serde_json::from_str(&bridge.snapshot_json().expect("workspace snapshot"))
+            serde_json::from_str(&bridge.snapshot_document().expect("workspace snapshot"))
                 .expect("snapshot JSON");
         assert_eq!(snapshot["collections"][0]["groups"][0]["id"], "auth");
         assert_eq!(
@@ -1545,7 +1396,7 @@ mod tests {
 
         let reopened = WorkspaceBridge::open_or_create(path, "Ignored".into()).expect("reopen");
         let snapshot: serde_json::Value =
-            serde_json::from_str(&reopened.snapshot_json().expect("snapshot")).expect("JSON");
+            serde_json::from_str(&reopened.snapshot_document().expect("snapshot")).expect("JSON");
         assert_eq!(snapshot["name"], "Checkout Team");
     }
 
@@ -1691,29 +1542,32 @@ mod tests {
 
     fn run_to_completion(input: &str) -> (Vec<String>, *mut CallbackState) {
         let state_pointer = Box::into_raw(Box::new(CallbackState::default()));
-        let callbacks = WireboltRunCallbacks {
-            on_cookies: None,
-            on_prepared: Some(record_prepared),
-            on_head: Some(record_head),
-            on_chunk: Some(record_chunk),
-            on_complete: Some(record_complete),
-            on_error: Some(record_error),
+        let callbacks = TransportCallbacks {
+            cookies: None,
+            prepared: Some(record_prepared),
+            head: Some(record_head),
+            chunk: Some(record_chunk),
+            complete: Some(record_complete),
+            error: Some(record_error),
         };
-
-        // SAFETY: The input and callback context outlive the run session.
-        let session = unsafe {
-            wirebolt_run_start(input.as_ptr(), input.len(), callbacks, state_pointer.cast())
-        };
-        assert!(!session.is_null());
-        // SAFETY: `state_pointer` remains owned by the caller until after join.
-        let state = unsafe { &*state_pointer };
-        let events = state.wait_for_terminal();
-
-        // SAFETY: The worker reached a terminal callback and this is the sole free.
-        unsafe { wirebolt_run_free(session) };
+        let observer = Arc::new(NativeTransportObserver {
+            callbacks,
+            context: state_pointer as usize,
+        });
+        let input: RunInput = serde_json::from_str(input).unwrap();
+        SHARED_RUNTIME
+            .as_ref()
+            .unwrap()
+            .block_on(wirebolt_app::session::transport::execute(
+                input,
+                RunCancellation::new(),
+                observer,
+                wirebolt_core::NoSecrets,
+            ));
+        // SAFETY: This test owns the allocation until the caller releases it.
+        let events = unsafe { &*state_pointer }.wait_for_terminal();
         (events, state_pointer)
     }
-
     #[derive(Debug, Default)]
     struct CallbackState {
         events: Mutex<Vec<String>>,

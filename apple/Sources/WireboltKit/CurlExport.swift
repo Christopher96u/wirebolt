@@ -14,19 +14,19 @@ public struct CurlSecretReferences: Sendable {
 
 func shellQuote(_ value: String) -> String { domainShellQuote(text: value) }
 
-public extension RequestDraft {
-    var curlValueSources: [ValueSource] {
+extension RequestDraft {
+    public var curlValueSources: [ValueSource] {
         domainCurlValueSources(draft: domain).map(ValueSource.init(domain:))
     }
-    func curlSecretNames(variables: [String: ValueSource]) -> [String] {
+    public func curlSecretNames(variables: [String: ValueSource]) -> [String] {
         domainCurlExport(draft: domain, variables: variables.mapValues(\.domain), hex: []).secretNames
     }
-    func curlCommand(secrets: CurlSecretReferences) -> String {
+    public func curlCommand(secrets: CurlSecretReferences) -> String {
         domainCurlExport(draft: domain, variables: secrets.variables.mapValues(\.domain), hex: Array(secrets.hexEncoded)).command
     }
 }
 
-internal extension ProxyDocument {
+extension ProxyDocument {
     func curlRoute(for url: String) -> ProxyRouteDocument? {
         domainCurlProxyRoute(configuration: domain, url: url).map(ProxyRouteDocument.init(domain:))
     }
