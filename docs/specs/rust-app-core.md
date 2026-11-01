@@ -68,3 +68,24 @@ Wave 2 starts from the integrated result of wave 1. Agents edit app-target (`app
 Each agent reviews its own branch with the process in `/Users/chris96u/.claude/skills/code-review/SKILL.md` (two axes: **Standards** — `CONTRIBUTING.md`, `docs/development.md`, the smell baseline in that skill; **Spec** — this document), against the branch's starting commit, then fixes every hard finding. The orchestrator then reviews the integrated branch the same way before opening the pull request.
 
 Commit subjects are single-line and imperative; no `Co-authored-by` or tool attribution lines (`CONTRIBUTING.md`).
+
+## What remains in Swift and why
+
+Response wave (Agent A); the domain and session waves add their remaining files at integration.
+
+| File | Remaining Swift responsibility and reason |
+| --- | --- |
+| `ResponseStorage.swift` | Actor facades, bounded batching of the existing Swift transport's `Data` ingress, Foundation URLs/dates and native object identity; legacy domain snapshots are encoded only at the boundary until the domain/session waves share their records. Rust owns disk I/O, preview state, quotas, history and cookie rules. |
+| `ResponseIndexCache.swift` | Detached-task scheduling and Swift task cancellation forwarded to Rust; the retained cache and shared scans live in Rust. |
+| `ResponseTextIndex.swift` | Immutable viewport metadata and batched row/search coordinate conversion for native views. |
+| `TextLineIndex.swift` | Value facade applying Rust-produced edit deltas to a native line-start mirror; keystrokes never transfer the complete index. |
+| `TextSearch.swift` | Query facade, UTF-16 `NSRange` adaptation and Swift cancellation/error adaptation. |
+| `CodeFolding.swift` | Projection facade, incremental edit ingress, and batched editor coordinate conversion; native text snapshots are never echoed across the bridge on keystrokes. |
+| `CodeTextWrapping.swift` | CoreText font measurement, native shaping adapter, direct lookup of Rust-produced break snapshots and native attributed-string invisible-space rendering. |
+| `JSONNode.swift` | Converts Rust-produced tree records into the existing native tree view's value type. |
+| `JSONResponseDocument.swift` | Retains the Rust-owned temporary document and mirrors its URL and bounded preview. |
+| `ResponseFormatting.swift` | Localized Foundation byte-count formatting and legacy enum/record facades; duration, status, failure and outcome policy live in Rust. |
+| `MarkdownPreview.swift` | Builds `NSAttributedString`, AppKit fonts, colors and paragraph styles from Rust-produced runs; mirrors Rust cache retention for native object identity. |
+| `WireboltApp/IndexedResponseEditor.swift` | Native viewport drawing, selection and clipboard integration; worker cancellation forwards to Rust through the response task adapter. |
+| `WireboltApp/ResponseViewer.swift` | Native renderer composition and AppKit/WebKit adapters; JSON file parsing is requested from Rust by path. |
+| `WireboltApp/NativeCodeEditor.swift` | AppKit/TextKit editing, layout, syntax attributes and ruler drawing require native APIs; response coordinate and break data arrive in batches. |

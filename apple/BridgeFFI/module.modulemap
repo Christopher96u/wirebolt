@@ -1,0 +1,4 @@
+module wirebolt_ffiFFI {
+    header "../Generated/wirebolt_ffiFFI.h"
+    export *
+}

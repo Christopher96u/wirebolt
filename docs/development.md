@@ -38,7 +38,7 @@ For a focused change:
 ./scripts/test.sh
 ```
 
-Generated bindings live under `apple/Generated` and are produced by the scripts. Do not hand-edit them.
+Generated bindings live under `apple/Generated` and are produced by the scripts. Do not hand-edit them. Response search and cookie date parsing use ICU’s portable C APIs and link the system ICU library (`-licucore`) to preserve the existing regular-expression dialect and date formats. Run `./scripts/generate-bindings.sh` before a standalone `swift test --package-path apple`; the test script does this automatically. SwiftPM imports these bindings through `WireboltBridge` and the `BridgeFFI` module map.
 
 ## Performance
 
@@ -59,8 +59,9 @@ Native workloads cover request and tab selection, large responses, resizing, ren
 | Location | Responsibility |
 | --- | --- |
 | `crates/wirebolt-core` | Workspace persistence, import/export, request preparation and transport |
-| `crates/wirebolt-ffi` | Swift-facing bridge and streaming interface |
-| `apple/Sources/WireboltKit` | Sessions, models, storage and platform coordination |
+| `crates/wirebolt-app/src/response` | File-backed response bodies, sparse indexes, search, folding, wrapping policy, JSON/Markdown parsing, history and cookies |
+| `crates/wirebolt-ffi` | Swift-facing bridge and streaming interface; typed response objects in `app_response.rs` |
+| `apple/Sources/WireboltKit` | Sessions, models, response facades and platform coordination |
 | `apple/WireboltApp` | Native interface and app adapters |
 | `apple/Tests` | Swift tests and bridge smoke validation |
 | `apple/Benchmarks` | Native performance workloads |

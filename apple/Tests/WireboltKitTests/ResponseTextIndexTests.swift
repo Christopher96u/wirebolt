@@ -155,3 +155,31 @@ import Testing
         #expect(try index.rows(start: 0, count: 2).map(\.text) == ["1234", ""])
     }
 }
+
+extension ResponseTextIndexTests {
+    @Test func viewportBatchesSpaceSpansForNativeAttributes() throws {
+        let url = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: url) }
+        try Data("  café 東京 🚀 \nsecond row".utf8).write(to: url)
+        let rows = try ResponseTextIndex(url: url, columns: 80, prefix: "Header: value\n").rows(start: 0, count: 3)
+        for row in rows { #expect(row.spaceRanges == InvisibleSpaces.runs(in: row.text as NSString)) }
+    }
+}
+
+extension ResponseTextIndexTests {
+    @Test func narrowArabicRowsKeepNativeLigatureMetrics() throws {
+        let url = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: url) }
+        try Data(String(repeating: "لا ", count: 100).utf8).write(to: url)
+        let layout = wrapping(width: 1)
+        let index = try ResponseTextIndex(url: url, columns: 1, wrapping: layout)
+        let font = CTFontCreateWithName(layout.fontName as CFString, layout.fontSize, nil)
+        let advance = CodeTextWrapping.advance(fontName: layout.fontName, fontSize: layout.fontSize)
+        for row in try index.rows(start: 0, count: index.rowCount) {
+            let line = CTLineCreateWithAttributedString(NSAttributedString(string: row.text,
+                attributes: [NSAttributedString.Key(kCTFontAttributeName as String): font]))
+            let width = CTLineGetTypographicBounds(line, nil, nil, nil)
+            #expect(row.columns == Int(ceil(width / max(1, advance))))
+        }
+    }
+}

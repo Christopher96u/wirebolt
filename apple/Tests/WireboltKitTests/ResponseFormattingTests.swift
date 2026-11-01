@@ -102,3 +102,16 @@ struct RunFailureMessageTests {
         #expect(cancelled?.label == "Cancelled")
     }
 }
+
+extension RunFailureMessageTests {
+    @Test func hostsPreserveDisplaySpellingAndExplicitDefaultPorts() {
+        for (url, host) in [
+            ("https://EXAMPLE.COM:443/a", "EXAMPLE.COM:443"),
+            ("https://user:pass@HOST:443?x=y", "HOST:443"),
+            ("https://[::1]:443/a", "[::1]:443"),
+            ("https://café.example/a", "café.example"),
+            ("https://xn--caf-dma.example/a", "café.example"),
+            ("//EXAMPLE.COM/a", "EXAMPLE.COM"),
+        ] { #expect(RunFailureMessage.host(from: url) == host) }
+    }
+}

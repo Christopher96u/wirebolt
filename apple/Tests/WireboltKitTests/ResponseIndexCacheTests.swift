@@ -15,6 +15,7 @@ import Testing
         #expect(full.isComplete && full.rowCount == 1001)
         #expect(try await cache.firstViewport(url: url, columns: 80).isComplete)
         try Data("replacement".utf8).write(to: url)
+        #expect(try first.rows(start: 0, count: 1).first?.text == "replacement")
         let changed = try await cache.firstViewport(url: url, columns: 80)
         #expect(try changed.rows(start: 0, count: 1).first?.text == "replacement")
     }
