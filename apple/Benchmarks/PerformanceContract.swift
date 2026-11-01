@@ -525,6 +525,7 @@ private enum PerformanceContract {
         defer {
             // LaunchServices can register a directly executed app outside HOME.
             // Unregister while the bundle still exists, including on failed runs.
+            var failures: [String] = []
             do {
                 let unregister = Process()
                 unregister.executableURL = URL(fileURLWithPath: "/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister")
@@ -534,13 +535,19 @@ private enum PerformanceContract {
                 if fileManager.fileExists(atPath: copiedApp.path) {
                     try unregister.run()
                     unregister.waitUntilExit()
-                    precondition(unregister.terminationStatus == 0, "Could not unregister launch copy")
+                    if unregister.terminationStatus != 0 {
+                        failures.append("lsregister exited \(unregister.terminationStatus)")
+                    }
                 }
-                try fileManager.removeItem(at: root)
+            } catch { failures.append("unregister: \(error)") }
+            do { try fileManager.removeItem(at: root) }
+            catch { failures.append("delete temporary root: \(error)") }
+            do {
                 let defaultsAfter = try realDefaultsSnapshot()
-                precondition(defaultsBefore == defaultsAfter, "Launch smoke changed the real defaults domain")
-                FileHandle.standardError.write(Data("launch isolation: unregistered and deleted \(copiedApp.path); real defaults export byte-identical\n".utf8))
-            } catch { preconditionFailure("Launch smoke cleanup failed: \(error)") }
+                if defaultsBefore != defaultsAfter { failures.append("real defaults export changed") }
+            } catch { failures.append("export real defaults: \(error)") }
+            precondition(failures.isEmpty, "Launch smoke cleanup failed: \(failures.joined(separator: "; "))")
+            FileHandle.standardError.write(Data("launch isolation: unregistered and deleted \(copiedApp.path); real defaults export byte-identical\n".utf8))
         }
         // Give CFPreferences a distinct application domain as well as an isolated
         // home. Modifying/signing only this copy leaves every installed app alone.
