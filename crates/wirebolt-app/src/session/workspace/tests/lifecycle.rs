@@ -195,17 +195,29 @@ fn close_dirty_scope_blocks_atomically_then_discards_only_closed_documents() {
         );
     }
     a.draft.note = "Unsaved".into();
+    projections.insert(a.id.clone(), SessionTabDocument::from_document(&a));
     let blocked = policy::close(
         &mut tabs,
-        vec![a.clone(), b.clone()],
+        &mut projections,
         &SessionCloseScope::All,
         None,
         false,
+        |_| panic!("blocked close must not fetch saved drafts"),
     );
     assert_eq!(blocked.blocked, ["a"]);
     assert!(blocked.removed.is_empty());
     assert_eq!(blocked.snapshot.session_ids.len(), 2);
-    let closed = policy::close(&mut tabs, vec![a, b], &SessionCloseScope::All, None, true);
+    let closed = policy::close(
+        &mut tabs,
+        &mut projections,
+        &SessionCloseScope::All,
+        None,
+        true,
+        |id| {
+            assert_eq!(id, "a", "clean documents must not fetch saved drafts");
+            a.saved_draft.clone()
+        },
+    );
     assert!(closed.blocked.is_empty());
     assert_eq!(closed.removed.len(), 2);
     assert!(closed.snapshot.session_ids.is_empty());
@@ -286,4 +298,54 @@ async fn live_save_all_reads_later_drafts_after_acknowledging_earlier_saves() {
             .await
     );
     assert_eq!(lock(&live.results)[1].draft.note, "Latest B");
+}
+
+#[test]
+fn close_scopes_fetch_only_dirty_removed_payloads_at_every_tab_count() {
+    for count in [2, 20, 100] {
+        for scope in [
+            SessionCloseScope::One { id: "0".into() },
+            SessionCloseScope::Others { id: "0".into() },
+            SessionCloseScope::All,
+        ] {
+            for dirty in [false, true] {
+                let mut tabs = SessionTabs::default();
+                let mut projections = HashMap::new();
+                for i in 0..count {
+                    let mut projection = SessionTabDocument::from_document(&document(
+                        &i.to_string(),
+                        Some("api"),
+                        true,
+                    ));
+                    projection.dirty = dirty && i == count - 1;
+                    tabs.open(projection, &mut projections, None, false, i == count - 1);
+                }
+                let expected = match scope {
+                    SessionCloseScope::One { .. } => 1,
+                    SessionCloseScope::Others { .. } => count - 1,
+                    _ => count,
+                };
+                let mut fetched = vec![];
+                let result = policy::close(&mut tabs, &mut projections, &scope, None, true, |id| {
+                    fetched.push(id.to_owned());
+                    Some(DomainRequestDraft::default())
+                });
+                assert_eq!(result.removed.len(), expected);
+                assert_eq!(result.snapshot.session_ids.len(), count - expected);
+                let expected_fetch =
+                    usize::from(dirty && !matches!(scope, SessionCloseScope::One { .. }));
+                assert_eq!(fetched.len(), expected_fetch);
+                assert_eq!(
+                    result.removed.iter().filter(|d| d.saved.is_some()).count(),
+                    expected_fetch
+                );
+                if expected_fetch > 0 {
+                    assert_eq!(fetched, [(count - 1).to_string()]);
+                }
+                if count == expected {
+                    assert!(result.snapshot.groups[0].preview_tab_id.is_none());
+                }
+            }
+        }
+    }
 }

@@ -42,6 +42,7 @@ final class ProbeWindow: NSWindow { override var canBecomeKey: Bool { true } }
         let nativeColdWindowFirstContentMilliseconds: Double
         let nativeResponseRendererColdSwitchMilliseconds: Double
         let nativeResponseRendererSwitchP95Milliseconds: Double
+        let nativeTabCloseCommandP95Milliseconds: Double
     }
     static var windowFirstContentBudget = 0.0
     /// Each of the first JSON→Raw and Raw→JSON switches mounts or reactivates a renderer.
@@ -49,6 +50,7 @@ final class ProbeWindow: NSWindow { override var canBecomeKey: Bool { true } }
     /// Warm switches between mounted renderers: one 60 Hz frame for the complete native
     /// SwiftUI/AppKit path. The engine-only synthetic budget (4 ms) is gated by PerformanceContract.
     static var rendererSwitchBudget = 0.0
+    static var tabCloseBudget = 0.0
     static var samples = 100
     static let defaultsName = "wirebolt-native-workloads-\(UUID().uuidString)"
     static let fixtureDefaults = UserDefaults(suiteName: defaultsName)!
@@ -1077,11 +1079,75 @@ final class ProbeWindow: NSWindow { override var canBecomeKey: Bool { true } }
         print("markdown_native=passed")
     }
 
+    static func closeTabs(_ count: Int, root: URL) {
+        var values: [Double] = []
+        var draftSerializations = 0
+        var restoredDrafts = 0
+        var documentReads: UInt64 = 0
+        var draftWrites: UInt64 = 0
+        let raw = String(repeating: "x", count: 1_048_576)
+        for _ in 0..<max(5, samples) {
+            let model = WireboltModel(
+                runner: OfflineRunner(), history: HistoryRepository(root: root.appending(path: "history")),
+                cookieJar: CookieJar(storageURL: root.appending(path: "cookies.json")),
+                proxyPreferences: ProxyPreferences(defaults: fixtureDefaults))
+            let interface = WorkspaceUIState(defaults: fixtureDefaults)
+            for i in 0..<count {
+                _ = model.sessions.open(draft: RequestDraft(id: "body\(i)", name: "Body \(i)", body: .json(value: raw)))
+            }
+            interface.synchronizeSelection(model: model)
+            let sessions = Array(model.sessions.sessions.values)
+            let trafficBefore = sessions.map { $0.rust.bridgeTraffic() }
+            let id = model.sessions.activeSession!.id
+            let start = ContinuousClock.now
+            interface.closeTab(id: id, model: model)
+            values.append(ms(start))
+            precondition(model.sessions.sessions.count == count - 1)
+            draftSerializations += sessions.reduce(0) { $0 + $1.draftSynchronizationCount }
+            restoredDrafts += model.sessions.lastCloseRestoredDraftCount
+            for (session, before) in zip(sessions, trafficBefore) {
+                let after = session.rust.bridgeTraffic()
+                documentReads += after.documentReads - before.documentReads
+                draftWrites += after.draftWrites - before.draftWrites
+            }
+        }
+        precondition(draftSerializations == 0 && restoredDrafts == 0 && documentReads == 0 && draftWrites == 0,
+                     "Clean close must carry no draft payloads")
+        record("tab_close_command", values, budget: tabCloseBudget, details: ["tabs": count, "body_bytes_each": raw.utf8.count,
+            "draft_serializations": draftSerializations, "restored_drafts": restoredDrafts,
+            "bridge_document_reads": documentReads, "bridge_draft_writes": draftWrites, "bridge_body_bytes": 0])
+    }
+
+    static func verifyLastTabReopen(root: URL) {
+        let model = WireboltModel(runner: OfflineRunner(),
+            history: HistoryRepository(root: root.appending(path: "history")),
+            cookieJar: CookieJar(storageURL: root.appending(path: "cookies.json")),
+            proxyPreferences: ProxyPreferences(defaults: fixtureDefaults))
+        let interface = WorkspaceUIState(defaults: fixtureDefaults)
+        let session = model.sessions.open(draft: RequestDraft(id: "last", name: "Saved"))
+        interface.synchronizeSelection(model: model)
+        session.draft.note = "Unsaved"
+        interface.closeTab(id: session.id, model: model)
+        precondition(interface.dirtyCloseRequest?.documentIDs == [session.id])
+        interface.confirmDirtyClose(model: model)
+        precondition(model.sessions.sessions.isEmpty)
+        interface.reopenLastDocument(model: model)
+        precondition(model.sessions.activeSession === session)
+        precondition(session.draft.note.isEmpty && !session.isDirty)
+        session.draft.note = "After reopen"
+        session.synchronizeDraft()
+        precondition(session.rust.document().draft.note == "After reopen")
+        interface.closeTab(id: session.id, model: model)
+        interface.isShowingDirtyClose = false
+        precondition(model.sessions.activeSession === session)
+    }
+
     static func main() async throws {
         let budgets = try JSONDecoder().decode(Budgets.self, from: Data(contentsOf: URL(fileURLWithPath: "performance/budgets.json")))
         windowFirstContentBudget = budgets.nativeColdWindowFirstContentMilliseconds
         rendererColdSwitchBudget = budgets.nativeResponseRendererColdSwitchMilliseconds
         rendererSwitchBudget = budgets.nativeResponseRendererSwitchP95Milliseconds
+        tabCloseBudget = budgets.nativeTabCloseCommandP95Milliseconds
         _ = NSApplication.shared
         NSApp.setActivationPolicy(.prohibited)
         defer { fixtureDefaults.removePersistentDomain(forName: defaultsName) }
@@ -1102,6 +1168,7 @@ final class ProbeWindow: NSWindow { override var canBecomeKey: Bool { true } }
         else if mode=="markdown" { try await markdownPreview(size) }
         else if mode=="editor" { try editor(size) }
         else if mode=="workspace" { try workspace(size,root:root) }
+        else if mode=="tab-close" { verifyLastTabReopen(root: root); closeTabs(size, root: root) }
         else if mode=="response" { try response(size) }
         else if mode=="interface" { try verifyInterface(root: root); try await verifyRedesignFlows(root: root); verifyTreeTheme() }
         else if mode=="request-click-notes" || mode=="tab-click-notes" {

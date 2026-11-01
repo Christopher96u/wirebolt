@@ -24,6 +24,21 @@ struct WorkspaceUndoTests {
         await model.finishUndoWork()
     }
 
+    @Test("Workspace undo remains valid after closing an unrelated large draft")
+    func undoAfterTabClose() async throws {
+        let (model, _, manager) = makeModel()
+        model.workspace.collections = [nested]
+        model.select(nested.requests[2])
+        let target = try #require(model.sessions.activeSession)
+        await model.renameRequest(collectionID: "api", requestID: "root", name: "Renamed")
+        let unrelated = model.sessions.open(draft: RequestDraft(id: "large", body: .json(value: String(repeating: "x", count: 1_048_576))))
+        #expect(model.closeDocuments(.one(unrelated.id)).isEmpty)
+        await undo(model, manager)
+        #expect(target.draft.name == nested.requests[2].request.name)
+        await redo(model, manager)
+        #expect(target.draft.name == "Renamed")
+    }
+
     @Test("Environment changes and deletion undo without serializing secret material")
     func environmentUndo() async {
         let (model, _, manager) = makeModel()

@@ -54,6 +54,41 @@ import Testing
 }
 
 extension TextSearchTests {
+    @Test func indexedICUMatchesFoundationForUnicodeAndSelections() throws {
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: url) }
+        let source = "🚀e\u{301} Straße STRASSE\n東京 café CAFÉ\n!"
+        try Data(source.utf8).write(to: url)
+        let index = try ResponseTextIndex(url: url, columns: 100)
+        let rowStarts = [0, ("🚀e\u{301} Straße STRASSE\n" as NSString).length, (source as NSString).length - 1]
+        for (text, regex) in [(#"\X"#, true), ("(?i)strasse", true), ("café", false), (#"!\z"#, true), ("e\u{301}", false)] {
+            let pattern = regex ? text : NSRegularExpression.escapedPattern(for: text)
+            let expression = try NSRegularExpression(pattern: pattern, options: [.anchorsMatchLines, .caseInsensitive])
+            let expected = expression.matches(in: source, range: NSRange(location: 0, length: (source as NSString).length)).map(\.range)
+            let actual = try index.search(TextSearchQuery(text: text, regularExpression: regex)).map {
+                NSRange(location: rowStarts[$0.start.row] + $0.start.column,
+                        length: rowStarts[$0.end.row] + $0.end.column - rowStarts[$0.start.row] - $0.start.column)
+            }
+            #expect(actual == expected)
+        }
+        let selected = try index.search(TextSearchQuery(text: "café"), selection: (.init(row: 1, column: 8), .init(row: 1, column: 12)))
+        #expect(selected.count == 1)
+        #expect(selected[0].start == .init(row: 1, column: 8))
+    }
+
+    @Test func indexedCancellationInterruptsAnActiveICUSearch() async throws {
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: url) }
+        try Data((String(repeating: "a", count: 2000) + "!").utf8).write(to: url)
+        let index = try ResponseTextIndex(url: url, columns: 100)
+        let worker = responseTask(priority: .userInitiated) {
+            try index.search(TextSearchQuery(text: "(a|aa)+$", regularExpression: true))
+        }
+        DispatchQueue.global().asyncAfter(deadline: .now() + .milliseconds(10)) { worker.cancel() }
+        await #expect(throws: CancellationError.self) { try await worker.value }
+        #expect(try index.search(TextSearchQuery(text: "!")).first?.end.column == 1)
+    }
+
     @Test func preservesICUDialectAndUnicodeLineEndings() throws {
         let source = "a\rb\nc\r\nd\u{85}e\u{2028}f\u{2029}g"
         for pattern in [".", "^.", ".$"] {

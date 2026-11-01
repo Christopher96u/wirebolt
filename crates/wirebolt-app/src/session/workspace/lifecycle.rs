@@ -121,25 +121,36 @@ pub struct WorkspaceClose {
     pub snapshot: crate::session::tabs::SessionTabSnapshot,
 }
 #[must_use]
+#[allow(
+    clippy::implicit_hasher,
+    reason = "This is the retained SessionTabs projection store."
+)]
 pub fn close(
     tabs: &mut SessionTabs,
-    documents: Vec<SessionDocument>,
+    projections: &mut HashMap<String, SessionTabDocument>,
     scope: &crate::session::tabs::SessionCloseScope,
     group: Option<&str>,
     allow_dirty: bool,
+    mut saved_draft: impl FnMut(&str) -> Option<DomainRequestDraft>,
 ) -> WorkspaceClose {
-    let mut projections: HashMap<_, _> = documents
-        .iter()
-        .map(|d| (d.id.clone(), SessionTabDocument::from_document(d)))
+    // Close policy needs only native editor metadata. Fetch saved payloads lazily,
+    // after the entire scope has passed the dirty-close decision.
+    let prior: Vec<_> = projections
+        .values()
+        .map(|d| (d.id.clone(), d.dirty))
         .collect();
-    let blocked = tabs.close(scope, group, allow_dirty, &mut projections);
+    let blocked = tabs.close(scope, group, allow_dirty, projections);
     let removed = if blocked.is_empty() {
-        documents
+        prior
             .into_iter()
-            .filter(|d| !projections.contains_key(&d.id))
-            .map(|d| WorkspaceDiscard {
-                id: d.id,
-                saved: if allow_dirty { d.saved_draft } else { None },
+            .filter(|(id, _)| !projections.contains_key(id))
+            .map(|(id, dirty)| WorkspaceDiscard {
+                saved: if allow_dirty && dirty {
+                    saved_draft(&id)
+                } else {
+                    None
+                },
+                id,
             })
             .collect()
     } else {
@@ -148,6 +159,6 @@ pub fn close(
     WorkspaceClose {
         blocked,
         removed,
-        snapshot: tabs.snapshot(&projections),
+        snapshot: tabs.snapshot(projections),
     }
 }

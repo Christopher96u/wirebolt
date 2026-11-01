@@ -613,3 +613,225 @@ fn zero_width_text_keeps_bounded_native_shaping_windows() {
     assert_eq!(paragraph.columns(first, layout.advance), 1);
     assert_eq!(paragraph.next(2048, 0.0, &layout).length, 2048);
 }
+
+#[test]
+fn search_maps_last_byte_final_newline_and_eof_exactly() {
+    for (text, query, regex, start, end) in [
+        ("abc!", "!", false, (0, 3), (0, 4)),
+        ("abc!\n", "!\n", false, (0, 3), (1, 0)),
+        ("abc!\n", r"\z", true, (1, 0), (1, 0)),
+        ("abc!", r"\z", true, (0, 4), (0, 4)),
+    ] {
+        let (_root, store) = body(text.as_bytes());
+        for wrapping in [None, Some(layout(900.0))] {
+            let idx = index(&store, 80, "", wrapping, u64::MAX);
+            let matches = idx
+                .search(
+                    &SearchQuery {
+                        text: query.into(),
+                        regular_expression: regex,
+                        ..SearchQuery::default()
+                    },
+                    None,
+                    &cancellation(),
+                )
+                .unwrap();
+            assert_eq!(
+                matches,
+                vec![IndexedMatch {
+                    start: SearchPosition {
+                        row: start.0,
+                        column: start.1
+                    },
+                    end: SearchPosition {
+                        row: end.0,
+                        column: end.1
+                    },
+                }]
+            );
+        }
+    }
+}
+
+#[test]
+fn search_maps_malformed_utf8_surrogates_and_combining_marks() {
+    let mut bytes = vec![0xff];
+    bytes.extend_from_slice("🚀e\u{301}!".as_bytes());
+    let (_root, store) = body(&bytes);
+    for wrapping in [None, Some(layout(900.0))] {
+        let idx = index(&store, 80, "", wrapping, u64::MAX);
+        for (query, column, end) in [("�", 0, 1), ("🚀", 1, 3), ("e\u{301}", 3, 5), ("!", 5, 6)]
+        {
+            let matches = idx
+                .search(
+                    &SearchQuery {
+                        text: query.into(),
+                        ..SearchQuery::default()
+                    },
+                    None,
+                    &cancellation(),
+                )
+                .unwrap();
+            assert_eq!(matches[0].start, SearchPosition { row: 0, column });
+            assert_eq!(
+                matches[0].end,
+                SearchPosition {
+                    row: 0,
+                    column: end
+                }
+            );
+        }
+    }
+}
+
+#[test]
+fn capped_search_maps_the_twenty_thousandth_match_exactly() {
+    let (_root, store) = body("needle xxxxxxxxx\n".repeat(30_000).as_bytes());
+    let idx = index(&store, 100, "Header\n", None, u64::MAX);
+    let hits = idx
+        .search(
+            &SearchQuery {
+                text: "needle".into(),
+                ..SearchQuery::default()
+            },
+            None,
+            &cancellation(),
+        )
+        .unwrap();
+    assert_eq!(hits.len(), 20_000);
+    assert_eq!(
+        hits[19_999],
+        IndexedMatch {
+            start: SearchPosition {
+                row: 20_000,
+                column: 0
+            },
+            end: SearchPosition {
+                row: 20_000,
+                column: 6
+            },
+        }
+    );
+}
+
+#[test]
+fn prefix_only_search_does_not_scan_or_shape_the_body_again() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    #[derive(Debug)]
+    struct CountingShaper(AtomicUsize);
+    impl TextShaper for CountingShaper {
+        fn measure(
+            &self,
+            requests: Vec<ShapingRequest>,
+            layout: WrapLayout,
+        ) -> Vec<ShapingMetrics> {
+            self.0.fetch_add(requests.len(), Ordering::Relaxed);
+            TestShaper.measure(requests, layout)
+        }
+    }
+    let (_root, store) = body("unrelated body\n".repeat(100_000).as_bytes());
+    let adapter = Arc::new(CountingShaper(AtomicUsize::new(0)));
+    let idx = TextIndex::new(
+        options(&store.path(), 80, "Header: needle\n", Some(layout(900.0))),
+        u64::MAX,
+        Some(adapter.clone()),
+        &cancellation(),
+    )
+    .unwrap();
+    adapter.0.store(0, Ordering::Relaxed);
+    let hits = idx
+        .search(
+            &SearchQuery {
+                text: "needle".into(),
+                ..SearchQuery::default()
+            },
+            None,
+            &cancellation(),
+        )
+        .unwrap();
+    assert_eq!(hits[0].start, SearchPosition { row: 0, column: 8 });
+    assert_eq!(hits[0].end, SearchPosition { row: 0, column: 14 });
+    assert_eq!(adapter.0.load(Ordering::Relaxed), 0);
+}
+
+#[test]
+fn capped_mapping_stops_within_one_shaping_batch_of_the_last_endpoint() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    #[derive(Debug)]
+    struct CountingShaper(AtomicUsize);
+    impl TextShaper for CountingShaper {
+        fn measure(
+            &self,
+            requests: Vec<ShapingRequest>,
+            layout: WrapLayout,
+        ) -> Vec<ShapingMetrics> {
+            self.0.fetch_add(requests.len(), Ordering::Relaxed);
+            TestShaper.measure(requests, layout)
+        }
+    }
+    let (_root, store) = body("needle\n".repeat(100_000).as_bytes());
+    let adapter = Arc::new(CountingShaper(AtomicUsize::new(0)));
+    let idx = TextIndex::new(
+        options(&store.path(), 80, "", Some(layout(900.0))),
+        u64::MAX,
+        Some(adapter.clone()),
+        &cancellation(),
+    )
+    .unwrap();
+    adapter.0.store(0, Ordering::Relaxed);
+    let hits = idx
+        .search(
+            &SearchQuery {
+                text: "needle".into(),
+                ..SearchQuery::default()
+            },
+            None,
+            &cancellation(),
+        )
+        .unwrap();
+    assert_eq!(hits.len(), 20_000);
+    assert_eq!(
+        hits[19_999].end,
+        SearchPosition {
+            row: 19_999,
+            column: 6
+        }
+    );
+    assert!(adapter.0.load(Ordering::Relaxed) <= 20_001 + 65_536 / 7);
+}
+
+#[test]
+fn cancellation_between_matching_and_mapping_does_not_publish_partial_hits() {
+    struct CancellingEngine;
+    impl RegexEngine for CancellingEngine {
+        fn matches(
+            &self,
+            _query: &SearchQuery,
+            _source: &str,
+            _scope: Option<ResponseTextRange>,
+            cancellation: &ResponseCancellation,
+        ) -> ResponseResult<Vec<ResponseTextRange>> {
+            cancellation.cancel();
+            Ok(vec![ResponseTextRange {
+                location: 0,
+                length: 1,
+            }])
+        }
+    }
+    let (_root, store) = body(b"body");
+    for prefix in ["", "Header\n"] {
+        let idx = index(&store, 80, prefix, None, u64::MAX);
+        assert!(matches!(
+            idx.search_with_engine(
+                &SearchQuery {
+                    text: "x".into(),
+                    ..SearchQuery::default()
+                },
+                None,
+                &cancellation(),
+                &CancellingEngine
+            ),
+            Err(ResponseError::Cancelled)
+        ));
+    }
+}

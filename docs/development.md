@@ -73,12 +73,45 @@ Run on an idle Apple Silicon Mac:
 ```sh
 ./scripts/performance.sh check
 ./scripts/native-performance.sh
+./scripts/search-performance.sh
 ./scripts/http-benchmark.sh
 ```
 
 The contract distinguishes the response engine's cold first viewport (50 ms budget) from a complete native window's first content (300 ms budget, including native view construction and JSON formatting when applicable). Budgets are test targets, not universal timings promised for every Mac or workload.
 
 Native workloads cover request and tab selection, large responses, resizing, renderer changes, scrolling, notes and editor behavior. Large response viewers index files in the background and draw bounded viewports.
+
+The indexed search workload calls `AppTextIndex.search` through the production
+UniFFI/ICU path on 10 and 100 MiB UTF-8 files. Five fresh processes per size each
+run an absent query, a dense query capped at 20,000 matches, and a last-byte query.
+Fixture creation and indexing are outside query timings. Results include every
+sample, median, minimum, maximum and p95; process peak RSS is captured after the
+first two queries, before the last-byte query. Fresh processes keep allocator
+retention from repeated queries out of this two-query measurement. Exact match
+coordinates are asserted. Results are in `build/search-performance/`.
+
+Local search budgets in `performance/budgets.json` are: 100 MiB capped median
+**150 ms**, capped p95 **200 ms**, absent p95 **350 ms**, and two-query peak RSS
+**550 MiB**. These initial thresholds come from the local M5 Pro measurements;
+they do not change the existing M2 Pro reference budgets. The synthetic byte scan
+in `FeatureWorkloads` remains a separate component baseline.
+
+The native `tab-close` workload closes one clean tab among twenty 1 MiB drafts
+through `WorkspaceUIState.closeTab`, including command and native selection work,
+with a p95 budget of **8 ms**. It asserts zero unchanged draft serializations,
+zero restored draft payloads and therefore zero body bytes across the bridge.
+It also verifies final-tab dirty confirmation and reopening. Run it alone with
+`./scripts/native-performance.sh build`, then
+`build/native-performance/workloads tab-close 20 build/native-performance/tab-close.json 5`.
+Rust policy and native adapter tests cover close scopes at 2, 20 and 100 tabs,
+blocked closes, split/preview tabs, cancellation, save/discard and undo.
+
+The full gate includes both workloads locally and skips their timings in CI.
+Launch smoke still runs in CI: it copies and signs this checkout's app under a
+unique bundle/defaults identifier, gives each launch temporary `HOME`,
+`CFFIXED_USER_HOME`, temporary files and workspace roots, and probes Foundation's
+resolved home/Application Support and bundle identity before starting the timer.
+The timed child repeats these assertions before constructing the application.
 
 The native `editor_scroll` workload retains its 16 ms p95 budget. It measures main
 thread CPU time (`CLOCK_THREAD_CPUTIME_ID`) for a clip-view scroll, scroller

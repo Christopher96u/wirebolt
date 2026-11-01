@@ -3,6 +3,7 @@
     clippy::needless_pass_by_value,
     reason = "UniFFI lifts owned records at the boundary."
 )]
+use super::run::AppDocumentSession;
 use super::{
     Arc, DomainLocation, DomainRequestDraft, HashMap, Mutex, SessionCloseScope, SessionDocument,
     SessionDocumentEffect, SessionEditorGroup, SessionKind, SessionLayout, SessionLayoutGroup,
@@ -10,6 +11,14 @@ use super::{
     WorkspaceClose,
 };
 use crate::lock;
+
+/// A native editor's bounded projection and the Rust document that owns its
+/// saved state. Draft bodies never enter the close-decision boundary.
+#[derive(Debug, uniffi::Record)]
+pub struct AppCloseDocument {
+    pub document: Arc<AppDocumentSession>,
+    pub projection: SessionTabDocument,
+}
 #[uniffi::remote(Enum)]
 pub enum SessionKind {
     Http,
@@ -221,21 +230,33 @@ pub fn session_encode_layout(
 impl AppSessionTabs {
     pub fn close_workspace(
         &self,
-        documents: Vec<SessionDocument>,
+        documents: Vec<AppCloseDocument>,
         scope: SessionCloseScope,
         group: Option<String>,
         allow_dirty: bool,
     ) -> WorkspaceClose {
         let mut state = lock(&self.tabs);
-        let result = wirebolt_app::session::workspace::lifecycle::close(
-            &mut state.0,
-            documents,
+        let handles: HashMap<_, _> = documents
+            .into_iter()
+            .map(|entry| {
+                let id = entry.projection.id.clone();
+                state.1.insert(id.clone(), entry.projection);
+                (id, entry.document)
+            })
+            .collect();
+        state.1.retain(|id, _| handles.contains_key(id));
+        let (tabs, projections) = &mut *state;
+        wirebolt_app::session::workspace::lifecycle::close(
+            tabs,
+            projections,
             &scope,
             group.as_deref(),
             allow_dirty,
-        );
-        let retained: std::collections::HashSet<_> = result.snapshot.session_ids.iter().collect();
-        state.1.retain(|id, _| retained.contains(id));
-        result
+            |id| {
+                handles
+                    .get(id)
+                    .and_then(|session| lock(&session.document).saved_draft.clone())
+            },
+        )
     }
 }

@@ -220,3 +220,131 @@ func signedLayoutIndicesRemainCompatible() throws {
     #expect(layout.activeGroupIndex == -1)
     #expect(layout.groups[0].selectedIndex == -1 && layout.groups[0].previewIndex == -1)
 }
+
+extension LifecycleTests {
+    @Test("Discard close transfers only its target's saved payload")
+    @MainActor func dirtyCloseTrafficIgnoresUnrelatedLargeBodies() {
+        let model = WireboltModel(runner: LifecycleRunner())
+        let target = model.sessions.open(draft: RequestDraft(id: "target"))
+        let unrelated = (0..<19).map {
+            model.sessions.open(draft: RequestDraft(id: "large\($0)", body: .json(value: String(repeating: "x", count: 1_048_576))))
+        }
+        target.draft.note = "Unsynchronized target edit"
+        let tabs = [target] + unrelated
+        let before = tabs.map { $0.rust.bridgeTraffic() }
+        #expect(model.closeDocuments(.one(target.id), allowDirty: true).isEmpty)
+        #expect(model.sessions.lastCloseRestoredDraftCount == 1)
+        for (tab, prior) in zip(tabs, before) {
+            let after = tab.rust.bridgeTraffic()
+            #expect(after.documentReads == prior.documentReads)
+            #expect(after.draftWrites - prior.draftWrites == (tab === target ? 1 : 0))
+            #expect(tab.draftSynchronizationCount == 0)
+        }
+    }
+
+    @Test(arguments: [2, 20, 100])
+    @MainActor func bulkSaveSynchronizesEveryDirtyNativeDraft(count: Int) async {
+        let persistence = SaveRecorder()
+        let model = WireboltModel(runner: LifecycleRunner(), persistence: persistence)
+        let drafts = (0..<count).map { RequestDraft(id: "\($0)") }
+        model.workspace.collections = [CollectionDraft(id: "api", name: "API", requests: drafts.map { RequestLocation(collectionID: "api", request: $0) })]
+        let tabs = drafts.map { model.sessions.open(draft: $0, collectionID: "api") }
+        for (i, tab) in tabs.enumerated() { tab.draft.note = "Latest \(i)" }
+        #expect(await model.saveAllDirtySessions())
+        let saved = await persistence.saved
+        #expect(saved.map(\.location.request.note) == (0..<count).map { "Latest \($0)" })
+        #expect(tabs.allSatisfy { !$0.isDirty && $0.draftSynchronizationCount == 1 })
+    }
+
+    @Test(arguments: [2, 20, 100])
+    @MainActor func cleanCloseScopesAvoidDraftTraffic(count: Int) {
+        let body = String(repeating: "x", count: 1_048_576)
+        for scopeIndex in 0..<3 {
+            let model = WireboltModel(runner: LifecycleRunner())
+            let tabs = (0..<count).map { i in
+                model.sessions.open(draft: RequestDraft(id: "\(i)", body: .json(value: body)))
+            }
+            let scope: TabCloseScope = switch scopeIndex {
+            case 0: .one(tabs[0].id)
+            case 1: .others(tabs[0].id)
+            default: .all
+            }
+            let before = tabs.map { $0.rust.bridgeTraffic() }
+            #expect(model.closeDocuments(scope, allowDirty: true).isEmpty)
+            #expect(model.sessions.sessions.count == (scopeIndex == 0 ? count - 1 : scopeIndex == 1 ? 1 : 0))
+            #expect(tabs.allSatisfy { $0.draftSynchronizationCount == 0 })
+            #expect(model.sessions.lastCloseRestoredDraftCount == 0)
+            for (tab, prior) in zip(tabs, before) {
+                let after = tab.rust.bridgeTraffic()
+                #expect(after.documentReads == prior.documentReads)
+                #expect(after.draftWrites == prior.draftWrites)
+            }
+        }
+    }
+
+    @Test(arguments: [2, 20, 100])
+    @MainActor func mixedCloseUsesNativeDirtyStateAndCancelsOnlyClosedRuns(count: Int) {
+        let model = WireboltModel(runner: LifecycleRunner())
+        let tabs = (0..<count).map { model.sessions.open(draft: RequestDraft(id: "\($0)", name: "Original")) }
+        tabs[0].beginRun(RunID())
+        tabs[count - 1].draft.note = "Native edit, not synchronized"
+        #expect(model.closeDocuments(.others(tabs[0].id)).map(\.id) == [tabs[count - 1].id])
+        #expect(model.sessions.sessions.count == count)
+        #expect(tabs[0].isRunning)
+        #expect(model.sessions.lastCloseRestoredDraftCount == 0)
+        #expect(model.closeDocuments(.others(tabs[0].id), allowDirty: true).isEmpty)
+        #expect(tabs[count - 1].draft.note.isEmpty)
+        #expect(model.sessions.lastCloseRestoredDraftCount == 1)
+        #expect(tabs.allSatisfy { $0.draftSynchronizationCount == 0 })
+        #expect(tabs[0].isRunning)
+        #expect(model.closeDocuments(.all).isEmpty)
+        #expect(!tabs[0].isRunning)
+        #expect(model.sessions.sessions.isEmpty)
+    }
+
+    @Test("Draft synchronization follows changes, save, rename, discard and reopen")
+    @MainActor func draftSynchronizationTracksCommandBoundaries() {
+        let store = DocumentSessionStore()
+        let session = store.open(draft: RequestDraft(id: "a", name: "A"))
+        session.synchronizeDraft()
+        #expect(session.draftSynchronizationCount == 0)
+        session.draft.note = "Edited"
+        session.synchronizeDraft()
+        session.synchronizeDraft()
+        #expect(session.rust.document().draft.note == "Edited")
+        #expect(session.draftSynchronizationCount == 1)
+        session.renameSavedRequest("Renamed")
+        session.synchronizeDraft()
+        #expect(session.rust.document().draft.name == "Renamed")
+        #expect(session.draftSynchronizationCount == 1)
+        _ = store.closeWorkspace(.one(session.id), in: nil, allowDirty: true)
+        #expect(session.draft.note.isEmpty)
+        store.reopen(session)
+        session.draft.note = "After reopen"
+        session.synchronizeDraft()
+        #expect(session.rust.document().draft.note == "After reopen")
+        session.markSaved(session.draft)
+        session.synchronizeDraft()
+        #expect(session.draftSynchronizationCount == 2)
+        #expect(!session.isDirty)
+    }
+
+    @Test("Closing a preview in a split preserves the other group and native edits")
+    @MainActor func closePreviewAndSplitPreservesUnrelatedDrafts() throws {
+        let model = WireboltModel(runner: LifecycleRunner())
+        let source = model.sessions.open(draft: RequestDraft(id: "a"))
+        let firstGroup = model.sessions.activeGroupID
+        let split = try #require(model.sessions.split(tabID: source.id))
+        let copied = try #require(model.sessions.activeSession)
+        copied.draft.note = "Split edit"
+        let preview = model.sessions.openPreview(draft: RequestDraft(id: "preview"), collectionID: "api", in: firstGroup)
+        #expect(model.sessions.isPreview(tabID: preview.id))
+        #expect(model.closeDocuments(.one(preview.id), in: firstGroup).isEmpty)
+        #expect(model.sessions.session(id: copied.id) === copied)
+        #expect(copied.draft.note == "Split edit")
+        #expect(model.closeDocuments(.all, in: split).map(\.id) == [copied.id])
+        #expect(model.closeDocuments(.all, in: split, allowDirty: true).isEmpty)
+        #expect(model.sessions.groupCount == 1)
+        #expect(model.sessions.session(id: source.id) === source)
+    }
+}

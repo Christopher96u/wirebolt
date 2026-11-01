@@ -24,5 +24,10 @@
   "syntheticHistoryInsertP95Milliseconds": 4,
   "syntheticHistoryRestoreP95Milliseconds": 4,
   "syntheticHistoryEvictionP95Milliseconds": 4,
-  "largeImportParseP95Milliseconds": 250
+  "largeImportParseP95Milliseconds": 250,
+  "indexedSearchCappedMedianMilliseconds": 150,
+  "indexedSearchCappedP95Milliseconds": 200,
+  "indexedSearchAbsentP95Milliseconds": 350,
+  "indexedSearchTwoQueryPeakMebibytes": 550,
+  "nativeTabCloseCommandP95Milliseconds": 8
 }

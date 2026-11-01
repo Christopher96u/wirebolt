@@ -26,7 +26,10 @@ public final class DocumentSession: Identifiable {
     // The native editor keeps its value projection so a keystroke does not cross FFI.
     // It is synchronized with Rust at command boundaries; equality also drives Observation.
     public var draft: RequestDraft {
-        didSet { if !isTouched, draft != savedDraft { isTouched = true } }
+        didSet {
+            if draft != oldValue { draftNeedsSynchronization = true }
+            if !isTouched, draft != savedDraft { isTouched = true }
+        }
     }
     public private(set) var isTouched = false
     public var note: String {
@@ -48,6 +51,8 @@ public final class DocumentSession: Identifiable {
     public private(set) var runStartedAt: Date?
     public private(set) var isAwaitingResponseHead = false
     @ObservationIgnored let rust: AppDocumentSession
+    @ObservationIgnored private var draftNeedsSynchronization = false
+    @ObservationIgnored private(set) var draftSynchronizationCount = 0
     @ObservationIgnored private var progressTask: Task<Void, Never>?
     @ObservationIgnored private var ingress: [Data] = []
     @ObservationIgnored private var ingressBytes = 0
@@ -82,7 +87,12 @@ public final class DocumentSession: Identifiable {
             id: id, kind: kind,
             collectionId: collectionID, requestId: requestID, dirty: isDirty, touched: isTouched)
     }
-    func synchronizeDraft() { rust.edit(draft: draft.domain) }
+    func synchronizeDraft() {
+        guard draftNeedsSynchronization else { return }
+        rust.edit(draft: draft.domain)
+        draftSynchronizationCount += 1
+        draftNeedsSynchronization = false
+    }
     public func relocate(to collectionID: String) {
         rust.relocate(collectionId: collectionID)
         self.collectionID = collectionID
@@ -92,6 +102,7 @@ public final class DocumentSession: Identifiable {
         rust.rename(name: name)
         draft.name = name
         savedDraft?.name = name
+        draftNeedsSynchronization = false
     }
 
     public func beginRun(_ runID: RunID) {
@@ -179,6 +190,7 @@ public final class DocumentSession: Identifiable {
         rust.save(draft: draft.domain, replace: true)
         self.draft = draft
         savedDraft = draft
+        draftNeedsSynchronization = false
     }
     public func recordSavedDraft(_ draft: RequestDraft) {
         synchronizeDraft()
@@ -353,6 +365,9 @@ public final class DocumentSessionStore {
         }
     }
     @ObservationIgnored private let rust = AppSessionTabs()
+    // Counts actual full-draft payloads returned by the close command, independent
+    // of body sizes. Together with synchronization counts this guards bridge traffic.
+    @ObservationIgnored private(set) var lastCloseRestoredDraftCount = 0
 
     /// The saved request of the active document.
     private typealias RequestKey = RuntimeRequestKey
@@ -581,11 +596,11 @@ public final class DocumentSessionStore {
     func closeWorkspace(_ scope: TabCloseScope, in groupID: String?, allowDirty: Bool) -> (
         blocked: [DocumentSession], closed: [DocumentSession]
     ) {
-        let documents = sessions.values.map { session in
-            session.synchronizeDraft()
-            return session.rust.document()
+        let documents = sessions.values.map {
+            AppCloseDocument(document: $0.rust, projection: $0.tabProjection)
         }
         let result = rust.closeWorkspace(documents: documents, scope: scope, group: groupID, allowDirty: allowDirty)
+        lastCloseRestoredDraftCount = result.removed.filter { $0.saved != nil }.count
         let closed = result.removed.compactMap { effect -> DocumentSession? in
             guard let session = sessions[effect.id] else { return nil }
             if let saved = effect.saved { session.markSaved(RequestDraft(domain: saved)) }
