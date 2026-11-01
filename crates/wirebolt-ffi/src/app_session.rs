@@ -1860,7 +1860,6 @@ use wirebolt_app::domain::DomainAuthentication;
 
 // END C2 workspace application orchestration
 
-
 // MARK: C3 runtime operations (keep independent of workspace orchestration)
 use wirebolt_app::domain::{DomainOAuthConfiguration, DomainRunInput, DomainValueSource};
 use wirebolt_app::session::runtime::{
