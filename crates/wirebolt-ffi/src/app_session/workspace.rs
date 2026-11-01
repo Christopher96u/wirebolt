@@ -386,7 +386,7 @@ pub struct WorkspacePresentation {
     pub import_failure: Option<String>,
     pub export_failure: Option<String>,
     pub import_summary: Option<WorkspaceImportSummary>,
-    pub operation_failure: Option<String>,
+    pub operation_failure: Option<wirebolt_app::response::ResponseFailureKind>,
 }
 
 #[uniffi::remote(Record)]
@@ -650,22 +650,27 @@ impl AppWorkspaceOperations {
 #[uniffi::remote(Enum)]
 pub enum WorkspaceImportFile {
     Bruno,
-    Document { source: String, format: String },
-    Failure { message: String },
+    Document {
+        source: String,
+        format: crate::app_domain::DomainImportFormat,
+    },
+    Failure {
+        message: String,
+    },
 }
 
 #[uniffi::export]
 pub fn workspace_read_import(
     path: String,
-    preferred: Option<String>,
+    preferred: Option<crate::app_domain::DomainImportFormat>,
     formats: String,
 ) -> WorkspaceImportFile {
     wirebolt_app::session::workspace::files::read_import(Path::new(&path), preferred, &formats)
 }
 
 #[uniffi::export]
-pub fn workspace_import_display_name(format: String) -> String {
-    wirebolt_app::session::workspace::files::display_name(&format)
+pub fn workspace_import_display_name(format: crate::app_domain::DomainImportFormat) -> String {
+    wirebolt_app::session::workspace::files::display_name(format)
 }
 
 #[uniffi::export]
@@ -691,7 +696,7 @@ pub fn workspace_default_name(path: String, built_in: String) -> String {
 #[uniffi::remote(Record)]
 pub struct WorkspaceImport {
     pub source: String,
-    pub format: String,
+    pub format: crate::app_domain::DomainImportFormat,
     pub name: Option<String>,
     pub display_name: Option<String>,
     pub selected: Option<String>,
@@ -700,7 +705,7 @@ pub struct WorkspaceImport {
 
 #[uniffi::export]
 impl AppWorkspaceOperations {
-    pub fn take_failure(&self) -> Option<String> {
+    pub fn take_failure(&self) -> Option<wirebolt_app::response::ResponseFailureKind> {
         self.inner.take_failure()
     }
 }
@@ -720,7 +725,9 @@ pub enum WorkspaceRepositoryProblem {
 }
 
 #[uniffi::export]
-pub fn workspace_repository_problem(kind: String) -> Option<WorkspaceRepositoryProblem> {
+pub fn workspace_repository_problem(
+    kind: wirebolt_app::session::workspace::io::WorkspaceFailureKind,
+) -> Option<WorkspaceRepositoryProblem> {
     wirebolt_app::session::workspace::operations::repository_problem(&kind)
 }
 

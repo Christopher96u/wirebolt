@@ -18,13 +18,13 @@ async fn history_counts_and_clear_revision_belong_to_each_request() {
         ))
         .await;
     }
-    assert_eq!(state.history_count("first"), 2);
-    assert_eq!(state.history_count("second"), 1);
+    assert_eq!(state.history_count("first").unwrap(), 2);
+    assert_eq!(state.history_count("second").unwrap(), 1);
     let before = state.snapshot().history_revision;
     state.clear_history("first");
     assert_eq!(state.snapshot().history_revision, before + 1);
-    assert_eq!(state.history_count("first"), 0);
-    assert_eq!(state.history_count("second"), 1);
+    assert_eq!(state.history_count("first").unwrap(), 0);
+    assert_eq!(state.history_count("second").unwrap(), 1);
     assert!(!state.snapshot().request_activity.contains_key("first"));
 }
 #[tokio::test]
@@ -44,7 +44,7 @@ async fn restore_history_uses_bounded_body_and_keeps_request_draft() {
             root.path(),
         ))
         .await;
-    let entry = state.history_entries("a").remove(0);
+    let entry = state.history_entries("a").unwrap().remove(0);
     let run = Arc::new(Mutex::new(DocumentRun::default()));
     state.restore(entry.clone(), &run);
     let snapshot = lock(&run).snapshot();

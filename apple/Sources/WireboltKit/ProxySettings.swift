@@ -9,20 +9,13 @@ public enum ProxyScope: String, CaseIterable, Sendable {
 }
 
 public struct EffectiveProxy: Equatable, Sendable {
-    public enum Source: String, Codable, Sendable {
-        case request, workspace
-        case appDefault = "app_default"
-        case systemDefault = "system_default"
-        public var title: String {
-            domainProxyScopeTitle(scope: domain)
-        }
-    }
+    public typealias Source = DomainProxySource
     public let configuration: ProxyDocument
     public let source: Source
 
     public static func resolve(request: ProxyDocument?, workspace: ProxyDocument?, app: ProxyDocument) -> Self {
         let result = domainResolveProxy(request: request?.domain, workspace: workspace?.domain, app: app.domain)
-        return Self(configuration: ProxyDocument(domain: result.configuration), source: Source(domain: result.source))
+        return Self(configuration: ProxyDocument(domain: result.configuration), source: result.source)
     }
 
     public func summary(for url: String? = nil) -> String {
@@ -202,22 +195,7 @@ private extension ClientIdentityPEM.Failure {
 }
 
 extension EffectiveProxy.Source {
-    init(domain: DomainProxySource) {
-        self = switch domain {
-        case .request: .request
-        case .workspace: .workspace
-        case .appDefault: .appDefault
-        case .systemDefault: .systemDefault
-        }
-    }
-    var domain: DomainProxySource {
-        switch self {
-        case .request: .request
-        case .workspace: .workspace
-        case .appDefault: .appDefault
-        case .systemDefault: .systemDefault
-        }
-    }
+    public var title: String { domainProxyScopeTitle(scope: self) }
 }
 
 private extension ProxyScope {

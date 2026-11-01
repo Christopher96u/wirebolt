@@ -27,7 +27,10 @@ fn collection_exports_keep_all_existing_importers() {
         ),
         ("json", r#"{"version":1,"nodes":[]}"#, "legacy_workspace_v1"),
     ] {
-        assert_eq!(detect(extension, text).as_deref(), Some(format));
+        assert_eq!(
+            detect(extension, text),
+            Some(wirebolt_core::ImportFormat::parse(format).unwrap())
+        );
     }
     assert_eq!(detect("yaml", "openapi: 3.1.0\n"), None);
 }
@@ -152,16 +155,59 @@ fn import_summary_preserves_counts_pluralization_and_environment_guidance() {
 #[test]
 fn git_status_words_keep_index_additions_and_conflicts() {
     for (staged, unstaged, conflicted, expected) in [
-        ("none", "untracked", false, "New"),
-        ("added", "modified", false, "New"),
-        ("modified", "none", false, "Modified"),
-        ("none", "deleted", false, "Deleted"),
-        ("renamed", "none", false, "Renamed"),
-        ("renamed", "modified", false, "Renamed"),
-        ("unmerged", "unmerged", false, "Conflict"),
-        ("modified", "modified", true, "Conflict"),
+        (
+            wirebolt_core::GitDelta::None,
+            wirebolt_core::GitDelta::Untracked,
+            false,
+            "New",
+        ),
+        (
+            wirebolt_core::GitDelta::Added,
+            wirebolt_core::GitDelta::Modified,
+            false,
+            "New",
+        ),
+        (
+            wirebolt_core::GitDelta::Modified,
+            wirebolt_core::GitDelta::None,
+            false,
+            "Modified",
+        ),
+        (
+            wirebolt_core::GitDelta::None,
+            wirebolt_core::GitDelta::Deleted,
+            false,
+            "Deleted",
+        ),
+        (
+            wirebolt_core::GitDelta::Renamed,
+            wirebolt_core::GitDelta::None,
+            false,
+            "Renamed",
+        ),
+        (
+            wirebolt_core::GitDelta::Renamed,
+            wirebolt_core::GitDelta::Modified,
+            false,
+            "Renamed",
+        ),
+        (
+            wirebolt_core::GitDelta::Unmerged,
+            wirebolt_core::GitDelta::Unmerged,
+            false,
+            "Conflict",
+        ),
+        (
+            wirebolt_core::GitDelta::Modified,
+            wirebolt_core::GitDelta::Modified,
+            true,
+            "Conflict",
+        ),
     ] {
-        assert_eq!(git_change_kind(staged, unstaged, conflicted), expected);
+        assert_eq!(
+            git_change_kind(staged, unstaged, conflicted).title(),
+            expected
+        );
     }
 }
 #[test]

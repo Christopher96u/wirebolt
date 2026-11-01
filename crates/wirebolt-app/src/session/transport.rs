@@ -113,7 +113,7 @@ pub struct PreparedBodyDocument {
 
 #[derive(Debug, Serialize)]
 pub struct RunFailureDocument {
-    pub kind: &'static str,
+    pub kind: crate::response::ResponseFailureKind,
     pub issues: Vec<RequestIssueDocument>,
 }
 
@@ -190,7 +190,7 @@ pub fn prepare_protocol_run<R: SecretResolver + ?Sized>(
         pipeline.prepare(&request)
     }
     .map_err(|error| RunFailureDocument {
-        kind: "invalid_request",
+        kind: crate::response::ResponseFailureKind::InvalidRequest,
         issues: error.issues.into_iter().map(Into::into).collect(),
     })?;
     let proxy = ProxyPolicy::new(input.workspace_proxy)
@@ -209,7 +209,7 @@ pub fn prepare_protocol_run<R: SecretResolver + ?Sized>(
         request.transport.custom_ca_path.as_deref(),
         secrets,
     )
-    .map_err(|_| RunFailureDocument::new("tls_configuration"))?;
+    .map_err(|_| RunFailureDocument::new(crate::response::ResponseFailureKind::TlsConfiguration))?;
     let engine = shared_http_engine(&proxy, &config, secrets)
         .map_err(|error| RunFailureDocument::from_run_error(&error))?;
     let snapshot = prepared_run_snapshot(&prepared, request.transport, &proxy);
@@ -344,14 +344,14 @@ impl HttpEngineCache {
         build: impl FnOnce() -> Result<HttpEngine, RunError>,
     ) -> Result<Arc<HttpEngine>, RunError> {
         let generation = {
-            let state = self.lock();
+            let state = crate::lock(&self.state);
             if let Some(engine) = state.lookup(mode, config) {
                 return Ok(engine);
             }
             state.generation
         };
         let engine = Arc::new(build()?);
-        let mut state = self.lock();
+        let mut state = crate::lock(&self.state);
         if state.generation != generation {
             return Ok(engine);
         }
@@ -361,7 +361,7 @@ impl HttpEngineCache {
     }
 
     pub fn reset(&self) {
-        let mut state = self.lock();
+        let mut state = crate::lock(&self.state);
         state.generation += 1;
         state.system = None;
         state.direct = None;
@@ -371,15 +371,9 @@ impl HttpEngineCache {
     /// Manual engines embed proxy credentials, so a changed secret retires
     /// them; direct and system pools carry nothing secret and stay.
     fn clear_manual(&self) {
-        let mut state = self.lock();
+        let mut state = crate::lock(&self.state);
         state.generation += 1;
         state.manual.clear();
-    }
-
-    fn lock(&self) -> std::sync::MutexGuard<'_, HttpEngineCacheState> {
-        self.state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 }
 
@@ -430,7 +424,7 @@ impl HttpEngineCacheState {
 
 impl RunFailureDocument {
     #[must_use]
-    pub const fn new(kind: &'static str) -> Self {
+    pub const fn new(kind: crate::response::ResponseFailureKind) -> Self {
         Self {
             kind,
             issues: Vec::new(),
@@ -443,19 +437,19 @@ impl RunFailureDocument {
     }
 }
 
-const fn run_error_kind(kind: RunErrorKind) -> &'static str {
+const fn run_error_kind(kind: RunErrorKind) -> crate::response::ResponseFailureKind {
     match kind {
-        RunErrorKind::Cancelled => "cancelled",
-        RunErrorKind::TotalTimeout => "total_timeout",
-        RunErrorKind::ReadTimeout => "read_timeout",
-        RunErrorKind::ConnectTimeout => "connect_timeout",
-        RunErrorKind::StreamStopped => "stream_stopped",
-        RunErrorKind::ResponseTooLarge => "response_too_large",
-        RunErrorKind::Connection => "connection",
-        RunErrorKind::Request => "request",
-        RunErrorKind::ResponseBody => "response_body",
-        RunErrorKind::Proxy => "proxy",
-        RunErrorKind::Transport => "transport",
+        RunErrorKind::Cancelled => crate::response::ResponseFailureKind::Cancelled,
+        RunErrorKind::TotalTimeout => crate::response::ResponseFailureKind::TotalTimeout,
+        RunErrorKind::ReadTimeout => crate::response::ResponseFailureKind::ReadTimeout,
+        RunErrorKind::ConnectTimeout => crate::response::ResponseFailureKind::ConnectTimeout,
+        RunErrorKind::StreamStopped => crate::response::ResponseFailureKind::StreamStopped,
+        RunErrorKind::ResponseTooLarge => crate::response::ResponseFailureKind::ResponseTooLarge,
+        RunErrorKind::Connection => crate::response::ResponseFailureKind::Connection,
+        RunErrorKind::Request => crate::response::ResponseFailureKind::Request,
+        RunErrorKind::ResponseBody => crate::response::ResponseFailureKind::ResponseBody,
+        RunErrorKind::Proxy => crate::response::ResponseFailureKind::Proxy,
+        RunErrorKind::Transport => crate::response::ResponseFailureKind::Transport,
     }
 }
 
@@ -526,7 +520,9 @@ pub async fn execute<R>(
             return;
         }
         Err(_) => {
-            observer.failure(&RunFailureDocument::new("internal"));
+            observer.failure(&RunFailureDocument::new(
+                crate::response::ResponseFailureKind::Internal,
+            ));
             return;
         }
     };

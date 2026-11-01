@@ -1,6 +1,7 @@
 import AppKit
 import AuthenticationServices
 import Foundation
+import CFNetwork
 import Security
 
 public struct OAuth2TokenReceipt: Equatable, Sendable {
@@ -64,6 +65,67 @@ public final class OAuth2Service: NSObject, OAuth2Authorizing, OAuthPlatform, AS
                 completion.complete(callback: nil, cancelled: false)
             }
         }
+    }
+    nonisolated public func systemProxies(url: String) -> [DomainOAuthProxy] {
+        guard let target = URL(string: url), let settings = CFNetworkCopySystemProxySettings()?.takeRetainedValue() else { return [.direct] }
+        let proxies = CFNetworkCopyProxiesForURL(target as CFURL, settings).takeRetainedValue() as NSArray
+        return Self.proxyRoutes(proxies, target: target)
+    }
+    nonisolated static func proxyRoutes(_ proxies: NSArray, target: URL) -> [DomainOAuthProxy] {
+        var routes: [DomainOAuthProxy] = []
+        for case let proxy as [String: Any] in proxies {
+            guard let type = proxy[kCFProxyTypeKey as String] as? String else { continue }
+            if type == kCFProxyTypeNone as String { routes.append(.direct); continue }
+            if type == kCFProxyTypeAutoConfigurationJavaScript as String,
+                let script = proxy[kCFProxyAutoConfigurationJavaScriptKey as String] as? String,
+                let resolved = CFNetworkCopyProxiesForAutoConfigurationScript(script as CFString, target as CFURL, nil)?.takeRetainedValue()
+            {
+                routes.append(contentsOf: proxyRoutes(resolved as NSArray, target: target))
+                continue
+            }
+            if type == kCFProxyTypeAutoConfigurationURL as String,
+                let url = proxy[kCFProxyAutoConfigurationURLKey as String] as? URL,
+                let resolved = resolveProxyConfiguration(url, target: target)
+            {
+                routes.append(contentsOf: proxyRoutes(resolved, target: target))
+                continue
+            }
+            let scheme: String
+            if type == kCFProxyTypeHTTP as String { scheme = "http" }
+            else if type == kCFProxyTypeHTTPS as String { scheme = "http" }
+            else if type == kCFProxyTypeSOCKS as String { scheme = "socks5h" }
+            else { continue }
+            guard let host = proxy[kCFProxyHostNameKey as String] as? String else { continue }
+            var endpoint = URLComponents()
+            endpoint.scheme = scheme
+            endpoint.host = host.contains(":") && !host.hasPrefix("[") ? "[\(host)]" : host
+            endpoint.port = proxy[kCFProxyPortNumberKey as String] as? Int
+            endpoint.user = proxy[kCFProxyUsernameKey as String] as? String
+            endpoint.password = proxy[kCFProxyPasswordKey as String] as? String
+            if let endpoint = endpoint.string { routes.append(.proxy(endpoint: endpoint)) }
+        }
+        return routes
+    }
+    private final class ProxyConfigurationResult {
+        var proxies: NSArray?
+        var completed = false
+    }
+    nonisolated private static func resolveProxyConfiguration(_ url: URL, target: URL) -> NSArray? {
+        let result = ProxyConfigurationResult()
+        var context = CFStreamClientContext(version: 0, info: Unmanaged.passUnretained(result).toOpaque(), retain: nil, release: nil, copyDescription: nil)
+        let source = CFNetworkExecuteProxyAutoConfigurationURL(url as CFURL, target as CFURL, { context, proxies, error in
+            let result = Unmanaged<ProxyConfigurationResult>.fromOpaque(context).takeUnretainedValue()
+            if error == nil { result.proxies = proxies as NSArray }
+            result.completed = true
+        }, &context)
+        let runLoop = CFRunLoopGetCurrent()
+        CFRunLoopAddSource(runLoop, source, .defaultMode)
+        defer { CFRunLoopSourceInvalidate(source) }
+        let deadline = Date().addingTimeInterval(30)
+        while !result.completed && deadline.timeIntervalSinceNow > 0 {
+            CFRunLoopRunInMode(.defaultMode, deadline.timeIntervalSinceNow, true)
+        }
+        return result.proxies
     }
     nonisolated public func readSecret(name: String) -> String? {
         guard !name.isEmpty else { return nil }

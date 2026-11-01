@@ -83,12 +83,14 @@ pub async fn curl_command(
         .resolve(to_resolve, context.variables.clone())
         .await?;
     if values.len() != sources.len() + names.len() {
-        return Err(SessionFailure::new("export"));
+        return Err(SessionFailure::new(
+            crate::response::ResponseFailureKind::Export,
+        ));
     }
     let url = values
         .first()
         .cloned()
-        .ok_or_else(|| SessionFailure::new("export"))?;
+        .ok_or_else(|| SessionFailure::new(crate::response::ResponseFailureKind::Export))?;
     let mut secret_values = values.into_iter().skip(sources.len()).collect::<Vec<_>>();
     if let Some(credentials) = curl::proxy_route(proxy, &url).and_then(|r| r.credentials) {
         let proxy_names = [credentials.username, credentials.password];
@@ -102,7 +104,9 @@ pub async fn curl_command(
             )
             .await?;
         if values.len() != 2 {
-            return Err(SessionFailure::new("export"));
+            return Err(SessionFailure::new(
+                crate::response::ResponseFailureKind::Export,
+            ));
         }
         names.extend(proxy_names);
         secret_values.extend(values);

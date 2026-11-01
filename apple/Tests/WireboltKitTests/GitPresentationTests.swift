@@ -37,23 +37,26 @@ struct GitPresentationTests {
 }
 
 struct GitMergeRecoveryTests {
-    @Test("Status documents report an unfinished merge and older documents default to none")
-    func decodesMergeState() throws {
-        let merging = try decodeDomain(GitStatusSnapshot.self, from: Data(#"{"branch":"main","upstream":"origin/main","ahead":1,"behind":1,"revision":"abc","merging":true,"changes":[{"path":"wirebolt.toml","previous_path":null,"staged":"unmerged","unstaged":"unmerged","conflicted":true},{"path":"environments/dev.toml","previous_path":null,"staged":"modified","unstaged":"none","conflicted":false}]}"#.utf8))
+    @Test("Typed status and operation records preserve merge state")
+    func projectsMergeState() {
+        let merging = GitStatusSnapshot(WorkspaceGitStatus(
+            branch: "main", upstream: "origin/main", ahead: 1, behind: 1,
+            changes: [WorkspaceGitChange(path: "wirebolt.toml", previousPath: nil, staged: .unmerged, unstaged: .unmerged, conflicted: true),
+                WorkspaceGitChange(path: "environments/dev.toml", previousPath: nil, staged: .modified, unstaged: .none, conflicted: false)], merging: true))
         #expect(merging.merging)
         #expect(merging.conflictedChanges.map(\.path) == ["wirebolt.toml"])
-        let older = try decodeDomain(GitStatusSnapshot.self, from: Data(#"{"branch":"main","upstream":null,"ahead":0,"behind":0,"changes":[]}"#.utf8))
-        #expect(older.merging == false)
-        let aborted = try decodeDomain(GitOperationSnapshot.self, from: Data(#"{"outcome":"merge_aborted","revision":"abc","status":{"branch":"main","upstream":null,"ahead":0,"behind":0,"changes":[],"merging":false}}"#.utf8))
+        let clean = WorkspaceGitStatus(branch: "main", upstream: nil, ahead: 0, behind: 0, changes: [], merging: false)
+        #expect(GitStatusSnapshot(clean).merging == false)
+        let aborted = GitOperationSnapshot(WorkspaceGitOperation(outcome: .mergeAborted, revision: "abc", status: clean))
         #expect(aborted.outcome == .mergeAborted)
     }
 
     @Test("Repository failures that need guidance are recognised by kind")
     func repositoryProblems() {
-        #expect(GitRepositoryProblem(kind: "not_repository") == .notRepository)
-        #expect(GitRepositoryProblem(kind: "workspace_not_repository_root") == .notRepositoryRoot)
-        #expect(GitRepositoryProblem(kind: "git_unavailable") == .gitUnavailable)
-        #expect(GitRepositoryProblem(kind: "authentication_required") == nil)
+        #expect(GitRepositoryProblem(kind: .notRepository) == .notRepository)
+        #expect(GitRepositoryProblem(kind: .workspaceNotRepositoryRoot) == .notRepositoryRoot)
+        #expect(GitRepositoryProblem(kind: .gitUnavailable) == .gitUnavailable)
+        #expect(GitRepositoryProblem(kind: .authenticationRequired) == nil)
     }
 
     @Test("Abort Merge reloads the restored workspace; Initialize shows the new repository")
@@ -81,7 +84,7 @@ struct GitMergeRecoveryTests {
     func unsupportedRecovery() async {
         let model = WireboltModel(runner: SilentRunner(), gitCollaboration: StatusOnlyGit())
         await model.abortGitMerge()
-        #expect(model.gitFailure?.kind == "unsupported")
+        #expect(model.gitFailure?.kind == .unsupported)
     }
 }
 

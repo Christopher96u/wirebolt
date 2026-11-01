@@ -25,7 +25,7 @@ enum BridgeSmoke {
             ) {}
             fatalError("invalid request unexpectedly succeeded")
         } catch let failure as RunFailure {
-            guard failure.kind == "invalid_request",
+            guard failure.kind == .invalidRequest,
                   failure.issues.first?.path == "url"
             else {
                 fatalError("unexpected structured bridge failure")

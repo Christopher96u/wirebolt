@@ -7,8 +7,7 @@ use super::{
     AppResponseBody, Arc, DocumentRun, DomainProxy, DomainRequestDraft, DomainTransport, Instant,
     Mutex, Path, PathBuf, ResponseHeaderValue, SessionCompletion, SessionDocument, SessionFailure,
     SessionHead, SessionIssue, SessionKind, SessionPrepared, SessionPreparedBody,
-    SessionPreparedHeader, SessionProxy, SessionProxySource, SessionRunEvent, SessionRunSnapshot,
-    StoredCookie, lock,
+    SessionPreparedHeader, SessionProxy, SessionRunEvent, SessionRunSnapshot, StoredCookie, lock,
 };
 #[uniffi::remote(Record)]
 pub struct SessionHead {
@@ -33,7 +32,7 @@ pub struct SessionIssue {
 
 #[uniffi::remote(Record)]
 pub struct SessionFailure {
-    kind: String,
+    kind: wirebolt_app::response::ResponseFailureKind,
     issues: Vec<SessionIssue>,
 }
 
@@ -209,12 +208,4 @@ impl AppDocumentSession {
     pub fn was_touched(&self) -> bool {
         lock(&self.document).touched
     }
-}
-
-#[uniffi::remote(Enum)]
-pub enum SessionProxySource {
-    Request,
-    Workspace,
-    AppDefault,
-    SystemDefault,
 }

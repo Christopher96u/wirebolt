@@ -7,17 +7,17 @@ fn precedence_replaces_the_whole_policy() {
     for app in [manual(), DomainProxy::System, DomainProxy::Direct] {
         assert_eq!(
             resolve(None, None, app.clone()),
-            (app.clone(), "app_default".into())
+            (app.clone(), DomainProxySource::AppDefault)
         );
         for workspace in [manual(), DomainProxy::System, DomainProxy::Direct] {
             assert_eq!(
                 resolve(None, Some(workspace.clone()), app.clone()),
-                (workspace.clone(), "workspace".into())
+                (workspace.clone(), DomainProxySource::Workspace)
             );
             for request in [manual(), DomainProxy::System, DomainProxy::Direct] {
                 assert_eq!(
                     resolve(Some(request.clone()), Some(workspace.clone()), app.clone()),
-                    (request, "request".into())
+                    (request, DomainProxySource::Request)
                 );
             }
         }
@@ -204,13 +204,19 @@ fn probe_failure_messages_keep_categories_and_timeouts() {
 #[test]
 fn composer_indicators_show_overrides_and_invalid_policies() {
     for app in [DomainProxy::System, DomainProxy::Direct, manual()] {
-        assert!(!needs_indicator(&app, "app_default"));
-        assert!(needs_indicator(&DomainProxy::System, "workspace"));
-        assert!(needs_indicator(&DomainProxy::Direct, "request"));
+        assert!(!needs_indicator(&app, DomainProxySource::AppDefault));
+        assert!(needs_indicator(
+            &DomainProxy::System,
+            DomainProxySource::Workspace
+        ));
+        assert!(needs_indicator(
+            &DomainProxy::Direct,
+            DomainProxySource::Request
+        ));
     }
     assert!(needs_indicator(
         &DomainProxy::Manual { routes: vec![] },
-        "app_default"
+        DomainProxySource::AppDefault
     ));
 }
 #[test]

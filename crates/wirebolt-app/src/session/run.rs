@@ -34,14 +34,14 @@ pub struct SessionIssue {
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SessionFailure {
-    pub kind: String,
+    pub kind: crate::response::ResponseFailureKind,
     pub issues: Vec<SessionIssue>,
 }
 impl SessionFailure {
     #[must_use]
-    pub fn new(kind: &str) -> Self {
+    pub fn new(kind: crate::response::ResponseFailureKind) -> Self {
         Self {
-            kind: kind.into(),
+            kind,
             issues: vec![],
         }
     }
@@ -59,14 +59,7 @@ pub struct SessionPreparedBody {
     pub text_preview: Option<String>,
     pub redacted: bool,
 }
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum SessionProxySource {
-    Request,
-    Workspace,
-    AppDefault,
-    SystemDefault,
-}
+pub use crate::domain::proxy::DomainProxySource as SessionProxySource;
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SessionProxy {
     pub configuration: DomainProxy,
@@ -194,7 +187,12 @@ impl DocumentRun {
                     .is_err()
             };
             if failed {
-                self.finish(id, Some(SessionFailure::new("storage")));
+                self.finish(
+                    id,
+                    Some(SessionFailure::new(
+                        crate::response::ResponseFailureKind::Storage,
+                    )),
+                );
                 return None;
             }
             let due = self.publication.get_or_insert(now + PUBLICATION_INTERVAL);
@@ -238,7 +236,12 @@ impl DocumentRun {
         self.snapshot.started_at = None;
     }
     pub fn cancel(&mut self, id: &str) {
-        self.finish(id, Some(SessionFailure::new("cancelled")));
+        self.finish(
+            id,
+            Some(SessionFailure::new(
+                crate::response::ResponseFailureKind::Cancelled,
+            )),
+        );
     }
     pub fn reset(&mut self) {
         let active = self.snapshot.active_run_id.take();
@@ -287,11 +290,7 @@ impl DocumentRun {
         self.publication = None;
     }
 }
-pub fn lock<T>(value: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
-    value
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-}
+pub use crate::lock;
 
 impl TryFrom<&super::transport::PreparedRunSnapshotDocument> for SessionPrepared {
     type Error = serde_json::Error;
@@ -341,7 +340,7 @@ impl From<&wirebolt_core::RunHead> for SessionHead {
 impl From<&super::transport::RunFailureDocument> for SessionFailure {
     fn from(failure: &super::transport::RunFailureDocument) -> Self {
         Self {
-            kind: failure.kind.into(),
+            kind: failure.kind.clone(),
             issues: failure
                 .issues
                 .iter()

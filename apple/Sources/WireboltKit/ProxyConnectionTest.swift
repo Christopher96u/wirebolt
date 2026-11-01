@@ -37,7 +37,7 @@ public final class ProxyConnectionTest {
                 }
                 state.complete(id: token, status: status, failure: nil)
             } catch {
-                let category = RunFailureMessage((error as? RunFailure) ?? RunFailure(kind: "bridge", issues: [])).category
+                let category = RunFailureMessage((error as? RunFailure) ?? RunFailure(kind: .bridge, issues: [])).category
                 state.complete(id: token, status: nil, failure: category)
             }
             self?.synchronize()

@@ -57,7 +57,7 @@ impl WorkspacePlatform for Store {
 fn failure() -> WorkspaceReply {
     WorkspaceReply::Failed {
         failure: WorkspaceFailure {
-            kind: "unsupported".into(),
+            kind: crate::session::workspace::io::WorkspaceFailureKind::Unsupported,
             reason: "failed".into(),
             localized: false,
         },

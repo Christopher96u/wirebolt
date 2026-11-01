@@ -11,13 +11,13 @@ final class RuntimeRunnerAdapter: SessionRuntimeTransport {
                     values: try await runner.resolveValues(
                         values.map(ValueSource.init(domain:)), variables: variables.mapValues(ValueSource.init(domain:))), failure: nil)
             } catch {
-                reply.finish(values: [], failure: ((error as? RunFailure) ?? RunFailure(kind: "invalid_request", issues: [])).sessionRecord)
+                reply.finish(values: [], failure: ((error as? RunFailure) ?? RunFailure(kind: .invalidRequest, issues: [])).sessionRecord)
             }
         }
     }
     func execute(input: DomainRunInput, id: String, sink: SessionRunSink) {
         guard let uuid = UUID(uuidString: id) else {
-            sink.finish(failure: RunFailure(kind: "bridge", issues: []).sessionRecord)
+            sink.finish(failure: RunFailure(kind: .bridge, issues: []).sessionRecord)
             return
         }
         Task {
@@ -34,7 +34,7 @@ final class RuntimeRunnerAdapter: SessionRuntimeTransport {
                 }
                 sink.finish(failure: nil)
             } catch is CancellationError { sink.abandon() } catch {
-                sink.finish(failure: ((error as? RunFailure) ?? RunFailure(kind: "bridge", issues: [])).sessionRecord)
+                sink.finish(failure: ((error as? RunFailure) ?? RunFailure(kind: .bridge, issues: [])).sessionRecord)
             }
         }
     }

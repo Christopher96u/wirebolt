@@ -3,26 +3,7 @@
     clippy::needless_pass_by_value,
     reason = "UniFFI lifts owned records at the boundary."
 )]
-use super::{
-    DomainBody, DomainEnvironment, DomainProxy, DomainRunInput, WorkspaceGitOperation,
-    WorkspaceGitStatus,
-};
-#[uniffi::export]
-pub fn session_decode_git_status(
-    data: Vec<u8>,
-) -> Result<WorkspaceGitStatus, crate::WorkspaceBridgeError> {
-    serde_json::from_slice(&data)
-        .map_err(|_| crate::WorkspaceBridgeError::operation("Git returned an invalid response."))
-}
-
-#[uniffi::export]
-pub fn session_decode_git_operation(
-    data: Vec<u8>,
-) -> Result<WorkspaceGitOperation, crate::WorkspaceBridgeError> {
-    serde_json::from_slice(&data)
-        .map_err(|_| crate::WorkspaceBridgeError::operation("Git returned an invalid response."))
-}
-
+use super::{DomainBody, DomainEnvironment, DomainProxy, DomainRunInput};
 #[uniffi::export]
 pub fn session_encode_input(value: DomainRunInput) -> Result<Vec<u8>, crate::WorkspaceBridgeError> {
     wirebolt_app::session::serialization::encode_input(&value)

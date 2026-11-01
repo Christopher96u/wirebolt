@@ -30,7 +30,9 @@ impl TransportObserver for RequestObserver {
     fn prepared(&self, snapshot: &PreparedRunSnapshotDocument) {
         match SessionPrepared::try_from(snapshot) {
             Ok(snapshot) => self.0.event(SessionRunEvent::Prepared { snapshot }),
-            Err(_) => self.0.finish(Some(SessionFailure::new("bridge"))),
+            Err(_) => self.0.finish(Some(SessionFailure::new(
+                wirebolt_app::response::ResponseFailureKind::Bridge,
+            ))),
         }
     }
     fn head(&self, head: &wirebolt_core::RunHead, _: &[RequestIssueDocument]) {
@@ -88,11 +90,15 @@ impl AppRequestRun {
                     }
                 });
                 if task.await.is_err() {
-                    terminal.finish(Some(SessionFailure::new("internal")));
+                    terminal.finish(Some(SessionFailure::new(
+                        wirebolt_app::response::ResponseFailureKind::Internal,
+                    )));
                 }
             });
         } else {
-            observer.finish(Some(SessionFailure::new("bridge")));
+            observer.finish(Some(SessionFailure::new(
+                wirebolt_app::response::ResponseFailureKind::Bridge,
+            )));
         }
         Arc::new(Self { cancellation })
     }

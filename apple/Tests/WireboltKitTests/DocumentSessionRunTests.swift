@@ -42,8 +42,8 @@ struct DocumentSessionRunTests {
         let session = await completedSession(body: "previous")
         let run = RunID()
         session.beginRun(run)
-        await session.finish(runID: run, failure: RunFailure(kind: "connection", issues: []))
-        #expect(session.failure?.kind == "connection")
+        await session.finish(runID: run, failure: RunFailure(kind: .connection, issues: []))
+        #expect(session.failure?.kind == .connection)
         #expect(session.responseHead == nil && session.responseText.isEmpty)
         #expect(session.bodyStore != nil, "history keeps a body store for the failed run")
         #expect(!session.isAwaitingResponseHead && session.runStartedAt == nil)
@@ -56,7 +56,7 @@ struct DocumentSessionRunTests {
         session.beginRun(run)
         session.cancel(runID: run)
         await session.consume(.head(ResponseHead(status: 200, version: "HTTP/1.1", headers: [], timeToHeadersNS: 1)), runID: run)
-        #expect(session.failure?.kind == "cancelled")
+        #expect(session.failure?.kind == .cancelled)
         #expect(session.responseHead == nil && session.responseText.isEmpty)
     }
 

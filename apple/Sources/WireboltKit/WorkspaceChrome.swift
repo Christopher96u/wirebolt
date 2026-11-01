@@ -49,7 +49,7 @@ public extension EffectiveProxy {
     /// Whether the request composer shows the connection: a workspace or request override,
     /// or an invalid configuration. The app default applies everywhere and needs no reminder.
     var needsIndicator: Bool {
-        domainProxyNeedsIndicator(configuration: configuration.domain, source: source.domain)
+        domainProxyNeedsIndicator(configuration: configuration.domain, source: source)
     }
 }
 

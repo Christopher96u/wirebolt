@@ -104,7 +104,7 @@ pub fn transport_input(input: DomainRunInput) -> Result<transport::RunInput, Ses
             custom_ca_path: input.custom_ca_path,
         })
     };
-    convert().map_err(|_| SessionFailure::new("invalid_request"))
+    convert().map_err(|_| SessionFailure::new(crate::response::ResponseFailureKind::InvalidRequest))
 }
 /// # Errors
 /// Returns the same redacted template issues as request preparation.
@@ -117,7 +117,7 @@ pub fn resolve_values(
     variables: HashMap<String, DomainValueSource>,
     secrets: &dyn SecretResolver,
 ) -> Result<Vec<String>, SessionFailure> {
-    let invalid = || SessionFailure::new("invalid_request");
+    let invalid = || SessionFailure::new(crate::response::ResponseFailureKind::InvalidRequest);
     let values: Vec<ValueSource> = values
         .into_iter()
         .map(value_to_core)
@@ -136,7 +136,7 @@ pub fn resolve_values(
     RequestPipeline::new(Some(&environment), secrets)
         .resolve_values(&values)
         .map_err(|error| SessionFailure {
-            kind: "invalid_request".into(),
+            kind: crate::response::ResponseFailureKind::InvalidRequest,
             issues: error
                 .issues
                 .into_iter()
@@ -201,7 +201,7 @@ pub enum RuntimeRequestError {
 impl std::fmt::Display for RuntimeRequestError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Failure { failure } => f.write_str(&failure.kind),
+            Self::Failure { failure } => f.write_str(failure.kind.code()),
         }
     }
 }

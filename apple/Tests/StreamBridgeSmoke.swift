@@ -61,7 +61,7 @@ server.serve_forever()
                 if case .chunk = event, !received { received = true; runner.cancel(runID: cancelledRun) }
                 if case .complete = event { preconditionFailure("A cancelled stream must never complete successfully") }
             }
-        } catch let failure as RunFailure { cancelled = failure.kind == "cancelled" }
+        } catch let failure as RunFailure { cancelled = failure.kind == .cancelled }
         precondition(received && cancelled, "Cancelling a slow chunked stream must end only its run")
         try await verifyRuntimeSend(runner, draft: draft)
         print("slow_chunked_stream_and_cancellation=passed bytes=\(bytes.count)")
@@ -92,7 +92,7 @@ server.serve_forever()
         }
         model.cancel(second)
         await pending.value
-        precondition(second.failure?.kind == "cancelled" && session.failure == nil)
+        precondition(second.failure?.kind == .cancelled && session.failure == nil)
         let cancelledHistoryCount = await model.historyCount(for: second)
         precondition(cancelledHistoryCount == 2, "Native cancellation retains the prepared partial run in history")
         print("rust_runtime_send_stream_history_and_scoped_cancellation=passed")

@@ -211,9 +211,9 @@ struct ContentView: View {
         )) {
             Button("OK", role: .cancel) { model.operationFailure = nil }
         } message: {
-            Text(model.operationFailure?.kind == "keychain"
+            Text(model.operationFailure?.kind == .keychain
                 ? "The credentials could not be read or saved in Keychain. Check access and try again."
-                : model.operationFailure?.kind == "export"
+                : model.operationFailure?.kind == .export
                     ? (model.exportFailureMessage ?? "The saved request could not be exported.")
                     : "The operation could not be completed. Check access to the workspace and try again.")
         }

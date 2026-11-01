@@ -95,7 +95,7 @@ actor KeychainRecorder: WorkspacePersistence {
     func save(environment: EnvironmentDraft) async throws { environments.append(environment) }
     func readSecret(name: String) async throws -> String? { saved[name] }
     func saveSecret(name: String, value: String) async throws {
-        if failsSecrets { throw RunFailure(kind: "keychain", issues: []) }
+        if failsSecrets { throw RunFailure(kind: .keychain, issues: []) }
         saved[name] = value
     }
     func deleteSecret(name: String) async throws {

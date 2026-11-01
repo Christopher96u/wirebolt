@@ -39,12 +39,12 @@ pub struct WorkspacePresentation {
     pub import_failure: Option<String>,
     pub export_failure: Option<String>,
     pub import_summary: Option<WorkspaceImportSummary>,
-    pub operation_failure: Option<String>,
+    pub operation_failure: Option<crate::response::ResponseFailureKind>,
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct WorkspaceImport {
     pub source: String,
-    pub format: String,
+    pub format: wirebolt_core::ImportFormat,
     pub name: Option<String>,
     pub display_name: Option<String>,
     pub selected: Option<String>,
@@ -115,8 +115,8 @@ impl WorkspaceOperations {
         state.undo.clear();
         state.redo_tokens.clear();
     }
-    fn fail(&self, kind: &str) {
-        lock(&self.state).presentation.operation_failure = Some(kind.into());
+    fn fail(&self, kind: crate::response::ResponseFailureKind) {
+        lock(&self.state).presentation.operation_failure = Some(kind);
     }
     #[must_use]
     pub fn begin_load(&self, configured: bool) -> bool {
@@ -174,7 +174,8 @@ impl WorkspaceOperations {
             drop(state);
             Some(self.loaded(workspace, None))
         } else {
-            state.presentation.operation_failure = Some("workspace".into());
+            state.presentation.operation_failure =
+                Some(crate::response::ResponseFailureKind::Workspace);
             None
         }
     }
@@ -198,7 +199,7 @@ impl WorkspaceOperations {
         .failure_reason
         .is_some()
         {
-            self.fail("workspace");
+            self.fail(crate::response::ResponseFailureKind::Workspace);
             return None;
         }
         lock(&self.workspace.workspace).name.clone_from(&name);
@@ -262,7 +263,7 @@ impl WorkspaceOperations {
             .failure_reason
             .is_some()
             {
-                self.fail("workspace");
+                self.fail(crate::response::ResponseFailureKind::Workspace);
                 return WorkspaceMutation::default();
             }
             lock(&self.workspace.workspace)
@@ -363,7 +364,7 @@ impl WorkspaceOperations {
                         .await
                         .is_err()
                 {
-                    self.fail("workspace");
+                    self.fail(crate::response::ResponseFailureKind::Workspace);
                     return WorkspaceMutation::default();
                 }
                 if !renames.is_empty() {
@@ -381,7 +382,7 @@ impl WorkspaceOperations {
         let failed = outcome.failure_reason.is_some();
         if failed {
             let Some(partial) = self.workspace.partial(plan, outcome.completed) else {
-                self.fail("workspace");
+                self.fail(crate::response::ResponseFailureKind::Workspace);
                 return WorkspaceMutation::default();
             };
             plan = partial;
@@ -406,14 +407,14 @@ impl WorkspaceOperations {
             .failure_reason
             .is_some()
             {
-                self.fail("workspace");
+                self.fail(crate::response::ResponseFailureKind::Workspace);
                 return WorkspaceMutation::default();
             }
         }
         self.workspace.commit(plan.clone());
         secrets.observe(plan.observed_secrets.clone());
         if failed {
-            self.fail("workspace");
+            self.fail(crate::response::ResponseFailureKind::Workspace);
         }
         let undo = (!failed).then(|| self.register(Some(plan.inverse.clone()), named.name));
         WorkspaceMutation {
@@ -511,16 +512,16 @@ impl WorkspaceOperations {
             succeeded: false,
         };
         let Some(collection_id) = document.collection_id.or(fallback) else {
-            self.fail("workspace");
+            self.fail(crate::response::ResponseFailureKind::Workspace);
             return result;
         };
         if secrets.flush(secret_platform).await.is_err() {
-            self.fail("workspace");
+            self.fail(crate::response::ResponseFailureKind::Workspace);
             return result;
         }
         let (authentication, renames) = own_auth(result.draft.authentication.clone(), true);
         if secrets.copy(renames, secret_platform).await.is_err() {
-            self.fail("workspace");
+            self.fail(crate::response::ResponseFailureKind::Workspace);
             return result;
         }
         result.draft.authentication = authentication;
@@ -547,7 +548,7 @@ impl WorkspaceOperations {
         .failure_reason
         .is_some()
         {
-            self.fail("workspace");
+            self.fail(crate::response::ResponseFailureKind::Workspace);
             return result;
         }
         self.saved_request(&location);
@@ -579,7 +580,7 @@ impl WorkspaceOperations {
         let mut s = lock(&self.state);
         if action == WorkspaceGitAction::Pull && dirty {
             s.presentation.git_failure = Some(WorkspaceFailure {
-                kind: "unsaved_request".into(),
+                kind: crate::session::workspace::io::WorkspaceFailureKind::UnsavedRequest,
                 reason: "Save or discard request edits before pulling.".into(),
                 localized: true,
             });
@@ -590,7 +591,7 @@ impl WorkspaceOperations {
         }
         if !configured {
             s.presentation.git_failure = Some(WorkspaceFailure {
-                kind: "not_configured".into(),
+                kind: super::io::WorkspaceFailureKind::NotConfigured,
                 reason: "Open a workspace before using Git collaboration.".into(),
                 localized: true,
             });
@@ -632,12 +633,14 @@ impl WorkspaceOperations {
             reply => {
                 lock(&self.state).presentation.git_failure = Some(match reply {
                     WorkspaceReply::Failed { failure }
-                        if failure.kind != "bridge" || failure.localized =>
+                        if failure.kind
+                            != crate::session::workspace::io::WorkspaceFailureKind::Bridge
+                            || failure.localized =>
                     {
                         failure
                     }
                     _ => WorkspaceFailure {
-                        kind: "bridge".into(),
+                        kind: crate::session::workspace::io::WorkspaceFailureKind::Bridge,
                         reason: "Git operation failed.".into(),
                         localized: true,
                     },
@@ -654,7 +657,7 @@ impl WorkspaceOperations {
                 }
                 _ => {
                     lock(&self.state).presentation.git_failure = Some(WorkspaceFailure {
-                        kind: "workspace_reload".into(),
+                        kind: crate::session::workspace::io::WorkspaceFailureKind::WorkspaceReload,
                         reason: "Git updated the workspace, but Wirebolt could not reload it."
                             .into(),
                         localized: true,
@@ -758,7 +761,8 @@ impl WorkspaceOperations {
                     WorkspaceReply::Failed { failure } => failure.reason,
                     _ => String::new(),
                 });
-                s.presentation.operation_failure = Some("export".into());
+                s.presentation.operation_failure =
+                    Some(crate::response::ResponseFailureKind::Export);
                 None
             }
         }
@@ -805,7 +809,7 @@ impl WorkspaceSession {
 }
 
 impl WorkspaceOperations {
-    pub fn take_failure(&self) -> Option<String> {
+    pub fn take_failure(&self) -> Option<crate::response::ResponseFailureKind> {
         lock(&self.state).presentation.operation_failure.take()
     }
 }
@@ -816,11 +820,19 @@ pub enum WorkspaceRepositoryProblem {
     GitUnavailable,
 }
 #[must_use]
-pub fn repository_problem(kind: &str) -> Option<WorkspaceRepositoryProblem> {
+pub fn repository_problem(
+    kind: &super::io::WorkspaceFailureKind,
+) -> Option<WorkspaceRepositoryProblem> {
     match kind {
-        "not_repository" => Some(WorkspaceRepositoryProblem::NotRepository),
-        "workspace_not_repository_root" => Some(WorkspaceRepositoryProblem::NotRepositoryRoot),
-        "git_unavailable" => Some(WorkspaceRepositoryProblem::GitUnavailable),
+        super::io::WorkspaceFailureKind::NotRepository => {
+            Some(WorkspaceRepositoryProblem::NotRepository)
+        }
+        super::io::WorkspaceFailureKind::WorkspaceNotRepositoryRoot => {
+            Some(WorkspaceRepositoryProblem::NotRepositoryRoot)
+        }
+        super::io::WorkspaceFailureKind::GitUnavailable => {
+            Some(WorkspaceRepositoryProblem::GitUnavailable)
+        }
         _ => None,
     }
 }

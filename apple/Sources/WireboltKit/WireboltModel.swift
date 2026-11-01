@@ -15,7 +15,7 @@ extension RequestRunner {
     public func resolveValues(_ values: [ValueSource], variables: [String: ValueSource]) async throws -> [String] {
         try values.map { value in
             guard case .literal(let text) = value, !text.contains("{{") else {
-                throw RunFailure(kind: "invalid_request", issues: [RequestIssue(path: "values", kind: "unresolved_value", reference: nil)])
+                throw RunFailure(kind: .invalidRequest, issues: [RequestIssue(path: "values", kind: "unresolved_value", reference: nil)])
             }
             return text
         }
@@ -113,11 +113,11 @@ public protocol GitCollaboration: Sendable {
 extension GitCollaboration {
     public var sessionGitPlatform: AppWorkspacePlatform { .foreign(platform: WorkspacePlatformAdapter(git: self)) }
     public func abortMerge() async throws -> GitOperationSnapshot {
-        throw GitFailure(kind: "unsupported", reason: "This workspace cannot abort a merge.")
+        throw GitFailure(kind: .unsupported, reason: "This workspace cannot abort a merge.")
     }
 
     public func initializeRepository() async throws -> GitStatusSnapshot {
-        throw GitFailure(kind: "unsupported", reason: "This workspace cannot create a Git repository.")
+        throw GitFailure(kind: .unsupported, reason: "This workspace cannot create a Git repository.")
     }
 }
 
@@ -393,7 +393,7 @@ public final class WireboltModel {
             session.socket.connect(input: RunInput(domain: input), connector: socketConnector)
         } catch {
             mirrorSecretEdits()
-            operationFailure = RunFailure(kind: "keychain", issues: [])
+            operationFailure = RunFailure(kind: .keychain, issues: [])
         }
     }
 
@@ -456,13 +456,16 @@ public final class WireboltModel {
     }
 
     public func historyEntries(for session: DocumentSession) async -> [RunHistoryEntry] {
-        await runtime.historyEntries(id: session.requestID).map(RunHistoryEntry.init)
+        do { return try await runtime.historyEntries(id: session.requestID).map(RunHistoryEntry.init) }
+        catch { operationFailure = RunFailure(kind: .storage, issues: []); return [] }
     }
     public func historyCount(for session: DocumentSession) async -> Int {
-        Int(clamping: await runtime.historyCount(id: session.requestID))
+        do { return Int(clamping: try await runtime.historyCount(id: session.requestID)) }
+        catch { operationFailure = RunFailure(kind: .storage, issues: []); return 0 }
     }
     public func loadHistory(for session: DocumentSession) async {
-        await runtime.loadHistory(id: session.requestID)
+        do { try await runtime.loadHistory(id: session.requestID) }
+        catch { operationFailure = RunFailure(kind: .storage, issues: []) }
         mirrorRuntime()
     }
     public func restoreHistory(_ entry: RunHistoryEntry, into session: DocumentSession) async {
@@ -656,7 +659,7 @@ public final class WireboltModel {
                 if workspace.transport != TransportSettings(domain: result.value) {
                     workspace.transport = TransportSettings(domain: result.value)
                 }
-                if result.failed { operationFailure = RunFailure(kind: "workspace", issues: []) }
+                if result.failed { operationFailure = RunFailure(kind: .workspace, issues: []) }
             }
         }
     }
@@ -664,7 +667,7 @@ public final class WireboltModel {
     public func saveWorkspaceTransport() async {
         guard persistence != nil else { return }
         do { try await runtime.saveTransport(value: workspace.transport.domain, platform: runtimeSettings()) } catch {
-            operationFailure = RunFailure(kind: "workspace", issues: [])
+            operationFailure = RunFailure(kind: .workspace, issues: [])
         }
     }
 
@@ -683,7 +686,7 @@ public final class WireboltModel {
             operationFailure = RunFailure(failure)
             return nil
         } catch {
-            operationFailure = (error as? RunFailure) ?? RunFailure(kind: "export", issues: [])
+            operationFailure = (error as? RunFailure) ?? RunFailure(kind: .export, issues: [])
             return nil
         }
     }
@@ -700,7 +703,7 @@ public final class WireboltModel {
         do {
             _ = try await rustSecrets.load(name: name, platform: persistence.sessionSecretPlatform)
             mirrorSecretEdits()
-        } catch { operationFailure = RunFailure(kind: "keychain", issues: []) }
+        } catch { operationFailure = RunFailure(kind: .keychain, issues: []) }
     }
     private func flushSecrets() async throws {
         guard let persistence else {
@@ -761,7 +764,7 @@ public final class WireboltModel {
             return true
         } catch {
             mirrorSecretEdits()
-            operationFailure = RunFailure(kind: "keychain", issues: [])
+            operationFailure = RunFailure(kind: .keychain, issues: [])
             return false
         }
     }
@@ -771,19 +774,18 @@ public final class WireboltModel {
         do {
             try await rustSecrets.saveMaterial(name: name, value: value, platform: persistence.sessionSecretPlatform)
         } catch {
-            operationFailure = RunFailure(kind: "keychain", issues: [])
+            operationFailure = RunFailure(kind: .keychain, issues: [])
         }
     }
 
     public func importExternalFile(_ url: URL, preferred: ImportFormat? = nil) async {
         let formats = ImportFormat.localizedFormats
         let input = await Task.detached(priority: .userInitiated) {
-            workspaceReadImport(path: url.path, preferred: preferred?.rawValue, formats: formats)
+            workspaceReadImport(path: url.path, preferred: preferred, formats: formats)
         }.value
         switch input {
         case .bruno: await importBrunoCollection(at: url)
         case .document(let source, let format):
-            guard let format = ImportFormat(rawValue: format) else { return }
             await importDocument(source: source, format: format, url: url)
         case .failure(let message): importFailureMessage = message
         }
@@ -846,7 +848,7 @@ public final class WireboltModel {
         synchronizeWorkspace()
         let loaded = await rustOperations.import(
             request: WorkspaceImport(
-                source: source, format: format.rawValue, name: fileName,
+                source: source, format: format, name: fileName,
                 displayName: displayName, selected: selectedEnvironmentID, pasted: pasted), platform: persistence.sessionWorkspacePlatform)
         let value = rustOperations.presentation()
         if let loaded {
@@ -1168,7 +1170,7 @@ public final class WorkspaceCommandState {
 
 extension ImportFormat {
     /// The name used in menus and messages.
-    public var displayName: String { workspaceImportDisplayName(format: rawValue) }
+    public var displayName: String { workspaceImportDisplayName(format: self) }
 
     /// Explains a failed import with the importer's reason when it has one.
     public static func failureMessage(for error: any Error, fileName: String?) -> String {
@@ -1180,13 +1182,15 @@ extension ImportFormat {
     public static func unrecognizedMessage(fileName: String, contents: String) -> String {
         workspaceImportUnrecognized(name: fileName, contents: contents, formats: localizedFormats)
     }
+    public static let allCases: [ImportFormat] = [.curl, .har, .legacyWorkspaceV1, .postmanV2, .insomnia, .bruno, .brunoFolder]
+
     public static var localizedFormats: String {
         ListFormatter.localizedString(byJoining: allCases.filter { $0 != .brunoFolder }.map(\.displayName))
     }
 
     /// Infers the importer for a file opened from Finder or dropped on the window.
     public static func detect(fileExtension: String, contents: String) -> ImportFormat? {
-        domainDetectImport(extension: fileExtension, contents: contents).map(ImportFormat.init(domain:))
+        domainDetectImport(extension: fileExtension, contents: contents)
     }
 }
 

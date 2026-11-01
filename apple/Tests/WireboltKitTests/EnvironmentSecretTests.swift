@@ -48,7 +48,7 @@ struct EnvironmentSecretTests {
         let model = WireboltModel(runner: SilentRunner(), persistence: keychain)
 
         #expect(await model.saveSecrets(["env.staging.row": "fixture"]) == false)
-        #expect(model.operationFailure?.kind == "keychain")
+        #expect(model.operationFailure?.kind == .keychain)
         #expect(model.secretMaterial(for: .secret("env.staging.row")).isEmpty)
     }
 }

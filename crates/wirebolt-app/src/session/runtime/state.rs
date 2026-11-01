@@ -101,17 +101,25 @@ impl RuntimeState {
             lock(&self.snapshot).cookie_revision += 1;
         }
     }
-    #[must_use]
-    pub fn history_entries(&self, id: &str) -> Vec<SessionHistoryEntry> {
-        history::list(&mut lock(&self.history), id)
+    /// # Errors
+    /// Returns a history storage error.
+    pub fn history_entries(
+        &self,
+        id: &str,
+    ) -> crate::response::ResponseResult<Vec<SessionHistoryEntry>> {
+        lock(&self.history).list(id)
     }
-    #[must_use]
-    pub fn history_count(&self, id: &str) -> u64 {
+    /// # Errors
+    /// Returns a history storage error.
+    pub fn history_count(&self, id: &str) -> crate::response::ResponseResult<u64> {
         lock(&self.history).count(id)
     }
-    pub fn load_history(&self, id: &str) {
-        let entries = self.history_entries(id);
+    /// # Errors
+    /// Returns a history storage error.
+    pub fn load_history(&self, id: &str) -> crate::response::ResponseResult<()> {
+        let entries = self.history_entries(id)?;
         lock(&self.snapshot).history_entries = entries;
+        Ok(())
     }
     pub fn clear_history(&self, id: &str) {
         let _ = lock(&self.history).clear(id);
@@ -140,8 +148,10 @@ impl RuntimeState {
             failure: snapshot.failure,
             body_path: String::new(),
         };
-        let _ = history::record(&mut lock(&self.history), entry, &lock(body));
-        let entries = self.history_entries(id);
+        let _ = lock(&self.history).record(entry, &lock(body));
+        let Ok(entries) = self.history_entries(id) else {
+            return;
+        };
         let mut state = lock(&self.snapshot);
         state.history_entries = entries;
         state.request_activity.insert(
@@ -173,7 +183,7 @@ impl RuntimeState {
         let generation = self.generation.load(Ordering::Acquire);
         let state = self.clone();
         let restored = tokio::task::spawn_blocking(move || {
-            let entry = state.history_entries(&id).into_iter().next()?;
+            let entry = state.history_entries(&id).ok()?.into_iter().next()?;
             let activity = RequestActivity {
                 date: entry.created_at,
                 status: entry.response_head.as_ref().map(|head| head.status),

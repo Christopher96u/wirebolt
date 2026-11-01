@@ -47,7 +47,7 @@ async fn keychain_failure_stops_send_without_starting_run() {
         .edit_batch(HashMap::from([("token".into(), "fixture".into())]));
     assert_eq!(
         RuntimeRuns::default().send(c).await.unwrap().kind,
-        "keychain"
+        crate::response::ResponseFailureKind::Keychain
     );
     assert!(lock(&transport.inputs).is_empty());
     assert!(lock(&run).snapshot().active_run_id.is_none());

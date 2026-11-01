@@ -316,8 +316,8 @@ async fn export_reports_failure_kind_and_preserves_saved_only_contract() {
             .is_none()
     );
     assert_eq!(
-        h.ops.presentation().operation_failure.as_deref(),
-        Some("export")
+        h.ops.presentation().operation_failure,
+        Some(crate::response::ResponseFailureKind::Export)
     );
 }
 #[test]
