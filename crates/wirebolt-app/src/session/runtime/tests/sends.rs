@@ -1,6 +1,49 @@
 use super::*;
 use crate::lock;
 #[tokio::test]
+async fn storage_failure_cancels_transport_once_and_publishes_failure() {
+    let root = tempfile::tempdir().unwrap();
+    let runs = Arc::new(RuntimeRuns::default());
+    let run = Arc::new(Mutex::new(DocumentRun::default()));
+    let transport = Arc::new(Transport {
+        hold: true,
+        body: b"cannot store".to_vec(),
+        send_late_bytes: true,
+        ..Default::default()
+    });
+    let changes = Arc::new(Changes::default());
+    let mut c = command(
+        state(root.path()),
+        document("a"),
+        run.clone(),
+        transport.clone(),
+        root.path(),
+    );
+    let id = c.id.clone();
+    c.observer = changes.clone();
+    let owner = runs.clone();
+    let task = tokio::spawn(async move { owner.send(c).await });
+    transport.started.notified().await;
+    {
+        let mut run = lock(&run);
+        run.append_batch(&id, &[b"partial".to_vec()], std::time::Instant::now());
+        lock(&run.body().unwrap()).finish().unwrap();
+    }
+    transport.release.notify_one();
+    task.await.unwrap();
+    let snapshot = lock(&run).snapshot();
+    assert_eq!(snapshot.failure.unwrap().kind, ResponseFailureKind::Storage);
+    assert_eq!(snapshot.text, "partial");
+    assert!(snapshot.active_run_id.is_none() && snapshot.completion.is_none());
+    assert_eq!(*lock(&transport.bytes_accepted), [false, false]);
+    assert_eq!(transport.cancel_count.load(Ordering::Relaxed), 1);
+    // Begin, prepared, head and the terminal storage failure all invalidate presentation.
+    assert_eq!(changes.0.load(Ordering::Relaxed), 4);
+    runs.cancel("a", &run);
+    assert_eq!(transport.cancel_count.load(Ordering::Relaxed), 1);
+}
+
+#[tokio::test]
 async fn streams_response_into_bounded_visible_state() {
     let root = tempfile::tempdir().unwrap();
     let state = state(root.path());

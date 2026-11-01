@@ -4,7 +4,8 @@ use crate::lock;
 use crate::{
     domain::{DomainTransport, proxy::ResolvedDomainProxy},
     response::{
-        BodyProgress, BodyStore, FailureIssue, ResponseHeaderValue, StoredCookie, reference_time,
+        BodyPreview, BodyProgress, BodyStore, FailureIssue, ResponseHeaderValue, StoredCookie,
+        reference_time,
     },
 };
 use serde::{Deserialize, Serialize};
@@ -95,6 +96,7 @@ pub struct DocumentRun {
     pending_prepared: Option<SessionPrepared>,
     pending_cookies: Vec<StoredCookie>,
     publication: Option<Instant>,
+    fallback: Option<BodyPreview>,
 }
 impl DocumentRun {
     #[must_use]
@@ -131,6 +133,7 @@ impl DocumentRun {
         self.snapshot.active_run_id = active;
         self.snapshot.started_at = started;
         self.body = self.pending_body.take();
+        self.fallback = self.body.is_none().then(BodyPreview::default);
         self.snapshot.body_path = self
             .body
             .as_ref()
@@ -157,8 +160,10 @@ impl DocumentRun {
             }
             SessionRunEvent::Complete { completion } => {
                 self.finish(id, None);
-                self.snapshot.bytes = completion.bytes_received;
-                self.snapshot.completion = Some(completion);
+                if self.snapshot.failure.is_none() {
+                    self.snapshot.bytes = completion.bytes_received;
+                    self.snapshot.completion = Some(completion);
+                }
             }
         }
     }
@@ -186,11 +191,13 @@ impl DocumentRun {
                 );
                 return None;
             }
-            let due = self.publication.get_or_insert(now + PUBLICATION_INTERVAL);
-            Some(due.saturating_duration_since(now))
-        } else {
-            None
+        } else if let Some(preview) = &mut self.fallback {
+            for chunk in chunks {
+                preview.append(chunk);
+            }
         }
+        let due = self.publication.get_or_insert(now + PUBLICATION_INTERVAL);
+        Some(due.saturating_duration_since(now))
     }
     pub fn publish_due(&mut self, id: &str, now: Instant) {
         if self.accepts(id) && self.publication.is_some_and(|due| now >= due) {
@@ -199,7 +206,10 @@ impl DocumentRun {
     }
     pub fn publish(&mut self) {
         self.publication = None;
-        let progress = self.body.as_ref().map(|body| lock(body).progress());
+        let progress = self.body.as_ref().map_or_else(
+            || self.fallback.as_mut().map(BodyPreview::progress),
+            |body| Some(lock(body).progress()),
+        );
         if let Some(BodyProgress {
             bytes,
             data,
@@ -222,7 +232,11 @@ impl DocumentRun {
             let _ = lock(body).finish();
         }
         self.publish();
-        self.snapshot.failure = failure;
+        self.snapshot.failure = failure.or_else(|| {
+            self.fallback
+                .as_ref()
+                .map(|_| SessionFailure::new(crate::response::ResponseFailureKind::Storage))
+        });
         self.snapshot.active_run_id = None;
         self.snapshot.started_at = None;
     }
@@ -245,6 +259,7 @@ impl DocumentRun {
             ..SessionRunSnapshot::default()
         };
         self.body = None;
+        self.fallback = None;
     }
     pub fn append_cookies(&mut self, cookies: Vec<StoredCookie>) {
         if self.snapshot.awaiting_head {
@@ -262,6 +277,7 @@ impl DocumentRun {
         }
         self.snapshot = source.snapshot.clone();
         self.body.clone_from(&source.body);
+        self.fallback.clone_from(&source.fallback);
     }
     pub fn restore(&mut self, mut snapshot: SessionRunSnapshot, path: PathBuf) {
         snapshot.active_run_id = None;
@@ -276,6 +292,7 @@ impl DocumentRun {
             .map(|b| lock(b).path().to_string_lossy().into_owned());
         self.snapshot = snapshot;
         self.pending_body = None;
+        self.fallback = None;
         self.pending_prepared = None;
         self.pending_cookies.clear();
         self.publication = None;

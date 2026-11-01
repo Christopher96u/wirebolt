@@ -4,9 +4,12 @@ set -euo pipefail
 repo_dir="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$repo_dir"
 
+export LIBDISPATCH_COOPERATIVE_POOL_STRICT=1
+
 scripts/cargo.sh test --workspace --all-features
 scripts/generate-bindings.sh
-swift test --package-path apple
+swift build --package-path apple --build-tests
+python3 scripts/swift-tests.py
 
 mkdir -p build
 
@@ -55,4 +58,4 @@ swiftc \
   -framework Security \
   -framework SystemConfiguration
 
-build/bridge-smoke
+python3 scripts/swift-tests.py --log build/bridge-smoke.log build/bridge-smoke

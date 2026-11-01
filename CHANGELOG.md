@@ -27,6 +27,9 @@ Changes under **Unreleased** are on `main` but not in a published build yet. Dow
 
 ### Fixed
 
+- A response body write failure left the download running in the background. It now cancels the transfer and keeps the Storage failure visible.
+- The response preview stayed blank when its temporary file could not be created. It now keeps a bounded preview in memory and reports the storage failure.
+- Undoing and redoing an environment edit lost its previous Keychain values and changed the active environment.
 - The composer showed the request's own timeout when the request used the workspace's, and **0 s** for no limit.
 - With **Follow redirects**, a 301, 302, 307 or 308 that must resend the request content (for example a QUERY or PUT) was returned instead of followed. Content up to 64 KiB is now sent again.
 - Variables in query parameters showed percent-encoded in the URL, and typing `{{` in a URL whose query had encoded values encoded them twice.

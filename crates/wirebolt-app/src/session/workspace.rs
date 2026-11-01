@@ -295,9 +295,6 @@ pub fn plan_edit(
                     .min(environments.len()),
                 environment.clone(),
             );
-            plan.selected_environment_id =
-                (environment.id != "global").then(|| environment.id.clone());
-            plan.changes_environment_selection = true;
             plan.commands.push(C::SaveEnvironment { environment });
             plan.environments = Some(environments);
         }

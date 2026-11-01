@@ -700,8 +700,12 @@ impl SessionRunSink {
     pub fn event(&self, event: SessionRunEvent) {
         self.observer.event(event);
     }
-    pub fn bytes(&self, data: Vec<u8>) {
-        self.observer.bytes(&data);
+    pub fn bytes(&self, data: Vec<u8>) -> bool {
+        let accepted = self.observer.bytes(&data);
+        if !accepted {
+            self.finish(None);
+        }
+        accepted
     }
     pub fn cookies(&self, url: String, headers: Vec<ResponseHeaderValue>) {
         self.observer.store_cookies(&url, &headers);

@@ -88,7 +88,8 @@ struct ResponseViewer: View {
 
     @ViewBuilder
     private var sectionContent: some View {
-        if let failure = session.failure, interface.responseSection != .request, failure.kind != .cancelled || session.responseBytes == 0 {
+        if let failure = session.failure, interface.responseSection != .request,
+           (failure.kind != .cancelled && failure.kind != .storage) || session.responseBytes == 0 {
             ResponseFailureView(
                 message: RunFailureMessage(failure, host: RunFailureMessage.host(from: session.preparedRun?.url ?? session.draft.url)),
                 retry: send,
@@ -100,6 +101,19 @@ struct ResponseViewer: View {
                 if session.failure?.kind == .cancelled {
                     Text("Cancelled · Partial response").font(WireboltTheme.Typography.detail)
                         .foregroundStyle(WireboltTheme.warning).padding(WireboltTheme.Spacing.medium)
+                } else if let failure = session.failure, failure.kind == .storage {
+                    let message = RunFailureMessage(failure)
+                    VStack(alignment: .leading, spacing: WireboltTheme.Spacing.small) {
+                        HStack {
+                            Label(message.title + " · Partial response", systemImage: message.systemImage)
+                            Spacer()
+                            if let send { Button("Retry", action: send) }
+                        }
+                        Text(message.message)
+                    }
+                    .font(WireboltTheme.Typography.detail)
+                    .foregroundStyle(WireboltTheme.warning)
+                    .padding(WireboltTheme.Spacing.medium)
                 }
                 responseContent
             }

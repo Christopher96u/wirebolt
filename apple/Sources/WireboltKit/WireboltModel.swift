@@ -613,11 +613,15 @@ public final class WireboltModel {
     }
 
     @discardableResult
-    public func saveEnvironment(_ environment: EnvironmentDraft) async -> Bool {
-        // An unchanged environment is a successful save without an undo entry.
+    public func saveEnvironment(_ environment: EnvironmentDraft, secrets: [String: String] = [:]) async -> Bool {
+        await undoWork?.value
+        guard let persistence else { return false }
         synchronizeWorkspace()
-        if rustOperations.environmentUnchanged(environment: environment.domain) { return true }
-        return await perform(.saveEnvironment(environment: environment.domain)).succeeded
+        let result = await rustOperations.saveEnvironment(
+            environment: environment.domain, values: secrets, selected: selectedEnvironmentID,
+            platform: persistence.sessionWorkspacePlatform, secrets: rustSecrets, secretPlatform: persistence.sessionSecretPlatform)
+        finishMutation(result)
+        return result.succeeded
     }
 
     public func makeProxyConnectionTest() -> ProxyConnectionTest { ProxyConnectionTest(runner: runner) }
@@ -1051,6 +1055,11 @@ extension WireboltModel {
         let result = await rustOperations.mutate(
             command: command, selected: selectedEnvironmentID,
             platform: persistence.sessionWorkspacePlatform, secrets: rustSecrets, secretPlatform: persistence.sessionSecretPlatform)
+        finishMutation(result)
+        return result
+    }
+
+    private func finishMutation(_ result: WorkspaceMutation) {
         mirrorSecretEdits()
         applyMutation(result)
         mirrorWorkspacePresentation()
@@ -1062,7 +1071,6 @@ extension WireboltModel {
             if opensGroup { undoManager.endUndoGrouping() }
         }
         if undoManager == nil { rustOperations.clearUndo() }
-        return result
     }
 
     func finishUndoWork() async { await undoWork?.value }

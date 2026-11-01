@@ -121,11 +121,15 @@ struct Transport {
     started: tokio::sync::Notify,
     release: tokio::sync::Notify,
     cancelled: AtomicBool,
+    cancel_count: AtomicUsize,
+    send_late_bytes: bool,
+    bytes_accepted: Mutex<Vec<bool>>,
 }
 #[async_trait]
 impl RuntimeTransport for Transport {
     fn cancel(&self, _id: &str) {
         self.cancelled.store(true, Ordering::Relaxed);
+        self.cancel_count.fetch_add(1, Ordering::Relaxed);
         self.release.notify_one();
     }
     async fn resolve(
@@ -169,7 +173,10 @@ impl RuntimeTransport for Transport {
                 time_to_headers_ns: 10,
             },
         });
-        observer.bytes(&self.body);
+        lock(&self.bytes_accepted).push(observer.bytes(&self.body));
+        if self.send_late_bytes {
+            lock(&self.bytes_accepted).push(observer.bytes(b"late"));
+        }
         observer.event(SessionRunEvent::Complete {
             completion: SessionCompletion {
                 bytes_received: self.body.len() as u64,

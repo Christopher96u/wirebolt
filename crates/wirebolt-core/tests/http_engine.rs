@@ -340,7 +340,7 @@ async fn the_run_read_timeout_covers_the_wait_for_headers() {
     let _ = server.await;
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(start_paused = true)]
 async fn an_upload_that_keeps_moving_is_not_a_stall() {
     // Larger than the most the kernel can buffer for one loopback socket
     // pair (macOS caps it at 8 MiB), so most of the upload is gated by the
@@ -360,22 +360,34 @@ async fn an_upload_that_keeps_moving_is_not_a_stall() {
     .expect("prepared request");
     let mut body = Vec::new();
 
-    let run = engine
-        .run(
+    let cancellation = RunCancellation::new();
+    let run = {
+        let transfer = engine.run(
             request,
             RunOptions {
                 read_timeout: Some(Duration::from_millis(250)),
                 total_timeout: Some(Duration::from_secs(30)),
                 ..RunOptions::default()
             },
-            &RunCancellation::new(),
+            &cancellation,
             |chunk| {
                 body.extend_from_slice(chunk);
                 StreamControl::Continue
             },
-        )
-        .await
-        .expect("a slow but moving upload must not time out");
+        );
+        tokio::pin!(transfer);
+        // Only server reads advance the paused clock. Keep polling socket I/O so Tokio
+        // cannot auto-advance to the stall deadline while the kernel is moving bytes.
+        let deadline = std::time::Instant::now() + Duration::from_secs(30);
+        loop {
+            tokio::select! {
+                result = &mut transfer => break result.expect("a moving upload must not time out"),
+                () = tokio::task::yield_now() => {
+                    assert!(std::time::Instant::now() < deadline, "upload fixture stopped making progress");
+                }
+            }
+        }
+    };
 
     assert_eq!(body, b"uploaded");
     assert!(
@@ -1294,7 +1306,7 @@ async fn spawn_http1_script(
     (address, task)
 }
 
-/// Reads the request body 256 KiB at a time with a pause between reads, so
+/// Reads the request body 256 KiB at a time with a virtual pause between reads, so
 /// the client's upload is throttled by backpressure rather than finishing
 /// into kernel buffers at once. Returns the body bytes it consumed.
 async fn spawn_slow_reading_server(response: &'static [u8]) -> (SocketAddr, JoinHandle<usize>) {
@@ -1331,7 +1343,8 @@ async fn spawn_slow_reading_server(response: &'static [u8]) -> (SocketAddr, Join
             if body_start.is_some_and(|start| total >= start + content_length) {
                 break;
             }
-            tokio::time::sleep(Duration::from_millis(5)).await;
+            tokio::time::advance(Duration::from_millis(5)).await;
+            tokio::task::yield_now().await;
         }
         stream.write_all(response).await.expect("write response");
         let _ = stream.shutdown().await;

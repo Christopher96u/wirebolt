@@ -18,7 +18,7 @@ use std::{
     collections::HashMap,
     path::PathBuf,
     sync::{
-        Arc, Mutex,
+        Arc, Mutex, Weak,
         atomic::{AtomicBool, Ordering},
     },
     time::{Duration, Instant},
@@ -118,8 +118,8 @@ impl RuntimeRuns {
                 observer.cancel();
             } else {
                 lock(run).cancel(&active.id);
+                active.transport.cancel(&active.id);
             }
-            active.transport.cancel(&active.id);
         } else {
             let mut run = lock(run);
             if let Some(id) = run.snapshot().active_run_id {
@@ -188,18 +188,17 @@ impl RuntimeRuns {
             context.draft(document.draft.clone())
         };
         observer.changed();
-        let run_observer = Arc::new(RunObserver::new(
-            id.clone(),
-            run.clone(),
-            state.clone(),
-            observer,
-        ));
-        if let Some(active) = lock(&self.active)
-            .get_mut(&document_id)
-            .filter(|run| run.id == id)
-        {
-            active.observer = Some(run_observer.clone());
-        }
+        let run_observer = self.observe(
+            &document_id,
+            RunObserver::new(
+                id.clone(),
+                run.clone(),
+                state.clone(),
+                observer,
+                cancellation.clone(),
+                Arc::downgrade(&transport),
+            ),
+        );
         let draft = match prepare_cookies(draft, &context, transport.as_ref(), &run_observer).await
         {
             Ok(draft) => draft,
@@ -227,6 +226,16 @@ impl RuntimeRuns {
         self.remove(&document_id, &id);
         None
     }
+    fn observe(&self, document: &str, observer: RunObserver) -> Arc<RunObserver> {
+        let observer = Arc::new(observer);
+        if let Some(active) = lock(&self.active)
+            .get_mut(document)
+            .filter(|run| run.id == observer.id)
+        {
+            active.observer = Some(observer.clone());
+        }
+        observer
+    }
     fn remove(&self, document: &str, id: &str) {
         let mut active = lock(&self.active);
         if active.get(document).is_some_and(|run| run.id == id) {
@@ -243,6 +252,9 @@ pub struct RunObserver {
     observer: Arc<dyn RuntimeObserver>,
     dirty: AtomicBool,
     terminal: Mutex<Option<(SessionRunSnapshot, SharedBody)>>,
+    cancellation: RunCancellation,
+    transport: Weak<dyn RuntimeTransport>,
+    cancelled: AtomicBool,
 }
 impl std::fmt::Debug for RunObserver {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -257,6 +269,8 @@ impl RunObserver {
         run: Arc<Mutex<DocumentRun>>,
         state: Arc<RuntimeState>,
         observer: Arc<dyn RuntimeObserver>,
+        cancellation: RunCancellation,
+        transport: Weak<dyn RuntimeTransport>,
     ) -> Self {
         // Retain the starting workspace's jar for the complete run.
         let cookies = state.cookie_jar();
@@ -268,6 +282,9 @@ impl RunObserver {
             observer,
             dirty: AtomicBool::new(false),
             terminal: Mutex::new(None),
+            cancellation,
+            transport,
+            cancelled: AtomicBool::new(false),
         }
     }
 
@@ -290,6 +307,13 @@ impl RunObserver {
             return false;
         }
         run.append_batch(&self.id, &[bytes.to_vec()], Instant::now());
+        if !run.accepts(&self.id) {
+            self.capture(&run);
+            drop(run);
+            self.cancel_transport();
+            self.observer.changed();
+            return false;
+        }
         self.dirty.store(true, Ordering::Release);
         true
     }
@@ -320,11 +344,20 @@ impl RunObserver {
     }
     fn cancel(&self) {
         let mut run = lock(&self.run);
-        if !run.accepts(&self.id) {
-            return;
+        if run.accepts(&self.id) {
+            run.cancel(&self.id);
+            self.capture(&run);
         }
-        run.cancel(&self.id);
-        self.capture(&run);
+        drop(run);
+        self.cancel_transport();
+    }
+    fn cancel_transport(&self) {
+        if !self.cancelled.swap(true, Ordering::AcqRel) {
+            self.cancellation.cancel();
+            if let Some(transport) = self.transport.upgrade() {
+                transport.cancel(&self.id);
+            }
+        }
     }
     pub fn abandon(&self) {
         self.finish(Some(SessionFailure::new(

@@ -122,7 +122,7 @@ fn environment_edits_and_deletion_restore_position_and_secret_references() {
         plan.observed_secrets,
         ["env.local.token", "env.local.token"]
     );
-    assert_eq!(plan.selected_environment_id.as_deref(), Some("local"));
+    assert!(plan.selected_environment_id.is_none() && !plan.changes_environment_selection);
     roundtrip(
         workspace.clone(),
         Edit::RestoreEnvironment {
@@ -341,7 +341,8 @@ fn global_environment_save_does_not_select_it() {
         },
     )
     .unwrap();
-    assert!(plan.selected_environment_id.is_none() && plan.changes_environment_selection);
+    assert_eq!(plan.selected_environment_id.as_deref(), Some("old"));
+    assert!(!plan.changes_environment_selection);
 }
 #[test]
 fn partial_subtree_restore_keeps_only_successfully_persisted_prefix() {

@@ -495,6 +495,26 @@ impl AppWorkspaceOperations {
     ) -> Option<String> {
         self.inner.rename(proposed, platform.as_ref()).await
     }
+    pub async fn save_environment(
+        &self,
+        environment: DomainEnvironment,
+        values: std::collections::HashMap<String, String>,
+        selected: Option<String>,
+        platform: Arc<AppWorkspacePlatform>,
+        secrets: Arc<AppSessionSecrets>,
+        secret_platform: Arc<AppSecretPlatform>,
+    ) -> WorkspaceMutation {
+        self.inner
+            .save_environment(
+                environment,
+                values,
+                selected,
+                platform.as_ref(),
+                &secrets.inner,
+                secret_platform.as_ref(),
+            )
+            .await
+    }
     pub async fn mutate(
         &self,
         command: WorkspaceAction,
