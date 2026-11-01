@@ -10,7 +10,17 @@ use super::{
     SessionPreparedHeader, SessionRunEvent, SessionRunSnapshot, StoredCookie,
 };
 use crate::lock;
+use std::sync::atomic::{AtomicU64, Ordering};
 use wirebolt_app::response::FailureIssue;
+
+/// Counts full document/draft records at the bridge, excluding bounded metadata
+/// and handle traffic. Counters are per document so tests can measure a command
+/// without depending on other windows or parallel tests.
+#[derive(Debug, uniffi::Record)]
+pub struct AppDocumentBridgeTraffic {
+    pub document_reads: u64,
+    pub draft_writes: u64,
+}
 #[uniffi::remote(Record)]
 pub struct SessionHead {
     status: u16,
@@ -84,6 +94,8 @@ pub struct SessionRunSnapshot {
 pub struct AppDocumentSession {
     pub(super) document: Arc<Mutex<SessionDocument>>,
     pub(super) run: Arc<Mutex<DocumentRun>>,
+    document_reads: AtomicU64,
+    draft_writes: AtomicU64,
 }
 
 #[uniffi::export]
@@ -109,12 +121,25 @@ impl AppDocumentSession {
                 &note,
             ))),
             run: Arc::new(Mutex::new(DocumentRun::default())),
+            document_reads: AtomicU64::new(0),
+            draft_writes: AtomicU64::new(0),
         })
     }
     pub fn document(&self) -> SessionDocument {
+        self.document_reads.fetch_add(1, Ordering::Relaxed);
         lock(&self.document).clone()
     }
+    pub fn bridge_traffic(&self) -> AppDocumentBridgeTraffic {
+        AppDocumentBridgeTraffic {
+            document_reads: self.document_reads.load(Ordering::Relaxed),
+            draft_writes: self.draft_writes.load(Ordering::Relaxed),
+        }
+    }
+    pub fn is_dirty(&self) -> bool {
+        lock(&self.document).dirty()
+    }
     pub fn edit(&self, draft: DomainRequestDraft) {
+        self.draft_writes.fetch_add(1, Ordering::Relaxed);
         lock(&self.document).edit(draft);
     }
     pub fn relocate(&self, collection_id: String) {
@@ -124,6 +149,7 @@ impl AppDocumentSession {
         lock(&self.document).rename(&name);
     }
     pub fn save(&self, draft: DomainRequestDraft, replace: bool) {
+        self.draft_writes.fetch_add(1, Ordering::Relaxed);
         let mut document = lock(&self.document);
         if replace {
             document.mark_saved(draft);
@@ -196,5 +222,14 @@ pub fn session_publication_delay_ms() -> u64 {
 impl AppDocumentSession {
     pub fn was_touched(&self) -> bool {
         lock(&self.document).touched
+    }
+}
+
+impl wirebolt_app::session::workspace::lifecycle::CloseDocument for &AppDocumentSession {
+    fn is_dirty(&self) -> bool {
+        AppDocumentSession::is_dirty(self)
+    }
+    fn saved_draft(&self) -> Option<DomainRequestDraft> {
+        lock(&self.document).saved_draft.clone()
     }
 }

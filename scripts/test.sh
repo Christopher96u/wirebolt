@@ -57,3 +57,4 @@ swiftc \
   -framework SystemConfiguration
 
 python3 scripts/swift-tests.py --log build/bridge-smoke.log build/bridge-smoke
+scripts/native-adapter-tests.sh

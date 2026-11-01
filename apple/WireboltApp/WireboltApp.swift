@@ -2,6 +2,13 @@ import AppKit
 import SwiftUI
 
 @main
+@MainActor enum WireboltMain {
+    static func main() {
+        PerformanceProbe.validateLaunchIsolation()
+        WireboltApp.main()
+    }
+}
+
 struct WireboltApp: App {
     @NSApplicationDelegateAdaptor(WireboltAppDelegate.self) private var appDelegate
 
