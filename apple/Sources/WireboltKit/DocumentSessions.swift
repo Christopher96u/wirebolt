@@ -149,8 +149,9 @@ public final class DocumentSession: Identifiable {
             startedAt: nil, awaitingHead: false, cookies: [], bodyPath: entry.bodyPath), path: entry.bodyPath)
         mirror()
     }
-    private func mirror() {
+    func mirror() {
         let state = rust.snapshot()
+        if !isTouched, rust.wasTouched() { isTouched = true }
         assign(\.responseHead, state.head.map(ResponseHead.init)); assign(\.preparedRun, state.prepared.map(PreparedRunSnapshot.init))
         assign(\.responseText, state.text); assign(\.responsePreviewData, state.data); assign(\.responseBytes, state.bytes)
         assign(\.responseWasTruncated, state.truncated); assign(\.completion, state.completion.map(RunCompletion.init))
@@ -303,10 +304,7 @@ public final class DocumentSessionStore {
     @ObservationIgnored private let rust = AppSessionTabs()
 
     /// The saved request of the active document.
-    private struct RequestKey: Hashable {
-        let collectionID: String
-        let requestID: String
-    }
+    private typealias RequestKey = RuntimeRequestKey
 
     /// One observable flag per saved request that has been asked about, so each sidebar row
     /// depends only on its own flag: a selection change updates two rows, not every row.
@@ -321,7 +319,7 @@ public final class DocumentSessionStore {
 
     /// Whether the saved request is the active document's; observes only that request.
     public func isActiveRequest(collectionID: String, requestID: String) -> Bool {
-        let key = RequestKey(collectionID: collectionID, requestID: requestID)
+        let key = RequestKey(collectionId: collectionID, requestId: requestID)
         let flag = activeRequestFlags[key] ?? {
             let flag = ActiveRequestFlag(isActive: key == activeRequestKey)
             activeRequestFlags[key] = flag
@@ -334,9 +332,8 @@ public final class DocumentSessionStore {
     /// the groups, the active group or the open documents; call it after moving a
     /// document's request to another collection.
     public func refreshActiveRequest() {
-        let key = activeSession.flatMap { session in
-            session.collectionID.map { RequestKey(collectionID: $0, requestID: session.requestID) }
-        }
+        let session = activeSession
+        let key = sessionActiveRequestKey(collectionId: session?.collectionID, requestId: session?.requestID)
         guard key != activeRequestKey else { return }
         if let previous = activeRequestKey { activeRequestFlags[previous]?.isActive = false }
         activeRequestKey = key

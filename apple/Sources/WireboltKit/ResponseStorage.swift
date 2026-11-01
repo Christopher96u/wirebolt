@@ -79,7 +79,7 @@ public struct RunHistoryEntry: Codable, Equatable, Identifiable, Sendable {
 public actor HistoryRepository {
     public static let maximumEntriesPerRequest = 100
     public static let maximumStoredBytes: UInt64 = 2 * 1024 * 1024 * 1024
-    private let rust: AppRunHistory
+    nonisolated let rust: AppRunHistory
     public init(root: URL? = nil) {
         let directory = root ?? FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
             .appending(path: "Wirebolt/History", directoryHint: .isDirectory)
@@ -113,7 +113,7 @@ public struct CookieSnapshot: Codable, Equatable, Identifiable, Sendable {
 }
 
 public actor CookieJar {
-    private let rust: AppCookieJar
+    nonisolated let rust: AppCookieJar
     public init(storageURL: URL? = nil) { rust = AppCookieJar(storage: storageURL?.path) }
     public nonisolated static func storageURL(forWorkspaceAt workspaceURL: URL, in directory: URL) -> URL {
         URL(fileURLWithPath: appCookieStoragePath(workspace: workspaceURL.standardizedFileURL.path, directory: directory.path))

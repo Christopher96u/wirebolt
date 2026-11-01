@@ -2,6 +2,7 @@
 //! orchestration of workspace edits, sends, history, undo and secrets.
 pub mod persistence;
 pub mod run;
+pub mod runtime;
 pub mod secrets;
 pub mod tabs;
 #[cfg(test)]

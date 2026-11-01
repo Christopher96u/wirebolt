@@ -36,6 +36,26 @@ struct PreviewTabTests {
         #expect(store.isPreview(tabID: third.id))
     }
 
+    @Test("Restoring history leaves an untouched preview replaceable")
+    @MainActor func historyRestorationStaysPreview() throws {
+        let store = DocumentSessionStore()
+        let first = store.openPreview(draft: Self.location("a").request, collectionID: "api")
+        let path = FileManager.default.temporaryDirectory.appending(path: "wirebolt-preview-history-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: path) }
+        let data = Data("saved response".utf8)
+        try data.write(to: path)
+        let prepared = PreparedRunSnapshot(method: "GET", url: first.draft.url, headers: [],
+            body: PreparedBodySnapshot(byteCount: 0, contentType: nil, textPreview: nil, redacted: false), transport: TransportSettings())
+        let entry = RunHistoryEntry(id: RunID().description, requestID: first.requestID, createdAt: Date(), prepared: prepared,
+            responseHead: ResponseHead(status: 200, version: "HTTP/2", headers: [], timeToHeadersNS: 1), completion: nil, failure: nil, bodyPath: path.path)
+        first.restore(entry, viewport: data)
+        #expect(!first.isTouched)
+        #expect(store.isPreview(tabID: first.id))
+        let next = store.openPreview(draft: Self.location("b").request, collectionID: "api")
+        #expect(store.activeGroup?.tabIDs == [next.id])
+        #expect(store.session(id: first.id) == nil)
+    }
+
     @Test("Writing an unchanged value does not keep a preview tab")
     @MainActor func unchangedWriteStaysPreview() {
         let store = DocumentSessionStore()

@@ -2,6 +2,7 @@ import Foundation
 import Observation
 
 public protocol RequestRunner: Sendable {
+    var sessionTransport: AppRuntimeTransport { get }
     func events(for input: RunInput, runID: RunID) -> AsyncThrowingStream<RunEvent, any Error>
     func cancel(runID: RunID)
     func proxySettingsChanged()
@@ -9,6 +10,7 @@ public protocol RequestRunner: Sendable {
 }
 
 public extension RequestRunner {
+    var sessionTransport: AppRuntimeTransport { AppRuntimeTransport.foreign(platform: RuntimeRunnerAdapter(runner: self)) }
     func proxySettingsChanged() {}
     func resolveValues(_ values: [ValueSource], variables: [String: ValueSource]) async throws -> [String] {
         try values.map { value in
@@ -40,6 +42,7 @@ public protocol WorkspacePersistence: Sendable {
     /// The workspace folder, used to key local runtime storage such as cookies.
     var location: URL? { get }
     var sessionSecretPlatform: AppSecretPlatform { get }
+    var runtimeWorkspaceBridge: WorkspaceBridge? { get }
 }
 
 public extension WorkspacePersistence {
@@ -47,6 +50,7 @@ public extension WorkspacePersistence {
         let workspace = try await load(); application.replace(workspace: workspace.domain); return workspace
     }
     var location: URL? { nil }
+    var runtimeWorkspaceBridge: WorkspaceBridge? { nil }
     var sessionSecretPlatform: AppSecretPlatform { AppSecretPlatform.foreign(platform: SessionSecretAdapter(persistence: self)) }
     func readSecret(name _: String) async throws -> String? { nil }
     func deleteSecret(name _: String) async throws {}
@@ -140,7 +144,7 @@ public final class WireboltModel {
         if filtering { sidebarVisibleCache = (query, collapsed, expanded, rows) } else { sidebarUnfilteredCache = (collapsed, expanded, rows) }
         return rows
     }
-    public var selectedEnvironmentID: String?
+    public var selectedEnvironmentID: String? { didSet { runtime.selectEnvironment(id: selectedEnvironmentID) } }
     public let proxyPreferences: ProxyPreferences
     public let sessions: DocumentSessionStore
     public private(set) var isLoadingWorkspace = false
@@ -156,13 +160,13 @@ public final class WireboltModel {
     public var importSummary: ImportSummary?
     public private(set) var historyEntries: [RunHistoryEntry] = []
     public private(set) var historyRevision = 0
-    public struct RequestActivity: Sendable {
+    public struct RequestActivity: Equatable, Sendable {
         public let date: Date
         public let status: UInt16?
     }
     public private(set) var requestActivity: [String: RequestActivity] = [:]
     private var editedSecrets: [String: String] = [:]
-    private var dirtySecrets: Set<String> = []
+    @ObservationIgnored private let runtime: AppSessionRuntime
     /// Keychain names Wirebolt generated that this workspace used during this session. Those
     /// no longer referenced are deleted only when the undo stack is discarded (switching
     /// workspace, reloading after a pull, quitting), so an undone deletion still finds its value.
@@ -186,16 +190,12 @@ public final class WireboltModel {
     @ObservationIgnored private let runner: any RequestRunner
     @ObservationIgnored private var persistence: (any WorkspacePersistence)?
     @ObservationIgnored private var gitCollaboration: (any GitCollaboration)?
-    @ObservationIgnored private let history: HistoryRepository
-    @ObservationIgnored private var cookieJar: CookieJar
     /// Used while no workspace folder is known, for example in tests and previews.
-    @ObservationIgnored private let defaultCookieJar: CookieJar
     @ObservationIgnored private let cookieDirectory: URL?
     @ObservationIgnored private let oauth2: any OAuth2Authorizing
     @ObservationIgnored private var requestSearchIndex: [String: String] = [:]
     @ObservationIgnored private var rootCreation: Task<Void, any Error>?
     @ObservationIgnored private var transportSave: Task<Void, Never>?
-    @ObservationIgnored private var persistedTransport: TransportSettings?
     public private(set) var exportFailureMessage: String?
     public var operationFailure: RunFailure?
     /// The window's undo manager; workspace mutations register their inverse here.
@@ -226,9 +226,7 @@ public final class WireboltModel {
         self.persistence = persistence
         self.gitCollaboration = gitCollaboration
         self.sessions = sessions ?? DocumentSessionStore()
-        self.history = history
-        self.cookieJar = cookieJar
-        defaultCookieJar = cookieJar
+        runtime = AppSessionRuntime(history: history.rust, cookies: cookieJar.rust)
         self.cookieDirectory = cookieDirectory
         self.oauth2 = oauth2 ?? OAuth2Service()
     }
@@ -240,18 +238,11 @@ public final class WireboltModel {
         self.persistence = persistence
         self.gitCollaboration = gitCollaboration
         editedSecrets = [:]
-        dirtySecrets = []
         rustSecrets.resetEditor()
         workspaceLocation = persistence.location
-        // Each workspace keeps its own cookies, as a browser profile would.
-        if let cookieDirectory, let location = persistence.location {
-            cookieJar = CookieJar(storageURL: CookieJar.storageURL(forWorkspaceAt: location, in: cookieDirectory))
-            // Earlier versions shared one jar between all workspaces and kept session cookies.
-            try? FileManager.default.removeItem(at: cookieDirectory.appending(path: "cookies.json"))
-        } else {
-            cookieJar = defaultCookieJar
-        }
-        cookieRevision += 1
+        runtime.configureCookies(workspace: persistence.location?.standardizedFileURL.path, directory: cookieDirectory?.path)
+        mirrorRuntime()
+
     }
 
     public var selectedRequestID: String? {
@@ -287,9 +278,7 @@ public final class WireboltModel {
     public var isRunning: Bool { sessions.activeSession?.isRunning ?? false }
 
     public var activeVariables: [String: ValueSource] {
-        let global = workspace.environments.first { $0.id == WorkspaceDraft.globalEnvironmentID }?.enabledValues ?? [:]
-        let selected = workspace.environments.first { $0.id == selectedEnvironmentID }?.enabledValues ?? [:]
-        return global.merging(selected, uniquingKeysWith: { _, override in override })
+        runtime.activeVariables(environments: workspace.environments.map(\.domain)).mapValues(ValueSource.init(domain:))
     }
 
     public var hasUnsavedRequestChanges: Bool {
@@ -349,106 +338,41 @@ public final class WireboltModel {
 
     public func connectWebSocket(_ session: DocumentSession) async {
         guard let socketConnector else { return }
-        do { try await flushSecrets() } catch {
-            operationFailure = RunFailure(kind: "keychain", issues: [])
-            return
-        }
-        var draft = session.draft
-        if draft.inheritsWorkspaceTransport { draft.transport = workspace.transport }
-        session.socket.connect(input: RunInput(draft: draft, variables: activeVariables,
-            workspaceProxy: workspace.proxy, appProxy: proxyPreferences.configuration), connector: socketConnector)
+        do {
+            let input = try await rustSecrets.socketInput(draft: session.draft.domain, context: runtimeContext,
+                platform: persistence?.sessionSecretPlatform, observer: runtimeObserver(for: session))
+            mirrorSecretEdits()
+            session.socket.connect(input: RunInput(domain: input), connector: socketConnector)
+        } catch { mirrorSecretEdits(); operationFailure = RunFailure(kind: "keychain", issues: []) }
     }
 
     public func send(_ target: DocumentSession? = nil) async {
         let session = target ?? sessions.activeSession ?? sessions.openTemporary()
-        if session.kind == .webSocket {
-            if session.socket.status == .connected { await session.socket.send(body: session.draft.body) }
-            else { await connectWebSocket(session) }
-            return
+        switch sessionSendAction(kind: session.kind.rust, socket: session.socket.status.rust, running: session.isRunning) {
+        case .socketSend: await session.socket.send(body: session.draft.body); return
+        case .socketConnect: await connectWebSocket(session); return
+        case .ignore: return
+        case .http: break
         }
-        guard session.isRunning == false else { return }
         operationFailure = nil
-        do { try await flushSecrets() } catch {
-            operationFailure = RunFailure(kind: "keychain", issues: [])
-            return
-        }
-        guard !session.isRunning, sessions.session(id: session.id) != nil else { return }
-        let runID = RunID()
-        var runDraft = session.draft
-        if runDraft.inheritsWorkspaceTransport {
-            runDraft.transport = workspace.transport
-        }
-        let variables = activeVariables
-        let workspaceProxy = workspace.proxy
-        let appProxy = proxyPreferences.configuration
-        session.beginRun(runID)
-        let effectiveURL: URL?
-        do {
-            let values = try await runner.resolveValues([.literal(runDraft.url)], variables: variables)
-            effectiveURL = values.first.flatMap { URL(string: $0.trimmingCharacters(in: .whitespacesAndNewlines)) }
-        } catch {
-            await session.finish(runID: runID, failure: (error as? RunFailure) ?? RunFailure(kind: "invalid_request", issues: []))
-            return
-        }
-        guard session.activeRunID == runID, sessions.session(id: session.id) != nil else { return }
-        if let url = effectiveURL,
-           runDraft.headers.contains(where: {
-               $0.enabled && $0.name.caseInsensitiveCompare("cookie") == .orderedSame
-           }) == false,
-           let cookieHeader = await cookieJar.header(for: url)
-        {
-            runDraft.headers.append(RequestField(
-                name: "Cookie",
-                value: .literal(cookieHeader),
-                enabled: true,
-                sensitive: true
-            ))
-        }
-        guard session.activeRunID == runID, sessions.session(id: session.id) != nil else { return }
-        let input = RunInput(
-            draft: runDraft,
-            variables: variables,
-            workspaceProxy: workspaceProxy,
-            appProxy: appProxy
-        )
-
-        do {
-            for try await event in runner.events(for: input, runID: runID) {
-                guard session.activeRunID == runID else { return }
-                if Task.isCancelled {
-                    runner.cancel(runID: runID)
-                    session.cancel(runID: runID)
-                    return
-                }
-                if case let .cookies(update) = event, let url = URL(string: update.url) {
-                    let received = await cookieJar.store(headers: update.headers, requestURL: url)
-                    if !received.isEmpty { cookieRevision += 1 }
-                    guard session.activeRunID == runID else { return }
-                    session.appendResponseCookies(received)
-                }
-                await session.consume(event, runID: runID)
-            }
-            if session.activeRunID == runID {
-                await session.finish(runID: runID, failure: nil)
-            }
-            await recordHistory(session: session, runID: runID)
-        } catch is CancellationError {
-            session.cancel(runID: runID)
-        } catch let error as RunFailure {
-            await session.finish(runID: runID, failure: error)
-            await recordHistory(session: session, runID: runID)
-        } catch {
-            await session.finish(runID: runID, failure: RunFailure(kind: "bridge", issues: []))
-            await recordHistory(session: session, runID: runID)
-        }
+        session.synchronizeDraft()
+        let runtime = runtime
+        let failure = await withTaskCancellationHandler {
+            await runtime.send(document: session.rust, options: RuntimeRunOptions(context: runtimeContext, id: RunID().description,
+                directory: FileManager.default.temporaryDirectory.path), transport: runner.sessionTransport,
+                observer: runtimeObserver(for: session, requireOpen: true),
+                secrets: rustSecrets, platform: persistence?.sessionSecretPlatform)
+        } onCancel: { runtime.cancel(document: session.rust) }
+        if let failure { operationFailure = RunFailure(failure) }
+        mirrorSecretEdits()
+        session.mirror()
+        mirrorRuntime()
     }
 
     public func cancel(_ target: DocumentSession? = nil) {
-        guard let session = target ?? sessions.activeSession,
-              let runID = session.activeRunID
-        else { return }
-        runner.cancel(runID: runID)
-        session.cancel(runID: runID)
+        guard let session = target ?? sessions.activeSession else { return }
+        runtime.cancel(document: session.rust)
+        session.mirror()
     }
 
     @discardableResult
@@ -465,81 +389,41 @@ public final class WireboltModel {
 
     public func acquireOAuthToken(for session: DocumentSession) async {
         guard case .oauth2 = session.draft.authentication, let persistence else { return }
-        isOAuthBusy = true
-        oauthFailureMessage = nil
-        defer { isOAuthBusy = false }
-        do {
-            // A client secret typed in the editor must reach Keychain before the token request reads it.
-            try await flushSecrets()
-            // A new token must never overwrite the legacy shared item other requests read.
-            let migrated = try await migratingLegacySecrets(session.draft)
-            if migrated != session.draft { session.draft = migrated }
-            guard case let .oauth2(configuration) = session.draft.authentication else { return }
-            let (token, receipt) = try await oauth2.acquireToken(configuration: configuration)
-            observeSecrets([configuration.accessTokenReference])
-            try await persistence.saveSecret(name: configuration.accessTokenReference, value: token)
-            oauthReceipts[session.id] = receipt
-        } catch {
-            oauthFailureMessage = error.localizedDescription
-        }
+        session.synchronizeDraft()
+        await runtime.acquireToken(document: session.rust, secrets: rustSecrets, platform: persistence.sessionSecretPlatform,
+            authorizer: RuntimeOAuthAdapter(authorizer: oauth2) { [weak session] in session?.draft.authentication = .oauth2(configuration: $0) },
+            observer: runtimeObserver(for: session, oauth: true))
+        mirrorOAuthRuntime()
+        mirrorSecretEdits()
     }
 
     public func historyEntries(for session: DocumentSession) async -> [RunHistoryEntry] {
-        await history.list(requestID: session.requestID)
+        await runtime.historyEntries(id: session.requestID).map(RunHistoryEntry.init)
     }
-
     public func historyCount(for session: DocumentSession) async -> Int {
-        await history.count(requestID: session.requestID)
+        Int(clamping: await runtime.historyCount(id: session.requestID))
     }
-
     public func loadHistory(for session: DocumentSession) async {
-        historyEntries = await history.list(requestID: session.requestID)
+        await runtime.loadHistory(id: session.requestID)
+        mirrorRuntime()
     }
-
     public func restoreHistory(_ entry: RunHistoryEntry, into session: DocumentSession) async {
-        session.restore(entry, viewport: await Self.historyViewport(entry))
+        await runtime.restoreHistory(entry: entry.sessionRecord, document: session.rust)
+        session.mirror()
     }
-
-    private nonisolated static func historyViewport(_ entry: RunHistoryEntry) async -> Data {
-        await Task.detached(priority: .utility) { sessionHistoryViewport(path: entry.bodyPath) }.value
-    }
-
-    /// Shows the most recent recorded response in restored tabs that have not run yet.
     private func restoreLatestResponses(for restored: [DocumentSession]) {
-        guard !restored.isEmpty else { return }
         Task {
             for session in restored {
-                guard let entry = await history.list(requestID: session.requestID).first else { continue }
-                let viewport = await Self.historyViewport(entry)
-                guard sessions.session(id: session.id) === session, !session.isRunning,
-                      session.responseHead == nil, session.failure == nil else { continue }
-                requestActivity[session.requestID] = RequestActivity(date: entry.createdAt, status: entry.responseHead?.status)
-                session.restore(entry, viewport: viewport)
+                guard sessions.session(id: session.id) === session else { continue }
+                await runtime.restoreLatest(document: session.rust, observer: runtimeObserver(for: session, requireOpen: true))
+                session.mirror()
             }
+            mirrorRuntime()
         }
     }
-
     public func clearHistory(for session: DocumentSession) async {
-        try? await history.clear(requestID: session.requestID)
-        historyEntries = []
-        requestActivity[session.requestID] = nil
-        historyRevision += 1
-    }
-
-    private func recordHistory(session: DocumentSession, runID: RunID) async {
-        guard let prepared = session.preparedRun, let body = session.bodyStore else { return }
-        try? await history.record(
-            runID: runID,
-            requestID: session.requestID,
-            prepared: prepared,
-            responseHead: session.responseHead,
-            completion: session.completion,
-            failure: session.failure,
-            body: body
-        )
-        historyEntries = await history.list(requestID: session.requestID)
-        requestActivity[session.requestID] = RequestActivity(date: Date(), status: session.responseHead?.status)
-        historyRevision += 1
+        await runtime.clearHistory(id: session.requestID)
+        mirrorRuntime()
     }
 
     public func exportWorkspace() async -> String? {
@@ -602,7 +486,7 @@ public final class WireboltModel {
             rustSecrets.clearObserved()
             configurePersistence(persistence, gitCollaboration: gitCollaboration)
             transportSave = nil
-            persistedTransport = nil
+            runtime.resetWorkspace()
             selectedEnvironmentID = nil
             oauthReceipts = [:]
             historyEntries = []
@@ -696,19 +580,9 @@ public final class WireboltModel {
     // MARK: Cookies
 
     /// The active workspace's cookies, most specific domain first.
-    public func cookies() async -> [CookieSnapshot] {
-        await cookieJar.all().sorted { ($0.domain, $0.path, $0.name) < ($1.domain, $1.path, $1.name) }
-    }
-
-    public func deleteCookie(id: CookieSnapshot.ID) async {
-        await cookieJar.delete(id: id)
-        cookieRevision += 1
-    }
-
-    public func clearCookies() async {
-        await cookieJar.removeAll()
-        cookieRevision += 1
-    }
+    public func cookies() async -> [CookieSnapshot] { runtime.cookies().map(CookieSnapshot.init) }
+    public func deleteCookie(id: CookieSnapshot.ID) async { runtime.deleteCookie(id: id); mirrorRuntime() }
+    public func clearCookies() async { runtime.clearCookies(); mirrorRuntime() }
 
     /// Opens a saved request. `preview` reuses the group's preview tab instead of adding a tab.
     public func select(_ location: RequestLocation, preview: Bool = false) {
@@ -771,53 +645,36 @@ public final class WireboltModel {
     /// Validate and persist before publishing. Failed saves leave the active policy intact.
     public func applyProxy(_ configuration: ProxyDocument?, scope: ProxyScope,
                            session: DocumentSession? = nil, secrets: [String: String] = [:]) async throws {
-        try configuration?.validate()
-        if scope == .app && configuration == nil { throw ProxyValidationError("Choose an app default.") }
-        if scope == .request && session == nil { throw WorkspaceMutationError.unsupported }
-        for (name, value) in secrets {
-            guard let persistence else { throw WorkspaceMutationError.unsupported }
-            try await persistence.saveSecret(name: name, value: value)
-        }
-        switch scope {
-        case .app: try proxyPreferences.save(configuration ?? .system)
-        case .workspace:
-            guard let persistence else { throw WorkspaceMutationError.unsupported }
-            _ = try await persistence.apply(.saveWorkspaceProxy(configuration))
-            workspace.proxy = configuration
-        case .request: session?.draft.proxy = ProxySelection(document: configuration)
-        }
-        runner.proxySettingsChanged()
+        do {
+            try await runtime.applyProxy(configuration: configuration?.domain, scope: scope.rust,
+                hasSession: session != nil, secrets: secrets, secretPlatform: persistence?.sessionSecretPlatform,
+                platform: runtimeSettings())
+            switch scope {
+            case .app: break
+            case .workspace: workspace.proxy = configuration
+            case .request: session?.draft.proxy = ProxySelection(document: configuration)
+            }
+            runner.proxySettingsChanged()
+        } catch { throw runtimeError(error) }
     }
 
-    /// The model owns pending writes so dismissing a settings view cannot cancel them.
     public func updateWorkspaceTransport(_ value: TransportSettings) {
-        guard let persistence else { return }
-        if persistedTransport == nil { persistedTransport = workspace.transport }
+        guard persistence != nil else { return }
+        let generation = runtime.updateTransport(previous: workspace.transport.domain, value: value.domain)
         workspace.transport = value
-        let previous = transportSave
-        previous?.cancel()
+        let platform = runtimeSettings(), runtime = runtime
         transportSave = Task {
-            await previous?.value
-            do { try await Task.sleep(for: .milliseconds(250)) } catch { return }
-            do {
-                _ = try await persistence.apply(.saveWorkspaceSettings(value))
-                persistedTransport = value
-            } catch {
-                if workspace.transport == value, let persistedTransport { workspace.transport = persistedTransport }
-                operationFailure = RunFailure(kind: "workspace", issues: [])
+            if let result = await runtime.savePendingTransport(generation: generation, platform: platform) {
+                if workspace.transport != TransportSettings(domain: result.value) { workspace.transport = TransportSettings(domain: result.value) }
+                if result.failed { operationFailure = RunFailure(kind: "workspace", issues: []) }
             }
         }
     }
-
     public func flushWorkspaceTransport() async { await transportSave?.value }
-
     public func saveWorkspaceTransport() async {
-        guard let persistence else { return }
-        do {
-            _ = try await persistence.apply(.saveWorkspaceSettings(workspace.transport))
-        } catch {
-            operationFailure = RunFailure(kind: "workspace", issues: [])
-        }
+        guard persistence != nil else { return }
+        do { try await runtime.saveTransport(value: workspace.transport.domain, platform: runtimeSettings()) }
+        catch { operationFailure = RunFailure(kind: "workspace", issues: []) }
     }
 
     @discardableResult
@@ -825,71 +682,34 @@ public final class WireboltModel {
         await perform(.removeEnvironment(id: id), named: "Delete Environment")
     }
 
-    /// Explicit export: resolved credentials are returned only to the caller, never persisted.
+    /// Explicit export keeps Keychain references in the generated command.
     public func curlCommand(for draft: RequestDraft) async -> String? {
-        var draft = draft
-        if draft.inheritsWorkspaceTransport { draft.transport = workspace.transport }
-        let variables = activeVariables
-        let proxy: ProxyDocument = switch draft.proxy {
-        case .inherit: workspace.proxy ?? proxyPreferences.configuration
-        case .direct: .direct
-        case .system: .system
-        case let .manual(value): value
-        }
+        let context = runtimeContext
         do {
             try await flushSecrets()
-            // Resolving validates the draft exactly as a send would. Secret values are read only
-            // to choose how the shell decodes them; the command references Keychain instead.
-            let sources = draft.curlValueSources
-            var secretNames = draft.curlSecretNames(variables: variables)
-            let values = try await runner.resolveValues(sources + secretNames.map { .secret($0) }, variables: variables)
-            guard values.count == sources.count + secretNames.count else { throw RunFailure(kind: "export", issues: []) }
-            let url = values[0]
-            var secretValues = Array(values.suffix(secretNames.count))
-            if let references = proxy.curlRoute(for: url)?.credentials {
-                let names = [references.username, references.password]
-                let credentials = try await runner.resolveValues(names.map { .secret($0) }, variables: variables)
-                guard credentials.count == 2 else { throw RunFailure(kind: "export", issues: []) }
-                secretNames += names
-                secretValues += credentials
-            }
-            let hexEncoded = zip(secretNames, secretValues).filter { CurlSecretReferences.printsAsHex($1) }.map(\.0)
-            let secrets = CurlSecretReferences(variables: variables, hexEncoded: Set(hexEncoded))
-            return draft.curlCommand(secrets: secrets) + proxy.curlArguments(for: url, secrets: secrets)
-        } catch {
-            operationFailure = (error as? RunFailure) ?? RunFailure(kind: "export", issues: [])
+            return try await runtime.curlCommand(draft: draft.domain, context: context, transport: runner.sessionTransport)
+        } catch let RuntimeRequestError.Failure(failure) {
+            operationFailure = RunFailure(failure)
             return nil
-        }
+        } catch { operationFailure = (error as? RunFailure) ?? RunFailure(kind: "export", issues: []); return nil }
     }
-
     public func secretMaterial(for source: ValueSource) -> String {
-        switch source {
-        case let .literal(value): value
-        case let .secret(name): editedSecrets[name] ?? ""
-        }
+        _ = editedSecrets
+        return rustSecrets.material(source: source.domain)
     }
-
     public func editSecret(name: String, value: String) {
-        editedSecrets[name] = value
-        dirtySecrets.insert(name)
+        rustSecrets.edit(name: name, value: value)
+        mirrorSecretEdits()
     }
-
     public func loadSecret(_ source: ValueSource) async {
-        guard case let .secret(name) = source, editedSecrets[name] == nil, let persistence else { return }
-        do {
-            let value = try await rustSecrets.load(name: name, platform: persistence.sessionSecretPlatform)
-            if editedSecrets[name] == nil { editedSecrets[name] = value }
-        } catch { operationFailure = RunFailure(kind: "keychain", issues: []) }
+        guard case let .secret(name) = source, let persistence else { return }
+        do { _ = try await rustSecrets.load(name: name, platform: persistence.sessionSecretPlatform); mirrorSecretEdits() }
+        catch { operationFailure = RunFailure(kind: "keychain", issues: []) }
     }
-
     private func flushSecrets() async throws {
-        guard let persistence else { if !dirtySecrets.isEmpty { throw WorkspaceMutationError.unsupported }; return }
-        repeat {
-            synchronizeSecretEdits()
-            do { try await rustSecrets.flush(platform: persistence.sessionSecretPlatform) }
-            catch { mirrorSecretEdits(); throw error }
-            mirrorSecretEdits()
-        } while !dirtySecrets.isEmpty
+        guard let persistence else { if !rustSecrets.dirty().isEmpty { throw WorkspaceMutationError.unsupported }; return }
+        defer { mirrorSecretEdits() }
+        try await rustSecrets.flush(platform: persistence.sessionSecretPlatform)
     }
 
     private func observeSecrets(_ names: some Sequence<String>) {
@@ -904,35 +724,21 @@ public final class WireboltModel {
     /// discarded; items of deletions that can still be undone must stay.
     public func purgeReleasedSecrets() async {
         guard let persistence, rustSecrets.hasObserved() else { return }
-        var inUse = workspace.secretReferences
-        for session in sessions.sessions.values {
-            inUse.formUnion(session.draft.secretReferences)
-            if let saved = session.savedDraft { inUse.formUnion(saved.secretReferences) }
-        }
-        let current = workspaceLocation?.standardizedFileURL.path
-        let others = Array(Set(knownWorkspaceLocations().map(\.standardizedFileURL.path)).subtracting([current].compactMap { $0 }))
-        synchronizeSecretEdits()
-        await rustSecrets.purge(inUse: Array(inUse), others: others, platform: persistence.sessionSecretPlatform)
-        let cached = rustSecrets.cached()
-        for name in editedSecrets.keys where cached[name] == nil { editedSecrets[name] = nil; dirtySecrets.remove(name) }
+        let documents = sessions.sessions.values.map { session in session.synchronizeDraft(); return session.rust.document() }
+        await rustSecrets.purgeWorkspace(workspace: workspace.domain, documents: documents,
+            current: workspaceLocation?.standardizedFileURL.path,
+            others: knownWorkspaceLocations().map(\.standardizedFileURL.path), platform: persistence.sessionSecretPlatform)
         mirrorSecretEdits()
     }
-
-    /// Gives a request per-request Keychain names in place of legacy shared ones, copying
-    /// each value. The shared items stay: other workspaces may still use them.
     private func migratingLegacySecrets(_ draft: RequestDraft) async throws -> RequestDraft {
-        let (authentication, renames) = draft.authentication.withOwnKeychainNames(onlyLegacy: true)
-        guard !renames.isEmpty else { return draft }
-        try await copySecrets(renames)
-        var migrated = draft
-        migrated.authentication = authentication
-        return migrated
+        guard let persistence else { throw WorkspaceMutationError.unsupported }
+        defer { mirrorSecretEdits() }
+        return try await RequestDraft(domain: rustSecrets.migrate(draft: draft.domain, platform: persistence.sessionSecretPlatform))
     }
 
     /// Copies Keychain values from old to new names. Missing values stay missing.
     private func copySecrets(_ renames: [String: String]) async throws {
         guard let persistence else { throw WorkspaceMutationError.unsupported }
-        synchronizeSecretEdits()
         do { _ = try await rustSecrets.copy(renames: renames, platform: persistence.sessionSecretPlatform) }
         catch { mirrorSecretEdits(); throw error }
         mirrorSecretEdits()
@@ -944,10 +750,8 @@ public final class WireboltModel {
     public func saveSecrets(_ values: [String: String]) async -> Bool {
         guard !values.isEmpty else { return true }
         guard let persistence else { return false }
-        synchronizeSecretEdits()
         do {
             try await rustSecrets.save(values: values, platform: persistence.sessionSecretPlatform)
-            for (name, value) in values { editedSecrets[name] = value; dirtySecrets.remove(name) }
             mirrorSecretEdits(); return true
         } catch { mirrorSecretEdits(); operationFailure = RunFailure(kind: "keychain", issues: []); return false }
     }
@@ -955,7 +759,7 @@ public final class WireboltModel {
     public func saveSecret(name: String, value: String) async {
         guard let persistence else { return }
         do {
-            try await persistence.saveSecret(name: name, value: value)
+            try await rustSecrets.saveMaterial(name: name, value: value, platform: persistence.sessionSecretPlatform)
         } catch {
             operationFailure = RunFailure(kind: "keychain", issues: [])
         }
@@ -1328,8 +1132,8 @@ public final class WireboltModel {
 
     private func applyLoadedWorkspace(_ loaded: WorkspaceDraft, restoring layout: SessionLayout? = nil) {
         workspace = loaded
+        runtime.resetTransport()
         observeSecrets(loaded.secretReferences)
-        persistedTransport = loaded.transport
         rebuildRequestSearchIndex()
         selectedEnvironmentID = loaded.environments.first(where: { $0.id != WorkspaceDraft.globalEnvironmentID })?.id
         guard sessions.activeSession == nil else { return }
@@ -1815,14 +1619,39 @@ private final class SessionSecretAdapter: SessionSecretPlatform {
     }
 }
 private extension WireboltModel {
-    func synchronizeSecretEdits() {
-        rustSecrets.editBatch(values: Dictionary(uniqueKeysWithValues: dirtySecrets.compactMap { name in editedSecrets[name].map { (name, $0) } }))
+    var runtimeContext: RuntimeContext {
+        RuntimeContext(transport: workspace.transport.domain, workspaceProxy: workspace.proxy?.domain,
+            appProxy: proxyPreferences.configuration.domain, variables: activeVariables.mapValues(\.domain))
     }
-    func mirrorSecretEdits() {
-        let dirty = Set(rustSecrets.dirty())
-        for (name, value) in rustSecrets.cached() where !dirtySecrets.contains(name) || editedSecrets[name] == value {
-            editedSecrets[name] = value
-            if !dirty.contains(name) { dirtySecrets.remove(name) }
-        }
+    func runtimeObserver(for session: DocumentSession, requireOpen: Bool = false, oauth: Bool = false) -> RuntimePresentationObserver {
+        RuntimePresentationObserver(update: { [weak self, weak session] in session?.mirror(); self?.mirrorCookieRevision(); if oauth { self?.mirrorOAuthRuntime() } }, input: { [weak self, weak session] in
+            guard let self, let session, !requireOpen || self.sessions.session(id: session.id) === session else { return nil }
+            return RuntimeInput(draft: session.draft.domain, context: self.runtimeContext)
+        })
+    }
+    func mirrorSecretEdits() { let values = rustSecrets.cached(); if editedSecrets != values { editedSecrets = values } }
+    func mirrorOAuthRuntime() {
+        let state = runtime.oauthSnapshot()
+        if isOAuthBusy != state.busy { isOAuthBusy = state.busy }
+        let failure = state.failure.map { runtimeError($0).localizedDescription }
+        if oauthFailureMessage != failure { oauthFailureMessage = failure }
+        let receipts = state.receipts.mapValues { OAuth2TokenReceipt(expiresAt: $0.expiresAt.map(Date.init(timeIntervalSince1970:)), scope: $0.scope) }
+        if oauthReceipts != receipts { oauthReceipts = receipts }
+    }
+    func mirrorCookieRevision() {
+        let value = Int(clamping: runtime.cookieRevision())
+        if cookieRevision != value { cookieRevision = value }
+    }
+    func mirrorRuntime() {
+        let state = runtime.snapshot()
+        let entries = state.historyEntries.map(RunHistoryEntry.init)
+        if historyEntries != entries { historyEntries = entries }
+        if historyRevision != Int(clamping: state.historyRevision) { historyRevision = Int(clamping: state.historyRevision) }
+        if cookieRevision != Int(clamping: state.cookieRevision) { cookieRevision = Int(clamping: state.cookieRevision) }
+        let activity = state.requestActivity.mapValues { RequestActivity(date: Date(timeIntervalSinceReferenceDate: $0.date), status: $0.status) }
+        if requestActivity != activity { requestActivity = activity }
+    }
+    func runtimeSettings() -> AppRuntimeSettings {
+        AppRuntimeSettings(bridge: persistence?.runtimeWorkspaceBridge, platform: RuntimeSettingsAdapter(persistence: persistence, preferences: proxyPreferences))
     }
 }

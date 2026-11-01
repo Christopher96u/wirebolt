@@ -443,14 +443,14 @@ impl AppResponseBody {
 }
 #[derive(Debug, uniffi::Object)]
 pub struct AppRunHistory {
-    inner: Mutex<RunHistory>,
+    pub(crate) inner: Arc<Mutex<RunHistory>>,
 }
 #[uniffi::export]
 impl AppRunHistory {
     #[uniffi::constructor]
     pub fn new(root: String) -> Arc<Self> {
         Arc::new(Self {
-            inner: Mutex::new(RunHistory::new(PathBuf::from(root))),
+            inner: Arc::new(Mutex::new(RunHistory::new(PathBuf::from(root)))),
         })
     }
     pub fn record(&self, entry: Vec<u8>, body: Arc<AppResponseBody>) -> Result<(), ResponseError> {
@@ -471,14 +471,16 @@ impl AppRunHistory {
 }
 #[derive(Debug, uniffi::Object)]
 pub struct AppCookieJar {
-    inner: Mutex<ResponseCookieJar>,
+    pub(crate) inner: Arc<Mutex<ResponseCookieJar>>,
 }
 #[uniffi::export]
 impl AppCookieJar {
     #[uniffi::constructor]
     pub fn new(storage: Option<String>) -> Arc<Self> {
         Arc::new(Self {
-            inner: Mutex::new(ResponseCookieJar::new(storage.map(PathBuf::from))),
+            inner: Arc::new(Mutex::new(ResponseCookieJar::new(
+                storage.map(PathBuf::from),
+            ))),
         })
     }
     pub fn store(

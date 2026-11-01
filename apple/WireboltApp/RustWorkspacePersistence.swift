@@ -3,6 +3,7 @@ import Foundation
 struct RustWorkspacePersistence: WorkspacePersistence, GitCollaboration {
     private let bridge: WorkspaceBridge
     let location: URL?
+    var runtimeWorkspaceBridge: WorkspaceBridge? { bridge }
     var sessionSecretPlatform: AppSecretPlatform { AppSecretPlatform.workspace(bridge: bridge) }
 
     init(
