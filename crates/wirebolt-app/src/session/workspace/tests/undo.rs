@@ -56,8 +56,88 @@ async fn undo_active_environment_deletion_selects_the_restored_environment() {
     let plan = restored.plan.unwrap();
     assert!(plan.changes_environment_selection);
     assert_eq!(plan.selected_environment_id.as_deref(), Some("local"));
-    let (deleted, _) = h.undo(redo).await;
+    // The user deselected it before redo, so this deletion must preserve that choice.
+    let (deleted, undo) = h.undo(redo).await;
     assert!(deleted.succeeded && h.workspace.snapshot().environments.is_empty());
+    assert!(!deleted.plan.unwrap().changes_environment_selection);
+    let (restored, _) = h.undo(undo).await;
+    let plan = restored.plan.unwrap();
+    assert!(!plan.changes_environment_selection && plan.selected_environment_id.is_none());
+}
+
+#[tokio::test]
+async fn undo_inactive_environment_deletion_preserves_selection() {
+    let local = DomainEnvironment {
+        id: "local".into(),
+        ..Default::default()
+    };
+    let staging = DomainEnvironment {
+        id: "staging".into(),
+        ..Default::default()
+    };
+    for selected in [Some("local".to_owned()), None] {
+        let h = Harness::new(DomainWorkspace {
+            environments: vec![local.clone(), staging.clone()],
+            ..Default::default()
+        });
+        let deleted = h
+            .ops
+            .mutate(
+                Action::DeleteEnvironment {
+                    id: staging.id.clone(),
+                },
+                selected.clone(),
+                &h.store,
+                &h.secrets,
+                &Secrets,
+            )
+            .await;
+        assert!(deleted.succeeded);
+        let plan = deleted.plan.unwrap();
+        assert!(!plan.changes_environment_selection);
+        assert_eq!(plan.selected_environment_id, selected);
+        let undo = deleted.undo.unwrap();
+        let redo = h.ops.reverse_token(undo.token).unwrap();
+        let restored = h
+            .ops
+            .undo(
+                undo.token,
+                redo.token,
+                selected.clone(),
+                &h.store,
+                &h.secrets,
+                &Secrets,
+            )
+            .await;
+        assert!(restored.succeeded);
+        assert_eq!(
+            h.workspace.snapshot().environments,
+            [local.clone(), staging.clone()]
+        );
+        let plan = restored.plan.unwrap();
+        assert!(!plan.changes_environment_selection);
+        assert_eq!(plan.selected_environment_id, selected);
+        let undo = h.ops.reverse_token(redo.token).unwrap();
+        let deleted = h
+            .ops
+            .undo(
+                redo.token,
+                undo.token,
+                selected.clone(),
+                &h.store,
+                &h.secrets,
+                &Secrets,
+            )
+            .await;
+        assert!(deleted.succeeded);
+        assert_eq!(
+            h.workspace.snapshot().environments,
+            std::slice::from_ref(&local)
+        );
+        let plan = deleted.plan.unwrap();
+        assert!(!plan.changes_environment_selection);
+        assert_eq!(plan.selected_environment_id, selected);
+    }
 }
 
 #[derive(Default)]

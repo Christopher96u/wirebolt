@@ -1,6 +1,6 @@
 use super::super::workspace::{
-    SessionWorkspaceCommand as Command, SessionWorkspaceEdit as Edit, SessionWorkspacePlan,
-    plan_edit,
+    SessionEnvironmentRestoreSelection, SessionWorkspaceCommand as Command,
+    SessionWorkspaceEdit as Edit, SessionWorkspacePlan, plan_edit,
 };
 use crate::domain::{
     DomainCollection, DomainEnvironment, DomainGroup, DomainLocation, DomainRequestDraft,
@@ -115,6 +115,7 @@ fn environment_edits_and_deletion_restore_position_and_secret_references() {
         Edit::RestoreEnvironment {
             environment: changed.clone(),
             index: 0,
+            selection: SessionEnvironmentRestoreSelection::SelectCreated,
         },
     )
     .unwrap();
@@ -128,9 +129,16 @@ fn environment_edits_and_deletion_restore_position_and_secret_references() {
         Edit::RestoreEnvironment {
             environment: changed,
             index: 0,
+            selection: SessionEnvironmentRestoreSelection::SelectCreated,
         },
     );
-    roundtrip(workspace, Edit::RemoveEnvironment { id: "local".into() });
+    roundtrip(
+        workspace,
+        Edit::RemoveEnvironment {
+            id: "local".into(),
+            is_creation: false,
+        },
+    );
 }
 #[test]
 fn folder_deletion_inverse_restores_parents_before_children_with_ids_and_order() {
@@ -338,6 +346,7 @@ fn global_environment_save_does_not_select_it() {
                 ..Default::default()
             },
             index: 0,
+            selection: SessionEnvironmentRestoreSelection::SelectCreated,
         },
     )
     .unwrap();

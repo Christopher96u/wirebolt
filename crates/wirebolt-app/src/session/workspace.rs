@@ -14,6 +14,13 @@ use crate::domain::{
 };
 use std::collections::HashSet;
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SessionEnvironmentRestoreSelection {
+    SelectCreated,
+    SelectRestored,
+    Preserve,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[allow(
     clippy::large_enum_variant,
@@ -23,9 +30,11 @@ pub enum SessionWorkspaceEdit {
     RestoreEnvironment {
         environment: DomainEnvironment,
         index: u64,
+        selection: SessionEnvironmentRestoreSelection,
     },
     RemoveEnvironment {
         id: String,
+        is_creation: bool,
     },
     RestoreRequest {
         location: DomainLocation,
@@ -259,7 +268,11 @@ pub fn plan_edit(
         observed_secrets: vec![],
     };
     match step {
-        E::RestoreEnvironment { environment, index } => {
+        E::RestoreEnvironment {
+            environment,
+            index,
+            selection,
+        } => {
             let previous = workspace
                 .environments
                 .iter()
@@ -282,10 +295,12 @@ pub fn plan_edit(
             plan.inverse = previous.map_or_else(
                 || E::RemoveEnvironment {
                     id: environment.id.clone(),
+                    is_creation: selection == SessionEnvironmentRestoreSelection::SelectCreated,
                 },
                 |i| E::RestoreEnvironment {
                     environment: environments[i].clone(),
                     index: i as u64,
+                    selection: SessionEnvironmentRestoreSelection::Preserve,
                 },
             );
             environments.retain(|e| e.id != environment.id);
@@ -295,14 +310,17 @@ pub fn plan_edit(
                     .min(environments.len()),
                 environment.clone(),
             );
-            if previous.is_none() && environment.id != wirebolt_core::GLOBAL_ENVIRONMENT_ID {
+            if previous.is_none()
+                && selection != SessionEnvironmentRestoreSelection::Preserve
+                && environment.id != wirebolt_core::GLOBAL_ENVIRONMENT_ID
+            {
                 plan.selected_environment_id = Some(environment.id.clone());
                 plan.changes_environment_selection = true;
             }
             plan.commands.push(C::SaveEnvironment { environment });
             plan.environments = Some(environments);
         }
-        E::RemoveEnvironment { id } => {
+        E::RemoveEnvironment { id, is_creation } => {
             let index = workspace.environments.iter().position(|e| e.id == id)?;
             let previous = workspace.environments[index].clone();
             plan.observed_secrets.extend(
@@ -322,6 +340,14 @@ pub fn plan_edit(
             plan.inverse = E::RestoreEnvironment {
                 environment: previous,
                 index: index as u64,
+                // Redoing a creation selects it even if it was deselected before undo.
+                selection: if is_creation {
+                    SessionEnvironmentRestoreSelection::SelectCreated
+                } else if plan.changes_environment_selection {
+                    SessionEnvironmentRestoreSelection::SelectRestored
+                } else {
+                    SessionEnvironmentRestoreSelection::Preserve
+                },
             };
         }
         E::RestoreRequest { location } => {

@@ -18,15 +18,25 @@ use super::{
     WorkspaceSelectionProblem, WorkspaceUndoToken,
 };
 use crate::lock;
-use wirebolt_app::session::workspace::operations::WorkspaceImportSource;
+use wirebolt_app::session::workspace::{
+    SessionEnvironmentRestoreSelection, operations::WorkspaceImportSource,
+};
+#[uniffi::remote(Enum)]
+pub enum SessionEnvironmentRestoreSelection {
+    SelectCreated,
+    SelectRestored,
+    Preserve,
+}
 #[uniffi::remote(Enum)]
 pub enum SessionWorkspaceEdit {
     RestoreEnvironment {
         environment: DomainEnvironment,
         index: u64,
+        selection: SessionEnvironmentRestoreSelection,
     },
     RemoveEnvironment {
         id: String,
+        is_creation: bool,
     },
     RestoreRequest {
         location: DomainLocation,

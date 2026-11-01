@@ -1,5 +1,8 @@
 //! Workspace command policy and sidebar validation, over the retained workspace.
-use super::{SessionWorkspaceEdit as Edit, collection, descendants, location};
+use super::{
+    SessionEnvironmentRestoreSelection, SessionWorkspaceEdit as Edit, collection, descendants,
+    location,
+};
 use crate::domain::{
     DomainCollection, DomainEnvironment, DomainGroup, DomainLocation, DomainRequestDraft,
     DomainWorkspace, identity::unique_id, sidebar::ordered_children,
@@ -349,11 +352,18 @@ pub fn action(workspace: &DomainWorkspace, command: WorkspaceAction) -> Option<N
                 Edit::RestoreEnvironment {
                     environment,
                     index: index.unwrap_or(workspace.environments.len()) as u64,
+                    selection: SessionEnvironmentRestoreSelection::SelectCreated,
                 },
                 "Edit Environment",
             )
         }
-        A::DeleteEnvironment { id } => named(Edit::RemoveEnvironment { id }, "Delete Environment"),
+        A::DeleteEnvironment { id } => named(
+            Edit::RemoveEnvironment {
+                id,
+                is_creation: false,
+            },
+            "Delete Environment",
+        ),
         A::CreateRequest {
             web_socket,
             collection_id,
