@@ -26,142 +26,51 @@ public struct HTTPMethod: RawRepresentable, CaseIterable, Hashable, Sendable {
     public static let allCases: [HTTPMethod] = [.get, .post, .put, .patch, .delete, .head, .options, .query]
 }
 
-public enum ValueSource: Equatable, Hashable, Sendable {
-    case literal(String)
-    case secret(String)
+public typealias ValueSource = DomainValueSource
 
+extension ValueSource {
+    public static func literal(_ value: String) -> Self { .literal(value: value) }
+    public static func secret(_ name: String) -> Self { .secret(secret: name) }
     public var editableValue: String {
-        switch self {
-        case .literal(let value), .secret(let value): value
-        }
+        switch self { case .literal(let value), .secret(let value): value }
     }
 }
 
-public struct RequestField: Identifiable, Equatable, Sendable {
-    var domain: DomainField = DomainField(id: "", name: "", value: .literal(value: ""), enabled: false, sensitive: false)
-    init(domain: DomainField) { self.domain = domain }
+public typealias RequestField = DomainField
 
-    public var id: String {
-        get { domain.id }
-        set { domain.id = newValue }
+extension RequestField: Identifiable {
+    public init(id: String = domainUniqueId(), name: String = "", value: ValueSource = .literal(""), sensitive: Bool = false, enabled: Bool = true) {
+        self.init(id: id, name: name, value: value, enabled: enabled, sensitive: sensitive)
     }
-    public var name: String {
-        get { domain.name }
-        set { domain.name = newValue }
-    }
-    public var value: ValueSource {
-        get { ValueSource(domain: domain.value) }
-        set { domain.value = newValue.domain }
-    }
-    public var enabled: Bool {
-        get { domain.enabled }
-        set { domain.enabled = newValue }
-    }
-    public var sensitive: Bool {
-        get { domain.sensitive }
-        set { domain.sensitive = newValue }
-    }
+}
 
+public typealias APIKeyPlacement = DomainApiKeyPlacement
+
+public typealias OAuth2Grant = DomainOAuthGrant
+
+extension OAuth2Grant {
+    public static let authorizationCodePKCE = Self.authorizationCodePkce
+}
+
+public typealias OAuth2Configuration = DomainOAuthConfiguration
+
+extension OAuth2Configuration {
+    public var authorizationURL: String { get { authorizationUrl } set { authorizationUrl = newValue } }
+    public var tokenURL: String { get { tokenUrl } set { tokenUrl = newValue } }
+    public var clientID: String { get { clientId } set { clientId = newValue } }
+    public var redirectURI: String { get { redirectUri } set { redirectUri = newValue } }
     public init(
-        id: String = domainUniqueId(),
-        name: String = "",
-        value: ValueSource = .literal(""),
-        enabled: Bool = true,
-        sensitive: Bool = false
+        grant: OAuth2Grant = .authorizationCodePKCE, authorizationURL: String = "", tokenURL: String = "", clientID: String = "",
+        clientSecretReference: String = CredentialReference.unique(role: "oauth-client-secret"), scopes: String = "", audience: String = "",
+        redirectURI: String = "wirebolt://oauth/callback", accessTokenReference: String = CredentialReference.unique(role: "oauth-access-token")
     ) {
-        self.id = id
-        self.name = name
-        self.value = value
-        self.enabled = enabled
-        self.sensitive = sensitive
+        self.init(grant: grant, authorizationUrl: authorizationURL, tokenUrl: tokenURL, clientId: clientID,
+                  clientSecretReference: clientSecretReference, scopes: scopes, audience: audience, redirectUri: redirectURI,
+                  accessTokenReference: accessTokenReference)
     }
-
 }
 
-public enum APIKeyPlacement: String, CaseIterable, Sendable {
-    case header
-    case query
-}
-
-public enum OAuth2Grant: String, CaseIterable, Sendable {
-    case authorizationCodePKCE = "authorization_code_pkce"
-    case clientCredentials = "client_credentials"
-}
-
-public struct OAuth2Configuration: Equatable, Sendable {
-    var domain: DomainOAuthConfiguration = DomainOAuthConfiguration(
-        grant: .authorizationCodePkce, authorizationUrl: "", tokenUrl: "", clientId: "", clientSecretReference: "", scopes: "",
-        audience: "", redirectUri: "", accessTokenReference: "")
-    init(domain: DomainOAuthConfiguration) { self.domain = domain }
-
-    public var grant: OAuth2Grant {
-        get { OAuth2Grant(domain: domain.grant) }
-        set { domain.grant = newValue.domain }
-    }
-    public var authorizationURL: String {
-        get { domain.authorizationUrl }
-        set { domain.authorizationUrl = newValue }
-    }
-    public var tokenURL: String {
-        get { domain.tokenUrl }
-        set { domain.tokenUrl = newValue }
-    }
-    public var clientID: String {
-        get { domain.clientId }
-        set { domain.clientId = newValue }
-    }
-    public var clientSecretReference: String {
-        get { domain.clientSecretReference }
-        set { domain.clientSecretReference = newValue }
-    }
-    public var scopes: String {
-        get { domain.scopes }
-        set { domain.scopes = newValue }
-    }
-    public var audience: String {
-        get { domain.audience }
-        set { domain.audience = newValue }
-    }
-    public var redirectURI: String {
-        get { domain.redirectUri }
-        set { domain.redirectUri = newValue }
-    }
-    public var accessTokenReference: String {
-        get { domain.accessTokenReference }
-        set { domain.accessTokenReference = newValue }
-    }
-    public init(
-        grant: OAuth2Grant = .authorizationCodePKCE,
-        authorizationURL: String = "",
-        tokenURL: String = "",
-        clientID: String = "",
-        clientSecretReference: String = CredentialReference.unique(role: "oauth-client-secret"),
-        scopes: String = "",
-        audience: String = "",
-        redirectURI: String = "wirebolt://oauth/callback",
-        accessTokenReference: String = CredentialReference.unique(role: "oauth-access-token")
-    ) {
-        self.grant = grant
-        self.authorizationURL = authorizationURL
-        self.tokenURL = tokenURL
-        self.clientID = clientID
-        self.clientSecretReference = clientSecretReference
-        self.scopes = scopes
-        self.audience = audience
-        self.redirectURI = redirectURI
-        self.accessTokenReference = accessTokenReference
-    }
-
-}
-
-public enum RequestAuthentication: Equatable, Sendable {
-    case none
-    case basic(username: ValueSource, password: ValueSource)
-    case bearer(token: ValueSource)
-    case apiKey(placement: APIKeyPlacement, name: String, value: ValueSource)
-    case oauth2(configuration: OAuth2Configuration)
-
-}
+public typealias RequestAuthentication = DomainAuthentication
 
 /// Keychain names for credentials a request stores. Every new credential gets its own
 /// name so two requests never read or overwrite each other's secret material.
@@ -229,82 +138,19 @@ public extension RequestAuthentication {
     }
 }
 
-public enum RequestBody: Equatable, Sendable {
-    case empty
-    case text(contentType: String?, value: String)
-    case json(value: String)
-    case xml(value: String)
-    case html(value: String)
-    case raw(contentType: String?, value: String)
-    case formURLEncoded(fields: [RequestField])
-    case multipart(parts: [MultipartPart])
-    case file(path: String, contentType: String?)
+public typealias RequestBody = DomainBody
 
-}
+public typealias MultipartPartKind = DomainMultipartKind
 
-public enum MultipartPartKind: String, CaseIterable, Sendable {
-    case text
-    case binary
-    case file
-}
+public typealias MultipartPart = DomainMultipartPart
 
-public struct MultipartPart: Identifiable, Equatable, Sendable {
-    var domain: DomainMultipartPart = DomainMultipartPart(
-        id: "", name: "", kind: .text, value: .literal(value: ""), filePath: nil, fileName: nil, contentType: nil, enabled: false)
-    init(domain: DomainMultipartPart) { self.domain = domain }
-
-    public var id: String {
-        get { domain.id }
-        set { domain.id = newValue }
-    }
-    public var name: String {
-        get { domain.name }
-        set { domain.name = newValue }
-    }
-    public var kind: MultipartPartKind {
-        get { MultipartPartKind(domain: domain.kind) }
-        set { domain.kind = newValue.domain }
-    }
-    public var value: ValueSource {
-        get { ValueSource(domain: domain.value) }
-        set { domain.value = newValue.domain }
-    }
-    public var filePath: String? {
-        get { domain.filePath.map { $0 } }
-        set { domain.filePath = newValue.map { $0 } }
-    }
-    public var fileName: String? {
-        get { domain.fileName.map { $0 } }
-        set { domain.fileName = newValue.map { $0 } }
-    }
-    public var contentType: String? {
-        get { domain.contentType.map { $0 } }
-        set { domain.contentType = newValue.map { $0 } }
-    }
-    public var enabled: Bool {
-        get { domain.enabled }
-        set { domain.enabled = newValue }
-    }
+extension MultipartPart: Identifiable {
     public init(
-        id: String = domainUniqueId(),
-        name: String = "",
-        kind: MultipartPartKind = .text,
-        value: ValueSource = .literal(""),
-        filePath: String? = nil,
-        fileName: String? = nil,
-        contentType: String? = nil,
-        enabled: Bool = true
+        name: String = "", kind: MultipartPartKind = .text, value: ValueSource = .literal(""),
+        filePath: String? = nil, fileName: String? = nil, contentType: String? = nil, enabled: Bool = true, id: String = domainUniqueId()
     ) {
-        self.id = id
-        self.name = name
-        self.kind = kind
-        self.value = value
-        self.filePath = filePath
-        self.fileName = fileName
-        self.contentType = contentType
-        self.enabled = enabled
+        self.init(id: id, name: name, kind: kind, value: value, filePath: filePath, fileName: fileName, contentType: contentType, enabled: enabled)
     }
-
 }
 
 public enum ProxySelection: Hashable, Sendable {
@@ -404,12 +250,12 @@ public struct RequestDraft: Equatable, Sendable {
         set { domain.note = newValue }
     }
     public var query: [RequestField] {
-        get { domain.query.map { RequestField(domain: $0) } }
-        set { domain.query = newValue.map { $0.domain } }
+        get { domain.query }
+        set { domain.query = newValue }
     }
     public var headers: [RequestField] {
-        get { domain.headers.map { RequestField(domain: $0) } }
-        set { domain.headers = newValue.map { $0.domain } }
+        get { domain.headers }
+        set { domain.headers = newValue }
     }
     public var authentication: RequestAuthentication {
         get { RequestAuthentication(domain: domain.authentication) }
@@ -830,7 +676,7 @@ public struct WorkspaceDraft: Equatable, Sendable {
     }
     public var proxy: ProxyDocument? {
         get { domain.proxy.map { ProxyDocument(domain: $0) } }
-        set { domain.proxy = newValue.map { $0.domain } }
+        set { domain.proxy = newValue }
     }
     public var transport: TransportSettings {
         get { TransportSettings(domain: domain.transport) }
@@ -881,26 +727,12 @@ extension CollectionDraft {
 public typealias GitDeltaSnapshot = WorkspaceGitDelta
 public typealias GitOperationOutcome = WorkspaceGitOutcome
 
-public struct GitChangeSnapshot: Equatable, Identifiable, Sendable {
-    public var id: String { previousPath.map { "\($0)\u{0}\(path)" } ?? path }
-    public let path: String
-    public let previousPath: String?
-    public let staged: GitDeltaSnapshot
-    public let unstaged: GitDeltaSnapshot
-    public let conflicted: Bool
+public typealias GitChangeSnapshot = WorkspaceGitChange
 
-    public init(
-        path: String,
-        previousPath: String? = nil,
-        staged: GitDeltaSnapshot,
-        unstaged: GitDeltaSnapshot,
-        conflicted: Bool
-    ) {
-        self.path = path
-        self.previousPath = previousPath
-        self.staged = staged
-        self.unstaged = unstaged
-        self.conflicted = conflicted
+extension GitChangeSnapshot: Identifiable {
+    public var id: String { previousPath.map { "\($0)\u{0}\(path)" } ?? path }
+    public init(path: String, staged: GitDeltaSnapshot, unstaged: GitDeltaSnapshot, conflicted: Bool) {
+        self.init(path: path, previousPath: nil, staged: staged, unstaged: unstaged, conflicted: conflicted)
     }
 }
 
@@ -941,51 +773,16 @@ extension GitChangeSnapshot {
     }
 }
 
-public struct GitStatusSnapshot: Equatable, Sendable {
-    public let branch: String?
-    public let upstream: String?
-    public let ahead: UInt64
-    public let behind: UInt64
-    public let changes: [GitChangeSnapshot]
-    /// A pull stopped mid-merge; Abort Merge returns to the state before the pull.
-    public let merging: Bool
+public typealias GitStatusSnapshot = WorkspaceGitStatus
 
-    public init(
-        branch: String?,
-        upstream: String?,
-        ahead: UInt64,
-        behind: UInt64,
-        changes: [GitChangeSnapshot],
-        merging: Bool = false
-    ) {
-        self.branch = branch
-        self.upstream = upstream
-        self.ahead = ahead
-        self.behind = behind
-        self.changes = changes
-        self.merging = merging
+extension GitStatusSnapshot {
+    public init(branch: String?, upstream: String?, ahead: UInt64, behind: UInt64, changes: [GitChangeSnapshot]) {
+        self.init(branch: branch, upstream: upstream, ahead: ahead, behind: behind, changes: changes, merging: false)
     }
-
-    public var conflictedChanges: [GitChangeSnapshot] {
-        changes.filter { $0.kind == .conflicted }
-    }
+    public var conflictedChanges: [GitChangeSnapshot] { changes.filter { $0.kind == .conflicted } }
 }
 
-public struct GitOperationSnapshot: Equatable, Sendable {
-    public let outcome: GitOperationOutcome
-    public let revision: String?
-    public let status: GitStatusSnapshot
-
-    public init(
-        outcome: GitOperationOutcome,
-        revision: String?,
-        status: GitStatusSnapshot
-    ) {
-        self.outcome = outcome
-        self.revision = revision
-        self.status = status
-    }
-}
+public typealias GitOperationSnapshot = WorkspaceGitOperation
 
 /// Git failures that mean the workspace cannot use Git yet, each with its own guidance.
 public enum GitRepositoryProblem: Equatable, Sendable {
@@ -1013,58 +810,49 @@ public struct GitFailure: Error, Equatable, Sendable {
     }
 }
 
-public struct ResponseHeader: Equatable, Identifiable, Sendable {
-    public let name: String
-    public let value: String
+public typealias ResponseHeader = ResponseHeaderValue
+extension ResponseHeader: Identifiable {
     public var id: String { name + "\u{0}" + value }
 }
 
-public struct ResponseHead: Equatable, Sendable {
-    public let status: UInt16
-    public let version: String
-    public let headers: [ResponseHeader]
-    public let timeToHeadersNS: UInt64
-
+public typealias ResponseHead = SessionHead
+extension ResponseHead {
+    public var timeToHeadersNS: UInt64 { timeToHeadersNs }
+    public init(status: UInt16, version: String, headers: [ResponseHeader], timeToHeadersNS: UInt64) {
+        self.init(status: status, version: version, headers: headers, timeToHeadersNs: timeToHeadersNS)
+    }
 }
 
-public struct RunCompletion: Equatable, Sendable {
-    public let bytesReceived: UInt64
-    public let totalTimeNS: UInt64
-
+public typealias RunCompletion = SessionCompletion
+extension RunCompletion {
+    public var totalTimeNS: UInt64 { totalTimeNs }
+    public init(bytesReceived: UInt64, totalTimeNS: UInt64) { self.init(bytesReceived: bytesReceived, totalTimeNs: totalTimeNS) }
 }
 
-public struct RequestIssue: Equatable, Sendable {
-    public let path: String
-    public let kind: String
-    public let reference: String?
-}
+public typealias RequestIssue = SessionIssue
 
-public struct RunFailure: Error, Equatable, Sendable {
-    public let kind: String
-    public let issues: [RequestIssue]
-}
+public typealias RunFailure = SessionFailure
+extension RunFailure: Error {}
 
-public struct PreparedHeaderSnapshot: Equatable, Sendable {
-    public let name: String
-    public let value: String
-    public let redacted: Bool
-}
+public typealias PreparedHeaderSnapshot = SessionPreparedHeader
 
-public struct PreparedBodySnapshot: Equatable, Sendable {
-    public let byteCount: UInt64
-    public let contentType: String?
-    public let textPreview: String?
-    public let redacted: Bool
-
-}
+public typealias PreparedBodySnapshot = SessionPreparedBody
 
 public struct PreparedRunSnapshot: Equatable, Sendable {
-    public var proxy: EffectiveProxy? = nil
-    public let method: String
-    public let url: String
-    public let headers: [PreparedHeaderSnapshot]
-    public let body: PreparedBodySnapshot
-    public let transport: TransportSettings
+    var record: SessionPrepared
+    public var proxy: EffectiveProxy? {
+        get { record.proxy.map { EffectiveProxy(configuration: $0.configuration, source: EffectiveProxy.Source($0.source)) } }
+        set { record.proxy = newValue.map { SessionProxy(configuration: $0.configuration, source: $0.source.sessionRecord) } }
+    }
+    public var method: String { record.method }
+    public var url: String { record.url }
+    public var headers: [PreparedHeaderSnapshot] { record.headers }
+    public var body: PreparedBodySnapshot { record.body }
+    public var transport: TransportSettings { TransportSettings(domain: record.transport) }
+    public init(proxy: EffectiveProxy? = nil, method: String, url: String, headers: [PreparedHeaderSnapshot], body: PreparedBodySnapshot, transport: TransportSettings) {
+        record = SessionPrepared(proxy: proxy.map { SessionProxy(configuration: $0.configuration, source: $0.source.sessionRecord) },
+                                 method: method, url: url, headers: headers, body: body, transport: transport.domain)
+    }
 }
 
 public enum RunEvent: Equatable, Sendable {
@@ -1079,11 +867,11 @@ public struct RunInput: Sendable {
     let domain: DomainRunInput
     public var method: String { domain.method }
     public var url: String { domain.url }
-    public var query: [RequestField] { domain.query.map(RequestField.init(domain:)) }
-    public var headers: [RequestField] { domain.headers.map(RequestField.init(domain:)) }
+    public var query: [RequestField] { domain.query }
+    public var headers: [RequestField] { domain.headers }
     public var authentication: RequestAuthentication { RequestAuthentication(domain: domain.authentication) }
     public var body: RequestBody { RequestBody(domain: domain.body) }
-    public var variables: [String: ValueSource] { domain.variables.mapValues(ValueSource.init(domain:)) }
+    public var variables: [String: ValueSource] { domain.variables }
     public var appProxy: ProxyDocument? { domain.appProxy.map(ProxyDocument.init(domain:)) }
     public var workspaceProxy: ProxyDocument? { domain.workspaceProxy.map(ProxyDocument.init(domain:)) }
     public var requestProxy: ProxyDocument? { domain.requestProxy.map(ProxyDocument.init(domain:)) }
@@ -1107,59 +895,15 @@ public struct RunInput: Sendable {
 
 }
 
-public enum ProxyDocument: Hashable, Sendable {
-    case system
-    case direct
-    case manual(routes: [ProxyRouteDocument])
+public typealias ProxyDocument = DomainProxy
 
+public typealias ProxyRouteDocument = DomainProxyRoute
+
+extension ProxyRouteDocument {
+    public init(destination: String, endpoint: String) { self.init(destination: destination, endpoint: endpoint, credentials: nil) }
 }
 
-public struct ProxyRouteDocument: Hashable, Sendable {
-    var domain: DomainProxyRoute = DomainProxyRoute(destination: "", endpoint: "", credentials: nil)
-    init(domain: DomainProxyRoute) { self.domain = domain }
-
-    public var destination: String {
-        get { domain.destination }
-        set { domain.destination = newValue }
-    }
-    public var endpoint: String {
-        get { domain.endpoint }
-        set { domain.endpoint = newValue }
-    }
-    public var credentials: ProxyCredentialsDocument? {
-        get { domain.credentials.map { ProxyCredentialsDocument(domain: $0) } }
-        set { domain.credentials = newValue.map { $0.domain } }
-    }
-    public init(
-        destination: String,
-        endpoint: String,
-        credentials: ProxyCredentialsDocument? = nil
-    ) {
-        self.destination = destination
-        self.endpoint = endpoint
-        self.credentials = credentials
-    }
-
-}
-
-public struct ProxyCredentialsDocument: Hashable, Sendable {
-    var domain: DomainProxyCredentials = DomainProxyCredentials(username: "", password: "")
-    init(domain: DomainProxyCredentials) { self.domain = domain }
-
-    public var username: String {
-        get { domain.username }
-        set { domain.username = newValue }
-    }
-    public var password: String {
-        get { domain.password }
-        set { domain.password = newValue }
-    }
-    public init(username: String, password: String) {
-        self.username = username
-        self.password = password
-    }
-
-}
+public typealias ProxyCredentialsDocument = DomainProxyCredentials
 
 extension RequestField {
     /// Bulk editing changes values, not the credential storage or redaction policy.
@@ -1172,142 +916,6 @@ extension RequestField {
 public struct ResponseCookies: Equatable, Sendable {
     public let url: String
     public let headers: [ResponseHeader]
-}
-
-extension ValueSource {
-    var domain: DomainValueSource {
-        switch self {
-        case .literal(let v0): .literal(value: v0)
-        case .secret(let v0): .secret(secret: v0)
-        }
-    }
-    init(domain: DomainValueSource) {
-        self =
-            switch domain {
-            case .literal(let v0): .literal(v0)
-            case .secret(let v0): .secret(v0)
-            }
-    }
-}
-
-extension APIKeyPlacement {
-    var domain: DomainApiKeyPlacement {
-        switch self {
-        case .header: .header
-        case .query: .query
-        }
-    }
-    init(domain: DomainApiKeyPlacement) {
-        self =
-            switch domain {
-            case .header: .header
-            case .query: .query
-            }
-    }
-}
-
-extension OAuth2Grant {
-    var domain: DomainOAuthGrant {
-        switch self {
-        case .authorizationCodePKCE: .authorizationCodePkce
-        case .clientCredentials: .clientCredentials
-        }
-    }
-    init(domain: DomainOAuthGrant) {
-        self =
-            switch domain {
-            case .authorizationCodePkce: .authorizationCodePKCE
-            case .clientCredentials: .clientCredentials
-            }
-    }
-}
-
-extension RequestAuthentication {
-    var domain: DomainAuthentication {
-        switch self {
-        case .none: .none
-        case .basic(let v0, let v1): .basic(username: v0.domain, password: v1.domain)
-        case .bearer(let v0): .bearer(token: v0.domain)
-        case .apiKey(let v0, let v1, let v2): .apiKey(placement: v0.domain, name: v1, value: v2.domain)
-        case .oauth2(let v0): .oauth2(configuration: v0.domain)
-        }
-    }
-    init(domain: DomainAuthentication) {
-        self =
-            switch domain {
-            case .none: .none
-            case .basic(let v0, let v1): .basic(username: ValueSource(domain: v0), password: ValueSource(domain: v1))
-            case .bearer(let v0): .bearer(token: ValueSource(domain: v0))
-            case .apiKey(let v0, let v1, let v2): .apiKey(placement: APIKeyPlacement(domain: v0), name: v1, value: ValueSource(domain: v2))
-            case .oauth2(let v0): .oauth2(configuration: OAuth2Configuration(domain: v0))
-            }
-    }
-}
-
-extension RequestBody {
-    var domain: DomainBody {
-        switch self {
-        case .empty: .empty
-        case .text(let v0, let v1): .text(contentType: v0.map { $0 }, value: v1)
-        case .json(let v0): .json(value: v0)
-        case .xml(let v0): .xml(value: v0)
-        case .html(let v0): .html(value: v0)
-        case .raw(let v0, let v1): .raw(contentType: v0.map { $0 }, value: v1)
-        case .formURLEncoded(let v0): .formUrlEncoded(fields: v0.map { $0.domain })
-        case .multipart(let v0): .multipart(parts: v0.map { $0.domain })
-        case .file(let v0, let v1): .file(path: v0, contentType: v1.map { $0 })
-        }
-    }
-    init(domain: DomainBody) {
-        self =
-            switch domain {
-            case .empty: .empty
-            case .text(let v0, let v1): .text(contentType: v0.map { $0 }, value: v1)
-            case .json(let v0): .json(value: v0)
-            case .xml(let v0): .xml(value: v0)
-            case .html(let v0): .html(value: v0)
-            case .raw(let v0, let v1): .raw(contentType: v0.map { $0 }, value: v1)
-            case .formUrlEncoded(let v0): .formURLEncoded(fields: v0.map { RequestField(domain: $0) })
-            case .multipart(let v0): .multipart(parts: v0.map { MultipartPart(domain: $0) })
-            case .file(let v0, let v1): .file(path: v0, contentType: v1.map { $0 })
-            }
-    }
-}
-
-extension MultipartPartKind {
-    var domain: DomainMultipartKind {
-        switch self {
-        case .text: .text
-        case .binary: .binary
-        case .file: .file
-        }
-    }
-    init(domain: DomainMultipartKind) {
-        self =
-            switch domain {
-            case .text: .text
-            case .binary: .binary
-            case .file: .file
-            }
-    }
-}
-
-extension ProxyDocument {
-    var domain: DomainProxy {
-        switch self {
-        case .system: .system
-        case .direct: .direct
-        case .manual(let v0): .manual(routes: v0.map { $0.domain })
-        }
-    }
-    init(domain: DomainProxy) {
-        self =
-            switch domain {
-            case .system: .system
-            case .direct: .direct
-            case .manual(let v0): .manual(routes: v0.map { ProxyRouteDocument(domain: $0) })
-            }
-    }
 }
 
 extension AuthenticationKind {
@@ -1417,9 +1025,36 @@ private extension RequestBody {
         case .xml: .xml
         case .html: .html
         case .raw: .raw
-        case .formURLEncoded: .form
+        case .formUrlEncoded: .form
         case .multipart: .multipart
         case .file: .file
         }
     }
 }
+
+protocol NativeDomainValue {}
+extension NativeDomainValue {
+    var domain: Self { self }
+    init(domain: Self) { self = domain }
+}
+extension DomainValueSource: NativeDomainValue {}
+extension DomainField: NativeDomainValue {}
+extension DomainApiKeyPlacement: NativeDomainValue {}
+extension DomainOAuthGrant: NativeDomainValue {}
+extension DomainOAuthConfiguration: NativeDomainValue {}
+extension DomainAuthentication: NativeDomainValue {}
+extension DomainBody: NativeDomainValue {}
+extension DomainMultipartKind: NativeDomainValue {}
+extension DomainMultipartPart: NativeDomainValue {}
+extension DomainProxy: NativeDomainValue {}
+extension DomainProxyRoute: NativeDomainValue {}
+extension DomainProxyCredentials: NativeDomainValue {}
+
+protocol NativeSessionValue {}
+extension NativeSessionValue {
+    var sessionRecord: Self { self }
+    init(_ record: Self) { self = record }
+}
+extension SessionHead: NativeSessionValue {}
+extension SessionCompletion: NativeSessionValue {}
+extension SessionFailure: NativeSessionValue {}

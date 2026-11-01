@@ -2394,7 +2394,7 @@ private struct WebSocketRequestWorkspace: View {
                     default: .text
                     }
                 case .file: .file
-                case .xml, .html, .raw, .multipart, .empty, .formURLEncoded: .text
+                case .xml, .html, .raw, .multipart, .empty, .formUrlEncoded: .text
                 }
             },
             set: { kind in
@@ -2432,7 +2432,7 @@ private struct WebSocketRequestWorkspace: View {
                 switch session.draft.body {
                 case let .json(value), let .text(_, value), let .xml(value),
                      let .html(value), let .raw(_, value): value
-                case .empty, .formURLEncoded, .multipart, .file: ""
+                case .empty, .formUrlEncoded, .multipart, .file: ""
                 }
             },
             set: { value in
@@ -4268,12 +4268,12 @@ private struct BodyEditor: View {
                     get: { value },
                     set: { requestBody = .raw(contentType: contentType, value: $0) }
                 ))
-            case let .formURLEncoded(fields):
+            case let .formUrlEncoded(fields):
                 FieldEditor(
                     title: "Form Fields",
                     fields: Binding(
                         get: { fields },
-                        set: { requestBody = .formURLEncoded(fields: $0) }
+                        set: { requestBody = .formUrlEncoded(fields: $0) }
                     ),
                     kind: .query
                 )

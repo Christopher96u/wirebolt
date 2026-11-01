@@ -38,19 +38,14 @@ private struct NotesPreview: View {
                 if rendered.text.length == 0 {
                     Text("No notes yet. Switch to Edit to add Markdown.")
                         .foregroundStyle(.secondary).frame(maxWidth: .infinity, maxHeight: .infinity)
-                } else {
-                    MarkdownTextView(rendered: rendered)
-                }
+                } else { MarkdownTextView(rendered: rendered) }
             } else if failed {
                 Text("Could not preview this note. Your text is available in Edit.")
                     .foregroundStyle(.secondary).frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else {
-                ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
-            }
+            } else { ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity) }
         }
         .task(id: source) {
-            rendered = nil
-            failed = false
+            rendered = nil; failed = false
             do {
                 let result = try await MarkdownPreviewCache.shared.render(source)
                 try Task.checkCancellation()

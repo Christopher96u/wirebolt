@@ -77,8 +77,7 @@ final class WireboltAppDelegate: NSObject, NSApplicationDelegate {
         // In-app tabs own ⌘T; native window tabs would stack a second tab bar on top.
         NSWindow.allowsAutomaticWindowTabbing = false
         Self.applyInterfaceAppearance()
-        ThemeStore.shared.update(
-            selection: UserDefaults.standard.string(forKey: "interfaceAppearance") ?? "system",
+        ThemeStore.shared.update(selection: UserDefaults.standard.string(forKey: "interfaceAppearance") ?? "system",
             systemIsDark: NSApp.effectiveAppearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua,
             increasedContrast: NSWorkspace.shared.accessibilityDisplayShouldIncreaseContrast,
             density: InterfaceDensity(rawValue: UserDefaults.standard.string(forKey: "interfaceDensity") ?? "comfortable") ?? .comfortable)
@@ -95,7 +94,7 @@ final class WireboltAppDelegate: NSObject, NSApplicationDelegate {
     private func handleTabSwitchKey(_ event: NSEvent) -> Bool {
         let modifiers = event.modifierFlags.intersection([.command, .control, .option, .shift])
         guard event.keyCode == 48, modifiers == .control || modifiers == [.control, .shift],
-            let window = event.window, window === WorkspaceWindowRegistry.primary, window.attachedSheet == nil
+              let window = event.window, window === WorkspaceWindowRegistry.primary, window.attachedSheet == nil
         else { return false }
         interface.selectTab(offset: modifiers.contains(.shift) ? -1 : 1, model: model)
         return true
@@ -144,12 +143,11 @@ final class WireboltAppDelegate: NSObject, NSApplicationDelegate {
     /// Applied app-wide so every window, including Settings, follows the choice, and
     /// System (nil) fully reverts to the macOS appearance.
     static func applyInterfaceAppearance() {
-        NSApp.appearance =
-            switch UserDefaults.standard.string(forKey: "interfaceAppearance") {
-            case "light", "paper": NSAppearance(named: .aqua)
-            case "dark", "black", "ember": NSAppearance(named: .darkAqua)
-            default: nil
-            }
+        NSApp.appearance = switch UserDefaults.standard.string(forKey: "interfaceAppearance") {
+        case "light", "paper": NSAppearance(named: .aqua)
+        case "dark", "black", "ember": NSAppearance(named: .darkAqua)
+        default: nil
+        }
     }
 }
 
@@ -170,9 +168,7 @@ struct WireboltCommands: Commands {
     let state: WorkspaceCommandState
     private var recents: RecentWorkspaces { .shared }
 
-    private var workspaceActionsBusy: Bool {
-        model.isLoadingWorkspace || model.isGitBusy || model.isOAuthBusy || model.isShowingAppSettings
-    }
+    private var workspaceActionsBusy: Bool { model.isLoadingWorkspace || model.isGitBusy || model.isOAuthBusy || model.isShowingAppSettings }
     private var noWorkspace: Bool { focusedWorkspace == nil || model.isShowingAppSettings }
 
     var body: some Commands {
@@ -180,7 +176,8 @@ struct WireboltCommands: Commands {
         CommandGroup(replacing: .appSettings) {
             Button("Settings…") {
                 presentAppSettings(model)
-                if let window = WorkspaceWindowRegistry.primary { window.makeKeyAndOrderFront(nil) } else { openWindow(id: "workspace") }
+                if let window = WorkspaceWindowRegistry.primary { window.makeKeyAndOrderFront(nil) }
+                else { openWindow(id: "workspace") }
             }.keyboardShortcut(",", modifiers: .command)
         }
         CommandGroup(replacing: .help) {
@@ -225,21 +222,14 @@ struct WireboltCommands: Commands {
             Button("Close Tab") {
                 if NSApp.keyWindow?.sheetParent != nil {
                     NSApp.sendAction(#selector(NSResponder.cancelOperation(_:)), to: nil, from: nil)
-                } else if model.isShowingAppSettings && focusedWorkspace != nil {
-                    model.isShowingAppSettings = false
-                } else if let focusedWorkspace {
-                    focusedWorkspace.closeActiveTab(model: model)
-                } else {
-                    NSApp.keyWindow?.performClose(nil)
-                }
+                } else if model.isShowingAppSettings && focusedWorkspace != nil { model.isShowingAppSettings = false }
+                else if let focusedWorkspace { focusedWorkspace.closeActiveTab(model: model) }
+                else { NSApp.keyWindow?.performClose(nil) }
             }.keyboardShortcut("w", modifiers: .command)
             Button("Close Window") {
                 guard let window = NSApp.keyWindow else { return }
-                if focusedWorkspace != nil {
-                    requestWorkspaceWindowClose(window, model: model, interface: interface)
-                } else {
-                    window.performClose(nil)
-                }
+                if focusedWorkspace != nil { requestWorkspaceWindowClose(window, model: model, interface: interface) }
+                else { window.performClose(nil) }
             }.keyboardShortcut("w", modifiers: [.command, .shift])
             Divider()
             Button("Save") {
@@ -264,25 +254,18 @@ struct WireboltCommands: Commands {
             Button("Send") {
                 guard let session = model.sessions.activeSession else { return }
                 commitPendingEdits(in: NSApp.keyWindow)
-                if session.kind == .webSocket {
-                    Task { await session.socket.send(body: session.draft.body) }
-                } else {
-                    Task { await model.send(session) }
-                }
+                if session.kind == .webSocket { Task { await session.socket.send(body: session.draft.body) } }
+                else { Task { await model.send(session) } }
             }.keyboardShortcut(.return, modifiers: .command)
-                .disabled(
-                    noWorkspace || !state.hasURL || state.isRunning
-                        || (state.activeKind == .webSocket && state.socketStatus != .connected))
+                .disabled(noWorkspace || !state.hasURL || state.isRunning
+                    || (state.activeKind == .webSocket && state.socketStatus != .connected))
             Button("Cancel Request") { model.cancel() }
                 .keyboardShortcut(".", modifiers: .command)
                 .disabled(noWorkspace || !state.isRunning)
             Button(state.socketStatus == .connected ? "Disconnect" : "Connect") {
                 guard let session = model.sessions.activeSession, session.kind == .webSocket else { return }
-                if session.socket.status == .disconnected {
-                    Task { await model.connectWebSocket(session) }
-                } else {
-                    session.socket.disconnect()
-                }
+                if session.socket.status == .disconnected { Task { await model.connectWebSocket(session) } }
+                else { session.socket.disconnect() }
             }.keyboardShortcut(.return, modifiers: [.command, .control])
                 .disabled(noWorkspace || state.activeKind != .webSocket || !state.hasURL)
             Divider()
@@ -308,26 +291,20 @@ struct WireboltCommands: Commands {
             Button("Add Key") {
                 if let environmentAddRow { environmentAddRow() } else { interface.addKey() }
             }
-            .keyboardShortcut("k", modifiers: [.command, .shift])
-            .disabled(noWorkspace || (!state.hasActiveSession && environmentAddRow == nil))
+                .keyboardShortcut("k", modifiers: [.command, .shift])
+                .disabled(noWorkspace || (!state.hasActiveSession && environmentAddRow == nil))
             Divider()
             Toggle("Bulk Edit", isOn: $interface.isBulkEditing)
                 .keyboardShortcut("b", modifiers: .command)
                 .disabled(noWorkspace || !interface.canEditFields)
         }
         CommandMenu("Navigate") {
-            Button("Go Back") {
-                model.sessions.goBack()
-                interface.synchronizeSelection(model: model)
-            }
-            .keyboardShortcut(.leftArrow, modifiers: [.command, .control])
-            .disabled(noWorkspace || !state.canGoBack)
-            Button("Go Forward") {
-                model.sessions.goForward()
-                interface.synchronizeSelection(model: model)
-            }
-            .keyboardShortcut(.rightArrow, modifiers: [.command, .control])
-            .disabled(noWorkspace || !state.canGoForward)
+            Button("Go Back") { model.sessions.goBack(); interface.synchronizeSelection(model: model) }
+                .keyboardShortcut(.leftArrow, modifiers: [.command, .control])
+                .disabled(noWorkspace || !state.canGoBack)
+            Button("Go Forward") { model.sessions.goForward(); interface.synchronizeSelection(model: model) }
+                .keyboardShortcut(.rightArrow, modifiers: [.command, .control])
+                .disabled(noWorkspace || !state.canGoForward)
             Divider()
             Button("Split Right") {
                 if let tab = model.sessions.activeSession { interface.openInNewSplit(tabID: tab.id, model: model) }

@@ -15,7 +15,8 @@ struct RustWorkspacePersistence: WorkspacePersistence, GitCollaboration {
         switch workspaceSelectionProblem(path: path.path, mode: mode.rawValue) {
         case .notFound: throw WorkspaceSelectionError.workspaceNotFound
         case .alreadyExists: throw WorkspaceSelectionError.workspaceAlreadyExists
-        case nil: break
+        case nil:
+            break
         }
         // A new workspace starts empty; the first request creates the top-level list, so the
         // sidebar never opens on an empty placeholder collection. Its name follows the folder.
@@ -121,8 +122,7 @@ struct RustWorkspacePersistence: WorkspacePersistence, GitCollaboration {
             for: .applicationSupportDirectory,
             in: .userDomainMask
         )[0]
-        return
-            applicationSupport
+        return applicationSupport
             .appending(path: "Wirebolt", directoryHint: .isDirectory)
             .appending(path: "Workspaces", directoryHint: .isDirectory)
             .appending(path: "Default", directoryHint: .isDirectory)

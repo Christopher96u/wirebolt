@@ -1,7 +1,7 @@
 import Foundation
 import Observation
 
-public struct RunID: Codable, CustomStringConvertible, Hashable, Sendable {
+public struct RunID: CustomStringConvertible, Hashable, Sendable {
     public let rawValue: UUID
 
     public init(rawValue: UUID = UUID()) {
@@ -231,55 +231,12 @@ extension DocumentKind {
     var rust: SessionKind { self == .http ? .http : .webSocket }
     init(_ record: SessionKind) { self = record == .http ? .http : .webSocket }
 }
-extension ResponseHead {
-    var sessionRecord: SessionHead {
-        SessionHead(
-            status: status, version: version, headers: headers.map { ResponseHeaderValue(name: $0.name, value: $0.value) },
-            timeToHeadersNs: timeToHeadersNS)
-    }
-    init(_ record: SessionHead) {
-        self.init(
-            status: record.status, version: record.version, headers: record.headers.map { ResponseHeader(name: $0.name, value: $0.value) },
-            timeToHeadersNS: record.timeToHeadersNs)
-    }
-}
-extension RunCompletion {
-    var sessionRecord: SessionCompletion { SessionCompletion(bytesReceived: bytesReceived, totalTimeNs: totalTimeNS) }
-    init(_ record: SessionCompletion) { self.init(bytesReceived: record.bytesReceived, totalTimeNS: record.totalTimeNs) }
-}
-extension RunFailure {
-    var sessionRecord: SessionFailure {
-        SessionFailure(kind: kind, issues: issues.map { SessionIssue(path: $0.path, kind: $0.kind, reference: $0.reference) })
-    }
-    init(_ record: SessionFailure) {
-        self.init(kind: record.kind, issues: record.issues.map { RequestIssue(path: $0.path, kind: $0.kind, reference: $0.reference) })
-    }
-}
 extension PreparedRunSnapshot {
-    var sessionRecord: SessionPrepared {
-        SessionPrepared(
-            proxy: proxy.map { SessionProxy(configuration: $0.configuration.domain, source: $0.source.sessionRecord) },
-            method: method, url: url, headers: headers.map { SessionPreparedHeader(name: $0.name, value: $0.value, redacted: $0.redacted) },
-            body: SessionPreparedBody(
-                byteCount: body.byteCount, contentType: body.contentType, textPreview: body.textPreview, redacted: body.redacted),
-            transport: transport.domain)
-    }
-    init(_ record: SessionPrepared) {
-        self.init(
-            proxy: record.proxy.map {
-                EffectiveProxy(
-                    configuration: ProxyDocument(domain: $0.configuration),
-                    source: EffectiveProxy.Source($0.source))
-            },
-            method: record.method, url: record.url,
-            headers: record.headers.map { PreparedHeaderSnapshot(name: $0.name, value: $0.value, redacted: $0.redacted) },
-            body: PreparedBodySnapshot(
-                byteCount: record.body.byteCount, contentType: record.body.contentType, textPreview: record.body.textPreview,
-                redacted: record.body.redacted), transport: TransportSettings(domain: record.transport))
-    }
+    var sessionRecord: SessionPrepared { record }
+    init(_ record: SessionPrepared) { self.record = record }
 }
 
-public struct EditorGroup: Identifiable, Codable, Equatable, Sendable {
+public struct EditorGroup: Identifiable, Equatable, Sendable {
     public let id: String
     public var tabIDs: [String]
     public var selectedTabID: String?
@@ -306,8 +263,8 @@ public struct EditorGroup: Identifiable, Codable, Equatable, Sendable {
 }
 
 /// The restorable shape of the editor: saved requests open per group and the selection.
-public struct SessionLayout: Codable, Equatable, Sendable {
-    public struct Tab: Codable, Equatable, Sendable {
+public struct SessionLayout: Equatable, Sendable {
+    public struct Tab: Equatable, Sendable {
         public let collectionID: String
         public let requestID: String
 
@@ -317,7 +274,7 @@ public struct SessionLayout: Codable, Equatable, Sendable {
         }
     }
 
-    public struct Group: Codable, Equatable, Sendable {
+    public struct Group: Equatable, Sendable {
         public let tabs: [Tab]
         public let selectedIndex: Int?
         /// Index of the preview tab, if the group has one. Absent in older layouts.
@@ -699,25 +656,6 @@ extension TabCloseScope {
         case .others(let id): self = .others(id)
         case .rightOf(let id): self = .rightOf(id)
         case .all: self = .all
-        }
-    }
-}
-
-extension EffectiveProxy.Source {
-    var sessionRecord: SessionProxySource {
-        switch self {
-        case .request: .request
-        case .workspace: .workspace
-        case .appDefault: .appDefault
-        case .systemDefault: .systemDefault
-        }
-    }
-    init(_ source: SessionProxySource) {
-        self = switch source {
-        case .request: .request
-        case .workspace: .workspace
-        case .appDefault: .appDefault
-        case .systemDefault: .systemDefault
         }
     }
 }

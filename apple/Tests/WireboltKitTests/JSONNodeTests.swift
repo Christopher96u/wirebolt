@@ -8,10 +8,10 @@ struct JSONNodeTests {
     func scalarTypes() throws {
         let root = try #require(JSONNode.makeRoot(from: "{\"zero\":0,\"one\":1,\"yes\":true,\"no\":false}").first)
         let children = try #require(root.children)
-        #expect(children.first { $0.key == "zero" }?.type == "Number")
+        #expect(children.first { $0.key == "zero" }?.type == .number)
         #expect(children.first { $0.key == "zero" }?.value == "0")
         #expect(children.first { $0.key == "one" }?.value == "1")
-        #expect(children.first { $0.key == "yes" }?.type == "Boolean")
+        #expect(children.first { $0.key == "yes" }?.type == .boolean)
         #expect(children.first { $0.key == "no" }?.value == "false")
     }
 }
@@ -47,9 +47,9 @@ struct JSONNodeOrderTests {
         let root = try #require(JSONNode.makeRoot(from: Data(json.utf8), nodeLimit: 10).first)
         let items = try #require(root.children?.first)
         #expect(items.value == "Array(100 items)")
-        #expect(items.children?.last?.type == "Truncated")
+        #expect(items.children?.last?.type == .truncated)
         #expect(items.children?.last?.value.hasSuffix("more items not shown") == true)
-        #expect(root.children?.last?.type == "Truncated", "siblings after the limit are summarised too")
+        #expect(root.children?.last?.type == .truncated, "siblings after the limit are summarised too")
     }
 }
 

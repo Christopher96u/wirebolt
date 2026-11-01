@@ -89,30 +89,18 @@ struct EnvironmentEditor: View {
         .onChange(of: model.workspaceLocation) { onClose() }
         .onAppear { interface.saveEnvironmentEdits = saveAndClose }
         .onChange(of: hasChanges, initial: true) { interface.hasEnvironmentEdits = hasChanges }
-        .onDisappear {
-            interface.hasEnvironmentEdits = false
-            interface.saveEnvironmentEdits = nil
-        }
+        .onDisappear { interface.hasEnvironmentEdits = false; interface.saveEnvironmentEdits = nil }
         .focusedValue(\.environmentAddRow, addRow)
         .onSubmit { Task { _ = await saveAndClose() } }
         .onExitCommand(perform: cancel)
         .disabled(isSaving)
-        .alert(
-            "Environment could not be saved",
-            isPresented: Binding(
-                get: { validationMessage != nil }, set: { if !$0 { validationMessage = nil } }
-            )
-        ) {
-            Button("OK", role: .cancel) {}
-        } message: {
-            Text(validationMessage ?? "")
-        }
+        .alert("Environment could not be saved", isPresented: Binding(
+            get: { validationMessage != nil }, set: { if !$0 { validationMessage = nil } }
+        )) { Button("OK", role: .cancel) {} } message: { Text(validationMessage ?? "") }
         .alert("Discard changes?", isPresented: $isConfirmingDiscard) {
             Button("Discard Changes", role: .destructive) { onClose() }
             Button("Keep Editing", role: .cancel) {}
-        } message: {
-            Text("Your edits to environments and variables haven’t been saved.")
-        }
+        } message: { Text("Your edits to environments and variables haven’t been saved.") }
     }
 
     private var environmentList: some View {
@@ -131,37 +119,25 @@ struct EnvironmentEditor: View {
                 HStack(spacing: WireboltTheme.Spacing.medium) {
                     Circle().fill(environmentColor(environment.name)).frame(width: 7, height: 7)
                         .accessibilityHidden(true)
-                    InlineSidebarName(
-                        title: environment.id == WorkspaceDraft.globalEnvironmentID ? "Globals" : environment.name,
-                        isEditing: Binding(get: { editingNameID == environment.id }, set: { editingNameID = $0 ? environment.id : nil })
-                    ) {
-                        environment.name = $0
-                    }
+                    InlineSidebarName(title: environment.id == WorkspaceDraft.globalEnvironmentID ? "Globals" : environment.name,
+                        isEditing: Binding(get: { editingNameID == environment.id }, set: { editingNameID = $0 ? environment.id : nil })) {
+                            environment.name = $0
+                        }
                     Spacer(minLength: 0)
                     if selectedID == environment.id { Image(systemName: "checkmark").foregroundStyle(WireboltTheme.muted) }
                 }
                 .padding(.horizontal, WireboltTheme.Spacing.large)
                 .frame(minHeight: theme.density.controlHeight + WireboltTheme.Spacing.medium)
-                .background(
-                    selectedID == environment.id ? theme.definition.selected.color : .clear, in: .rect(cornerRadius: theme.geometry.row)
-                )
+                .background(selectedID == environment.id ? theme.definition.selected.color : .clear, in: .rect(cornerRadius: theme.geometry.row))
                 .contentShape(.rect)
-                .simultaneousGesture(
-                    TapGesture().onEnded {
-                        selectedID = environment.id
-                        environmentListFocused = true
-                    }
-                )
+                .simultaneousGesture(TapGesture().onEnded { selectedID = environment.id; environmentListFocused = true })
                 .accessibilityElement(children: .contain)
                 .accessibilityLabel(environment.name)
                 .accessibilityAction { selectedID = environment.id }
                 .accessibilityAddTraits(selectedID == environment.id ? .isSelected : [])
                 .contextMenu {
-                    Button("Rename") {
-                        selectedID = environment.id
-                        editingNameID = environment.id
-                    }
-                    .disabled(environment.id == WorkspaceDraft.globalEnvironmentID)
+                    Button("Rename") { selectedID = environment.id; editingNameID = environment.id }
+                        .disabled(environment.id == WorkspaceDraft.globalEnvironmentID)
                     Button("Delete", role: .destructive) { deleteEnvironment(id: environment.id) }
                         .disabled(environment.id == WorkspaceDraft.globalEnvironmentID)
                 }
@@ -170,11 +146,8 @@ struct EnvironmentEditor: View {
         .focusable().focused($environmentListFocused)
         .onMoveCommand { direction in
             guard editingNameID == nil, let index = environments.firstIndex(where: { $0.id == selectedID }) else { return }
-            if direction == .up {
-                selectedID = environments[max(0, index - 1)].id
-            } else if direction == .down {
-                selectedID = environments[min(environments.count - 1, index + 1)].id
-            }
+            if direction == .up { selectedID = environments[max(0, index - 1)].id }
+            else if direction == .down { selectedID = environments[min(environments.count - 1, index + 1)].id }
         }
         .onKeyPress(.return) {
             guard editingNameID == nil, selectedID != WorkspaceDraft.globalEnvironmentID else { return .ignored }
@@ -223,9 +196,7 @@ struct EnvironmentEditor: View {
                 }
                 .padding(.vertical, WireboltTheme.Spacing.xSmall)
                 .contextMenu {
-                    Button(variable.isSecret ? "Store in Workspace File" : "Make Secret") {
-                        setSecret(!variable.isSecret, variable: $variable)
-                    }
+                    Button(variable.isSecret ? "Store in Workspace File" : "Make Secret") { setSecret(!variable.isSecret, variable: $variable) }
                     Button("Delete", role: .destructive) { selected.variables.wrappedValue.removeAll { $0.id == variable.id } }
                 }
                 .task(id: variable.value) { if variable.isSecret { await model.loadSecret(variable.value) } }
@@ -271,12 +242,10 @@ struct EnvironmentEditor: View {
             }
             .frame(height: height, alignment: .top)
         } else {
-            FieldTextInput(
-                "Value",
-                text: Binding(
-                    get: { row.value.editableValue },
-                    set: { variable.wrappedValue.value = .literal($0) }
-                ), height: height)
+            FieldTextInput("Value", text: Binding(
+                get: { row.value.editableValue },
+                set: { variable.wrappedValue.value = .literal($0) }
+            ), height: height)
         }
     }
 
@@ -328,17 +297,12 @@ struct EnvironmentEditor: View {
     }
 
     private func commitNewRow(environmentID: String? = nil) {
-        defer {
-            newKey = ""
-            newValue = ""
-        }
+        defer { newKey = ""; newValue = "" }
         guard !newKey.trimmingCharacters(in: .whitespaces).isEmpty,
-            let index = environments.firstIndex(where: { $0.id == (environmentID ?? selectedID) })
-        else { return }
-        environments[index].variables.append(
-            EnvironmentVariableDraft(
-                key: newKey, value: .literal(newValue), order: environments[index].variables.count
-            ))
+              let index = environments.firstIndex(where: { $0.id == (environmentID ?? selectedID) }) else { return }
+        environments[index].variables.append(EnvironmentVariableDraft(
+            key: newKey, value: .literal(newValue), order: environments[index].variables.count
+        ))
     }
 
     private var hasInvalidRows: Bool {
@@ -368,10 +332,9 @@ struct EnvironmentEditor: View {
         isSaving = true
         defer { isSaving = false }
         // Values first: a saved reference must never point at a value that was not stored.
-        let referenced = Set(
-            environments.flatMap(\.variables).compactMap { row -> String? in
-                if case .secret(let name) = row.value { name } else { nil }
-            })
+        let referenced = Set(environments.flatMap(\.variables).compactMap { row -> String? in
+            if case .secret(let name) = row.value { name } else { nil }
+        })
         guard await model.saveSecrets(stagedSecrets.filter { referenced.contains($0.key) }) else {
             validationMessage = "The secret values could not be saved in Keychain. Your edits are still open."
             return false
@@ -379,24 +342,15 @@ struct EnvironmentEditor: View {
         stagedSecrets = [:]
         for id in deletedIDs {
             guard model.workspaceLocation == workspaceLocation else { return false }
-            guard await model.deleteEnvironment(id: id) else {
-                validationMessage = "The environment could not be deleted."
-                return false
-            }
+            guard await model.deleteEnvironment(id: id) else { validationMessage = "The environment could not be deleted."; return false }
             deletedIDs.remove(id)
             original.removeAll { $0.id == id }
         }
         for environment in environments where !original.contains(environment) {
             guard model.workspaceLocation == workspaceLocation else { return false }
-            guard await model.saveEnvironment(environment) else {
-                validationMessage = "The workspace could not be saved. Your edits are still open."
-                return false
-            }
-            if let index = original.firstIndex(where: { $0.id == environment.id }) {
-                original[index] = environment
-            } else {
-                original.append(environment)
-            }
+            guard await model.saveEnvironment(environment) else { validationMessage = "The workspace could not be saved. Your edits are still open."; return false }
+            if let index = original.firstIndex(where: { $0.id == environment.id }) { original[index] = environment }
+            else { original.append(environment) }
         }
         model.selectedEnvironmentID = selectedID == WorkspaceDraft.globalEnvironmentID ? nil : selectedID
         isSaving = false

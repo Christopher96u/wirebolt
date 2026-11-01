@@ -1,9 +1,7 @@
 import Foundation
 
 struct RustWebSocketRunner: WebSocketConnecting {
-    func connection(for input: RunInput) -> any WebSocketTransport {
-        RustWebSocketConnection(input: input)
-    }
+    func connection(for input: RunInput) -> any WebSocketTransport { RustWebSocketConnection(input: input) }
 }
 
 private final class RustWebSocketConnection: @unchecked Sendable, WebSocketTransport {
@@ -14,6 +12,7 @@ private final class RustWebSocketConnection: @unchecked Sendable, WebSocketTrans
     private let buffer = WebSocketEventBuffer()
 
     init(input: RunInput) { self.input = input }
+
     func events() -> AsyncThrowingStream<WebSocketEvent, any Error> {
         lock.withLock {
             if session == nil && !disconnected {
@@ -24,11 +23,10 @@ private final class RustWebSocketConnection: @unchecked Sendable, WebSocketTrans
             try await withTaskCancellationHandler {
                 try Task.checkCancellation()
                 return try await buffer.next()
-            } onCancel: {
-                self.disconnect()
-            }
+            } onCancel: { self.disconnect() }
         })
     }
+
     func send(_ data: Data, binary: Bool) -> Bool {
         lock.withLock { !disconnected && (session?.send(data: data, binary: binary) ?? false) }
     }

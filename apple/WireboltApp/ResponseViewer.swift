@@ -35,10 +35,7 @@ struct ResponseViewer: View {
                                 RunProgressView(startedAt: startedAt, cancel: cancel)
                                     .padding(.horizontal, 22).padding(.vertical, 16)
                                     .background(.regularMaterial, in: .rect(cornerRadius: WireboltTheme.Radius.group))
-                                    .overlay {
-                                        RoundedRectangle(cornerRadius: WireboltTheme.Radius.group).stroke(
-                                            WireboltTheme.separator, lineWidth: 0.5)
-                                    }
+                                    .overlay { RoundedRectangle(cornerRadius: WireboltTheme.Radius.group).stroke(WireboltTheme.separator, lineWidth: 0.5) }
                                     .transition(.opacity)
                             }
                         }
@@ -128,8 +125,7 @@ struct ResponseViewer: View {
         case .cookies:
             ResponseCookiesTable(cookies: session.responseCookies)
         case .raw:
-            ResponseSourceView(
-                title: "Raw Response", text: rawResponseText, bodyStore: session.bodyStore,
+            ResponseSourceView(title: "Raw Response", text: rawResponseText, bodyStore: session.bodyStore,
                 byteCount: session.responseBytes, prefix: rawResponseHeaders, isReceiving: isReceivingBody)
         case .request:
             SentRequestViewer(snapshot: session.preparedRun)
@@ -143,9 +139,7 @@ struct ResponseViewer: View {
     private var rawResponseHeaders: String {
         guard let head = session.responseHead else { return "" }
         // HTTP/2 and later carry no reason phrase on the wire.
-        let statusLine =
-            head.version.hasPrefix("HTTP/1")
-            ? "\(head.version) \(ResponseFormatting.statusLine(head.status))" : "\(head.version) \(head.status)"
+        let statusLine = head.version.hasPrefix("HTTP/1") ? "\(head.version) \(ResponseFormatting.statusLine(head.status))" : "\(head.version) \(head.status)"
         let headers = head.headers.map { "\($0.name): \($0.value)" }.joined(separator: "\n")
         return [statusLine, headers, "", ""].joined(separator: "\n")
     }
@@ -164,17 +158,11 @@ private struct ResponseRunObserver: View {
             .onChange(of: session.responseHead) {
                 guard interface.usesAutomaticRenderer, let head = session.responseHead else { return }
                 let mime = head.headers.first { $0.name.lowercased() == "content-type" }?.value.lowercased() ?? ""
-                if mime.contains("json") {
-                    interface.responseRenderer = .json
-                } else if mime.contains("html") {
-                    interface.responseRenderer = .html
-                } else if mime.contains("xml") {
-                    interface.responseRenderer = .xml
-                } else if mime.hasPrefix("image/") {
-                    interface.responseRenderer = .image
-                } else {
-                    interface.responseRenderer = .raw
-                }
+                if mime.contains("json") { interface.responseRenderer = .json }
+                else if mime.contains("html") { interface.responseRenderer = .html }
+                else if mime.contains("xml") { interface.responseRenderer = .xml }
+                else if mime.hasPrefix("image/") { interface.responseRenderer = .image }
+                else { interface.responseRenderer = .raw }
             }
             .onChange(of: session.isRunning) { wasRunning, isRunning in
                 if wasRunning, !isRunning { announceOutcome() }
@@ -186,12 +174,9 @@ private struct ResponseRunObserver: View {
         if let failure = session.failure {
             text = failure.kind == "cancelled" ? "Request cancelled" : "Request failed. " + RunFailureMessage(failure).title
         } else if session.completion != nil || session.responseHead != nil {
-            text = ResponseFormatting.completionSummary(
-                status: session.responseHead?.status,
+            text = ResponseFormatting.completionSummary(status: session.responseHead?.status,
                 totalTimeNS: session.completion?.totalTimeNS, bytes: session.responseBytes)
-        } else {
-            return
-        }
+        } else { return }
         AccessibilityNotification.Announcement(text).post()
     }
 }
@@ -308,9 +293,7 @@ private struct ResponseSourceView: View {
                             if let bodyStore {
                                 let data = try? await bodyStore.viewport(length: Int(byteCount))
                                 value = prefix + String(decoding: data ?? Data(), as: UTF8.self)
-                            } else {
-                                value = text
-                            }
+                            } else { value = text }
                             NSPasteboard.general.clearContents()
                             NSPasteboard.general.setString(value, forType: .string)
                         }
@@ -318,7 +301,7 @@ private struct ResponseSourceView: View {
                     Divider()
                     EditorPreferencesMenu()
                 }.ghostMenuStyle().menuIndicator(.hidden).fixedSize().labelStyle(.iconOnly)
-                    .help("Actions")
+                .help("Actions")
             }.font(.system(size: 13)).padding(.horizontal, 12).frame(height: 27)
                 .background(WireboltTheme.barBackground)
             Divider()
@@ -376,11 +359,7 @@ private struct ResponseSectionBar: View {
                 }
                 VStack(alignment: .leading, spacing: WireboltTheme.Spacing.small) {
                     summary
-                    HStack(spacing: WireboltTheme.Spacing.small) {
-                        tabs
-                        Spacer(minLength: 0)
-                        actions
-                    }
+                    HStack(spacing: WireboltTheme.Spacing.small) { tabs; Spacer(minLength: 0); actions }
                 }
             }
             if showsDetails {
@@ -403,26 +382,19 @@ private struct ResponseSectionBar: View {
         .accessibilityLabel("Response sections")
         .alert("Response Action Failed", isPresented: Binding(get: { actionError != nil }, set: { if !$0 { actionError = nil } })) {
             Button("OK", role: .cancel) {}
-        } message: {
-            Text(actionError ?? "The operation could not be completed.")
-        }
+        } message: { Text(actionError ?? "The operation could not be completed.") }
     }
 
     private var summary: some View {
         HStack(spacing: WireboltTheme.Spacing.medium) {
-            Button {
-                showsDetails.toggle()
-            } label: {
+            Button { showsDetails.toggle() } label: {
                 HStack(spacing: WireboltTheme.Spacing.medium) {
                     if let head = session.responseHead {
                         Text(ResponseFormatting.statusLine(head.status)).foregroundStyle(WireboltTheme.statusColor(head.status))
                     }
                     Text("·").foregroundStyle(WireboltTheme.dim)
-                    if session.isRunning, let start = session.runStartedAt {
-                        ElapsedTimeText(startedAt: start)
-                    } else {
-                        Text(session.completion.map { ResponseFormatting.duration(nanoseconds: $0.totalTimeNS) } ?? "—")
-                    }
+                    if session.isRunning, let start = session.runStartedAt { ElapsedTimeText(startedAt: start) }
+                    else { Text(session.completion.map { ResponseFormatting.duration(nanoseconds: $0.totalTimeNS) } ?? "—") }
                     Text("·").foregroundStyle(WireboltTheme.dim)
                     Text(ResponseFormatting.byteCount(session.responseBytes))
                     Image(systemName: showsDetails ? "chevron.down" : "chevron.right")
@@ -433,11 +405,8 @@ private struct ResponseSectionBar: View {
             }
             .buttonStyle(.plain)
             .accessibilityLabel("Response summary")
-            .accessibilityValue(
-                ResponseFormatting.completionSummary(
-                    status: session.responseHead?.status,
-                    totalTimeNS: session.completion?.totalTimeNS, bytes: session.responseBytes)
-            )
+            .accessibilityValue(ResponseFormatting.completionSummary(status: session.responseHead?.status,
+                totalTimeNS: session.completion?.totalTimeNS, bytes: session.responseBytes))
             .accessibilityHint(showsDetails ? "Collapse details" : "Expand details")
             if session.isRunning, let cancel {
                 Button("Cancel Request", systemImage: "xmark", action: cancel)
@@ -448,25 +417,19 @@ private struct ResponseSectionBar: View {
 
     private var tabs: some View {
         ScrollView(.horizontal) {
-            HStack(spacing: WireboltTheme.Spacing.xSmall) {
-                ForEach([ResponsePanelSection.body, .headers, .cookies, .raw, .request]) { section in
-                    PanelTabButton(
-                        title: section.rawValue,
-                        badge: section == .headers ? session.responseHead?.headers.count : nil,
-                        isSelected: interface.responseSection == section, height: theme.density.controlHeight,
-                        action: { interface.responseSection = section })
-                }
+        HStack(spacing: WireboltTheme.Spacing.xSmall) {
+            ForEach([ResponsePanelSection.body, .headers, .cookies, .raw, .request]) { section in
+                PanelTabButton(title: section.rawValue,
+                    badge: section == .headers ? session.responseHead?.headers.count : nil,
+                    isSelected: interface.responseSection == section, height: theme.density.controlHeight,
+                    action: { interface.responseSection = section })
             }
+        }
         }.scrollIndicators(.never).frame(height: theme.density.controlHeight)
     }
 
     private var rendererSelection: Binding<ResponseRenderer> {
-        Binding(
-            get: { interface.responseRenderer },
-            set: {
-                interface.responseRenderer = $0
-                interface.usesAutomaticRenderer = false
-            })
+        Binding(get: { interface.responseRenderer }, set: { interface.responseRenderer = $0; interface.usesAutomaticRenderer = false })
     }
 
     private var actions: some View {
@@ -490,17 +453,17 @@ private struct ResponseSectionBar: View {
                 .labelStyle(.iconOnly).buttonStyle(GhostIconStyle()).disabled(session.isRunning)
             Button("Copy Body", systemImage: "doc.on.doc", action: copyBody)
                 .labelStyle(.iconOnly).buttonStyle(GhostIconStyle()).disabled(session.bodyStore == nil || session.isRunning)
-            Menu("Response Actions", systemImage: "ellipsis") {
-                Button("Find in Body", systemImage: "magnifyingglass", action: findBody).disabled(session.isRunning)
-                Button("Copy Body", systemImage: "doc.on.doc", action: copyBody).disabled(session.bodyStore == nil || session.isRunning)
-                Button("Export Body…", systemImage: "square.and.arrow.up", action: saveResponse)
-                    .disabled(session.bodyStore == nil || session.isRunning)
-                Toggle("Decode Unicode Escapes", isOn: $decodesUnicodeEscapes).disabled(interface.responseRenderer != .json)
-                EditorPreferencesMenu()
-                Menu("Open With") { OpenWithMenuItems(store: session.bodyStore) }.disabled(session.isRunning)
-            }
-            .ghostMenuStyle().menuIndicator(.hidden).labelStyle(.iconOnly)
-            .frame(minWidth: 28, minHeight: 28).help("Response Actions")
+        Menu("Response Actions", systemImage: "ellipsis") {
+            Button("Find in Body", systemImage: "magnifyingglass", action: findBody).disabled(session.isRunning)
+            Button("Copy Body", systemImage: "doc.on.doc", action: copyBody).disabled(session.bodyStore == nil || session.isRunning)
+            Button("Export Body…", systemImage: "square.and.arrow.up", action: saveResponse)
+                .disabled(session.bodyStore == nil || session.isRunning)
+            Toggle("Decode Unicode Escapes", isOn: $decodesUnicodeEscapes).disabled(interface.responseRenderer != .json)
+            EditorPreferencesMenu()
+            Menu("Open With") { OpenWithMenuItems(store: session.bodyStore) }.disabled(session.isRunning)
+        }
+        .ghostMenuStyle().menuIndicator(.hidden).labelStyle(.iconOnly)
+        .frame(minWidth: 28, minHeight: 28).help("Response Actions")
         }
     }
 
@@ -573,8 +536,7 @@ private struct OpenWithMenuItems: View {
         if let store {
             ForEach(NSWorkspace.shared.urlsForApplications(toOpen: store.url), id: \.self) { application in
                 Button(application.deletingPathExtension().lastPathComponent) {
-                    NSWorkspace.shared.open(
-                        [store.url], withApplicationAt: application,
+                    NSWorkspace.shared.open([store.url], withApplicationAt: application,
                         configuration: NSWorkspace.OpenConfiguration())
                 }
             }
@@ -621,9 +583,7 @@ private struct ResponseBodyViewer: View {
                 } actions: {
                     Button("View Headers") { interface.responseSection = .headers }
                 }
-            } else {
-                rendererContent
-            }
+            } else { rendererContent }
 
         }
         // Keyed on completion too: a viewport read while the body streams would be stale.
@@ -642,13 +602,9 @@ private struct ResponseBodyViewer: View {
         .onChange(of: interface.responseRenderer) { _, renderer in
             if renderer != .json {
                 hasShownOtherText = true
-                if renderer == .xml {
-                    otherLanguage = .xml
-                } else if renderer == .html {
-                    otherLanguage = .html
-                } else {
-                    otherLanguage = .plain
-                }
+                if renderer == .xml { otherLanguage = .xml }
+                else if renderer == .html { otherLanguage = .html }
+                else { otherLanguage = .plain }
             }
         }
         .onChange(of: receivedBytes) { _, value in storeSize = max(storeSize, value) }
@@ -707,13 +663,12 @@ private struct ResponseBodyViewer: View {
         let formatted = sameBody ? jsonDocument : nil
         let pending = isJSON && store != nil && !sameBody
         let showsOther = !isJSON || (!pending && formatted == nil)
-        let language: SyntaxLanguage =
-            switch interface.responseRenderer {
-            case .json: showsOther ? .json : otherLanguage
-            case .xml: .xml
-            case .html: .html
-            default: .plain
-            }
+        let language: SyntaxLanguage = switch interface.responseRenderer {
+        case .json: showsOther ? .json : otherLanguage
+        case .xml: .xml
+        case .html: .html
+        default: .plain
+        }
         let displayedOtherFind = showsOther && isJSON ? jsonFind : otherFind
         ZStack {
             // Both are final presentations. Keeping them mounted preserves native
@@ -788,8 +743,7 @@ private struct ResponseImageView: View {
             } else if isLoading {
                 ProgressView().controlSize(.small).frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
-                ContentUnavailableView(
-                    "Can’t Preview Image", systemImage: "photo",
+                ContentUnavailableView("Can’t Preview Image", systemImage: "photo",
                     description: Text("This response isn’t a supported image. Choose Raw or Hex to inspect it."))
             }
         }
@@ -798,11 +752,7 @@ private struct ResponseImageView: View {
             let url = url
             let data = data
             let decoder = Task.detached(priority: .userInitiated) { Self.decode(url: url, data: data) }
-            let result = await withTaskCancellationHandler {
-                await decoder.value
-            } onCancel: {
-                decoder.cancel()
-            }
+            let result = await withTaskCancellationHandler { await decoder.value } onCancel: { decoder.cancel() }
             guard !Task.isCancelled else { return }
             image = result
             isLoading = false
@@ -831,11 +781,7 @@ private struct ResponseWebPreview: View {
             .task(id: url) {
                 guard let url else { return }
                 let reader = Task.detached(priority: .userInitiated) { try String(contentsOf: url, encoding: .utf8) }
-                let result = try? await withTaskCancellationHandler {
-                    try await reader.value
-                } onCancel: {
-                    reader.cancel()
-                }
+                let result = try? await withTaskCancellationHandler { try await reader.value } onCancel: { reader.cancel() }
                 guard !Task.isCancelled else { return }
                 html = result
             }
@@ -878,16 +824,14 @@ struct ResponseHeadersTable: View {
 private struct ResponseCookiesTable: View {
     let cookies: [CookieSnapshot]
     var body: some View {
-        ResponseKeyValueTable(
-            title: "Cookies",
-            rows: cookies.flatMap { cookie in
-                var rows = [(cookie.name, cookie.value, true), ("    Path", cookie.path, false)]
-                if cookie.httpOnly { rows.append(("    HttpOnly", "True", false)) }
-                if cookie.secure { rows.append(("    Secure", "True", false)) }
-                if let expires = cookie.expiresAt { rows.append(("    Expires", expires.formatted(), false)) }
-                if !cookie.sameSite.isEmpty { rows.append(("    SameSite", cookie.sameSite, false)) }
-                return rows
-            })
+        ResponseKeyValueTable(title: "Cookies", rows: cookies.flatMap { cookie in
+            var rows = [(cookie.name, cookie.value, true), ("    Path", cookie.path, false)]
+            if cookie.httpOnly { rows.append(("    HttpOnly", "True", false)) }
+            if cookie.secure { rows.append(("    Secure", "True", false)) }
+            if let expires = cookie.expiresAt { rows.append(("    Expires", expires.formatted(), false)) }
+            if !cookie.sameSite.isEmpty { rows.append(("    SameSite", cookie.sameSite, false)) }
+            return rows
+        })
     }
 }
 
@@ -909,7 +853,7 @@ private struct ResponseKeyValueTable: View {
                     NSPasteboard.general.clearContents()
                     NSPasteboard.general.setString(rows.map { "\($0.0): \($0.1)" }.joined(separator: "\n"), forType: .string)
                 }.labelStyle(.iconOnly).buttonStyle(.borderless)
-                    .help("Copy All")
+                .help("Copy All")
             }.font(.system(size: 13)).padding(.horizontal, 12).frame(height: 27)
                 .background(WireboltTheme.barBackground)
             Divider()
@@ -923,9 +867,7 @@ private struct ResponseKeyValueTable: View {
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 0) {
                     ForEach(Array(rows.enumerated()), id: \.offset) { _, row in
-                        if search.isEmpty || row.0.localizedCaseInsensitiveContains(search)
-                            || row.1.localizedCaseInsensitiveContains(search)
-                        {
+                        if search.isEmpty || row.0.localizedCaseInsensitiveContains(search) || row.1.localizedCaseInsensitiveContains(search) {
                             HStack(alignment: .top, spacing: 0) {
                                 Text(row.0).frame(width: 178, alignment: .leading).padding(.leading, 10)
                                 Text(row.1).frame(maxWidth: .infinity, alignment: .leading).padding(.leading, 6)
@@ -944,8 +886,7 @@ private struct SentRequestViewer: View {
 
     var body: some View {
         if snapshot == nil {
-            ContentUnavailableView(
-                "No Request Sent", systemImage: "paperplane",
+            ContentUnavailableView("No Request Sent", systemImage: "paperplane",
                 description: Text("Send the request (⌘↩) to see exactly what was transmitted."))
         } else {
             sentRequest
@@ -970,18 +911,16 @@ private struct SentRequestViewer: View {
         guard let snapshot else { return "No request has been sent from this tab." }
         let url = URL(string: snapshot.url)
         let components = url.flatMap { URLComponents(url: $0, resolvingAgainstBaseURL: false) }
-        let path =
-            (components?.percentEncodedPath.isEmpty == false ? components?.percentEncodedPath ?? "/" : "/")
+        let path = (components?.percentEncodedPath.isEmpty == false ? components?.percentEncodedPath ?? "/" : "/")
             + (components?.percentEncodedQuery.map { "?" + $0 } ?? "")
         let host = (url?.host ?? "[redacted]") + (url?.port.map { ":" + String($0) } ?? "")
         var lines = [
             "\(snapshot.method) \(path) HTTP/1.1",
             "Host: \(host)",
         ]
-        lines.append(
-            contentsOf: snapshot.headers.map {
-                "\($0.name): \($0.value)"
-            })
+        lines.append(contentsOf: snapshot.headers.map {
+            "\($0.name): \($0.value)"
+        })
         if let bodyText = snapshot.body.textPreview {
             lines.append("Content-Length: \(snapshot.body.byteCount)")
             lines.append("")
@@ -1008,8 +947,7 @@ private struct JSONResponseTree: View {
                 if isParsing {
                     ProgressView().controlSize(.small)
                 } else if nodes.isEmpty {
-                    ContentUnavailableView(
-                        "Not JSON", systemImage: "curlybraces",
+                    ContentUnavailableView("Not JSON", systemImage: "curlybraces",
                         description: Text("The response body isn’t valid JSON. Choose Raw to read it as text."))
                 }
             }
@@ -1021,11 +959,7 @@ private struct JSONResponseTree: View {
                     try Task.checkCancellation()
                     return url.map { JSONNode.makeRoot(from: $0) } ?? JSONNode.makeRoot(from: preview)
                 }
-                let result = try? await withTaskCancellationHandler {
-                    try await parse.value
-                } onCancel: {
-                    parse.cancel()
-                }
+                let result = try? await withTaskCancellationHandler { try await parse.value } onCancel: { parse.cancel() }
                 guard !Task.isCancelled else { return }
                 nodes = result ?? []
                 revision += 1
@@ -1093,8 +1027,7 @@ struct JSONTreeView: NSViewRepresentable {
             for root in coordinator.roots { outline.expandItem(root) }
         } else {
             // Refresh cell styles without rebuilding nodes or losing expansion/selection.
-            outline.reloadData(
-                forRowIndexes: IndexSet(integersIn: 0..<outline.numberOfRows),
+            outline.reloadData(forRowIndexes: IndexSet(integersIn: 0..<outline.numberOfRows),
                 columnIndexes: IndexSet(integersIn: 0..<outline.numberOfColumns))
         }
     }
@@ -1125,25 +1058,21 @@ struct JSONTreeView: NSViewRepresentable {
         }
         func outlineView(_ outlineView: NSOutlineView, viewFor tableColumn: NSTableColumn?, item: Any) -> NSView? {
             guard let node = item as? Node, let column = tableColumn else { return nil }
-            let field =
-                (outlineView.makeView(withIdentifier: column.identifier, owner: nil) as? NSTextField)
+            let field = (outlineView.makeView(withIdentifier: column.identifier, owner: nil) as? NSTextField)
                 ?? NSTextField(labelWithString: "")
             field.identifier = column.identifier
             field.font = .monospacedSystemFont(ofSize: fontSize, weight: .regular)
             field.lineBreakMode = .byTruncatingTail
             field.maximumNumberOfLines = 1
             field.stringValue = column.identifier.rawValue == "key" ? node.value.key : node.value.value
-            if node.value.key == "Root" {
-                field.textColor = theme.muted.nsColor
-            } else if column.identifier.rawValue == "key" {
-                field.textColor = theme.definition.syntaxKey.nsColor
-            } else {
-                field.textColor =
-                    switch node.value.type {
-                    case "String": theme.definition.syntaxString.nsColor
-                    case "Number": theme.definition.syntaxNumber.nsColor
-                    case "Boolean": theme.definition.syntaxKeyword.nsColor
-                    case "Null": theme.definition.syntaxKeyword.nsColor
+            if node.value.key == "Root" { field.textColor = theme.muted.nsColor }
+            else if column.identifier.rawValue == "key" { field.textColor = theme.definition.syntaxKey.nsColor }
+            else {
+                field.textColor = switch node.value.type {
+                case .string: theme.definition.syntaxString.nsColor
+                    case .number: theme.definition.syntaxNumber.nsColor
+                    case .boolean: theme.definition.syntaxKeyword.nsColor
+                    case .null: theme.definition.syntaxKeyword.nsColor
                     default: theme.muted.nsColor
                     }
             }

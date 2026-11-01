@@ -46,20 +46,16 @@ struct NetworkSettingsPage: View {
     @State private var isConfirmingAppSettings = false
 
     init(model: WireboltModel, scope: ProxyScope, session: DocumentSession? = nil, onClose: (() -> Void)? = nil, isActive: Bool = true) {
-        self.model = model
-        self.scope = scope
-        self.session = session
-        self.onClose = onClose
+        self.model = model; self.scope = scope; self.session = session; self.onClose = onClose
         self.isActive = isActive
         _transport = State(initialValue: model.workspace.transport)
         _transportBaseline = State(initialValue: model.workspace.transport)
         _test = State(initialValue: model.makeProxyConnectionTest())
-        let configuration: ProxyDocument? =
-            switch scope {
-            case .app: model.proxyPreferences.configuration
-            case .workspace: model.workspace.proxy
-            case .request: session?.draft.proxy.document
-            }
+        let configuration: ProxyDocument? = switch scope {
+        case .app: model.proxyPreferences.configuration
+        case .workspace: model.workspace.proxy
+        case .request: session?.draft.proxy.document
+        }
         let draft = ProxyFormDraft(configuration: configuration)
         _form = State(initialValue: draft)
         _baseline = State(initialValue: draft)
@@ -78,10 +74,8 @@ struct NetworkSettingsPage: View {
     private var stagesTransport: Bool { isSheet && scope == .workspace }
     private var transportChanged: Bool { stagesTransport && transport != transportBaseline }
     private var validation: String? {
-        do {
-            _ = try form.document()
-            return nil
-        } catch { return error.localizedDescription }
+        do { _ = try form.document(); return nil }
+        catch { return error.localizedDescription }
     }
     private var effective: EffectiveProxy {
         let value = try? form.document()
@@ -94,132 +88,120 @@ struct NetworkSettingsPage: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            ScrollView {
-                VStack(alignment: .leading, spacing: 18) {
-                    HStack(alignment: .top) {
-                        VStack(alignment: .leading, spacing: 5) {
-                            Text("Proxy").font(.title2.weight(.semibold))
-                            Text(scopeDescription).font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-                        }
-                        Spacer(minLength: 8)
-                        Text(scope.title).font(.caption.weight(.medium)).padding(.horizontal, 9).padding(.vertical, 5)
-                            .background(.quaternary, in: Capsule())
+        ScrollView {
+            VStack(alignment: .leading, spacing: 18) {
+                HStack(alignment: .top) {
+                    VStack(alignment: .leading, spacing: 5) {
+                        Text("Proxy").font(.title2.weight(.semibold))
+                        Text(scopeDescription).font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                     }
-                    VStack(alignment: .leading, spacing: 12) {
-                        Picker("Mode", selection: $form.mode) {
-                            if scope != .app {
-                                Text(scope == .workspace ? "Inherit from app default" : "Inherit from workspace").tag(
-                                    ProxyFormDraft.Mode.inherit)
-                            }
-                            Text("System").tag(ProxyFormDraft.Mode.system)
-                            Text("Direct — No proxy").tag(ProxyFormDraft.Mode.direct)
-                            Text("Manual").tag(ProxyFormDraft.Mode.manual)
-                        }.accessibilityLabel("Proxy mode")
-                        Text(modeDescription).font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-                        if form.mode == .manual {
-                            Divider()
-                            ForEach($form.routes) { $route in
-                                ProxyRouteFields(route: $route, canRemove: form.routes.count > 1) {
-                                    form.routes.removeAll { $0.id == route.id }
-                                }
-                                if route.id != form.routes.last?.id { Divider().padding(.vertical, 4) }
-                            }
-                            if form.routes.count < 2 {
-                                Button("Add Separate Route", systemImage: "plus") {
-                                    if form.routes.first?.destination == "all" { form.routes[0].destination = "http" }
-                                    var route = ProxyRouteDraft()
-                                    route.destination = "https"
-                                    form.routes.append(route)
-                                }.font(.caption)
-                            }
-                        }
-                    }.padding(WireboltTheme.Spacing.xLarge).frame(maxWidth: .infinity, alignment: .leading)
-                        .background(theme.definition.card.color, in: .rect(cornerRadius: theme.geometry.card))
-                        .overlay(RoundedRectangle(cornerRadius: theme.geometry.card).strokeBorder(theme.cardBorder.color))
-
-                    if let validation {
-                        Label(validation, systemImage: "exclamationmark.circle").font(.callout).foregroundStyle(WireboltTheme.danger)
-                            .fixedSize(horizontal: false, vertical: true)
-                    } else {
-                        VStack(alignment: .leading, spacing: 9) {
-                            Label(changed ? "Connection preview" : "Effective connection", systemImage: "network")
-                                .font(.caption.weight(.semibold)).foregroundStyle(.secondary)
-                            Text(effective.summary(for: session?.draft.url)).font(.system(.body, design: .monospaced).weight(.medium))
-                                .textSelection(.enabled).lineLimit(2)
-                                .id(effective.summary(for: session?.draft.url))
-                            Text(sourceDescription).font(.caption).foregroundStyle(.secondary)
-                            if scope != .app {
-                                HStack(spacing: 14) {
-                                    if scope == .request {
-                                        Button("Edit workspace settings") { model.isShowingWorkspaceSettings = true }
-                                    }
-                                    Button("Edit app default", action: openAppSettings)
-                                }.buttonStyle(.link).tint(WireboltTheme.secondary).font(.caption)
-                            }
-                        }.padding(16).frame(maxWidth: .infinity, alignment: .leading)
-                            .background(theme.definition.tabActive.color, in: .rect(cornerRadius: theme.geometry.card))
-                    }
-                    if let saveError {
-                        Label(saveError, systemImage: "exclamationmark.circle").font(.caption).foregroundStyle(WireboltTheme.danger)
-                    }
-                    if let session, session.kind == .webSocket, session.socket.status != .disconnected {
-                        Label("Reconnect to apply changes to this WebSocket.", systemImage: "arrow.triangle.2.circlepath")
-                            .font(.caption).foregroundStyle(.secondary)
-                    }
-                    if scope == .request {
-                        Text("Applies to the next send. Save the request (⌘S) to keep its override.")
-                            .font(.caption).foregroundStyle(.secondary)
-                    }
-                    Divider()
-                    DisclosureGroup("Test connection", isExpanded: $showsTest) {
-                        VStack(alignment: .leading, spacing: 10) {
-                            TextField("https://example.com", text: $testURL).accessibilityLabel("Proxy test URL").textFieldStyle(
-                                .roundedBorder)
-                            Text("Send a HEAD request to this URL without request headers, body or cookies. Timeout: 5 seconds.")
-                                .font(.caption).foregroundStyle(.secondary)
-                            if !form.secrets.isEmpty {
-                                Text("Save or apply credentials before testing.").font(.caption).foregroundStyle(.secondary)
-                            }
-                            HStack {
-                                if test.isRunning {
-                                    ProgressView().controlSize(.small)
-                                    Text("Connecting…").font(.caption)
-                                    Spacer()
-                                    Button("Cancel test") { test.cancel() }
-                                } else {
-                                    Button("Test connection") { test.start(configuration: effective.configuration, url: testURL) }
-                                        .disabled(validation != nil || !form.secrets.isEmpty || !ProxyConnectionTest.validTarget(testURL))
-                                }
-                            }
-                            if let message = test.message {
-                                Label(message, systemImage: test.succeeded ? "checkmark.circle" : "info.circle")
-                                    .font(.caption).foregroundStyle(test.succeeded ? WireboltTheme.success : Color.secondary)
-                                    .fixedSize(horizontal: false, vertical: true)
-                            }
-                        }.padding(.top, 10)
-                    }.font(.callout.weight(.medium))
-                    if scope != .app {
+                    Spacer(minLength: 8)
+                    Text(scope.title).font(.caption.weight(.medium)).padding(.horizontal, 9).padding(.vertical, 5)
+                        .background(.quaternary, in: Capsule())
+                }
+                VStack(alignment: .leading, spacing: 12) {
+                    Picker("Mode", selection: $form.mode) {
+                        if scope != .app { Text(scope == .workspace ? "Inherit from app default" : "Inherit from workspace").tag(ProxyFormDraft.Mode.inherit) }
+                        Text("System").tag(ProxyFormDraft.Mode.system)
+                        Text("Direct — No proxy").tag(ProxyFormDraft.Mode.direct)
+                        Text("Manual").tag(ProxyFormDraft.Mode.manual)
+                    }.accessibilityLabel("Proxy mode")
+                    Text(modeDescription).font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                    if form.mode == .manual {
                         Divider()
-                        DisclosureGroup("Timeouts, redirects & TLS", isExpanded: $showsTransport) {
-                            TransportSettingsFields(model: model, session: session, staged: stagesTransport ? $transport : nil).padding(
-                                .top, 12)
-                        }.font(.callout.weight(.medium))
+                        ForEach($form.routes) { $route in
+                            ProxyRouteFields(route: $route, canRemove: form.routes.count > 1) {
+                                form.routes.removeAll { $0.id == route.id }
+                            }
+                            if route.id != form.routes.last?.id { Divider().padding(.vertical, 4) }
+                        }
+                        if form.routes.count < 2 {
+                            Button("Add Separate Route", systemImage: "plus") {
+                                if form.routes.first?.destination == "all" { form.routes[0].destination = "http" }
+                                var route = ProxyRouteDraft(); route.destination = "https"
+                                form.routes.append(route)
+                            }.font(.caption)
+                        }
                     }
-                }.padding(20).frame(maxWidth: 670, alignment: .leading).frame(maxWidth: .infinity)
-                    .background(NetworkScrollStyle())
-            }
-            Divider()
-            if isSheet { sheetFooter } else { inlineFooter }
+                }.padding(WireboltTheme.Spacing.xLarge).frame(maxWidth: .infinity, alignment: .leading)
+                    .background(theme.definition.card.color, in: .rect(cornerRadius: theme.geometry.card))
+                    .overlay(RoundedRectangle(cornerRadius: theme.geometry.card).strokeBorder(theme.cardBorder.color))
+
+                if let validation {
+                    Label(validation, systemImage: "exclamationmark.circle").font(.callout).foregroundStyle(WireboltTheme.danger)
+                        .fixedSize(horizontal: false, vertical: true)
+                } else {
+                    VStack(alignment: .leading, spacing: 9) {
+                        Label(changed ? "Connection preview" : "Effective connection", systemImage: "network")
+                            .font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+                        Text(effective.summary(for: session?.draft.url)).font(.system(.body, design: .monospaced).weight(.medium))
+                            .textSelection(.enabled).lineLimit(2)
+                            .id(effective.summary(for: session?.draft.url))
+                        Text(sourceDescription).font(.caption).foregroundStyle(.secondary)
+                        if scope != .app {
+                            HStack(spacing: 14) {
+                                if scope == .request {
+                                    Button("Edit workspace settings") { model.isShowingWorkspaceSettings = true }
+                                }
+                                Button("Edit app default", action: openAppSettings)
+                            }.buttonStyle(.link).tint(WireboltTheme.secondary).font(.caption)
+                        }
+                    }.padding(16).frame(maxWidth: .infinity, alignment: .leading)
+                        .background(theme.definition.tabActive.color, in: .rect(cornerRadius: theme.geometry.card))
+                }
+                if let saveError { Label(saveError, systemImage: "exclamationmark.circle").font(.caption).foregroundStyle(WireboltTheme.danger) }
+                if let session, session.kind == .webSocket, session.socket.status != .disconnected {
+                    Label("Reconnect to apply changes to this WebSocket.", systemImage: "arrow.triangle.2.circlepath")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+                if scope == .request {
+                    Text("Applies to the next send. Save the request (⌘S) to keep its override.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+                Divider()
+                DisclosureGroup("Test connection", isExpanded: $showsTest) {
+                    VStack(alignment: .leading, spacing: 10) {
+                        TextField("https://example.com", text: $testURL).accessibilityLabel("Proxy test URL").textFieldStyle(.roundedBorder)
+                        Text("Send a HEAD request to this URL without request headers, body or cookies. Timeout: 5 seconds.")
+                            .font(.caption).foregroundStyle(.secondary)
+                        if !form.secrets.isEmpty {
+                            Text("Save or apply credentials before testing.").font(.caption).foregroundStyle(.secondary)
+                        }
+                        HStack {
+                            if test.isRunning {
+                                ProgressView().controlSize(.small)
+                                Text("Connecting…").font(.caption)
+                                Spacer()
+                                Button("Cancel test") { test.cancel() }
+                            } else {
+                                Button("Test connection") { test.start(configuration: effective.configuration, url: testURL) }
+                                    .disabled(validation != nil || !form.secrets.isEmpty || !ProxyConnectionTest.validTarget(testURL))
+                            }
+                        }
+                        if let message = test.message {
+                            Label(message, systemImage: test.succeeded ? "checkmark.circle" : "info.circle")
+                                .font(.caption).foregroundStyle(test.succeeded ? WireboltTheme.success : Color.secondary)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                    }.padding(.top, 10)
+                }.font(.callout.weight(.medium))
+                if scope != .app {
+                    Divider()
+                    DisclosureGroup("Timeouts, redirects & TLS", isExpanded: $showsTransport) {
+                        TransportSettingsFields(model: model, session: session, staged: stagesTransport ? $transport : nil).padding(.top, 12)
+                    }.font(.callout.weight(.medium))
+                }
+            }.padding(20).frame(maxWidth: 670, alignment: .leading).frame(maxWidth: .infinity)
+                .background(NetworkScrollStyle())
+        }
+        Divider()
+        if isSheet { sheetFooter } else { inlineFooter }
         }
         .background(theme.definition.window.color)
         .onChange(of: currentConfiguration) {
             if !changed { reload() }
         }
-        .onChange(of: form) {
-            saveError = nil
-            status = nil
-            test.reset()
-        }
+        .onChange(of: form) { saveError = nil; status = nil; test.reset() }
         .onChange(of: effective.configuration) { test.reset() }
         .onChange(of: testURL) { test.reset() }
         .onDisappear { test.cancel() }
@@ -239,7 +221,8 @@ struct NetworkSettingsPage: View {
     }
 
     private func openAppSettings() {
-        if isSheet && (changed || transportChanged) { isConfirmingAppSettings = true } else { showAppSettings() }
+        if isSheet && (changed || transportChanged) { isConfirmingAppSettings = true }
+        else { showAppSettings() }
     }
 
     private func showAppSettings() {
@@ -250,20 +233,11 @@ struct NetworkSettingsPage: View {
 
     private var inlineFooter: some View {
         HStack {
-            if saving {
-                ProgressView().controlSize(.small)
-            } else if changed {
-                Text("Unapplied changes").font(.caption).foregroundStyle(.secondary)
-            } else if let status {
-                Label(status, systemImage: "checkmark.circle.fill").font(.caption).foregroundStyle(.secondary)
-            }
+            if saving { ProgressView().controlSize(.small) }
+            else if changed { Text("Unapplied changes").font(.caption).foregroundStyle(.secondary) }
+            else if let status { Label(status, systemImage: "checkmark.circle.fill").font(.caption).foregroundStyle(.secondary) }
             Spacer()
-            if changed {
-                Button("Reset") {
-                    form = baseline
-                    saveError = nil
-                }
-            }
+            if changed { Button("Reset") { form = baseline; saveError = nil } }
             Button(scope == .request ? "Apply to request" : "Save") { Task { await save() } }
                 .buttonStyle(.borderedProminent).tint(WireboltTheme.controlAccent).disabled(!changed || validation != nil || saving)
         }
@@ -311,25 +285,21 @@ struct NetworkSettingsPage: View {
         }
     }
     private var sourceDescription: String {
-        "Source: \(effective.source.title)"
-            + (scope == .request && form.mode == .inherit && model.workspace.proxy == nil ? " · inherited through workspace" : "")
+        "Source: \(effective.source.title)" + (scope == .request && form.mode == .inherit && model.workspace.proxy == nil ? " · inherited through workspace" : "")
     }
     private func reload() {
         let value = ProxyFormDraft(configuration: currentConfiguration)
-        form = value
-        baseline = value
+        form = value; baseline = value
     }
     private func save() async {
-        saving = true
-        saveError = nil
+        saving = true; saveError = nil
         defer { saving = false }
         do {
             try await model.applyProxy(form.document(), scope: scope, session: session, secrets: form.secrets)
             reload()
             status = scope == .request ? "Applied to request" : "Saved"
-        } catch let error as ProxyValidationError { saveError = error.message } catch {
-            saveError = "Could not save. Check workspace and Keychain access, then retry."
-        }
+        } catch let error as ProxyValidationError { saveError = error.message }
+        catch { saveError = "Could not save. Check workspace and Keychain access, then retry." }
     }
 }
 
@@ -345,9 +315,7 @@ private struct ProxyRouteFields: View {
                     Text("HTTP only").tag("http")
                     Text("HTTPS only").tag("https")
                 }
-                if canRemove {
-                    Button("Remove Route", systemImage: "minus.circle", action: remove).labelStyle(.iconOnly).help("Remove Route")
-                }
+                if canRemove { Button("Remove Route", systemImage: "minus.circle", action: remove).labelStyle(.iconOnly).help("Remove Route") }
             }
             HStack(alignment: .top, spacing: 10) {
                 VStack(alignment: .leading, spacing: 5) {
@@ -405,9 +373,7 @@ struct ProxyConnectionIndicator: View {
 
     /// Styled like the composer's other controls: icon and value, no chrome.
     private var indicator: some View {
-        Button {
-            showsDetails.toggle()
-        } label: {
+        Button { showsDetails.toggle() } label: {
             Label(label, systemImage: "network")
                 .font(WireboltTheme.Typography.tab).lineLimit(1)
                 .foregroundStyle(label == "Error" ? WireboltTheme.danger : WireboltTheme.muted)
@@ -423,19 +389,9 @@ struct ProxyConnectionIndicator: View {
                     Text(effective.summary(for: session.draft.url)).font(.system(.body, design: .monospaced))
                     Text("Source: \(effective.source.title)").foregroundStyle(.secondary)
                     Divider()
-                    Button("Request settings") {
-                        showsDetails = false
-                        openRequestSettings()
-                    }
-                    Button("Workspace settings") {
-                        showsDetails = false
-                        model.isShowingWorkspaceSettings = true
-                    }
-                    Button("App default") {
-                        showsDetails = false
-                        model.settingsTab = "network"
-                        presentAppSettings(model)
-                    }
+                    Button("Request settings") { showsDetails = false; openRequestSettings() }
+                    Button("Workspace settings") { showsDetails = false; model.isShowingWorkspaceSettings = true }
+                    Button("App default") { showsDetails = false; model.settingsTab = "network"; presentAppSettings(model) }
                     if let last = session.preparedRun?.proxy {
                         Divider()
                         Text("Last execution").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
@@ -456,30 +412,23 @@ struct TransportSettingsFields: View {
     private var inherited: Bool { session?.draft.inheritsWorkspaceTransport == true }
     private var transport: Binding<TransportSettings> {
         if let staged { return staged }
-        return Binding(
-            get: {
-                session.map { $0.draft.inheritsWorkspaceTransport ? model.workspace.transport : $0.draft.transport }
-                    ?? model.workspace.transport
-            },
-            set: { value in
-                if let session { session.draft.transport = value } else { model.updateWorkspaceTransport(value) }
-            })
+        return Binding(get: { session.map { $0.draft.inheritsWorkspaceTransport ? model.workspace.transport : $0.draft.transport } ?? model.workspace.transport },
+                set: { value in
+                    if let session { session.draft.transport = value }
+                    else { model.updateWorkspaceTransport(value) }
+                })
     }
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             if let session {
-                Toggle(
-                    "Inherit workspace transport settings",
-                    isOn: Binding(
-                        get: { session.draft.inheritsWorkspaceTransport },
-                        set: { value in
-                            if !value { session.draft.transport = model.workspace.transport }
-                            session.draft.inheritsWorkspaceTransport = value
-                        })
-                ).tint(WireboltTheme.controlAccent)
+                Toggle("Inherit workspace transport settings", isOn: Binding(
+                    get: { session.draft.inheritsWorkspaceTransport },
+                    set: { value in
+                        if !value { session.draft.transport = model.workspace.transport }
+                        session.draft.inheritsWorkspaceTransport = value
+                    })).tint(WireboltTheme.controlAccent)
                 if inherited {
-                    Text("Using workspace defaults. Turn off inheritance to edit only this request.").font(.caption).foregroundStyle(
-                        .secondary)
+                    Text("Using workspace defaults. Turn off inheritance to edit only this request.").font(.caption).foregroundStyle(.secondary)
                     Button("Edit workspace settings") { model.isShowingWorkspaceSettings = true }
                 }
             }
@@ -488,12 +437,8 @@ struct TransportSettingsFields: View {
                 Toggle("Follow redirects", isOn: transport.followRedirects).tint(WireboltTheme.controlAccent)
                 Stepper("Maximum redirects: \(transport.wrappedValue.maximumRedirects)", value: transport.maximumRedirects, in: 0...10)
                     .disabled(!transport.wrappedValue.followRedirects)
-                LabeledContent("Total timeout (ms)") {
-                    TextField("0 = no limit", value: transport.totalTimeoutMS, format: .number).frame(width: 110)
-                }
-                LabeledContent("Read timeout (ms)") {
-                    TextField("0 = no limit", value: transport.readTimeoutMS, format: .number).frame(width: 110)
-                }
+                LabeledContent("Total timeout (ms)") { TextField("0 = no limit", value: transport.totalTimeoutMS, format: .number).frame(width: 110) }
+                LabeledContent("Read timeout (ms)") { TextField("0 = no limit", value: transport.readTimeoutMS, format: .number).frame(width: 110) }
                 Text("A timeout of 0 disables that deadline.").font(.caption).foregroundStyle(.secondary)
                 Divider().padding(.vertical, 2)
                 certificateFields
@@ -507,37 +452,27 @@ struct TransportSettingsFields: View {
                 if transport.wrappedValue.clientCertificateReference != nil {
                     Label("Stored in Keychain", systemImage: "lock.fill").foregroundStyle(.secondary)
                     Button("Replace…", action: chooseClientCertificate)
-                    Button("Remove") {
-                        transport.wrappedValue.clientCertificateReference = nil
-                        certificateError = nil
-                    }
+                    Button("Remove") { transport.wrappedValue.clientCertificateReference = nil; certificateError = nil }
                 } else {
                     Button("Choose…", action: chooseClientCertificate)
                 }
             }
         }
-        Text(
-            "For servers that require mutual TLS: a PEM certificate and its unencrypted private key, in one file or two. They’re stored in Keychain; workspace files keep only a reference."
-        )
-        .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+        Text("For servers that require mutual TLS: a PEM certificate and its unencrypted private key, in one file or two. They’re stored in Keychain; workspace files keep only a reference.")
+            .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
         LabeledContent("Custom CA") {
             HStack(spacing: 8) {
                 if let path = transport.wrappedValue.customCAPath {
                     Text(URL(fileURLWithPath: path).lastPathComponent).lineLimit(1).truncationMode(.middle).help(path)
                     Button("Change…", action: chooseCustomCA)
-                    Button("Remove") {
-                        transport.wrappedValue.customCAPath = nil
-                        certificateError = nil
-                    }
+                    Button("Remove") { transport.wrappedValue.customCAPath = nil; certificateError = nil }
                 } else {
                     Button("Choose…", action: chooseCustomCA)
                 }
             }
         }
-        Text(
-            "Also trust the certificate authorities in a PEM bundle, such as a private or development CA. Workspace files store the bundle’s path."
-        )
-        .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+        Text("Also trust the certificate authorities in a PEM bundle, such as a private or development CA. Workspace files store the bundle’s path.")
+            .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
         if let certificateError {
             Label(certificateError, systemImage: "exclamationmark.circle").font(.caption).foregroundStyle(WireboltTheme.danger)
                 .fixedSize(horizontal: false, vertical: true)
@@ -557,7 +492,7 @@ struct TransportSettingsFields: View {
                 let sources = try await Self.readPEM(panel.urls)
                 let identity = try ClientIdentityPEM(parsing: sources)
                 // A new name per choice: Cancel in Workspace Settings keeps the previous identity intact.
-                let name = "tls.\(UUID().uuidString.lowercased()).client-identity"
+                let name = CredentialReference.unique(role: "client-identity", scope: "tls")
                 model.editSecret(name: name, value: identity.combined)
                 await model.saveSecret(name: name, value: identity.combined)
                 transport.wrappedValue.clientCertificateReference = name
@@ -576,9 +511,10 @@ struct TransportSettingsFields: View {
         Task {
             guard await present(panel, in: NSApp.keyWindow) == .OK, let url = panel.url else { return }
             do {
-                guard try await Self.readPEM([url]).first?.contains("-----BEGIN CERTIFICATE-----") == true else {
-                    throw PEMFileError(name: url.lastPathComponent)
-                }
+                try await Task.detached(priority: .userInitiated) {
+                    do { try appValidateCaPemFile(path: url.path) }
+                    catch let DomainError.Invalid(reason) { throw ProxyValidationError(reason) }
+                }.value
                 transport.wrappedValue.customCAPath = url.path
                 certificateError = nil
             } catch { certificateError = error.localizedDescription }
@@ -587,22 +523,9 @@ struct TransportSettingsFields: View {
 
     private static func readPEM(_ urls: [URL]) async throws -> [String] {
         try await Task.detached(priority: .userInitiated) {
-            try urls.map { url in
-                // PEM files are small; a larger or binary file (DER, PKCS #12) is the wrong format.
-                let size = (try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
-                guard size <= 1_048_576, let text = try? String(contentsOf: url, encoding: .utf8) else {
-                    throw PEMFileError(name: url.lastPathComponent)
-                }
-                return text
-            }
+            do { return try appReadPemFiles(paths: urls.map(\.path)) }
+            catch let DomainError.Invalid(reason) { throw ProxyValidationError(reason) }
         }.value
-    }
-}
-
-private struct PEMFileError: LocalizedError {
-    let name: String
-    var errorDescription: String? {
-        "“\(name)” isn’t a PEM certificate file. Convert DER or PKCS #12 (.p12) files to PEM first."
     }
 }
 
@@ -611,10 +534,7 @@ private struct NetworkScrollStyle: NSViewRepresentable {
     func makeNSView(context: Context) -> Probe { Probe() }
     func updateNSView(_ view: Probe, context: Context) { view.configure() }
     final class Probe: NSView {
-        override func viewDidMoveToWindow() {
-            super.viewDidMoveToWindow()
-            configure()
-        }
+        override func viewDidMoveToWindow() { super.viewDidMoveToWindow(); configure() }
         func configure() {
             guard let scroll = enclosingScrollView, !(scroll.verticalScroller is CodeScroller) else { return }
             scroll.verticalScroller = CodeScroller()

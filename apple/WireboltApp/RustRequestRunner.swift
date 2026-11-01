@@ -52,8 +52,7 @@ private final class RequestStreamObserver: SessionRequestObserver {
         continuation.yield(.cookies(ResponseCookies(url: url, headers: headers.map { ResponseHeader(name: $0.name, value: $0.value) })))
     }
     func finish(failure: SessionFailure?) {
-        continuation.finish(throwing: failure.map(RunFailure.init))
-    }
+        continuation.finish(throwing: failure.map(RunFailure.init)) }
 }
 
 /// The shared HTTP engine snapshots macOS proxy settings. Invalidate pooled engines
@@ -61,14 +60,11 @@ private final class RequestStreamObserver: SessionRequestObserver {
 private final class SystemProxyMonitor: @unchecked Sendable {
     private let store: SCDynamicStore?
     init() {
-        store = SCDynamicStoreCreate(
-            nil, "io.github.christopher96u.wirebolt.proxy-settings" as CFString,
-            { _, _, _ in
-                resetHttpEngines()
-            }, nil)
+        store = SCDynamicStoreCreate(nil, "io.github.christopher96u.wirebolt.proxy-settings" as CFString, { _, _, _ in
+            resetHttpEngines()
+        }, nil)
         if let store {
-            SCDynamicStoreSetNotificationKeys(
-                store,
+            SCDynamicStoreSetNotificationKeys(store,
                 ["State:/Network/Global/Proxies", "Setup:/Network/Global/Proxies"] as CFArray,
                 ["State:/Network/Service/.*/Proxies", "Setup:/Network/Service/.*/Proxies"] as CFArray)
             SCDynamicStoreSetDispatchQueue(store, DispatchQueue(label: "io.github.christopher96u.wirebolt.proxy-settings"))

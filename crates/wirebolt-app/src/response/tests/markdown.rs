@@ -2,115 +2,148 @@ use super::*;
 fn text(doc: &MarkdownDocument) -> String {
     doc.runs.iter().map(|r| r.text.as_str()).collect()
 }
+struct PlainParser;
+impl MarkdownParser for PlainParser {
+    fn parse(
+        &self,
+        source: &str,
+        _: &ResponseCancellation,
+    ) -> ResponseResult<Vec<MarkdownInputRun>> {
+        Ok(if source.is_empty() {
+            vec![]
+        } else {
+            vec![input(source, 1)]
+        })
+    }
+}
+fn input(text: &str, block: u64) -> MarkdownInputRun {
+    MarkdownInputRun {
+        text: text.into(),
+        style: MarkdownStyle::default(),
+        block: Some(block),
+        item: None,
+    }
+}
+struct FixtureParser(Vec<MarkdownInputRun>);
+impl MarkdownParser for FixtureParser {
+    fn parse(&self, _: &str, _: &ResponseCancellation) -> ResponseResult<Vec<MarkdownInputRun>> {
+        Ok(self.0.clone())
+    }
+}
 #[test]
-fn blocks_and_inline_formatting() {
-    let mut cache = MarkdownCache::new(8 * 1024 * 1024);
-    let doc=cache.render("# Title\n\n- **Bold** item\n- second\n\n> quote\n\n```swift\nlet x = 1\n```\n\n[link](https://example.com)",&cancellation()).unwrap();
+fn platform_intents_keep_block_item_and_inline_transitions() {
+    let mut title = input("Title", 1);
+    title.style.heading = 1;
+    let mut bold = input("Bold", 3);
+    bold.style.bold = true;
+    bold.style.depth = 1;
+    bold.item = Some(MarkdownListItem {
+        id: 2,
+        number: 3,
+        ordered: true,
+    });
+    let mut continuation = bold.clone();
+    continuation.text = " item".into();
+    continuation.style.bold = false;
+    let mut nested = input("nested 🚀", 6);
+    nested.style.depth = 2;
+    nested.item = Some(MarkdownListItem {
+        id: 5,
+        number: 1,
+        ordered: false,
+    });
+    let mut quote = input("quoted code\n", 7);
+    quote.style.quote = true;
+    quote.style.code = true;
+    let parser = FixtureParser(vec![title, bold, continuation, nested, quote]);
+    let mut cache = MarkdownCache::new(4096);
+    let doc = cache.render("fixture", &cancellation(), &parser).unwrap();
     assert_eq!(
         text(&doc),
-        "Title\n•  Bold item\n•  second\nquote\nlet x = 1\n\nlink"
+        "Title\n3.  Bold item\n•  nested 🚀\nquoted code\n"
     );
-    assert_eq!(doc.runs[0].style.heading, 1);
-    assert!(
-        doc.runs
-            .iter()
-            .find(|r| r.text.contains("Bold"))
-            .unwrap()
-            .style
-            .bold
-    );
-    assert!(
-        doc.runs
-            .iter()
-            .find(|r| r.text.contains("let x"))
-            .unwrap()
-            .style
-            .code
-    );
+    assert!(doc.runs[1].style.block_separator);
+    assert!(doc.runs.iter().any(|r| r.text == "Bold" && r.style.bold));
     assert_eq!(
-        doc.runs.last().unwrap().style.link.as_deref(),
-        Some("https://example.com")
+        doc.cost,
+        text(&doc).encode_utf16().count() as u64 * 2 + 5 * 256
     );
 }
 #[test]
-fn nested_lists_unicode_and_no_remote_resources() {
-    let mut cache = MarkdownCache::new(8 * 1024 * 1024);
-    let doc=cache.render("1. café 🚀\n2. 東京\n   - nested\n\n![alt text](https://example.invalid/tracking.png)\n\n[unsafe](file:///etc/passwd)",&cancellation()).unwrap();
-    let text = text(&doc);
-    for part in ["1.  café 🚀", "2.  東京", "•  nested", "alt text"] {
-        assert!(text.contains(part), "{text}");
+fn only_safe_native_links_are_rendered() {
+    for (link, allowed) in [
+        ("HTTPS://example.com", true),
+        ("mailto:a@b.com", true),
+        ("http://x", true),
+        ("../page", false),
+        ("file:///tmp/a", false),
+        ("javascript:alert", false),
+    ] {
+        let mut run = input("link", 1);
+        run.style.link = Some(link.into());
+        let doc = MarkdownCache::new(1024)
+            .render(link, &cancellation(), &FixtureParser(vec![run]))
+            .unwrap();
+        assert_eq!(doc.runs[0].style.link.is_some(), allowed);
     }
-    assert!(doc.runs.iter().all(|r| r.style.link.is_none()));
 }
 #[test]
 fn cache_reuse_invalidation_and_budget() {
     let mut cache = MarkdownCache::new(1024);
-    let first = cache.render("**one**", &cancellation()).unwrap();
-    let repeated = cache.render("**one**", &cancellation()).unwrap();
+    let first = cache.render("one", &cancellation(), &PlainParser).unwrap();
+    let repeated = cache.render("one", &cancellation(), &PlainParser).unwrap();
     assert!(Arc::ptr_eq(&first, &repeated));
     assert_eq!(cache.stats().parse_count, 1);
-    let edited = cache.render("**two**", &cancellation()).unwrap();
+    let edited = cache.render("two", &cancellation(), &PlainParser).unwrap();
     assert_eq!(text(&edited), "two");
     assert_eq!(text(&first), "one");
     for index in 0..20 {
         cache
-            .render(&format!("Note {index}"), &cancellation())
+            .render(&format!("Note {index}"), &cancellation(), &PlainParser)
             .unwrap();
     }
     assert!(cache.stats().retained_bytes <= 1024);
     cache
-        .render(&"large ".repeat(1000), &cancellation())
+        .render(&"large ".repeat(1000), &cancellation(), &PlainParser)
         .unwrap();
     assert!(cache.stats().retained_bytes <= 1024);
 }
 #[test]
-fn cancelled_work_does_not_parse_or_publish() {
+fn cancellation_does_not_parse_or_publish() {
     let mut cache = MarkdownCache::new(1024);
     let cancel = cancellation();
     cancel.cancel();
     assert!(matches!(
-        cache.render("# Cancel me", &cancel),
+        cache.render("Cancel me", &cancel, &PlainParser),
         Err(ResponseError::Cancelled)
     ));
     assert_eq!(cache.stats().parse_count, 0);
 }
 #[test]
-fn empty_and_unfinished_markdown_remain_readable() {
-    let mut cache = MarkdownCache::new(1024);
-    assert!(text(&cache.render("", &cancellation()).unwrap()).is_empty());
-    assert_eq!(
-        text(&cache.render("**unfinished", &cancellation()).unwrap()),
-        "**unfinished"
-    );
-    assert!(
-        text(&cache.render("```\nunclosed code", &cancellation()).unwrap())
-            .contains("unclosed code")
-    );
-}
-
-#[test]
-fn native_markdown_rules_html_tables_and_inline_code() {
-    let mut cache = MarkdownCache::new(1024 * 1024);
-    for (source, expected) in [
-        ("---", "⸻"),
-        ("before\n\n---\n\nafter", "before\n⸻\nafter"),
-        ("<b>bold</b>", "<b>bold</b>"),
-        ("<div>\nhello\n</div>", "<div>\nhello\n</div>\n"),
-        ("| a | b |\n| - | - |\n| x | y |", "a\nb\nx\ny"),
-    ] {
-        assert_eq!(
-            text(&cache.render(source, &cancellation()).unwrap()),
-            expected
-        );
+fn cancelled_platform_parser_does_not_publish() {
+    struct CancellingParser;
+    impl MarkdownParser for CancellingParser {
+        fn parse(
+            &self,
+            _: &str,
+            cancellation: &ResponseCancellation,
+        ) -> ResponseResult<Vec<MarkdownInputRun>> {
+            cancellation.cancel();
+            Ok(vec![input("hidden", 1)])
+        }
     }
-    let document = cache.render("one `code` two", &cancellation()).unwrap();
-    assert!(
-        document
-            .runs
-            .iter()
-            .find(|r| r.text == "code")
-            .unwrap()
-            .style
-            .code
-    );
+    let mut cache = MarkdownCache::new(1024);
+    assert!(matches!(
+        cache.render("source", &cancellation(), &CancellingParser),
+        Err(ResponseError::Cancelled)
+    ));
+    assert!(cache.stats().retained_ids.is_empty());
+}
+#[test]
+fn empty_platform_document() {
+    let doc = MarkdownCache::new(1024)
+        .render("", &cancellation(), &PlainParser)
+        .unwrap();
+    assert_eq!(text(&doc), "");
+    assert_eq!(doc.cost, 0);
 }

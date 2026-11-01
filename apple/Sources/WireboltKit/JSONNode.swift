@@ -4,21 +4,13 @@ struct JSONNode: Identifiable, Sendable {
     static let nodeLimit = 200_000
     let id: String
     let key: String
-    let type: String
+    let type: JsonNodeKind
     let value: String
     let children: [JSONNode]?
     private init(_ node: JsonTreeNode) {
         id = node.id
         key = node.key
-        type = switch node.kind {
-        case .object: "Object"
-        case .array: "Array"
-        case .string: "String"
-        case .number: "Number"
-        case .boolean: "Boolean"
-        case .null: "Null"
-        case .truncated: "Truncated"
-        }
+        type = node.kind
         value = node.value
         children = node.children?.map(JSONNode.init)
     }

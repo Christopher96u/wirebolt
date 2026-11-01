@@ -29,7 +29,6 @@ hyper = { version = "=1.11.1", features = ["http1", "http2", "server"] }
 hyper-util = { version = "=0.1.20", features = ["tokio"] }
 idna = "=1.1.0"
 percent-encoding = "=2.3.2"
-pulldown-cmark = { version = "=0.13.6", default-features = false }
 regex = "=1.13.1"
 reqwest = { version = "=0.13.4", default-features = false, features = ["cookies", "http2", "rustls", "socks", "stream", "system-proxy"] }
 security-framework = "=3.7.0"

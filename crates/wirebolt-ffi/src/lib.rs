@@ -1,7 +1,9 @@
 uniffi::setup_scaffolding!();
 mod app_domain;
+mod app_pem;
 mod app_response;
 mod app_session;
+mod app_syntax;
 mod native_transport;
 
 #[cfg(test)]

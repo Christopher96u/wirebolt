@@ -43,8 +43,7 @@ struct CookiesView: View {
                     ContentUnavailableView(
                         "No Cookies",
                         systemImage: "tray",
-                        description: Text(
-                            "Cookies set by responses in this workspace appear here. Session cookies are kept until Wirebolt quits.")
+                        description: Text("Cookies set by responses in this workspace appear here. Session cookies are kept until Wirebolt quits.")
                     )
                 }
             }

@@ -25,12 +25,10 @@ struct IndexedResponseEditor: View {
             let wrapping = wraps ? CodeTextWrapping(fontName: font.fontName, fontSize: fontSize, columns: columns) : nil
             Group {
                 if let index {
-                    IndexedCodeScrollView(
-                        index: index, fontSize: fontSize, language: language, search: search, wraps: wraps,
+                    IndexedCodeScrollView(index: index, fontSize: fontSize, language: language, search: search, wraps: wraps,
                         storageKey: prefix.isEmpty ? "Response body \(language)" : "Raw response", find: find ?? localFind)
                 } else if failure {
-                    ContentUnavailableView(
-                        "Can’t Open Response", systemImage: "exclamationmark.triangle",
+                    ContentUnavailableView("Can’t Open Response", systemImage: "exclamationmark.triangle",
                         description: Text("The response file couldn’t be read. Send the request again to reload it."))
                 } else {
                     ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -53,8 +51,7 @@ struct IndexedResponseEditor: View {
                         try await Task.sleep(for: .milliseconds(120))
                     }
                     if index == nil || index?.url != url {
-                        let first = try await ResponseIndexCache.shared.firstViewport(
-                            url: url, columns: columns, prefix: prefix, wrapping: wrapping)
+                        let first = try await ResponseIndexCache.shared.firstViewport(url: url, columns: columns, prefix: prefix, wrapping: wrapping)
                         try Task.checkCancellation()
                         index = first
                         if first.isComplete { return }
@@ -107,10 +104,7 @@ private struct IndexedCodeScrollView: NSViewRepresentable {
             view?.presentation?.origin = point
             view?.visibleAreaChanged()
         }
-        let changed =
-            view.theme != theme || view.index?.rowCount != index.rowCount || view.index?.url != index.url
-            || view.index?.columns != index.columns || view.index?.wrapping != index.wrapping || view.fontSize != fontSize
-            || view.language != language
+        let changed = view.theme != theme || view.index?.rowCount != index.rowCount || view.index?.url != index.url || view.index?.columns != index.columns || view.index?.wrapping != index.wrapping || view.fontSize != fontSize || view.language != language
         let oldIndex = view.index
         let oldOrigin = scroll.contentView.bounds.origin
         let oldRow = max(0, Int(oldOrigin.y / view.lineHeight))
@@ -124,21 +118,8 @@ private struct IndexedCodeScrollView: NSViewRepresentable {
         if view.showsInvisibles != invisibles { view.showsInvisibles = invisibles }
         scroll.hasHorizontalScroller = !wraps
         view.autoresizingMask = wraps ? [.width] : []
-        let width =
-            wraps
-            ? scroll.contentSize.width
-            : max(
-                scroll.contentSize.width,
-                Double(index.maximumColumns)
-                    * (" " as NSString).size(withAttributes: [.font: NSFont.monospacedSystemFont(ofSize: fontSize, weight: .regular)]).width
-                    + view.gutterWidth + 22)
-        view.setFrameSize(
-            NSSize(
-                width: width,
-                height: max(
-                    scroll.contentSize.height,
-                    Double(index.rowCount) * view.lineHeight + 2 * CodeEditorMetrics.textTopInset(fontSize)
-                        + (beyond ? max(0, scroll.contentSize.height - view.lineHeight) : 0))))
+        let width = wraps ? scroll.contentSize.width : max(scroll.contentSize.width, Double(index.maximumColumns) * (" " as NSString).size(withAttributes: [.font: NSFont.monospacedSystemFont(ofSize: fontSize, weight: .regular)]).width + view.gutterWidth + 22)
+        view.setFrameSize(NSSize(width: width, height: max(scroll.contentSize.height, Double(index.rowCount) * view.lineHeight + 2 * CodeEditorMetrics.textTopInset(fontSize) + (beyond ? max(0, scroll.contentSize.height - view.lineHeight) : 0))))
         scroll.contentInsets = NSEdgeInsets(top: 0, left: 0, bottom: 0, right: 0)
         if changed {
             view.invalidateRows()
@@ -201,11 +182,7 @@ final class IndexedCodeView: NSView, NSUserInterfaceValidations {
     private var findTask: Task<Void, Never>?
     private var selectionStart: (row: Int, column: Int)?
     private var selectionEnd: (row: Int, column: Int)?
-    deinit {
-        loadTask?.cancel()
-        findTask?.cancel()
-        shapingTask?.cancel()
-    }
+    deinit { loadTask?.cancel(); findTask?.cancel(); shapingTask?.cancel() }
 
     func restoreSelection() {
         guard let selection = presentation?.indexedSelection else { return }
@@ -250,11 +227,7 @@ final class IndexedCodeView: NSView, NSUserInterfaceValidations {
                 do {
                     if !query.text.isEmpty { try await Task.sleep(for: .milliseconds(100)) }
                     let worker = responseTask(priority: .userInitiated) { try index.search(query, selection: scope) }
-                    let matches = try await withTaskCancellationHandler {
-                        try await worker.value
-                    } onCancel: {
-                        worker.cancel()
-                    }
+                    let matches = try await withTaskCancellationHandler { try await worker.value } onCancel: { worker.cancel() }
                     try Task.checkCancellation()
                     guard let self, let state else { return }
                     self.findMatches = matches
@@ -317,34 +290,23 @@ final class IndexedCodeView: NSView, NSUserInterfaceValidations {
         if cachedRows.first?.number ?? Int.max > first || cachedRows.last?.number ?? -1 < end - 1 {
             load(range)
         }
-        let numberAttributes: [NSAttributedString.Key: Any] = [
-            .font: NSFont.monospacedSystemFont(ofSize: fontSize, weight: .regular), .foregroundColor: theme.definition.lineNumber.nsColor,
-        ]
+        let numberAttributes: [NSAttributedString.Key: Any] = [.font: NSFont.monospacedSystemFont(ofSize: fontSize, weight: .regular), .foregroundColor: theme.definition.lineNumber.nsColor]
         let selection = orderedSelection
         let singleLongLine = cachedRows.filter { $0.text.utf16.count > 2048 }.count == 1
         for row in cachedRows where range.contains(row.number) {
             let y = Double(row.number) * lineHeight + CodeEditorMetrics.textTopInset(fontSize)
             if !row.continuation {
                 let number = String(row.line + 1) as NSString
-                number.draw(
-                    at: NSPoint(x: gutterWidth - 22 - number.size(withAttributes: numberAttributes).width, y: y),
-                    withAttributes: numberAttributes)
+                number.draw(at: NSPoint(x: gutterWidth - 22 - number.size(withAttributes: numberAttributes).width, y: y), withAttributes: numberAttributes)
             }
             if row.text.utf16.count > 2048, selection == nil, query.isEmpty, findMatches.isEmpty {
                 let cached: ShapedLine
-                if let found = shapedLines.firstIndex(where: {
-                    $0.text == row.text && $0.language == language && $0.fontSize == fontSize && $0.appearance == effectiveAppearance.name
-                        && $0.themeRevision == theme.revision
-                }) {
+                if let found = shapedLines.firstIndex(where: { $0.text == row.text && $0.language == language && $0.fontSize == fontSize && $0.appearance == effectiveAppearance.name && $0.themeRevision == theme.revision }) {
                     cached = shapedLines.remove(at: found)
                 } else {
                     let source = row.text as NSString
                     let progressive = singleLongLine && source.length <= 2 * 1024 * 1024
-                    let prefix =
-                        progressive
-                        ? source.substring(
-                            with: source.rangeOfComposedCharacterSequences(for: NSRange(location: 0, length: min(2048, source.length))))
-                        : row.text
+                    let prefix = progressive ? source.substring(with: source.rangeOfComposedCharacterSequences(for: NSRange(location: 0, length: min(2048, source.length)))) : row.text
                     let prefixLength = prefix.utf16.count
                     cached = ShapedLine(
                         text: row.text, language: language, fontSize: fontSize, appearance: effectiveAppearance.name,
@@ -354,39 +316,27 @@ final class IndexedCodeView: NSView, NSUserInterfaceValidations {
                                 prefix,
                                 spaceRuns: row.spaceRanges?.prefix { $0.location < prefixLength }.map {
                                     NSIntersectionRange($0, NSRange(location: 0, length: prefixLength))
-                                }, language: language, fontSize: fontSize, invisibles: showsInvisibles, theme: theme), fontSize: fontSize),
-                        complete: !progressive)
+                                }, language: language, fontSize: fontSize, invisibles: showsInvisibles, theme: theme), fontSize: fontSize), complete: !progressive)
                 }
                 shapedLines.append(cached)
                 if !cached.complete { prepareLongLine(row.text, spaceRuns: row.spaceRanges) }
-                while shapedLines.count > 2 || shapedLines.reduce(0, { $0 + $1.text.utf16.count }) > 2 * 1024 * 1024 {
-                    shapedLines.removeFirst()
-                }
+                while shapedLines.count > 2 || shapedLines.reduce(0, { $0 + $1.text.utf16.count }) > 2 * 1024 * 1024 { shapedLines.removeFirst() }
                 cached.line.draw(at: CGPoint(x: gutterWidth + 4 + row.indent, y: y), visible: visibleRect)
                 hasDrawnViewport = true
                 continue
             }
-            let attributed = NSMutableAttributedString(
-                attributedString: Self.styled(
-                    row.text, spaceRuns: row.spaceRanges, language: language, fontSize: fontSize, invisibles: showsInvisibles, theme: theme)
-            )
+            let attributed = NSMutableAttributedString(attributedString: Self.styled(row.text, spaceRuns: row.spaceRanges, language: language, fontSize: fontSize, invisibles: showsInvisibles, theme: theme))
             for range in findHighlights(row: row.number, length: attributed.length) {
                 attributed.addAttribute(.backgroundColor, value: NSColor.findHighlightColor.withAlphaComponent(0.25), range: range)
             }
             if let (start, end) = selection, row.number >= start.row && row.number <= end.row {
                 let lower = row.number == start.row ? min(start.column, attributed.length) : 0
                 let upper = row.number == end.row ? min(end.column, attributed.length) : attributed.length
-                if upper > lower {
-                    attributed.addAttribute(
-                        .backgroundColor, value: NSColor.selectedTextBackgroundColor, range: NSRange(location: lower, length: upper - lower)
-                    )
-                }
+                if upper > lower { attributed.addAttribute(.backgroundColor, value: NSColor.selectedTextBackgroundColor, range: NSRange(location: lower, length: upper - lower)) }
             }
             if !query.isEmpty {
                 let match = (row.text as NSString).range(of: query)
-                if match.location != NSNotFound {
-                    attributed.addAttribute(.backgroundColor, value: NSColor.findHighlightColor, range: match)
-                }
+                if match.location != NSNotFound { attributed.addAttribute(.backgroundColor, value: NSColor.findHighlightColor, range: match) }
             }
             attributed.draw(at: NSPoint(x: gutterWidth + 4 + row.indent, y: y))
             hasDrawnViewport = true
@@ -409,13 +359,9 @@ final class IndexedCodeView: NSView, NSUserInterfaceValidations {
                 let line = try await IndexedTextLine.prepare(attributed, fontSize: fontSize)
                 try Task.checkCancellation()
                 guard let self, self.fontSize == fontSize, self.language == language, self.effectiveAppearance.name == appearance,
-                    self.showsInvisibles == invisibles, self.theme.revision == theme.revision
-                else { return }
+                      self.showsInvisibles == invisibles, self.theme.revision == theme.revision else { return }
                 self.shapedLines.removeAll { $0.text == text }
-                self.shapedLines.append(
-                    ShapedLine(
-                        text: text, language: language, fontSize: fontSize, appearance: appearance, themeRevision: theme.revision,
-                        line: line))
+                self.shapedLines.append(ShapedLine(text: text, language: language, fontSize: fontSize, appearance: appearance, themeRevision: theme.revision, line: line))
                 while self.shapedLines.count > 2 { self.shapedLines.removeFirst() }
                 self.shapingText = nil
                 self.needsDisplay = true
@@ -425,13 +371,9 @@ final class IndexedCodeView: NSView, NSUserInterfaceValidations {
         }
     }
 
-    private static func styled(
-        _ text: String, spaceRuns: [NSRange]?, language: SyntaxLanguage, fontSize: Double, invisibles: Bool, theme: ResolvedTheme
-    ) -> NSAttributedString {
+    private static func styled(_ text: String, spaceRuns: [NSRange]?, language: SyntaxLanguage, fontSize: Double, invisibles: Bool, theme: ResolvedTheme) -> NSAttributedString {
         let highlighted = SyntaxHighlighter.attributedString(text: text, language: language, fontSize: fontSize, theme: theme)
-        return invisibles
-            ? InvisibleSpaces.marking(highlighted, runs: spaceRuns, attributes: [.foregroundColor: theme.definition.dim.nsColor])
-            : highlighted
+        return invisibles ? InvisibleSpaces.marking(highlighted, runs: spaceRuns, attributes: [.foregroundColor: theme.definition.dim.nsColor]) : highlighted
     }
 
     private func load(_ range: Range<Int>) {
@@ -440,11 +382,7 @@ final class IndexedCodeView: NSView, NSUserInterfaceValidations {
         loadingRange = range
         loadTask = Task { [weak self] in
             let reader = responseTask(priority: .userInitiated) { try index.rows(start: range.lowerBound, count: range.count) }
-            let rows = try? await withTaskCancellationHandler {
-                try await reader.value
-            } onCancel: {
-                reader.cancel()
-            }
+            let rows = try? await withTaskCancellationHandler { try await reader.value } onCancel: { reader.cancel() }
             guard !Task.isCancelled, let self, let rows else { return }
             self.cachedRows = rows
             self.updateAccessibilityWindow()
@@ -459,11 +397,7 @@ final class IndexedCodeView: NSView, NSUserInterfaceValidations {
         guard !query.isEmpty, let index else { return }
         findTask = Task { [weak self] in
             let search = responseTask(priority: .userInitiated) { try index.firstMatch(query) }
-            let row = try? await withTaskCancellationHandler {
-                try await search.value
-            } onCancel: {
-                search.cancel()
-            }
+            let row = try? await withTaskCancellationHandler { try await search.value } onCancel: { search.cancel() }
             guard !Task.isCancelled, let self, let row else { return }
             self.scroll(NSPoint(x: 0, y: Double(row) * self.lineHeight))
         }
@@ -526,25 +460,22 @@ final class IndexedCodeView: NSView, NSUserInterfaceValidations {
     }
     override func keyDown(with event: NSEvent) {
         if event.modifierFlags.contains(.shift), extendSelection(for: event) { return }
-        if event.modifierFlags.contains(.command), event.charactersIgnoringModifiers == "f" {
-            findState?.isVisible = true
-        } else if event.modifierFlags.contains(.command), event.charactersIgnoringModifiers == "a" {
-            selectAll(nil)
-        } else if event.modifierFlags.contains(.command), event.charactersIgnoringModifiers == "c" {
-            copy(nil)
-        } else {
+        if event.modifierFlags.contains(.command), event.charactersIgnoringModifiers == "f" { findState?.isVisible = true }
+        else if event.modifierFlags.contains(.command), event.charactersIgnoringModifiers == "a" { selectAll(nil) }
+        else if event.modifierFlags.contains(.command), event.charactersIgnoringModifiers == "c" { copy(nil) }
+        else {
             let origin = visibleRect.origin
-            let target: Double? =
-                switch event.keyCode {
-                case 115: 0
-                case 119: max(0, frame.height - visibleRect.height)
-                case 116: max(0, origin.y - visibleRect.height)
-                case 121: min(frame.height - visibleRect.height, origin.y + visibleRect.height)
-                case 125: event.modifierFlags.contains(.command) ? max(0, frame.height - visibleRect.height) : origin.y + lineHeight
-                case 126: event.modifierFlags.contains(.command) ? 0 : max(0, origin.y - lineHeight)
-                default: nil
-                }
-            if let target { scroll(NSPoint(x: origin.x, y: target)) } else { super.keyDown(with: event) }
+            let target: Double? = switch event.keyCode {
+            case 115: 0
+            case 119: max(0, frame.height - visibleRect.height)
+            case 116: max(0, origin.y - visibleRect.height)
+            case 121: min(frame.height - visibleRect.height, origin.y + visibleRect.height)
+            case 125: event.modifierFlags.contains(.command) ? max(0, frame.height - visibleRect.height) : origin.y + lineHeight
+            case 126: event.modifierFlags.contains(.command) ? 0 : max(0, origin.y - lineHeight)
+            default: nil
+            }
+            if let target { scroll(NSPoint(x: origin.x, y: target)) }
+            else { super.keyDown(with: event) }
         }
     }
     override func selectAll(_ sender: Any?) {
@@ -557,9 +488,7 @@ final class IndexedCodeView: NSView, NSUserInterfaceValidations {
         saveSelection()
         if let (start, end) = orderedSelection, start != end {
             findState?.indexedSelection = (.init(row: start.row, column: start.column), .init(row: end.row, column: end.column))
-        } else {
-            findState?.indexedSelection = nil
-        }
+        } else { findState?.indexedSelection = nil }
         needsDisplay = true
         NSAccessibility.post(element: self, notification: .selectedTextChanged)
     }
@@ -582,9 +511,11 @@ final class IndexedCodeView: NSView, NSUserInterfaceValidations {
         case 126: end = command ? (0, 0) : (max(0, end.row - 1), end.column)
         case 125: end = command ? (lastRow, Int.max) : (min(lastRow, end.row + 1), end.column)
         case 123:
-            if end.column > 0 { end.column -= 1 } else if end.row > 0 { end = (end.row - 1, rowLength(end.row - 1) ?? 0) }
+            if end.column > 0 { end.column -= 1 }
+            else if end.row > 0 { end = (end.row - 1, rowLength(end.row - 1) ?? 0) }
         case 124:
-            if let length = rowLength(end.row), end.column >= length, end.row < lastRow { end = (end.row + 1, 0) } else { end.column += 1 }
+            if let length = rowLength(end.row), end.column >= length, end.row < lastRow { end = (end.row + 1, 0) }
+            else { end.column += 1 }
         case 116: end.row = max(0, end.row - page)
         case 121: end.row = min(lastRow, end.row + page)
         case 115: end = (0, 0)
@@ -658,8 +589,7 @@ final class IndexedCodeView: NSView, NSUserInterfaceValidations {
         return accessibilityText.substring(with: clamped)
     }
     override func accessibilityLine(for index: Int) -> Int {
-        var lower = 0
-        var upper = accessibilityLineStarts.count
+        var lower = 0, upper = accessibilityLineStarts.count
         while lower + 1 < upper {
             let middle = (lower + upper) / 2
             if accessibilityLineStarts[middle] <= index { lower = middle } else { upper = middle }
@@ -672,8 +602,7 @@ final class IndexedCodeView: NSView, NSUserInterfaceValidations {
     }
     override func accessibilitySelectedTextRange() -> NSRange {
         guard let (start, end) = orderedSelection,
-            let lower = accessibilityOffset(row: start.row, column: start.column)
-        else {
+              let lower = accessibilityOffset(row: start.row, column: start.column) else {
             return NSRange(location: accessibilityLineStarts.first ?? 0, length: 0)
         }
         let upper = accessibilityOffset(row: end.row, column: end.column) ?? accessibilityText.length
@@ -681,8 +610,7 @@ final class IndexedCodeView: NSView, NSUserInterfaceValidations {
     }
     override func setAccessibilitySelectedTextRange(_ range: NSRange) {
         guard let start = accessibilityPosition(range.location),
-            let end = accessibilityPosition(NSMaxRange(range))
-        else { return }
+              let end = accessibilityPosition(NSMaxRange(range)) else { return }
         selectionStart = start
         selectionEnd = end
         // Keep the assistive window moving with the reading position.
@@ -711,8 +639,7 @@ final class IndexedCodeView: NSView, NSUserInterfaceValidations {
                     let string = row.text as NSString
                     let lower = row.number == start.row ? min(start.column, string.length) : 0
                     let upper = row.number == end.row ? min(end.column, string.length) : string.length
-                    return (row.number > start.row && !row.continuation ? "\n" : "")
-                        + string.substring(with: NSRange(location: lower, length: max(0, upper - lower)))
+                    return (row.number > start.row && !row.continuation ? "\n" : "") + string.substring(with: NSRange(location: lower, length: max(0, upper - lower)))
                 }.joined()
             }.value
             NSPasteboard.general.clearContents()

@@ -34,11 +34,9 @@ struct WireboltSettingsView: View {
     private var section: SettingsSection { SettingsSection(rawValue: model.settingsTab) ?? .appearance }
     private var filteredSections: [SettingsSection] {
         let query = search.trimmingCharacters(in: .whitespacesAndNewlines)
-        return query.isEmpty
-            ? SettingsSection.allCases
-            : SettingsSection.allCases.filter {
-                ($0.title + " " + $0.keywords).localizedCaseInsensitiveContains(query)
-            }
+        return query.isEmpty ? SettingsSection.allCases : SettingsSection.allCases.filter {
+            ($0.title + " " + $0.keywords).localizedCaseInsensitiveContains(query)
+        }
     }
 
     var body: some View {
@@ -71,12 +69,8 @@ struct WireboltSettingsView: View {
             if !filteredSections.contains(section), let first = filteredSections.first { model.settingsTab = first.rawValue }
         }
         .task(id: model.isShowingAppSettings) {
-            if model.isShowingAppSettings {
-                search = ""
-                searchIsFocused = true
-            } else {
-                searchIsFocused = false
-            }
+            if model.isShowingAppSettings { search = ""; searchIsFocused = true }
+            else { searchIsFocused = false }
         }
         .onExitCommand(perform: close)
     }
@@ -123,9 +117,7 @@ struct WireboltSettingsView: View {
             .frame(height: 60)
             VStack(spacing: WireboltTheme.Spacing.xxSmall) {
                 ForEach(filteredSections) { item in
-                    Button {
-                        model.settingsTab = item.rawValue
-                    } label: {
+                    Button { model.settingsTab = item.rawValue } label: {
                         Label(item.title, systemImage: item.symbol)
                             .labelStyle(.titleAndIcon)
                             .font(.system(size: theme.typography.settingsLabel, weight: section == item ? .medium : .regular))
@@ -133,10 +125,8 @@ struct WireboltSettingsView: View {
                             .frame(maxWidth: .infinity, alignment: .leading)
                             .padding(.horizontal, WireboltTheme.Spacing.large)
                             .frame(minHeight: theme.density == .compact ? 32 : 40)
-                            .background(
-                                section == item ? theme.definition.selected.color : .clear,
-                                in: .rect(cornerRadius: theme.geometry.row)
-                            )
+                            .background(section == item ? theme.definition.selected.color : .clear,
+                                in: .rect(cornerRadius: theme.geometry.row))
                             .contentShape(.rect)
                     }
                     .buttonStyle(.plain)
@@ -148,11 +138,8 @@ struct WireboltSettingsView: View {
             .onMoveCommand { direction in
                 let items = filteredSections
                 guard let index = items.firstIndex(of: section) else { return }
-                if direction == .up {
-                    model.settingsTab = items[max(0, index - 1)].rawValue
-                } else if direction == .down {
-                    model.settingsTab = items[min(items.count - 1, index + 1)].rawValue
-                }
+                if direction == .up { model.settingsTab = items[max(0, index - 1)].rawValue }
+                else if direction == .down { model.settingsTab = items[min(items.count - 1, index + 1)].rawValue }
             }
             Spacer()
             Button(action: close) {
@@ -173,12 +160,6 @@ struct WireboltSettingsView: View {
         .background(theme.definition.card.color)
     }
 
-    private func close() {
-        commitPendingEdits(in: NSApp.keyWindow)
-        model.isShowingAppSettings = false
-    }
-    private func openWorkspaceSettings() {
-        close()
-        model.isShowingWorkspaceSettings = true
-    }
+    private func close() { commitPendingEdits(in: NSApp.keyWindow); model.isShowingAppSettings = false }
+    private func openWorkspaceSettings() { close(); model.isShowingWorkspaceSettings = true }
 }

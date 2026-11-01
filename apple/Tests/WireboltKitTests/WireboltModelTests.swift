@@ -1181,7 +1181,10 @@ private actor PausedSecretPersistence: WorkspacePersistence {
         await withCheckedContinuation { pending = $0 }
     }
     func waitForWrite() async { while pending == nil { await Task.yield() } }
-    func releaseWrite() { pending?.resume(); pending = nil }
+    func releaseWrite() {
+        pending?.resume()
+        pending = nil
+    }
 }
 @MainActor private final class PausedOAuthAuthorizer: OAuth2Authorizing {
     var pending: CheckedContinuation<Void, Never>?
@@ -1189,7 +1192,10 @@ private actor PausedSecretPersistence: WorkspacePersistence {
         await withCheckedContinuation { pending = $0 }
         return ("fixture", OAuth2TokenReceipt(expiresAt: nil, scope: nil))
     }
-    func release() { pending?.resume(); pending = nil }
+    func release() {
+        pending?.resume()
+        pending = nil
+    }
 }
 
 // Verify the Rust-owned interchange format while keeping native facade assertions.

@@ -8,17 +8,11 @@ public enum ProxyScope: String, CaseIterable, Sendable {
     }
 }
 
-public struct EffectiveProxy: Equatable, Sendable {
-    public enum Source: String, Codable, Sendable {
-        case request, workspace
-        case appDefault = "app_default"
-        case systemDefault = "system_default"
-        public var title: String {
-            domainProxyScopeTitle(scope: domain)
-        }
-    }
-    public let configuration: ProxyDocument
-    public let source: Source
+public typealias EffectiveProxy = ResolvedDomainProxy
+
+extension EffectiveProxy {
+    public typealias Source = DomainProxySource
+
 
     public static func resolve(request: ProxyDocument?, workspace: ProxyDocument?, app: ProxyDocument) -> Self {
         let result = domainResolveProxy(request: request?.domain, workspace: workspace?.domain, app: app.domain)
@@ -201,23 +195,8 @@ private extension ClientIdentityPEM.Failure {
     }
 }
 
-extension EffectiveProxy.Source {
-    init(domain: DomainProxySource) {
-        self = switch domain {
-        case .request: .request
-        case .workspace: .workspace
-        case .appDefault: .appDefault
-        case .systemDefault: .systemDefault
-        }
-    }
-    var domain: DomainProxySource {
-        switch self {
-        case .request: .request
-        case .workspace: .workspace
-        case .appDefault: .appDefault
-        case .systemDefault: .systemDefault
-        }
-    }
+extension DomainProxySource: NativeDomainValue {
+    public var title: String { domainProxyScopeTitle(scope: self) }
 }
 
 private extension ProxyScope {
@@ -245,6 +224,25 @@ private extension ProxyFormDraft.Mode {
         case .system: .system
         case .direct: .direct
         case .manual: .manual
+        }
+    }
+}
+
+extension EffectiveProxy.Source {
+    var sessionRecord: SessionProxySource {
+        switch self {
+        case .request: .request
+        case .workspace: .workspace
+        case .appDefault: .appDefault
+        case .systemDefault: .systemDefault
+        }
+    }
+    init(_ source: SessionProxySource) {
+        self = switch source {
+        case .request: .request
+        case .workspace: .workspace
+        case .appDefault: .appDefault
+        case .systemDefault: .systemDefault
         }
     }
 }
