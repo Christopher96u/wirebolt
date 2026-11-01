@@ -22,6 +22,7 @@ public struct SidebarSnapshot: Sendable {
             storage = Storage(metadata: metadata, content: content)
         }
         var metadata: SidebarRow { storage.metadata }
+        public var workspaceMetadata: SidebarRow { storage.metadata }
         public var content: Content { storage.content }
         var ancestors: [Int] { metadata.ancestors.map(Int.init) }
         var search: String { metadata.search }
@@ -59,6 +60,10 @@ public struct SidebarSnapshot: Sendable {
     public static func requestPath(from url: String) -> String { domainRequestPath(url: url) }
     public func visible(query: String, collapsedCollections: Set<String>, expandedGroups: Set<String>) -> [Row] {
         index.visible(query: query, collapsed: Array(collapsedCollections), expanded: Array(expandedGroups)).map { rows[Int($0)] }
+    }
+    public func canMove(_ identifier: String, by delta: Int) -> Bool {
+        guard let id = workspaceMoveRowId(identifier: identifier) else { return false }
+        return index.sibling(id: id, delta: Int64(delta)) != nil
     }
     public func sibling(of rowID: String, by delta: Int) -> Row? {
         index.sibling(id: rowID, delta: Int64(delta)).map { rows[Int($0)] }

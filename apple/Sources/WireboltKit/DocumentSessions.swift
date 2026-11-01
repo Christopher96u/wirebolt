@@ -374,6 +374,19 @@ public final class DocumentSessionStore {
         return restored
     }
 
+    /// Applies the Rust-selected layout or first-document fallback in one bridge call.
+    func restoreWorkspace(_ application: AppWorkspaceOperations, layout: SessionLayout?) -> [DocumentSession] {
+        synchronizeTabs()
+        let restored = application.restoreTabs(tabs: rust, layout: layout?.sessionRecord)
+        let projected = restored.result.documents.map { document in
+            DocumentSession(id: document.id, kind: DocumentKind(document.kind), collectionID: document.collectionId,
+                requestID: document.requestId, draft: RequestDraft(domain: document.draft), savedDraft: document.savedDraft.map(RequestDraft.init(domain:)))
+        }
+        for session in projected { sessions[session.id] = session }
+        mirrorTabs(restored.result.snapshot)
+        return restored.restoreHistory ? projected : []
+    }
+
     public var activeGroup: EditorGroup? {
         groups.first(where: { $0.id == activeGroupID })
     }
@@ -491,6 +504,19 @@ public final class DocumentSessionStore {
         mirrorTabs(); return []
     }
 
+    func closeWorkspace(_ scope: TabCloseScope, in groupID: String?, allowDirty: Bool) -> (blocked: [DocumentSession], closed: [DocumentSession]) {
+        let documents = sessions.values.map { session in session.synchronizeDraft(); return session.rust.document() }
+        let result = rust.closeWorkspace(documents: documents, scope: scope.sessionRecord, group: groupID, allowDirty: allowDirty)
+        let closed = result.removed.compactMap { effect -> DocumentSession? in
+            guard let session = sessions[effect.id] else { return nil }
+            if let saved = effect.saved { session.markSaved(RequestDraft(domain: saved)) }
+            return session
+        }
+        let blocked = result.blocked.compactMap { sessions[$0] }
+        mirrorTabs(result.snapshot)
+        return (blocked, closed)
+    }
+
     public func removeAll() {
         for session in sessions.values { session.socket.disconnect() }
         rust.removeAll(); sessions.removeAll(keepingCapacity: true); mirrorTabs()
@@ -519,4 +545,20 @@ extension SessionLayout {
 }
 extension TabCloseScope {
     var sessionRecord: SessionCloseScope { switch self { case let .one(id): .one(id: id); case let .others(id): .others(id: id); case let .rightOf(id): .rightOf(id: id); case .all: .all } }
+}
+
+extension EditorGroup {
+    var workspaceRecord: SessionEditorGroup { SessionEditorGroup(id: id, tabIds: tabIDs, selectedTabId: selectedTabID,
+        backwardTabIds: backwardTabIDs, forwardTabIds: forwardTabIDs, previewTabId: previewTabID) }
+}
+
+extension TabCloseScope {
+    init(_ record: SessionCloseScope) {
+        switch record {
+        case let .one(id): self = .one(id)
+        case let .others(id): self = .others(id)
+        case let .rightOf(id): self = .rightOf(id)
+        case .all: self = .all
+        }
+    }
 }

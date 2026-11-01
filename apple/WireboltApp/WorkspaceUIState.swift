@@ -115,6 +115,7 @@ struct SidebarMoveCommands: Equatable {
 final class WorkspaceUIState {
     var sidebarDragIdentifier: String?
     @ObservationIgnored private let defaults: UserDefaults
+    @ObservationIgnored private let rustInterface = AppWorkspaceInterface()
 
     var columnVisibility = NavigationSplitViewVisibility.all
     private var fallbackPresentation = DocumentPresentationState()
@@ -194,7 +195,7 @@ final class WorkspaceUIState {
         else { isShowingEnvironmentInspector = true }
     }
 
-    var dirtyCloseRequest: DirtyCloseRequest?
+    var dirtyCloseRequest: DirtyCloseRequest? { didSet { if dirtyCloseRequest == nil { rustInterface.cancelClose() } } }
     var workspaceNamePrompt: WorkspaceNamePrompt?
     var workspaceDeleteRequest: WorkspaceDeleteRequest?
 
@@ -285,6 +286,7 @@ final class WorkspaceUIState {
     }
 
     func resetForWorkspace(model: WireboltModel) {
+        rustInterface.reset()
         isShowingEnvironmentInspector = false
         hasEnvironmentEdits = false
         saveEnvironmentEdits = nil
@@ -343,8 +345,6 @@ final class WorkspaceUIState {
     var sidebarCursor: String?
     /// The row that keyboard navigation last selected, so the sidebar can scroll it into view.
     var sidebarScrollTarget: String?
-    @ObservationIgnored var typeSelectBuffer = ""
-    @ObservationIgnored var typeSelectTime = Date.distantPast
 
     func makeNewFolder(model: WireboltModel, collectionID: String? = nil, parentID: String? = nil) {
         Task {
@@ -404,6 +404,7 @@ final class WorkspaceUIState {
         // Deleted documents must not be restored by the last-closed-tab fallback.
         lastClosedSession = nil
         lastClosedPresentation = nil
+        rustInterface.forgetClosed()
         sidebarCursor = nil
         Task {
             switch target {
@@ -462,22 +463,22 @@ final class WorkspaceUIState {
     }
 
     func close(_ scope: TabCloseScope, model: WireboltModel, in targetGroupID: String? = nil) {
-        let groupID = targetGroupID ?? model.sessions.activeGroupID
+        close(scope, model: model, groupID: targetGroupID ?? model.sessions.activeGroupID, allowDirty: false)
+    }
+
+    private func close(_ scope: TabCloseScope, model: WireboltModel, groupID: String, allowDirty: Bool) {
         let previous = model.sessions.activeSession
         let previousPresentation = previous.flatMap { presentationByTabID[$0.id] }
-        let blocked = model.closeDocuments(scope, in: groupID)
+        let blocked = model.closeDocuments(scope, in: groupID, allowDirty: allowDirty)
         guard blocked.isEmpty else {
-            dirtyCloseRequest = DirtyCloseRequest(
-                scope: scope,
-                groupID: groupID,
-                documentTitles: blocked.map(\.title),
-                documentIDs: blocked.map(\.id)
-            )
+            rustInterface.blockClose(request: WorkspaceDirtyClose(scope: scope.sessionRecord, groupId: groupID,
+                ids: blocked.map(\.id), titles: blocked.map(\.title)))
+            dirtyCloseRequest = DirtyCloseRequest(scope: scope, groupID: groupID, documentTitles: blocked.map(\.title), documentIDs: blocked.map(\.id))
             return
         }
         discardPresentation(for: scope, model: model)
         synchronizeSelection(model: model)
-        if model.sessions.activeSession == nil {
+        if rustInterface.closed(previous: previous?.id, active: model.sessions.activeSession?.id) {
             lastClosedSession = previous
             lastClosedPresentation = previousPresentation
             NSApp.keyWindow?.performClose(nil)
@@ -485,30 +486,18 @@ final class WorkspaceUIState {
     }
 
     func saveDirtyClose(model: WireboltModel) {
-        guard let request = dirtyCloseRequest else { return }
+        guard let request = rustInterface.takeClose() else { return }
         dirtyCloseRequest = nil
         Task {
-            for id in request.documentIDs {
-                guard let session = model.sessions.session(id: id) else { continue }
-                guard await model.save(session, fallbackCollectionID: model.workspace.collections.first?.id) else { return }
-            }
-            close(request.scope, model: model, in: request.groupID)
+            guard await model.saveDocuments(request.ids) else { return }
+            close(TabCloseScope(request.scope), model: model, in: request.groupId)
         }
     }
 
     func confirmDirtyClose(model: WireboltModel) {
-        guard let request = dirtyCloseRequest else { return }
-        let previous = model.sessions.activeSession
-        let previousPresentation = previous.flatMap { presentationByTabID[$0.id] }
-        model.closeDocuments(request.scope, in: request.groupID, allowDirty: true)
+        guard let request = rustInterface.takeClose() else { return }
         dirtyCloseRequest = nil
-        discardPresentation(for: request.scope, model: model)
-        synchronizeSelection(model: model)
-        if model.sessions.activeSession == nil {
-            lastClosedSession = previous
-            lastClosedPresentation = previousPresentation
-            NSApp.keyWindow?.performClose(nil)
-        }
+        close(TabCloseScope(request.scope), model: model, groupID: request.groupId, allowDirty: true)
     }
 
     func presentation(for session: DocumentSession) -> DocumentPresentationState {
@@ -540,11 +529,11 @@ final class WorkspaceUIState {
     }
 
     func reopenLastDocument(model: WireboltModel) {
-        guard model.sessions.activeSession == nil, let session = lastClosedSession else { return }
+        guard let id = rustInterface.reopen(hasActive: model.sessions.activeSession != nil),
+              let session = lastClosedSession, session.id == id else { return }
         model.sessions.reopen(session)
         if let state = lastClosedPresentation { presentationByTabID[session.id] = state }
-        lastClosedSession = nil
-        lastClosedPresentation = nil
+        lastClosedSession = nil; lastClosedPresentation = nil
         synchronizeSelection(model: model)
     }
 
@@ -566,9 +555,7 @@ extension WorkspaceUIState {
         renamingRequestID != nil || renamingGroupID != nil || renamingCollectionID != nil
     }
 
-    var isFilteringSidebar: Bool {
-        !sidebarFilter.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-    }
+    var isFilteringSidebar: Bool { workspaceSidebarFiltering(query: sidebarFilter) }
 
     func visibleSidebarRows(model: WireboltModel) -> [SidebarSnapshot.Row] {
         guard collectionsExpanded || isFilteringSidebar else { return [] }
@@ -577,7 +564,7 @@ extension WorkspaceUIState {
 
     /// The highlighted row: a selected folder or collection, otherwise the active request.
     func sidebarSelectionRowID(model: WireboltModel) -> String? {
-        sidebarCursor ?? model.selectedRequestID.map { "request:" + $0 }
+        workspaceSidebarSelection(cursor: sidebarCursor, selected: model.selectedRequestID)
     }
 
     func isSidebarRowExpanded(_ row: SidebarSnapshot.Row) -> Bool {
@@ -585,73 +572,33 @@ extension WorkspaceUIState {
     }
 
     func setSidebarRow(_ row: SidebarSnapshot.Row, expanded: Bool) {
-        switch row.content {
-        case .collection(let collection):
-            if expanded { collapsedSidebarCollections.remove(collection.id) } else { collapsedSidebarCollections.insert(collection.id) }
-        case .group(let collection, let group):
-            let key = collection.id + ":" + group.id
-            if expanded { expandedSidebarGroups.insert(key) } else { expandedSidebarGroups.remove(key) }
-        case .request:
-            break
-        }
+        applySidebar(rustInterface.sidebar(input: sidebarState, rows: [row.workspaceMetadata], selectedRequest: nil,
+            action: .setExpanded(id: row.id, expanded: expanded)))
     }
 
     /// Selecting a request row opens it; folders and collections are only highlighted.
     func selectSidebarRow(_ id: String, model: WireboltModel, scroll: Bool = false) {
-        guard let row = visibleSidebarRows(model: model).first(where: { $0.id == id }) else { return }
-        if case .request(let location) = row.content {
-            sidebarCursor = nil
-            if model.selectedRequestID != location.id { activateSavedRequest(location, model: model) }
-        } else {
-            sidebarCursor = id
-        }
-        if scroll { sidebarScrollTarget = id }
+        _ = navigateSidebar(.select(id: id, scroll: scroll), model: model)
     }
 
     /// ↑/↓ over every visible row, including folders and collections.
     func moveSidebarSelection(_ delta: Int, model: WireboltModel) {
-        let rows = visibleSidebarRows(model: model)
-        guard let id = SidebarNavigation.step(from: sidebarSelectionRowID(model: model), by: delta, in: rows) else { return }
-        selectSidebarRow(id, model: model, scroll: true)
+        _ = navigateSidebar(.step(delta: Int64(delta)), model: model)
     }
 
     /// ← collapses or selects the parent; → expands or selects the first child.
     func moveSidebarSelectionHorizontally(right: Bool, model: WireboltModel) {
-        let rows = visibleSidebarRows(model: model)
-        let current = sidebarSelectionRowID(model: model)
-        let outcome = right
-            ? SidebarNavigation.right(from: current, in: rows, isExpanded: isSidebarRowExpanded)
-            : SidebarNavigation.left(from: current, in: rows, isExpanded: isSidebarRowExpanded)
-        switch outcome {
-        case let .select(id): selectSidebarRow(id, model: model, scroll: true)
-        case let .expand(id), let .collapse(id):
-            guard let row = rows.first(where: { $0.id == id }) else { return }
-            // Collapsing hides the active request; keep the container selected instead.
-            if case .collapse = outcome { sidebarCursor = id }
-            setSidebarRow(row, expanded: !isSidebarRowExpanded(row))
-        case .none: break
-        }
+        _ = navigateSidebar(.arrow(right: right), model: model)
     }
 
     /// Type-select: letters typed within a second extend the search prefix.
     func typeSelectInSidebar(_ characters: String, model: WireboltModel) -> Bool {
-        let now = Date()
-        if now.timeIntervalSince(typeSelectTime) > 1 { typeSelectBuffer = "" }
-        guard !(typeSelectBuffer.isEmpty && characters == " ") else { return false }
-        typeSelectBuffer += characters
-        typeSelectTime = now
-        let rows = visibleSidebarRows(model: model)
-        guard let id = SidebarNavigation.typeSelect(typeSelectBuffer, from: sidebarSelectionRowID(model: model), in: rows)
-        else { return true }
-        selectSidebarRow(id, model: model, scroll: true)
-        return true
+        navigateSidebar(.type(characters: characters, time: Date().timeIntervalSince1970), model: model)
     }
 
     /// Return renames the selected row, as in Finder and the Xcode navigator.
     func renameSidebarSelection(model: WireboltModel) {
-        guard let id = sidebarSelectionRowID(model: model),
-              let row = visibleSidebarRows(model: model).first(where: { $0.id == id }) else { return }
-        beginRename(row)
+        _ = navigateSidebar(.rename, model: model)
     }
 
     func beginRename(_ row: SidebarSnapshot.Row) {
@@ -664,20 +611,42 @@ extension WorkspaceUIState {
 
     /// ⌘↓ opens the selection: a request moves focus to its URL, a container toggles.
     func openSidebarSelection(model: WireboltModel) {
-        guard let id = sidebarSelectionRowID(model: model),
-              let row = visibleSidebarRows(model: model).first(where: { $0.id == id }) else { return }
-        if row.isContainer { setSidebarRow(row, expanded: !isSidebarRowExpanded(row)) } else { focusURLTrigger += 1 }
+        _ = navigateSidebar(.open, model: model)
     }
 
     /// The selected request or folder as a move identifier ("kind|collection|id").
     func sidebarMoveIdentifier(model: WireboltModel) -> String? {
-        if let cursor = sidebarCursor {
-            return visibleSidebarRows(model: model).first { $0.id == cursor }?.moveIdentifier
+        let saved = model.sessions.activeSession.map { session in session.collectionID.map { model.workspace.location(collectionID: $0, requestID: session.requestID) != nil } ?? false } ?? false
+        return workspaceSidebarMoveIdentifier(cursor: sidebarCursor, selected: model.selectedRequestID,
+            rows: sidebarCursor == nil ? [] : visibleSidebarRows(model: model).map(\.workspaceMetadata), saved: saved)
+    }
+
+    private var sidebarState: WorkspaceSidebarState {
+        WorkspaceSidebarState(query: sidebarFilter, cursor: sidebarCursor, scrollTarget: sidebarScrollTarget,
+            collapsed: Array(collapsedSidebarCollections), expanded: Array(expandedSidebarGroups), collectionsExpanded: collectionsExpanded)
+    }
+
+    @discardableResult
+    private func navigateSidebar(_ action: WorkspaceSidebarAction, model: WireboltModel) -> Bool {
+        let rows = visibleSidebarRows(model: model)
+        let result = rustInterface.sidebar(input: sidebarState, rows: rows.map(\.workspaceMetadata),
+            selectedRequest: model.selectedRequestID, action: action)
+        applySidebar(result)
+        if let id = result.openRequest, let row = rows.first(where: { $0.id == id }), case let .request(location) = row.content {
+            activateSavedRequest(location, model: model)
         }
-        guard let session = model.sessions.activeSession, let collectionID = session.collectionID,
-              model.workspace.location(collectionID: collectionID, requestID: session.requestID) != nil
-        else { return nil }
-        return "request|\(collectionID)|\(session.requestID)"
+        if let id = result.renameRow, let row = rows.first(where: { $0.id == id }) { beginRename(row) }
+        if result.focusUrl { focusURLTrigger += 1 }
+        return result.handled
+    }
+
+    private func applySidebar(_ result: WorkspaceSidebarResult) {
+        let state = result.state
+        if sidebarCursor != state.cursor { sidebarCursor = state.cursor }
+        if sidebarScrollTarget != state.scrollTarget { sidebarScrollTarget = state.scrollTarget }
+        let collapsed = Set(state.collapsed), expanded = Set(state.expanded)
+        if collapsedSidebarCollections != collapsed { collapsedSidebarCollections = collapsed }
+        if expandedSidebarGroups != expanded { expandedSidebarGroups = expanded }
     }
 
     func sidebarMoveCommands(model: WireboltModel) -> SidebarMoveCommands? {

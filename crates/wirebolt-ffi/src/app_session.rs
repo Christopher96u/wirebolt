@@ -653,14 +653,14 @@ pub struct SessionWorkspacePlan {
 
 #[derive(Debug, uniffi::Object)]
 pub struct AppWorkspaceSession {
-    inner: wirebolt_app::session::workspace::WorkspaceSession,
+    inner: Arc<wirebolt_app::session::workspace::WorkspaceSession>,
 }
 #[uniffi::export]
 impl AppWorkspaceSession {
     #[uniffi::constructor]
     pub fn new() -> Arc<Self> {
         Arc::new(Self {
-            inner: wirebolt_app::session::workspace::WorkspaceSession::default(),
+            inner: Arc::new(wirebolt_app::session::workspace::WorkspaceSession::default()),
         })
     }
     pub fn replace(&self, workspace: DomainWorkspace) {
@@ -997,4 +997,803 @@ pub fn session_existing_workspace_paths(paths: Vec<String>) -> Vec<String> {
 #[uniffi::export]
 pub fn session_publication_delay_ms() -> u64 {
     u64::try_from(wirebolt_app::session::run::PUBLICATION_INTERVAL.as_millis()).unwrap_or(16)
+}
+
+// MARK: C2 workspace application orchestration
+use wirebolt_app::session::workspace::io::WorkspaceFailure;
+#[uniffi::remote(Record)]
+pub struct WorkspaceFailure {
+    pub kind: String,
+    pub reason: String,
+    pub localized: bool,
+}
+use wirebolt_app::session::workspace::io::WorkspaceImportedEnvironment;
+#[uniffi::remote(Record)]
+pub struct WorkspaceImportedEnvironment {
+    pub id: String,
+    pub name: String,
+}
+use wirebolt_app::session::workspace::io::WorkspaceImportSummary;
+#[uniffi::remote(Record)]
+pub struct WorkspaceImportSummary {
+    pub collection_names: Vec<String>,
+    pub request_count: u64,
+    pub group_count: u64,
+    pub environments: Vec<WorkspaceImportedEnvironment>,
+    pub warnings: Vec<String>,
+}
+use wirebolt_app::session::workspace::io::WorkspaceGitChange;
+#[uniffi::remote(Record)]
+pub struct WorkspaceGitChange {
+    pub path: String,
+    pub previous_path: Option<String>,
+    pub staged: String,
+    pub unstaged: String,
+    pub conflicted: bool,
+}
+use wirebolt_app::session::workspace::io::WorkspaceGitStatus;
+#[uniffi::remote(Record)]
+pub struct WorkspaceGitStatus {
+    pub branch: Option<String>,
+    pub upstream: Option<String>,
+    pub ahead: u64,
+    pub behind: u64,
+    pub changes: Vec<WorkspaceGitChange>,
+    pub merging: bool,
+}
+use wirebolt_app::session::workspace::io::WorkspaceGitOperation;
+#[uniffi::remote(Record)]
+pub struct WorkspaceGitOperation {
+    pub outcome: String,
+    pub revision: Option<String>,
+    pub status: WorkspaceGitStatus,
+}
+use wirebolt_app::session::workspace::io::WorkspaceGitAction;
+#[uniffi::remote(Enum)]
+pub enum WorkspaceGitAction {
+    Status,
+    Pull,
+    Commit { message: String },
+    Push,
+    Abort,
+    Initialize,
+}
+use wirebolt_app::session::workspace::io::WorkspaceExport;
+#[uniffi::remote(Enum)]
+pub enum WorkspaceExport {
+    Workspace,
+    Collection { id: String },
+    Request { collection_id: String, id: String },
+}
+use wirebolt_app::session::workspace::io::WorkspaceIO;
+#[uniffi::remote(Enum)]
+pub enum WorkspaceIO {
+    Load,
+    Commands {
+        commands: Vec<SessionWorkspaceCommand>,
+    },
+    Import {
+        format: String,
+        source: String,
+        name: Option<String>,
+    },
+    Export {
+        target: WorkspaceExport,
+    },
+    Git {
+        action: WorkspaceGitAction,
+    },
+}
+use wirebolt_app::session::workspace::io::WorkspaceReply;
+#[uniffi::remote(Enum)]
+pub enum WorkspaceReply {
+    Loaded { workspace: DomainWorkspace },
+    Commands { result: SessionCommandBatchResult },
+    Imported { summary: WorkspaceImportSummary },
+    Exported { content: String },
+    GitStatus { status: WorkspaceGitStatus },
+    GitOperation { operation: WorkspaceGitOperation },
+    Failed { failure: WorkspaceFailure },
+}
+use wirebolt_app::session::workspace::actions::WorkspaceAction;
+#[uniffi::remote(Enum)]
+pub enum WorkspaceAction {
+    SaveEnvironment {
+        environment: DomainEnvironment,
+    },
+    DeleteEnvironment {
+        id: String,
+    },
+    CreateRequest {
+        web_socket: bool,
+        collection_id: Option<String>,
+        group_id: Option<String>,
+    },
+    CreateCollection {
+        name: String,
+    },
+    CreateGroup {
+        collection_id: String,
+        parent_id: Option<String>,
+        name: String,
+    },
+    RenameRequest {
+        collection_id: String,
+        id: String,
+        name: String,
+    },
+    RenameGroup {
+        collection_id: String,
+        id: String,
+        name: String,
+    },
+    RenameCollection {
+        id: String,
+        name: String,
+    },
+    DeleteRequest {
+        collection_id: String,
+        id: String,
+    },
+    DeleteGroup {
+        collection_id: String,
+        id: String,
+    },
+    DeleteCollection {
+        id: String,
+    },
+    DuplicateRequest {
+        collection_id: String,
+        id: String,
+    },
+    MoveRequest {
+        from_collection_id: String,
+        id: String,
+        to_collection_id: String,
+        group_id: Option<String>,
+        order: i64,
+    },
+    MoveGroup {
+        collection_id: String,
+        id: String,
+        parent_id: Option<String>,
+        order: i64,
+    },
+    Reorder {
+        identifier: String,
+        target: String,
+        after: bool,
+        collection_id: String,
+        parent_id: Option<String>,
+    },
+    MoveBy {
+        identifier: String,
+        delta: i64,
+    },
+    MoveTo {
+        identifier: String,
+        collection_id: String,
+        parent_id: Option<String>,
+    },
+}
+use wirebolt_app::session::workspace::operations::WorkspacePresentation;
+#[uniffi::remote(Record)]
+pub struct WorkspacePresentation {
+    pub loading: bool,
+    pub loaded: bool,
+    pub git_busy: bool,
+    pub importing: bool,
+    pub git_status: Option<WorkspaceGitStatus>,
+    pub git_operation: Option<WorkspaceGitOperation>,
+    pub git_failure: Option<WorkspaceFailure>,
+    pub import_failure: Option<String>,
+    pub export_failure: Option<String>,
+    pub import_summary: Option<WorkspaceImportSummary>,
+    pub operation_failure: Option<String>,
+}
+use wirebolt_app::session::workspace::operations::WorkspaceUndoToken;
+#[uniffi::remote(Record)]
+pub struct WorkspaceUndoToken {
+    pub token: u64,
+    pub name: String,
+}
+use wirebolt_app::session::workspace::operations::WorkspaceMutation;
+#[uniffi::remote(Record)]
+pub struct WorkspaceMutation {
+    pub succeeded: bool,
+    pub plan: Option<SessionWorkspacePlan>,
+    pub undo: Option<WorkspaceUndoToken>,
+    pub created_id: Option<String>,
+    pub root: Option<DomainCollection>,
+}
+use wirebolt_app::session::workspace::operations::WorkspaceLoad;
+#[uniffi::remote(Record)]
+pub struct WorkspaceLoad {
+    pub workspace: DomainWorkspace,
+    pub selected_environment_id: Option<String>,
+    pub select: Option<DomainLocation>,
+}
+use wirebolt_app::session::workspace::operations::WorkspaceSave;
+#[uniffi::remote(Record)]
+pub struct WorkspaceSave {
+    pub document_id: String,
+    pub draft: DomainRequestDraft,
+    pub location: Option<DomainLocation>,
+    pub succeeded: bool,
+}
+
+#[derive(Debug, uniffi::Object)]
+pub struct WorkspaceIOReply {
+    sender: Mutex<Option<tokio::sync::oneshot::Sender<WorkspaceReply>>>,
+}
+#[uniffi::export]
+impl WorkspaceIOReply {
+    pub fn complete(&self, reply: WorkspaceReply) {
+        if let Some(sender) = lock(&self.sender).take() {
+            let _ = sender.send(reply);
+        }
+    }
+}
+#[uniffi::export(with_foreign)]
+pub trait WorkspaceIOPlatform: Send + Sync {
+    fn execute(&self, request: WorkspaceIO, reply: Arc<WorkspaceIOReply>);
+}
+#[derive(uniffi::Object)]
+pub struct AppWorkspacePlatform {
+    native: Option<Arc<wirebolt_app::session::persistence::SessionPersistence>>,
+    foreign: Option<Arc<dyn WorkspaceIOPlatform>>,
+}
+impl std::fmt::Debug for AppWorkspacePlatform {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AppWorkspacePlatform")
+            .finish_non_exhaustive()
+    }
+}
+#[uniffi::export]
+impl AppWorkspacePlatform {
+    #[uniffi::constructor]
+    pub fn workspace(bridge: Arc<WorkspaceBridge>) -> Arc<Self> {
+        Arc::new(Self {
+            native: Some(bridge.inner.clone()),
+            foreign: None,
+        })
+    }
+    #[uniffi::constructor]
+    pub fn foreign(platform: Arc<dyn WorkspaceIOPlatform>) -> Arc<Self> {
+        Arc::new(Self {
+            native: None,
+            foreign: Some(platform),
+        })
+    }
+}
+#[async_trait::async_trait]
+impl wirebolt_app::session::workspace::io::WorkspacePlatform for AppWorkspacePlatform {
+    async fn execute(&self, request: WorkspaceIO) -> WorkspaceReply {
+        if let Some(native) = &self.native {
+            let native = native.clone();
+            return tokio::task::spawn_blocking(move || native.workspace_io(request))
+                .await
+                .unwrap_or_else(|_| WorkspaceReply::Failed {
+                    failure: WorkspaceFailure::workspace(),
+                });
+        }
+        let (sender, receiver) = tokio::sync::oneshot::channel();
+        if let Some(platform) = &self.foreign {
+            platform.execute(
+                request,
+                Arc::new(WorkspaceIOReply {
+                    sender: Mutex::new(Some(sender)),
+                }),
+            );
+        }
+        receiver.await.unwrap_or_else(|_| WorkspaceReply::Failed {
+            failure: WorkspaceFailure::workspace(),
+        })
+    }
+}
+#[derive(Debug, uniffi::Object)]
+pub struct AppWorkspaceOperations {
+    inner: wirebolt_app::session::workspace::operations::WorkspaceOperations,
+}
+#[uniffi::export]
+impl AppWorkspaceOperations {
+    #[uniffi::constructor]
+    pub fn new(workspace: Arc<AppWorkspaceSession>) -> Arc<Self> {
+        Arc::new(Self {
+            inner: wirebolt_app::session::workspace::operations::WorkspaceOperations::new(
+                workspace.inner.clone(),
+            ),
+        })
+    }
+    pub fn presentation(&self) -> WorkspacePresentation {
+        self.inner.presentation()
+    }
+    pub fn clear_undo(&self) {
+        self.inner.clear_undo();
+    }
+    pub fn begin_load(&self, configured: bool) -> bool {
+        self.inner.begin_load(configured)
+    }
+    pub fn reverse_token(&self, token: u64) -> Option<WorkspaceUndoToken> {
+        self.inner.reverse_token(token)
+    }
+    pub fn begin_git(&self, configured: bool, action: WorkspaceGitAction, dirty: bool) -> bool {
+        self.inner.begin_git(configured, action, dirty)
+    }
+    pub fn begin_import(&self, configured: bool, pasted: bool) -> bool {
+        self.inner.begin_import(configured, pasted)
+    }
+    pub fn finish_import_failure(&self, message: String, pasted: bool) -> String {
+        self.inner.finish_import_failure(message, pasted)
+    }
+    pub fn can_reorder(
+        &self,
+        identifier: String,
+        target: String,
+        collection_id: String,
+        parent: Option<String>,
+    ) -> bool {
+        self.inner
+            .can_reorder(identifier, target, collection_id, parent)
+    }
+    pub fn can_move_to(
+        &self,
+        identifier: String,
+        collection_id: String,
+        parent: Option<String>,
+    ) -> bool {
+        self.inner.can_move_to(identifier, collection_id, parent)
+    }
+    pub fn next_order(&self, collection_id: String, parent: Option<String>) -> i64 {
+        self.inner.next_order(collection_id, parent)
+    }
+    pub fn new_request(
+        &self,
+        web_socket: bool,
+        collection_id: String,
+        group_id: Option<String>,
+    ) -> DomainLocation {
+        self.inner.new_request(web_socket, collection_id, group_id)
+    }
+}
+#[uniffi::export(async_runtime = "tokio")]
+impl AppWorkspaceOperations {
+    pub async fn load(
+        &self,
+        platform: Arc<AppWorkspacePlatform>,
+        switching: bool,
+    ) -> Option<WorkspaceLoad> {
+        self.inner.load(platform.as_ref(), switching).await
+    }
+    pub async fn rename(
+        &self,
+        proposed: String,
+        platform: Arc<AppWorkspacePlatform>,
+    ) -> Option<String> {
+        self.inner.rename(proposed, platform.as_ref()).await
+    }
+    pub async fn mutate(
+        &self,
+        command: WorkspaceAction,
+        selected: Option<String>,
+        platform: Arc<AppWorkspacePlatform>,
+        secrets: Arc<AppSessionSecrets>,
+        secret_platform: Arc<AppSecretPlatform>,
+    ) -> WorkspaceMutation {
+        self.inner
+            .mutate(
+                command,
+                selected,
+                platform.as_ref(),
+                &secrets.inner,
+                secret_platform.as_ref(),
+            )
+            .await
+    }
+    pub async fn undo(
+        &self,
+        token: u64,
+        reverse: u64,
+        selected: Option<String>,
+        platform: Arc<AppWorkspacePlatform>,
+        secrets: Arc<AppSessionSecrets>,
+        secret_platform: Arc<AppSecretPlatform>,
+    ) -> WorkspaceMutation {
+        self.inner
+            .undo(
+                token,
+                reverse,
+                selected,
+                platform.as_ref(),
+                &secrets.inner,
+                secret_platform.as_ref(),
+            )
+            .await
+    }
+    pub async fn save(
+        &self,
+        document: SessionDocument,
+        fallback: Option<String>,
+        platform: Arc<AppWorkspacePlatform>,
+        secrets: Arc<AppSessionSecrets>,
+        secret_platform: Arc<AppSecretPlatform>,
+    ) -> WorkspaceSave {
+        self.inner
+            .save(
+                document,
+                fallback,
+                platform.as_ref(),
+                &secrets.inner,
+                secret_platform.as_ref(),
+            )
+            .await
+    }
+    pub async fn git(
+        &self,
+        action: WorkspaceGitAction,
+        platform: Arc<AppWorkspacePlatform>,
+        persistence: Option<Arc<AppWorkspacePlatform>>,
+    ) -> Option<WorkspaceLoad> {
+        self.inner
+            .git(
+                action,
+                platform.as_ref(),
+                persistence
+                    .as_deref()
+                    .map(|p| p as &dyn wirebolt_app::session::workspace::io::WorkspacePlatform),
+            )
+            .await
+    }
+    pub async fn import(
+        &self,
+        request: WorkspaceImport,
+        platform: Arc<AppWorkspacePlatform>,
+    ) -> Option<WorkspaceLoad> {
+        self.inner.import(request, platform.as_ref()).await
+    }
+    pub async fn export(
+        &self,
+        target: WorkspaceExport,
+        platform: Arc<AppWorkspacePlatform>,
+    ) -> Option<String> {
+        self.inner.export(target, platform.as_ref()).await
+    }
+}
+#[uniffi::export]
+pub fn workspace_new_environment() -> DomainEnvironment {
+    wirebolt_app::session::workspace::actions::new_environment()
+}
+#[uniffi::export]
+pub fn workspace_import_failure(reason: Option<String>, name: Option<String>) -> String {
+    wirebolt_app::session::workspace::operations::import_failure_message(
+        reason.as_deref(),
+        name.as_deref(),
+    )
+}
+// END C2 workspace application orchestration
+
+// C2 document lifecycle policy
+use wirebolt_app::session::workspace::lifecycle::{WorkspaceDiscard, WorkspaceRestore};
+#[uniffi::remote(Record)]
+pub struct WorkspaceDiscard {
+    pub id: String,
+    pub saved: Option<DomainRequestDraft>,
+}
+#[uniffi::remote(Record)]
+pub struct WorkspaceRestore {
+    pub result: SessionRestoreResult,
+    pub restore_history: bool,
+}
+#[uniffi::export]
+pub fn workspace_dirty_ids(
+    groups: Vec<SessionEditorGroup>,
+    documents: Vec<SessionTabDocument>,
+) -> Vec<String> {
+    wirebolt_app::session::workspace::lifecycle::dirty_ids(&groups, &documents)
+}
+#[uniffi::export]
+pub fn workspace_discard(documents: Vec<SessionDocument>) -> Vec<WorkspaceDiscard> {
+    wirebolt_app::session::workspace::lifecycle::discard(documents)
+}
+#[uniffi::export]
+pub fn workspace_move_row_id(identifier: String) -> Option<String> {
+    let parts: Vec<_> = identifier.split('|').collect();
+    if parts.len() != 3 {
+        return None;
+    }
+    Some(if parts[0] == "request" {
+        format!("request:{}/{}", parts[1], parts[2])
+    } else {
+        format!("group:{}:{}", parts[1], parts[2])
+    })
+}
+#[uniffi::export]
+impl AppWorkspaceOperations {
+    pub fn restore_tabs(
+        &self,
+        tabs: Arc<AppSessionTabs>,
+        layout: Option<AppSessionLayout>,
+    ) -> WorkspaceRestore {
+        let mut state = lock(&tabs.tabs);
+        let (tabs, documents) = &mut *state;
+        self.inner.restore_tabs(tabs, documents, layout)
+    }
+}
+#[uniffi::export(async_runtime = "tokio")]
+impl AppWorkspaceOperations {
+    pub async fn save_all(
+        &self,
+        documents: Vec<SessionDocument>,
+        fallback: Option<String>,
+        platform: Arc<AppWorkspacePlatform>,
+        secrets: Arc<AppSessionSecrets>,
+        secret_platform: Arc<AppSecretPlatform>,
+    ) -> Vec<WorkspaceSave> {
+        self.inner
+            .save_all(
+                documents,
+                fallback,
+                platform.as_ref(),
+                &secrets.inner,
+                secret_platform.as_ref(),
+            )
+            .await
+    }
+}
+
+// MARK: C2 workspace application orchestration
+use wirebolt_app::session::workspace::interface::WorkspaceSidebarState;
+#[uniffi::remote(Record)]
+pub struct WorkspaceSidebarState {
+    pub query: String,
+    pub cursor: Option<String>,
+    pub scroll_target: Option<String>,
+    pub collapsed: Vec<String>,
+    pub expanded: Vec<String>,
+    pub collections_expanded: bool,
+}
+use wirebolt_app::session::workspace::interface::WorkspaceSidebarAction;
+#[uniffi::remote(Enum)]
+pub enum WorkspaceSidebarAction {
+    Select { id: String, scroll: bool },
+    Step { delta: i64 },
+    Arrow { right: bool },
+    Type { characters: String, time: f64 },
+    SetExpanded { id: String, expanded: bool },
+    Open,
+    Rename,
+}
+use wirebolt_app::session::workspace::interface::WorkspaceSidebarResult;
+#[uniffi::remote(Record)]
+pub struct WorkspaceSidebarResult {
+    pub state: WorkspaceSidebarState,
+    pub open_request: Option<String>,
+    pub rename_row: Option<String>,
+    pub focus_url: bool,
+    pub handled: bool,
+}
+use wirebolt_app::session::workspace::interface::WorkspaceDirtyClose;
+#[uniffi::remote(Record)]
+pub struct WorkspaceDirtyClose {
+    pub scope: SessionCloseScope,
+    pub group_id: String,
+    pub ids: Vec<String>,
+    pub titles: Vec<String>,
+}
+#[derive(Debug, uniffi::Object)]
+pub struct AppWorkspaceInterface {
+    inner: wirebolt_app::session::workspace::interface::WorkspaceInterface,
+}
+#[uniffi::export]
+impl AppWorkspaceInterface {
+    #[uniffi::constructor]
+    pub fn new() -> Arc<Self> {
+        Arc::new(Self {
+            inner: wirebolt_app::session::workspace::interface::WorkspaceInterface::default(),
+        })
+    }
+    pub fn sidebar(
+        &self,
+        input: WorkspaceSidebarState,
+        rows: Vec<wirebolt_app::domain::sidebar::SidebarRow>,
+        selected_request: Option<String>,
+        action: WorkspaceSidebarAction,
+    ) -> WorkspaceSidebarResult {
+        self.inner.sidebar(input, rows, selected_request, action)
+    }
+    pub fn reset(&self) {
+        self.inner.reset();
+    }
+    pub fn block_close(&self, request: WorkspaceDirtyClose) {
+        self.inner.block_close(request);
+    }
+    pub fn take_close(&self) -> Option<WorkspaceDirtyClose> {
+        self.inner.take_close()
+    }
+    pub fn cancel_close(&self) {
+        self.inner.cancel_close();
+    }
+    pub fn closed(&self, previous: Option<String>, active: Option<String>) -> bool {
+        self.inner.closed(previous, active)
+    }
+    pub fn forget_closed(&self) {
+        self.inner.forget_closed();
+    }
+    pub fn reopen(&self, has_active: bool) -> Option<String> {
+        self.inner.reopen(has_active)
+    }
+}
+#[uniffi::export]
+pub fn workspace_sidebar_filtering(query: String) -> bool {
+    wirebolt_app::session::workspace::interface::filtering(&query)
+}
+#[uniffi::export]
+pub fn workspace_sidebar_selection(
+    cursor: Option<String>,
+    selected: Option<String>,
+) -> Option<String> {
+    wirebolt_app::session::workspace::interface::selection(cursor, selected)
+}
+#[uniffi::export]
+pub fn workspace_sidebar_move_identifier(
+    cursor: Option<String>,
+    selected: Option<String>,
+    rows: Vec<wirebolt_app::domain::sidebar::SidebarRow>,
+    saved: bool,
+) -> Option<String> {
+    wirebolt_app::session::workspace::interface::move_identifier(
+        cursor.as_deref(),
+        selected.as_deref(),
+        &rows,
+        saved,
+    )
+}
+
+// MARK: C2 workspace application orchestration
+use wirebolt_app::session::workspace::files::WorkspaceImportFile;
+#[uniffi::remote(Enum)]
+pub enum WorkspaceImportFile {
+    Bruno,
+    Document { source: String, format: String },
+    Failure { message: String },
+}
+#[uniffi::export]
+pub fn workspace_read_import(
+    path: String,
+    preferred: Option<String>,
+    formats: String,
+) -> WorkspaceImportFile {
+    wirebolt_app::session::workspace::files::read_import(Path::new(&path), preferred, &formats)
+}
+#[uniffi::export]
+pub fn workspace_import_display_name(format: String) -> String {
+    wirebolt_app::session::workspace::files::display_name(&format)
+}
+#[uniffi::export]
+pub fn workspace_import_unreadable(name: String) -> String {
+    wirebolt_app::session::workspace::files::unreadable(&name)
+}
+#[uniffi::export]
+pub fn workspace_import_unrecognized(name: String, contents: String, formats: String) -> String {
+    wirebolt_app::session::workspace::files::unrecognized(&name, &contents, &formats)
+}
+#[uniffi::export]
+pub fn workspace_recent_paths(path: String, paths: Vec<String>) -> Vec<String> {
+    wirebolt_app::session::workspace::files::recent(&path, paths)
+}
+#[uniffi::export]
+pub fn workspace_default_name(path: String, built_in: String) -> String {
+    wirebolt_app::session::workspace::files::default_name(Path::new(&path), Path::new(&built_in))
+}
+
+use wirebolt_app::session::workspace::operations::WorkspaceImport;
+#[uniffi::remote(Record)]
+pub struct WorkspaceImport {
+    pub source: String,
+    pub format: String,
+    pub name: Option<String>,
+    pub display_name: Option<String>,
+    pub selected: Option<String>,
+    pub pasted: bool,
+}
+#[uniffi::export]
+impl AppWorkspaceOperations {
+    pub fn take_failure(&self) -> Option<String> {
+        self.inner.take_failure()
+    }
+}
+use wirebolt_app::session::workspace::lifecycle::WorkspaceClose;
+#[uniffi::remote(Record)]
+pub struct WorkspaceClose {
+    pub blocked: Vec<String>,
+    pub removed: Vec<WorkspaceDiscard>,
+    pub snapshot: SessionTabSnapshot,
+}
+#[uniffi::export]
+impl AppSessionTabs {
+    pub fn close_workspace(
+        &self,
+        documents: Vec<SessionDocument>,
+        scope: SessionCloseScope,
+        group: Option<String>,
+        allow_dirty: bool,
+    ) -> WorkspaceClose {
+        let mut state = lock(&self.tabs);
+        let result = wirebolt_app::session::workspace::lifecycle::close(
+            &mut state.0,
+            documents,
+            &scope,
+            group.as_deref(),
+            allow_dirty,
+        );
+        let retained: std::collections::HashSet<_> = result.snapshot.session_ids.iter().collect();
+        state.1.retain(|id, _| retained.contains(id));
+        result
+    }
+}
+
+#[uniffi::export]
+impl AppWorkspaceInterface {
+    pub fn enqueue_files(&self, urls: Vec<String>) -> Vec<String> {
+        self.inner.enqueue_files(urls)
+    }
+    pub fn drain_files(&self) -> Vec<String> {
+        self.inner.drain_files()
+    }
+}
+use wirebolt_app::session::workspace::operations::WorkspaceRepositoryProblem;
+#[uniffi::remote(Enum)]
+pub enum WorkspaceRepositoryProblem {
+    NotRepository,
+    NotRepositoryRoot,
+    GitUnavailable,
+}
+#[uniffi::export]
+pub fn workspace_repository_problem(kind: String) -> Option<WorkspaceRepositoryProblem> {
+    wirebolt_app::session::workspace::operations::repository_problem(&kind)
+}
+use wirebolt_app::session::workspace::files::WorkspaceSelectionProblem;
+#[uniffi::remote(Enum)]
+pub enum WorkspaceSelectionProblem {
+    NotFound,
+    AlreadyExists,
+}
+use wirebolt_app::session::workspace::interface::WorkspaceUnsavedPrompt;
+#[uniffi::remote(Record)]
+pub struct WorkspaceUnsavedPrompt {
+    pub message: String,
+    pub detail: String,
+}
+#[uniffi::export]
+pub fn workspace_read_document(path: String) -> Option<String> {
+    wirebolt_app::session::workspace::files::read_document(Path::new(&path))
+}
+#[uniffi::export]
+pub fn workspace_selection_problem(
+    path: String,
+    mode: String,
+) -> Option<WorkspaceSelectionProblem> {
+    wirebolt_app::session::workspace::files::selection_problem(Path::new(&path), &mode)
+}
+#[uniffi::export]
+pub fn workspace_unsaved_prompt(titles: Vec<String>, quitting: bool) -> WorkspaceUnsavedPrompt {
+    wirebolt_app::session::workspace::interface::unsaved_prompt(&titles, quitting)
+}
+
+#[uniffi::export]
+impl AppWorkspaceOperations {
+    pub fn environment_unchanged(&self, environment: DomainEnvironment) -> bool {
+        self.inner.environment_unchanged(&environment)
+    }
+}
+
+#[uniffi::export]
+impl AppWorkspaceOperations {
+    pub fn request_matches(
+        &self,
+        request: wirebolt_app::domain::sidebar::DomainSidebarRequest,
+        normalized: String,
+    ) -> bool {
+        self.inner.request_matches(request, &normalized)
+    }
 }

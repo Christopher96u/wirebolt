@@ -3,21 +3,18 @@ import Foundation
 struct RustWorkspacePersistence: WorkspacePersistence, GitCollaboration {
     private let bridge: WorkspaceBridge
     let location: URL?
+    var sessionWorkspacePlatform: AppWorkspacePlatform { .workspace(bridge: bridge) }
+    var sessionGitPlatform: AppWorkspacePlatform { .workspace(bridge: bridge) }
     var sessionSecretPlatform: AppSecretPlatform { AppSecretPlatform.workspace(bridge: bridge) }
 
     init(
         path: URL = Self.defaultWorkspaceURL,
         mode: WorkspaceOpenMode = .openOrCreate
     ) throws {
-        let manifest = path.appending(path: "wirebolt.toml")
-        let workspaceExisted = FileManager.default.fileExists(atPath: manifest.path)
-        switch mode {
-        case .open where !workspaceExisted:
-            throw WorkspaceSelectionError.workspaceNotFound
-        case .create where workspaceExisted:
-            throw WorkspaceSelectionError.workspaceAlreadyExists
-        case .open, .create, .openOrCreate:
-            break
+        switch workspaceSelectionProblem(path: path.path, mode: mode.rawValue) {
+        case .notFound: throw WorkspaceSelectionError.workspaceNotFound
+        case .alreadyExists: throw WorkspaceSelectionError.workspaceAlreadyExists
+        case nil: break
         }
         // A new workspace starts empty; the first request creates the top-level list, so the
         // sidebar never opens on an empty placeholder collection. Its name follows the folder.
@@ -27,11 +24,7 @@ struct RustWorkspacePersistence: WorkspacePersistence, GitCollaboration {
 
     /// The folder name, except for the built-in workspace in Application Support.
     static func defaultName(for path: URL) -> String {
-        let name = path.standardizedFileURL.lastPathComponent.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard path.standardizedFileURL != builtInWorkspaceURL.standardizedFileURL, !name.isEmpty, name != "/" else {
-            return "Wirebolt"
-        }
-        return name
+        workspaceDefaultName(path: path.standardizedFileURL.path, builtIn: builtInWorkspaceURL.standardizedFileURL.path)
     }
 
     func load() async throws -> WorkspaceDraft {
@@ -252,7 +245,7 @@ struct RustWorkspacePersistence: WorkspacePersistence, GitCollaboration {
     }
 }
 
-enum WorkspaceOpenMode {
+enum WorkspaceOpenMode: String {
     case open
     case create
     case openOrCreate
