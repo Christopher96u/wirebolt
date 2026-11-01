@@ -1,0 +1,31 @@
+[package]
+name = "wirebolt-app"
+license.workspace = true
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+async-trait.workspace = true
+base64.workspace = true
+getrandom.workspace = true
+hyper.workspace = true
+idna.workspace = true
+percent-encoding.workspace = true
+regex.workspace = true
+reqwest.workspace = true
+rustls.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+tempfile.workspace = true
+tokio.workspace = true
+tokio-util.workspace = true
+unicode-casefold.workspace = true
+unicode-normalization.workspace = true
+unicode-segmentation.workspace = true
+url.workspace = true
+wirebolt-core.workspace = true
+
+[lints]
+workspace = true

@@ -88,7 +88,7 @@ struct ResponseViewer: View {
 
     @ViewBuilder
     private var sectionContent: some View {
-        if let failure = session.failure, interface.responseSection != .request, failure.kind != "cancelled" || session.responseBytes == 0 {
+        if let failure = session.failure, interface.responseSection != .request, failure.kind != .cancelled || session.responseBytes == 0 {
             ResponseFailureView(
                 message: RunFailureMessage(failure, host: RunFailureMessage.host(from: session.preparedRun?.url ?? session.draft.url)),
                 retry: send,
@@ -97,7 +97,7 @@ struct ResponseViewer: View {
             )
         } else {
             VStack(spacing: 0) {
-                if session.failure?.kind == "cancelled" {
+                if session.failure?.kind == .cancelled {
                     Text("Cancelled · Partial response").font(WireboltTheme.Typography.detail)
                         .foregroundStyle(WireboltTheme.warning).padding(WireboltTheme.Spacing.medium)
                 }
@@ -172,7 +172,7 @@ private struct ResponseRunObserver: View {
     private func announceOutcome() {
         let text: String
         if let failure = session.failure {
-            text = failure.kind == "cancelled" ? "Request cancelled" : "Request failed. " + RunFailureMessage(failure).title
+            text = failure.kind == .cancelled ? "Request cancelled" : "Request failed. " + RunFailureMessage(failure).title
         } else if session.completion != nil || session.responseHead != nil {
             text = ResponseFormatting.completionSummary(status: session.responseHead?.status,
                 totalTimeNS: session.completion?.totalTimeNS, bytes: session.responseBytes)
@@ -953,10 +953,9 @@ private struct JSONResponseTree: View {
             .task(id: url) {
                 isParsing = true
                 let url = url, preview = preview
-                let parse = Task.detached(priority: .userInitiated) {
-                    let data = try url.map { try Data(contentsOf: $0, options: .mappedIfSafe) } ?? preview
+                let parse = responseTask(priority: .userInitiated) {
                     try Task.checkCancellation()
-                    return JSONNode.makeRoot(from: data)
+                    return url.map { JSONNode.makeRoot(from: $0) } ?? JSONNode.makeRoot(from: preview)
                 }
                 let result = try? await withTaskCancellationHandler { try await parse.value } onCancel: { parse.cancel() }
                 guard !Task.isCancelled else { return }
@@ -1068,11 +1067,11 @@ struct JSONTreeView: NSViewRepresentable {
             else if column.identifier.rawValue == "key" { field.textColor = theme.definition.syntaxKey.nsColor }
             else {
                 field.textColor = switch node.value.type {
-                case "String": theme.definition.syntaxString.nsColor
-                case "Number": theme.definition.syntaxNumber.nsColor
-                case "Boolean": theme.definition.syntaxKeyword.nsColor
-                case "Null": theme.definition.syntaxKeyword.nsColor
-                default: theme.muted.nsColor
+                case .string: theme.definition.syntaxString.nsColor
+                case .number: theme.definition.syntaxNumber.nsColor
+                case .boolean: theme.definition.syntaxKeyword.nsColor
+                case .null: theme.definition.syntaxKeyword.nsColor
+                case .object, .array, .truncated: theme.muted.nsColor
                 }
             }
             return field

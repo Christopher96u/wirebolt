@@ -3,15 +3,13 @@ import Darwin
 import Foundation
 import WireboltStreamFFI
 
-private let performanceHeadCallback: @convention(c) (
-    UnsafeMutableRawPointer?, UnsafePointer<UInt8>?, UInt
-) -> Void = { _, _, _ in }
-private let performanceChunkCallback: @convention(c) (
-    UnsafeMutableRawPointer?, UnsafePointer<UInt8>?, UInt
-) -> UInt8 = { _, _, _ in 1 }
-private let performanceTerminalCallback: @convention(c) (
-    UnsafeMutableRawPointer?, UnsafePointer<UInt8>?, UInt
-) -> Void = { _, _, _ in }
+private final class PerformanceRequestObserver: SessionRequestObserver {
+    let terminal = DispatchSemaphore(value: 0)
+    func event(event: SessionRunEvent) {}
+    func bytes(data: Data) -> Bool { true }
+    func cookies(url: String, headers: [ResponseHeaderValue]) {}
+    func finish(failure: SessionFailure?) { terminal.signal() }
+}
 
 private struct PerformanceBudgets: Decodable {
     let referenceMachine: String
@@ -441,31 +439,19 @@ private enum PerformanceContract {
         guard wirebolt_runtime_warmup() == 1 else {
             throw HarnessError.invalidMeasurement("shared HTTP runtime failed to start")
         }
-        let input = Data("{}".utf8)
-        let callbacks = wirebolt_run_callbacks(
-            on_prepared: performanceHeadCallback,
-            on_head: performanceHeadCallback,
-            on_chunk: performanceChunkCallback,
-            on_complete: performanceTerminalCallback,
-            on_error: performanceTerminalCallback,
-            on_cookies: nil
-        )
-
+        let input = DomainRunInput(method: "GET", url: "", query: [], headers: [], authentication: .none, body: .empty,
+            variables: [:], appProxy: nil, workspaceProxy: nil, requestProxy: .direct, totalTimeoutMs: 30_000,
+            readTimeoutMs: 10_000, maxResponseBytes: nil, validateTls: true, followRedirects: false, maximumRedirects: 10,
+            clientCertificateReference: nil, customCaPath: nil)
         return try (0 ..< metricSamples).map { _ in
+            let observer = PerformanceRequestObserver()
             let started = DispatchTime.now().uptimeNanoseconds
-            let session = input.withUnsafeBytes { bytes in
-                wirebolt_run_start(
-                    bytes.bindMemory(to: UInt8.self).baseAddress,
-                    UInt(bytes.count),
-                    callbacks,
-                    nil
-                )
-            }
+            let session = AppRequestRun.start(input: input, observer: observer)
             let elapsed = DispatchTime.now().uptimeNanoseconds - started
-            guard let session else {
+            session.cancel()
+            guard observer.terminal.wait(timeout: .now() + 5) == .success else {
                 throw HarnessError.invalidMeasurement("request dispatch failed")
             }
-            wirebolt_run_free(session)
             return Double(elapsed) / 1_000
         }
     }

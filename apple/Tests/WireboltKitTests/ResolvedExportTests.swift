@@ -29,7 +29,7 @@ struct ResolvedExportTests {
     @MainActor
     func proxyRouting() async throws {
         let model = WireboltModel(runner: ExportResolver())
-        model.workspace.proxy = .manual(routes: [ProxyRouteDocument(destination: "https", endpoint: "http://proxy.test:8080", credentials: ProxyCredentialsDocument(username: "token", password: "token"))])
+        model.workspace.proxy = .manual(routes: [ProxyRouteDocument(destination: .https, endpoint: "http://proxy.test:8080", credentials: ProxyCredentialsDocument(username: "token", password: "token"))])
         var draft = RequestDraft(url: "https://{{host}}/echo")
         let command = try #require(await model.curlCommand(for: draft))
         #expect(command.contains("--proxy 'http://proxy.test:8080' --noproxy ''"))
@@ -69,7 +69,7 @@ struct ResolvedExportTests {
         let model = WireboltModel(runner: ExportResolver())
         let command = await model.curlCommand(for: RequestDraft(url: "{{missing}}"))
         #expect(command == nil)
-        #expect(model.operationFailure?.kind == "invalid_request")
+        #expect(model.operationFailure?.kind == .invalidRequest)
     }
 }
 
@@ -85,7 +85,7 @@ private actor ExportResolver: RequestRunner {
             case .secret("multiline"): return "fixture-line\nsecond"
             case .literal("{{pem}}"): return "fixture-line\nsecond"
             case .literal(let text) where !text.contains("{{"): return text
-            default: throw RunFailure(kind: "invalid_request", issues: [])
+            default: throw RunFailure(kind: .invalidRequest, issues: [])
             }
         }
     }

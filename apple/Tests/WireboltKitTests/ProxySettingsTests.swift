@@ -5,7 +5,7 @@ import Synchronization
 
 @Suite("Proxy settings")
 struct ProxySettingsTests {
-    static let manual = ProxyDocument.manual(routes: [ProxyRouteDocument(destination: "all", endpoint: "http://localhost:8080")])
+    static let manual = ProxyDocument.manual(routes: [ProxyRouteDocument(destination: .all, endpoint: "http://localhost:8080")])
 
     @Test("Request overrides workspace, workspace overrides app, and each selection replaces the whole policy")
     func precedence() {
@@ -69,7 +69,7 @@ struct ProxySettingsTests {
         form.routes[0].username = "sensitive-user"
         form.routes[0].password = "sensitive-password"
         let document = try #require(try form.document())
-        let encoded = String(decoding: try JSONEncoder().encode(document), as: UTF8.self)
+        let encoded = String(decoding: try encodeDomain(document), as: UTF8.self)
         #expect(!encoded.contains("sensitive-user"))
         #expect(!encoded.contains("sensitive-password"))
         #expect(form.secrets.count == 2)
@@ -80,7 +80,7 @@ struct ProxySettingsTests {
 
     @Test("Route preview maps WebSocket schemes and reports bypass when no route matches")
     func summaries() {
-        let config = ProxyDocument.manual(routes: [ProxyRouteDocument(destination: "https", endpoint: "socks5h://localhost:1080")])
+        let config = ProxyDocument.manual(routes: [ProxyRouteDocument(destination: .https, endpoint: "socks5h://localhost:1080")])
         let effective = EffectiveProxy.resolve(request: nil, workspace: config, app: .direct)
         #expect(effective.summary(for: "wss://example.com") == "SOCKS5H · localhost:1080")
         #expect(effective.summary(for: "http://example.com") == "Direct · No matching proxy route")
@@ -107,7 +107,7 @@ struct ProxySettingsTests {
         #expect(await runner.input?.requestProxy == .system)
         try await model.applyProxy(nil, scope: .workspace)
         #expect(model.workspace.proxy == nil)
-        #expect(await persistence.commands == [.saveWorkspaceProxy(.direct), .saveWorkspaceProxy(nil)])
+        #expect(await persistence.commands == [.saveWorkspaceProxy(proxy: .direct), .saveWorkspaceProxy(proxy: nil)])
         try await model.applyProxy(nil, scope: .request, session: session)
         #expect(model.effectiveProxy(for: session.draft).source == .appDefault)
         let curl = await model.curlCommand(for: session.draft)
@@ -125,7 +125,7 @@ struct ProxySettingsTests {
         let model = WireboltModel(runner: ProxyRunner(), persistence: persistence)
         try await model.applyProxy(document, scope: .workspace, secrets: form.secrets)
         #expect(await persistence.savedSecrets == form.secrets)
-        #expect(await persistence.commands == [.saveWorkspaceProxy(document)])
+        #expect(await persistence.commands == [.saveWorkspaceProxy(proxy: document)])
         let failing = ProxyPersistence(rejectSecrets: true)
         let other = WireboltModel(runner: ProxyRunner(), persistence: failing)
         do { try await other.applyProxy(document, scope: .workspace, secrets: form.secrets); Issue.record("Keychain failure should stop the save") }
@@ -203,7 +203,7 @@ struct ProxySettingsTests {
 }
 
 private actor ProxyPersistence: WorkspacePersistence {
-    var commands: [WorkspaceCommand] = []
+    var commands: [SessionWorkspaceCommand] = []
     var savedSecrets: [String: String] = [:]
     let rejectSecrets: Bool
     init(rejectSecrets: Bool = false) { self.rejectSecrets = rejectSecrets }
@@ -214,7 +214,7 @@ private actor ProxyPersistence: WorkspacePersistence {
         if rejectSecrets { throw WorkspaceMutationError.unsupported }
         savedSecrets[name] = value
     }
-    func apply(_ command: WorkspaceCommand) async throws -> WorkspaceDelta {
+    func apply(_ command: SessionWorkspaceCommand) async throws -> WorkspaceDelta {
         commands.append(command)
         return WorkspaceDelta(version: 1, kind: .workspace, affectedIDs: [])
     }
@@ -232,7 +232,7 @@ private actor ProxyRunner: RequestRunner {
 
 private final class ProxySocketConnector: WebSocketConnecting {
     let input = Mutex<RunInput?>(nil)
-    func connection(for input: RunInput) -> any WebSocketTransport {
+    func connection(for input: RunInput, state: AppSessionSocket, generation: String) -> any WebSocketTransport {
         self.input.withLock { $0 = input }
         return ProxySocketTransport()
     }
@@ -255,4 +255,39 @@ private final class ProbeRunner: RequestRunner {
         }
     }
     func cancel(runID: RunID) {}
+}
+
+extension ProxySettingsTests {
+    @Test func invalidBridgeIdentityGetsOneStableNativeUUID() {
+        var input = domainProxyRouteInput(route: nil)
+        input.id = "invalid"
+        let draft = ProxyRouteDraft(domain: input)
+        #expect(draft.id == draft.id)
+        #expect(UUID(uuidString: draft.domain.id) == draft.id)
+        #expect(ProxyRouteDraft(domain: draft.domain).id == draft.id)
+    }
+    @Test @MainActor func handEditedUnknownDestinationStaysManual() throws {
+        let suite = "WireboltProxyTests.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        defaults.set(Data(#"{"mode":"manual","routes":[{"destination":"ftp","endpoint":"http://localhost:8080"}]}"#.utf8), forKey: ProxyPreferences.key)
+        let preferences = ProxyPreferences(defaults: defaults)
+        guard case let .manual(routes) = preferences.configuration else { Issue.record("Expected manual proxy"); return }
+        #expect(routes.count == 1)
+        #expect(routes[0].destination == nil)
+        for _ in 0..<2 {
+            #expect(throws: ProxyValidationError("Choose All, HTTP or HTTPS destinations.")) {
+                try preferences.configuration.validate()
+            }
+        }
+    }
+    @Test func generatedProxyEnumsKeepPreferenceRawValues() {
+        #expect(ProxyScope.allCases.map(\.rawValue) == ["app", "workspace", "request", "systemDefault"])
+        #expect(ProxyScope.editableScopes.map(\.rawValue) == ["app", "workspace", "request"])
+        #expect(ProxyFormDraft.Mode.allCases.map(\.rawValue) == ["inherit", "system", "direct", "manual"])
+        for scope in ProxyScope.allCases { #expect(ProxyScope(rawValue: scope.rawValue) == scope) }
+        for mode in ProxyFormDraft.Mode.allCases { #expect(ProxyFormDraft.Mode(rawValue: mode.rawValue) == mode) }
+        #expect(ProxyScope(rawValue: "unknown") == nil)
+        #expect(ProxyFormDraft.Mode(rawValue: "unknown") == nil)
+    }
 }

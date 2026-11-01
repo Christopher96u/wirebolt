@@ -168,7 +168,7 @@ struct LifecycleTests {
         await writer.store(headers: [ResponseHeader(name: "Set-Cookie", value: "id=1; Max-Age=3600")], requestURL: URL(string: "https://example.com")!)
         let reader = CookieJar(storageURL: cookies)
         #expect(await reader.header(for: URL(string: "https://example.com/")!) == "id=1")
-        #expect(await HistoryRepository(root: root.appending(path: "missing")).list(requestID: "a").isEmpty)
+        #expect(try await HistoryRepository(root: root.appending(path: "missing")).list(requestID: "a").isEmpty)
     }
 
     @MainActor private func settle() async {
@@ -203,9 +203,20 @@ private actor SaveRecorder: WorkspacePersistence {
     func save(environment _: EnvironmentDraft) async throws {}
     func saveSecret(name _: String, value _: String) async throws {}
 
-    func apply(_ command: WorkspaceCommand) async throws -> WorkspaceDelta {
-        if fails { throw RunFailure(kind: "workspace", issues: []) }
-        if case let .saveRequest(collectionID, location) = command { saved.append((collectionID, location)) }
+    func apply(_ command: SessionWorkspaceCommand) async throws -> WorkspaceDelta {
+        if fails { throw RunFailure(kind: .workspace, issues: []) }
+        if case let .saveRequest(location) = command { saved.append((location.collectionId, RequestLocation(domain: location))) }
         return WorkspaceDelta(version: UInt64(saved.count), kind: .request, affectedIDs: [])
     }
+}
+
+@Test("Stored signed layout indices preserve legacy decoding")
+@MainActor
+func signedLayoutIndicesRemainCompatible() throws {
+    let defaults = try #require(UserDefaults(suiteName: "wirebolt.signed-layout.\(UUID().uuidString)"))
+    let source = Data(#"{"groups":[{"tabs":[{"collectionID":"api","requestID":"a"}],"selectedIndex":-1,"previewIndex":-1}],"activeGroupIndex":-1}"#.utf8)
+    defaults.set(["/legacy": source], forKey: SessionLayoutStore.defaultsKey)
+    let layout = try #require(SessionLayoutStore(defaults: defaults).layout(forWorkspace: "/legacy"))
+    #expect(layout.activeGroupIndex == -1)
+    #expect(layout.groups[0].selectedIndex == -1 && layout.groups[0].previewIndex == -1)
 }

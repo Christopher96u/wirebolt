@@ -44,14 +44,16 @@ struct AuthenticationReferenceTests {
         }
     }
 
-    @Test("A new API key request encodes the reference, never material")
-    func apiKeyEncodesOnlyReference() throws {
+    @Test("A new API key request projects its typed reference")
+    func apiKeyProjectsOnlyReference() throws {
         var draft = RequestDraft(url: "https://api.example.com/v1/orders")
         draft.authentication = .new(.apiKey)
-        let encoded = String(decoding: try JSONEncoder().encode(RunInput(draft: draft, variables: [:])), as: UTF8.self)
+        let input = RunInput(draft: draft, variables: [:]).domain
         let name = try #require(references(draft.authentication).first)
-        #expect(encoded.contains(#""kind":"api_key""#))
-        #expect(encoded.contains(name))
+        guard case let .apiKey(placement, key, value) = input.authentication else { Issue.record("Expected API key"); return }
+        #expect(placement == .header)
+        #expect(key == "X-API-Key")
+        #expect(value == .secret(name))
     }
 
     @Test("Editing the API key value stages Keychain material under the request's own name")
@@ -79,7 +81,7 @@ actor KeychainRecorder: WorkspacePersistence {
     private(set) var saved: [String: String] = [:]
     private(set) var deleted: [String] = []
     private(set) var environments: [EnvironmentDraft] = []
-    private(set) var commands: [WorkspaceCommand] = []
+    private(set) var commands: [SessionWorkspaceCommand] = []
     var failsSecrets = false
     nonisolated let location: URL?
     private let workspace: WorkspaceDraft
@@ -95,7 +97,7 @@ actor KeychainRecorder: WorkspacePersistence {
     func save(environment: EnvironmentDraft) async throws { environments.append(environment) }
     func readSecret(name: String) async throws -> String? { saved[name] }
     func saveSecret(name: String, value: String) async throws {
-        if failsSecrets { throw RunFailure(kind: "keychain", issues: []) }
+        if failsSecrets { throw RunFailure(kind: .keychain, issues: []) }
         saved[name] = value
     }
     func deleteSecret(name: String) async throws {
@@ -104,9 +106,9 @@ actor KeychainRecorder: WorkspacePersistence {
     }
     func failSecrets() { failsSecrets = true }
 
-    func apply(_ command: WorkspaceCommand) async throws -> WorkspaceDelta {
+    func apply(_ command: SessionWorkspaceCommand) async throws -> WorkspaceDelta {
         commands.append(command)
-        if case let .saveEnvironment(environment) = command { environments.append(environment) }
+        if case let .saveEnvironment(environment) = command { environments.append(EnvironmentDraft(domain: environment)) }
         return WorkspaceDelta(version: UInt64(commands.count), kind: .workspace, affectedIDs: [])
     }
 }
@@ -117,4 +119,15 @@ struct SilentRunner: RequestRunner {
     }
 
     func cancel(runID _: RunID) {}
+}
+
+extension AuthenticationReferenceTests {
+    @Test func credentialNamePolicyComesFromTheDomain() {
+        for name in ["auth.api-key", "oauth.client-secret", "oauth.access-token", ""] {
+            let replacement = CredentialReference.editableName(for: .secret(name), role: "token")
+            #expect(replacement != name)
+            #expect(CredentialReference.isOwned(replacement))
+        }
+        #expect(CredentialReference.editableName(for: .secret("personal.token"), role: "token") == "personal.token")
+    }
 }

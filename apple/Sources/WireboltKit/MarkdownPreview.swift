@@ -1,111 +1,147 @@
 import AppKit
-import CryptoKit
 
-/// Immutable after construction; NSTextView receives its own mutable storage copy.
 public final class RenderedMarkdown: @unchecked Sendable {
     public let text: NSAttributedString
     public let cost: Int
-    init(_ text: NSAttributedString, cost: Int) { self.text = text; self.cost = cost }
+    private let nativeText: NSAttributedString
+    init(_ text: NSAttributedString, cost: Int, nativeText: NSAttributedString? = nil) {
+        self.text = text
+        self.cost = cost
+        self.nativeText = nativeText ?? text
+    }
+    @MainActor public func makeTextStorage() -> NSTextStorage { NSTextStorage(attributedString: nativeText) }
 }
 
-/// Serial background parsing bounds concurrent work and retained preview memory.
+/// Rust assembles runs and owns cache retention; Foundation supplies Markdown intents.
 public actor MarkdownPreviewCache {
     public static let shared = MarkdownPreviewCache()
-    private let byteLimit: Int
-    private var entries: [String: RenderedMarkdown] = [:]
-    private var recency: [String] = []
-    public private(set) var retainedBytes = 0
-    public private(set) var parseCount = 0
-
-    public init(byteLimit: Int = 8 * 1_024 * 1_024) { self.byteLimit = max(0, byteLimit) }
-
-    public func render(_ source: String) throws -> RenderedMarkdown {
-        try Task.checkCancellation()
-        let key = SHA256.hash(data: Data(source.utf8)).map { String(format: "%02x", $0) }.joined()
-        if let cached = entries[key] {
-            recency.removeAll { $0 == key }; recency.append(key)
-            return cached
-        }
-        parseCount += 1
-        let rendered = try Self.parse(source)
-        try Task.checkCancellation()
-        if rendered.cost <= byteLimit {
-            while retainedBytes + rendered.cost > byteLimit || entries.count >= 8 {
-                guard !recency.isEmpty else { break }
-                let oldest = recency.removeFirst()
-                retainedBytes -= entries.removeValue(forKey: oldest)?.cost ?? 0
-            }
-            entries[key] = rendered; recency.append(key); retainedBytes += rendered.cost
-        }
-        return rendered
-    }
-
-    private static func parse(_ source: String) throws -> RenderedMarkdown {
-        let markdown = try AttributedString(markdown: source, options: .init(interpretedSyntax: .full))
-        try Task.checkCancellation()
+    private let rust: AppMarkdownCache
+    private var rendered: [UInt64: RenderedMarkdown] = [:]
+    public var retainedBytes: Int { Int(clamping: rust.stats().retainedBytes) }
+    public var parseCount: Int { Int(clamping: rust.stats().parseCount) }
+    public init(byteLimit: Int = 8 * 1_024 * 1_024) { rust = AppMarkdownCache(byteLimit: UInt64(max(0, byteLimit)), parser: FoundationMarkdownParser()) }
+    public func render(_ source: String) async throws -> RenderedMarkdown {
+        let rust = rust
+        let document = try await responseAsync { try responseCall { try rust.render(source: source, cancellation: $0) } }
+        let id = document.id()
+        if let cached = rendered[id] { return cached }
         let output = NSMutableAttributedString(string: "")
-        var previousBlock: Int?
-        var previousItem: Int?
-        var runs = 0
-        for run in markdown.runs {
+        var attributes: [MarkdownStyle: [NSAttributedString.Key: Any]] = [:]
+        let native = NSMutableAttributedString(string: "")
+        var trailingParagraphStyle: NSParagraphStyle?
+        output.beginEditing()
+        native.beginEditing()
+        for run in document.runs() {
             try Task.checkCancellation()
-            runs += 1
+            let style: [NSAttributedString.Key: Any]
+            if let cached = attributes[run.style] {
+                style = cached
+            } else {
+                style = Self.attributes(run.style)
+                attributes[run.style] = style
+            }
+            let attributed = NSAttributedString(string: run.text, attributes: style)
+            output.append(attributed)
+            if run.style.blockSeparator, let paragraph = trailingParagraphStyle {
+                var nativeStyle = style
+                nativeStyle[.paragraphStyle] = paragraph
+                native.append(NSAttributedString(string: run.text, attributes: nativeStyle))
+            } else {
+                native.append(attributed)
+            }
+            let string = run.text as NSString
+            if string.length > 0 {
+                var end = 0
+                var contentsEnd = 0
+                string.getParagraphStart(nil, end: &end, contentsEnd: &contentsEnd, for: NSRange(location: string.length - 1, length: 1))
+                trailingParagraphStyle = contentsEnd < end ? nil : style[.paragraphStyle] as? NSParagraphStyle
+            }
+        }
+        output.endEditing()
+        native.endEditing()
+        try Task.checkCancellation()
+        let result = RenderedMarkdown(NSAttributedString(attributedString: output), cost: Int(clamping: document.cost()),
+            nativeText: NSAttributedString(attributedString: native))
+        let retained = Set(rust.stats().retainedIds)
+        rendered = rendered.filter { retained.contains($0.key) }
+        if retained.contains(id) { rendered[id] = result }
+        return result
+    }
+    private static func attributes(_ style: MarkdownStyle) -> [NSAttributedString.Key: Any] {
+        if style.blockSeparator {
+            return [.font: NSFont.systemFont(ofSize: 13), .foregroundColor: NSColor.labelColor]
+        }
+        let paragraph = NSMutableParagraphStyle()
+        paragraph.lineSpacing = 3
+        paragraph.paragraphSpacing = 6
+        if style.depth > 0 {
+            paragraph.firstLineHeadIndent = CGFloat(style.depth - 1) * 20
+            paragraph.headIndent = CGFloat(style.depth) * 20
+        }
+        if style.quote {
+            paragraph.firstLineHeadIndent += 16
+            paragraph.headIndent += 16
+        }
+        var font = style.code ? NSFont.monospacedSystemFont(ofSize: 12, weight: .regular) : NSFont.systemFont(ofSize: 13)
+        if style.heading > 0 { font = NSFont.systemFont(ofSize: CGFloat(max(14, 26 - Int(style.heading) * 2)), weight: .bold) }
+        var traits = font.fontDescriptor.symbolicTraits
+        if style.bold { traits.insert(.bold) }
+        if style.italic { traits.insert(.italic) }
+        font = NSFont(descriptor: font.fontDescriptor.withSymbolicTraits(traits), size: font.pointSize) ?? font
+        var attributes: [NSAttributedString.Key: Any] = [
+            .font: font, .foregroundColor: style.quote ? NSColor.secondaryLabelColor : NSColor.labelColor, .paragraphStyle: paragraph,
+        ]
+        if style.code { attributes[.backgroundColor] = NSColor.quaternaryLabelColor }
+        if style.strikethrough { attributes[.strikethroughStyle] = NSUnderlineStyle.single.rawValue }
+        if let link = style.link, let url = URL(string: link) { attributes[.link] = url }
+        return attributes
+    }
+}
+
+/// Foundation's full Markdown interpretation is a platform service: its block,
+/// image, HTML and extension behavior is part of the existing Notes appearance.
+private final class FoundationMarkdownParser: AppMarkdownParser, Sendable {
+    func parse(source: String, cancellation: AppResponseCancellation) throws -> [MarkdownInputRun] {
+        try cancellation.check()
+        let markdown = try AttributedString(markdown: source, options: .init(interpretedSyntax: .full))
+        var output: [MarkdownInputRun] = []
+        output.reserveCapacity(markdown.runs.count)
+        for run in markdown.runs {
+            if Task.isCancelled { throw ResponseError.Cancelled }
             let components = run.presentationIntent?.components ?? []
-            let block = components.first?.identity
-            var heading: Int?
+            var heading: UInt32 = 0
             var code = false
             var quote = false
-            var item: (id: Int, number: Int)?
+            var item: (id: UInt64, number: UInt64)?
             var ordered: Bool?
-            var depth = 0
+            var depth: UInt32 = 0
             for component in components {
                 switch component.kind {
-                case .header(let level): heading = level
+                case .header(let level): heading = UInt32(level)
                 case .codeBlock: code = true
                 case .blockQuote: quote = true
-                case .listItem(let number): if item == nil { item = (component.identity, number) }
-                case .orderedList: if ordered == nil { ordered = true }; depth += 1
-                case .unorderedList: if ordered == nil { ordered = false }; depth += 1
+                case .listItem(let number):
+                    if item == nil { item = (UInt64(component.identity), UInt64(number)) }
+                case .orderedList:
+                    if ordered == nil { ordered = true }
+                    depth += 1
+                case .unorderedList:
+                    if ordered == nil { ordered = false }
+                    depth += 1
                 default: break
                 }
             }
-            let paragraph = NSMutableParagraphStyle()
-            paragraph.lineSpacing = 3
-            paragraph.paragraphSpacing = 6
-            if depth > 0 {
-                paragraph.firstLineHeadIndent = CGFloat(max(0, depth - 1)) * 20
-                paragraph.headIndent = CGFloat(depth) * 20
-            }
-            if quote { paragraph.firstLineHeadIndent += 16; paragraph.headIndent += 16 }
-            var attributes: [NSAttributedString.Key: Any] = [
-                .font: NSFont.systemFont(ofSize: 13), .foregroundColor: NSColor.labelColor,
-                .paragraphStyle: paragraph,
-            ]
             let inline = run.inlinePresentationIntent ?? []
-            let monospace = code || inline.contains(.code)
-            var font = monospace ? NSFont.monospacedSystemFont(ofSize: 12, weight: .regular) : NSFont.systemFont(ofSize: 13)
-            if let heading { font = NSFont.systemFont(ofSize: CGFloat(max(14, 26 - heading * 2)), weight: .bold) }
-            var traits = font.fontDescriptor.symbolicTraits
-            if inline.contains(.stronglyEmphasized) { traits.insert(.bold) }
-            if inline.contains(.emphasized) { traits.insert(.italic) }
-            font = NSFont(descriptor: font.fontDescriptor.withSymbolicTraits(traits), size: font.pointSize) ?? font
-            attributes[.font] = font
-            if monospace { attributes[.backgroundColor] = NSColor.quaternaryLabelColor }
-            if quote { attributes[.foregroundColor] = NSColor.secondaryLabelColor }
-            if inline.contains(.strikethrough) { attributes[.strikethroughStyle] = NSUnderlineStyle.single.rawValue }
-            if let link = run.link, ["http", "https", "mailto"].contains(link.scheme?.lowercased() ?? "") {
-                attributes[.link] = link
-            }
-            if block != previousBlock && output.length > 0 {
-                output.append(NSAttributedString(string: "\n", attributes: [.font: NSFont.systemFont(ofSize: 13), .foregroundColor: NSColor.labelColor]))
-            }
-            if let item, item.id != previousItem {
-                output.append(NSAttributedString(string: ordered == true ? "\(item.number).  " : "•  ", attributes: attributes))
-            }
-            output.append(NSAttributedString(string: String(markdown[run.range].characters), attributes: attributes))
-            previousBlock = block
-            previousItem = item?.id
+            output.append(MarkdownInputRun(
+                text: String(markdown[run.range].characters),
+                style: MarkdownStyle(
+                    heading: heading, code: code || inline.contains(.code), quote: quote, depth: depth,
+                    bold: inline.contains(.stronglyEmphasized), italic: inline.contains(.emphasized),
+                    strikethrough: inline.contains(.strikethrough), link: run.link?.absoluteString, blockSeparator: false),
+                block: components.first.map { UInt64($0.identity) },
+                item: item.map { MarkdownListItem(id: $0.id, number: $0.number, ordered: ordered == true) }))
         }
-        return RenderedMarkdown(NSAttributedString(attributedString: output), cost: output.length * 2 + runs * 256)
+        try cancellation.check()
+        return output
     }
 }

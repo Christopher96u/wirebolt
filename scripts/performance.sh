@@ -30,6 +30,7 @@ swiftc \
   apple/Benchmarks/PerformanceContract.swift \
   -Xcc -fmodule-map-file=apple/Generated/wirebolt_ffiFFI.modulemap \
   -Xcc -fmodule-map-file=crates/wirebolt-ffi/include/module.modulemap \
+  -licucore \
   target/release/libwirebolt_ffi.a \
   -framework AppKit \
   -framework Security \

@@ -1,7 +1,7 @@
 import Foundation
 
 extension BridgeSmoke {
-    /// Exercise the real C callback buffer with chunks below its 32 KiB threshold.
+    /// Exercise typed Rust transport callbacks with small streamed chunks.
     /// The server deliberately keeps the connection open after sending its body.
     static func verifySlowStreaming(_ runner: RustRequestRunner) async throws {
         let server = Process()
@@ -61,8 +61,41 @@ server.serve_forever()
                 if case .chunk = event, !received { received = true; runner.cancel(runID: cancelledRun) }
                 if case .complete = event { preconditionFailure("A cancelled stream must never complete successfully") }
             }
-        } catch let failure as RunFailure { cancelled = failure.kind == "cancelled" }
+        } catch let failure as RunFailure { cancelled = failure.kind == .cancelled }
         precondition(received && cancelled, "Cancelling a slow chunked stream must end only its run")
+        try await verifyRuntimeSend(runner, draft: draft)
         print("slow_chunked_stream_and_cancellation=passed bytes=\(bytes.count)")
     }
+    @MainActor private static func verifyRuntimeSend(_ runner: RustRequestRunner, draft: RequestDraft) async throws {
+        let directory = FileManager.default.temporaryDirectory.appending(path: "wirebolt-runtime-smoke-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let model = WireboltModel(runner: runner, history: HistoryRepository(root: directory), cookieDirectory: nil)
+        let session = model.sessions.open(draft: draft)
+        let started = ContinuousClock.now
+        let send = Task { await model.send(session) }
+        while session.responseText.isEmpty && started.duration(to: .now) < .seconds(3) {
+            try await Task.sleep(for: .milliseconds(5))
+        }
+        precondition(!session.responseText.isEmpty && session.isRunning, "Rust runtime must publish small chunks before completion")
+        precondition(started.duration(to: .now) < .milliseconds(800))
+        session.draft.url = "https://example.com/edited"
+        await send.value
+        precondition(session.responseText == "first 🌍 line\n" && session.failure == nil)
+        precondition(session.preparedRun?.url == draft.url && session.draft.url != draft.url)
+        let count = await model.historyCount(for: session)
+        precondition(count == 1)
+        let second = model.sessions.open(draft: draft, forceNewSession: true)
+        let pending = Task { await model.send(second) }
+        let cancelStarted = ContinuousClock.now
+        while second.responseText.isEmpty && cancelStarted.duration(to: .now) < .seconds(3) {
+            try await Task.sleep(for: .milliseconds(5))
+        }
+        model.cancel(second)
+        await pending.value
+        precondition(second.failure?.kind == .cancelled && session.failure == nil)
+        let cancelledHistoryCount = await model.historyCount(for: second)
+        precondition(cancelledHistoryCount == 2, "Native cancellation retains the prepared partial run in history")
+        print("rust_runtime_send_stream_history_and_scoped_cancellation=passed")
+    }
+
 }

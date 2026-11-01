@@ -60,7 +60,7 @@ struct StreamingPreviewTests {
         await session.consume(.chunk(Data("partial".utf8)), runID: run)
         session.cancel(runID: run)
         try await waitUntil { session.responseText == "partial" }
-        #expect(!session.isRunning && session.failure?.kind == "cancelled")
+        #expect(!session.isRunning && session.failure?.kind == .cancelled)
         #expect(session.responseText == "partial")
         await session.consume(.chunk(Data("late".utf8)), runID: run)
         #expect(session.responseText == "partial")

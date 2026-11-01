@@ -80,7 +80,7 @@ struct WireboltModelTests {
             #expect((model.operationFailure != nil) == fails)
             if !fails {
                 #expect(await persistence.commands.count == 1)
-                #expect(await persistence.commands.last == .saveWorkspaceSettings(latest))
+                #expect(await persistence.commands.last == .saveWorkspaceSettings(transport: latest.domain))
             }
         }
     }
@@ -103,7 +103,9 @@ struct WireboltModelTests {
         #expect(original.draft.note == "Unsaved original")
         #expect(split.isDirty)
         await model.saveCurrentRequest(collectionID: "source")
-        guard case let .saveRequest(destination, saved) = await persistence.commands.last else { Issue.record("Missing save"); return }
+        guard case let .saveRequest(record) = await persistence.commands.last else { Issue.record("Missing save"); return }
+        let destination = record.collectionId
+        let saved = RequestLocation(domain: record)
         #expect(destination == "target")
         #expect(saved.order == 4)
         #expect(saved.request.note == "Unsaved split")
@@ -156,7 +158,8 @@ struct WireboltModelTests {
         await model.saveCurrentRequest(collectionID: "api")
         let commands = await persistence.commands
         #expect(commands.count == 3)
-        guard case let .saveRequest(_, saved) = commands.last else { Issue.record("Expected save"); return }
+        guard case let .saveRequest(record) = commands.last else { Issue.record("Expected save"); return }
+        let saved = RequestLocation(domain: record)
         #expect(saved.order == 0)
         #expect(saved.request.note == "Unsaved edit")
     }
@@ -189,7 +192,7 @@ struct WireboltModelTests {
         model.workspace.collections = [collection]
         await model.reorderSidebar("request|api|b", relativeTo: "request:a", after: false, collectionID: "api", parentID: nil)
         #expect(model.workspace.collections == [collection])
-        #expect(model.operationFailure?.kind == "workspace")
+        #expect(model.operationFailure?.kind == .workspace)
     }
 
     @Test("New global requests persist at the workspace root and contextual requests keep their folder")
@@ -222,7 +225,9 @@ struct WireboltModelTests {
         model.draft.note = "Keep in second"
         await model.saveCurrentRequest(collectionID: "first")
         let commands = await persistence.commands
-        guard case let .saveRequest(collectionID, saved) = commands.first else { Issue.record("Expected request save"); return }
+        guard case let .saveRequest(record) = commands.first else { Issue.record("Expected request save"); return }
+        let collectionID = record.collectionId
+        let saved = RequestLocation(domain: record)
         #expect(collectionID == "second")
         #expect(saved.request.note == "Keep in second")
         #expect(model.workspace.collections[0].requests.isEmpty)
@@ -261,7 +266,8 @@ struct WireboltModelTests {
         #expect(model.draft.url == "https://example.com/unsaved")
         #expect(model.sessions.activeSession?.isDirty == true)
         let commands = await persistence.commands
-        guard case let .saveRequest(_, saved) = commands.first else { Issue.record("Expected one request save"); return }
+        guard case let .saveRequest(record) = commands.first else { Issue.record("Expected one request save"); return }
+        let saved = RequestLocation(domain: record)
         #expect(saved.request.name == "After")
         #expect(saved.request.url == "https://example.com/saved")
         model.draft.url = "https://example.com/saved"
@@ -307,8 +313,8 @@ struct WireboltModelTests {
     @Test("surfaces structured validation failures")
     @MainActor
     func reportsFailure() async {
-        let issue = RequestIssue(path: "url", kind: "invalid_url", reference: nil)
-        let model = WireboltModel(runner: StubRunner(failure: RunFailure(kind: "invalid_request", issues: [issue])))
+        let issue = RequestIssue(path: "url", kind: .invalidUrl, reference: nil)
+        let model = WireboltModel(runner: StubRunner(failure: RunFailure(kind: .invalidRequest, issues: [issue])))
 
         await model.send()
 
@@ -421,8 +427,8 @@ struct WireboltModelTests {
         #expect(saved?.1 == "api")
     }
 
-    @Test("encodes secret references without secret material")
-    func encodesRequestInput() throws {
+    @Test("projects secret references in typed run input")
+    func projectsRequestInput() throws {
         let draft = RequestDraft(
             method: .post,
             url: "https://example.com",
@@ -433,7 +439,7 @@ struct WireboltModelTests {
 
         let workspaceProxy = ProxyDocument.manual(routes: [
             ProxyRouteDocument(
-                destination: "all",
+                destination: .all,
                 endpoint: "http://proxy.internal:8080/",
                 credentials: ProxyCredentialsDocument(
                     username: "proxy.username",
@@ -441,25 +447,22 @@ struct WireboltModelTests {
                 )
             ),
         ])
-        let data = try JSONEncoder().encode(RunInput(
+        let input = RunInput(
             draft: draft,
             variables: [:],
             workspaceProxy: workspaceProxy
-        ))
-        let json = String(decoding: data, as: UTF8.self)
+        ).domain
 
-        #expect(json.contains("api.token"))
-        #expect(json.contains("request_proxy"))
-        #expect(json.contains("proxy.internal"))
-        #expect(json.contains("proxy.username"))
-        #expect(json.contains("secret material") == false)
+        #expect(input.authentication == .bearer(token: .secret("api.token")))
+        #expect(input.requestProxy == .direct)
+        #expect(input.workspaceProxy == workspaceProxy)
     }
 
     @Test("round-trips a manual workspace proxy without secret material")
     func roundTripsManualProxy() throws {
         let proxy = ProxyDocument.manual(routes: [
             ProxyRouteDocument(
-                destination: "https",
+                destination: .https,
                 endpoint: "socks5h://proxy.internal:1080/",
                 credentials: ProxyCredentialsDocument(
                     username: "proxy.username",
@@ -468,19 +471,18 @@ struct WireboltModelTests {
             ),
         ])
 
-        let data = try JSONEncoder().encode(proxy)
-        let decoded = try JSONDecoder().decode(ProxyDocument.self, from: data)
+        let data = try encodeDomain(proxy)
+        let decoded = try decodeDomain(ProxyDocument.self, from: data)
 
         #expect(decoded == proxy)
         #expect(String(decoding: data, as: UTF8.self).contains("secret material") == false)
     }
 
-    @Test("decodes the stable Git bridge document")
-    func decodesGitBridgeDocument() throws {
-        let data = Data(#"{"branch":"main","upstream":"origin/main","ahead":1,"behind":2,"changes":[{"path":"wirebolt.toml","previous_path":null,"staged":"type_changed","unstaged":"none","conflicted":false}]}"#.utf8)
-
-        let status = try JSONDecoder().decode(GitStatusSnapshot.self, from: data)
-
+    @Test("projects typed Git status and deltas")
+    func projectsGitStatus() {
+        let status = GitStatusSnapshot(WorkspaceGitStatus(
+            branch: "main", upstream: "origin/main", ahead: 1, behind: 2,
+            changes: [WorkspaceGitChange(path: "wirebolt.toml", previousPath: nil, staged: .typeChanged, unstaged: .none, conflicted: false)], merging: false))
         #expect(status.branch == "main")
         #expect(status.ahead == 1)
         #expect(status.behind == 2)
@@ -529,7 +531,7 @@ struct WireboltModelTests {
         await model.pullGit()
 
         #expect(await collaboration.calls == [])
-        #expect(model.gitFailure?.kind == "unsaved_request")
+        #expect(model.gitFailure?.kind == .unsavedRequest)
     }
 
     @Test("reloads workspace after a successful pull")
@@ -656,7 +658,7 @@ struct WireboltModelTests {
         #expect(model.closeDocuments(.all, allowDirty: true).isEmpty)
         await task.value
         #expect(!session.isRunning)
-        #expect(session.failure?.kind == "cancelled")
+        #expect(session.failure?.kind == .cancelled)
         #expect(!session.isDirty)
         #expect(model.sessions.activeSession == nil)
     }
@@ -704,15 +706,14 @@ struct WireboltModelTests {
                 EnvironmentVariableDraft(id: "first", key: "host", value: .literal("example.com"), enabled: true, order: 1),
             ]
         )
-        let data = try JSONEncoder().encode(environment)
-        let decoded = try JSONDecoder().decode(EnvironmentDraft.self, from: data)
+        let decoded = EnvironmentDraft(domain: environment.domain)
 
         #expect(decoded == environment)
         #expect(decoded.variables.map(\.id) == ["second", "first"])
         #expect(decoded.enabledValues == ["host": .literal("example.com")])
     }
 
-    @Test("custom methods and stable field IDs survive request encoding")
+    @Test("custom methods and stable field IDs survive typed projection")
     func customMethodAndFields() throws {
         let method = try #require(HTTPMethod(rawValue: "PURGE"))
         let draft = RequestDraft(
@@ -721,11 +722,8 @@ struct WireboltModelTests {
             headers: [RequestField(id: "stable-header", name: "X-Test", value: .literal("yes"))]
         )
         let input = RunInput(draft: draft, variables: [:])
-        let data = try JSONEncoder().encode(input)
-        let json = String(decoding: data, as: UTF8.self)
-
-        #expect(json.contains("PURGE"))
-        #expect(json.contains("stable-header"))
+        #expect(input.domain.method == "PURGE")
+        #expect(input.domain.headers.map(\.id) == ["stable-header"])
     }
 
     @Test("request transport visibly inherits workspace defaults until overridden")
@@ -768,7 +766,7 @@ struct WireboltModelTests {
             Issue.record("Expected workspace settings command")
             return
         }
-        #expect(settings.validateTLS == false)
+        #expect(settings.validateTls == false)
     }
 
     @Test("keeps the exact prepared request immutable while the draft changes")
@@ -800,8 +798,8 @@ struct WireboltModelTests {
         await model.send()
         #expect(await persistence.savedSecret?.0 == "test.token")
         #expect(await persistence.savedSecret?.1 == "fixture-token-material")
-        let encoded = try JSONEncoder().encode(RunInput(draft: model.draft, variables: [:]))
-        #expect(!String(decoding: encoded, as: UTF8.self).contains("fixture-token-material"))
+        let input = RunInput(draft: model.draft, variables: [:]).domain
+        #expect(input.authentication == .bearer(token: .secret("test.token")))
     }
 
     @Test("Cancellation has a terminal presentation and ignores late callbacks")
@@ -813,7 +811,7 @@ struct WireboltModelTests {
         session.cancel(runID: run)
         await session.consume(.chunk(Data("late".utf8)), runID: run)
         #expect(!session.isRunning)
-        #expect(session.failure?.kind == "cancelled")
+        #expect(session.failure?.kind == .cancelled)
         #expect(session.responseBytes == 0)
     }
 
@@ -840,10 +838,57 @@ struct WireboltModelTests {
 
         #expect(await persistence.savedSecret?.0 == "oauth.test-token")
         #expect(await persistence.savedSecret?.1 == "access-material")
-        let encoded = try JSONEncoder().encode(RunInput(draft: session.draft, variables: [:]))
-        #expect(String(decoding: encoded, as: UTF8.self).contains("access-material") == false)
+        let input = RunInput(draft: session.draft, variables: [:]).domain
+        #expect(input.authentication == .oauth2(configuration: configuration))
         #expect(model.oauthReceipts[session.id] != nil)
     }
+    @Test("Send reads the current editor projection after credential storage finishes")
+    @MainActor func latestDraftAfterSecretFlush() async {
+        let persistence = PausedSecretPersistence()
+        let runner = InputCapturingRunner()
+        let model = WireboltModel(runner: runner, persistence: persistence)
+        let session = model.sessions.open(draft: RequestDraft(url: "https://example.com/before"))
+        model.editSecret(name: "token", value: "fixture")
+        let send = Task { await model.send(session) }
+        await persistence.waitForWrite()
+        session.draft.url = "https://example.com/after"
+        await persistence.releaseWrite()
+        await send.value
+        #expect(await runner.lastInput?.url == "https://example.com/after")
+    }
+
+    @Test("Closing a document during credential storage prevents its pending transport")
+    @MainActor func closeDuringSecretFlush() async {
+        let persistence = PausedSecretPersistence()
+        let runner = InputCapturingRunner()
+        let model = WireboltModel(runner: runner, persistence: persistence)
+        let session = model.sessions.open(draft: RequestDraft(url: "https://example.com/pending"))
+        model.editSecret(name: "token", value: "fixture")
+        let send = Task { await model.send(session) }
+        await persistence.waitForWrite()
+        _ = model.closeDocuments(.all, allowDirty: true)
+        await persistence.releaseWrite()
+        await send.value
+        #expect(await runner.lastInput == nil)
+        #expect(!session.isRunning)
+    }
+
+    @Test("OAuth acquisition preserves edits made while the authorization adapter waits")
+    @MainActor func editsDuringOAuthAcquisition() async {
+        let authorizer = PausedOAuthAuthorizer()
+        let model = WireboltModel(runner: StubRunner(), persistence: SecretPersistenceRecorder(), oauth2: authorizer)
+        let session = model.sessions.open(draft: RequestDraft(url: "https://example.com/before", authentication: .oauth2(configuration: OAuth2Configuration())))
+        let acquire = Task { await model.acquireOAuthToken(for: session) }
+        while authorizer.pending == nil { await Task.yield() }
+        session.draft.url = "https://example.com/after"
+        session.draft.note = "Keep this edit"
+        authorizer.release()
+        await acquire.value
+        #expect(session.draft.url == "https://example.com/after")
+        #expect(session.draft.note == "Keep this edit")
+        #expect(model.oauthReceipts[session.id] != nil)
+    }
+
 }
 
 private struct StubRunner: RequestRunner {
@@ -1050,7 +1095,7 @@ private actor SequencedPersistence: WorkspacePersistence {
 private actor MutationRecorder: WorkspacePersistence {
     let fails: Bool
     init(fails: Bool = false) { self.fails = fails }
-    private(set) var commands: [WorkspaceCommand] = []
+    private(set) var commands: [SessionWorkspaceCommand] = []
     private(set) var loadCount = 0
 
     func load() async throws -> WorkspaceDraft {
@@ -1062,8 +1107,8 @@ private actor MutationRecorder: WorkspacePersistence {
     func save(environment _: EnvironmentDraft) async throws {}
     func saveSecret(name _: String, value _: String) async throws {}
 
-    func apply(_ command: WorkspaceCommand) async throws -> WorkspaceDelta {
-        if fails { throw RunFailure(kind: "workspace", issues: []) }
+    func apply(_ command: SessionWorkspaceCommand) async throws -> WorkspaceDelta {
+        if fails { throw RunFailure(kind: .workspace, issues: []) }
         commands.append(command)
         return WorkspaceDelta(
             version: UInt64(commands.count),
@@ -1113,8 +1158,46 @@ private extension GitStatusSnapshot {
 }
 
 private struct UnreadableWorkspace: WorkspacePersistence {
-    func load() async throws -> WorkspaceDraft { throw RunFailure(kind: "workspace", issues: []) }
+    func load() async throws -> WorkspaceDraft { throw RunFailure(kind: .workspace, issues: []) }
     func save(request: RequestDraft, in collectionID: String) async throws {}
     func save(environment: EnvironmentDraft) async throws {}
     func saveSecret(name: String, value: String) async throws {}
+}
+
+private actor PausedSecretPersistence: WorkspacePersistence {
+    private var pending: CheckedContinuation<Void, Never>?
+    func load() async throws -> WorkspaceDraft { WorkspaceDraft(name: "Fixture") }
+    func save(request: RequestDraft, in collectionID: String) async throws {}
+    func save(environment: EnvironmentDraft) async throws {}
+    func saveSecret(name: String, value: String) async throws {
+        await withCheckedContinuation { pending = $0 }
+    }
+    func waitForWrite() async { while pending == nil { await Task.yield() } }
+    func releaseWrite() {
+        pending?.resume()
+        pending = nil
+    }
+}
+@MainActor private final class PausedOAuthAuthorizer: OAuth2Authorizing {
+    var pending: CheckedContinuation<Void, Never>?
+    func acquireToken(configuration: OAuth2Configuration) async throws -> (String, OAuth2TokenReceipt) {
+        await withCheckedContinuation { pending = $0 }
+        return ("fixture", OAuth2TokenReceipt(expiresAt: nil, scope: nil))
+    }
+    func release() {
+        pending?.resume()
+        pending = nil
+    }
+}
+
+// Verify the Rust-owned interchange format while keeping native facade assertions.
+func encodeDomain(_ value: ProxyDocument) throws -> Data { try sessionEncodeProxy(value: value) }
+func decodeDomain(_: ProxyDocument.Type, from data: Data) throws -> ProxyDocument { try sessionDecodeProxy(data: data) }
+
+@Test("Default typed persistence preserves collection-qualified request identity")
+func defaultPersistenceDeltaKeepsLocationIdentity() async throws {
+    let persistence = StubPersistence(workspace: WorkspaceDraft(name: "Fixture"))
+    let location = RequestLocation(collectionID: "api", request: RequestDraft(id: "orders"))
+    let delta = try await persistence.apply(.saveRequest(location: location.domain))
+    #expect(delta.affectedIDs == [location.id])
 }

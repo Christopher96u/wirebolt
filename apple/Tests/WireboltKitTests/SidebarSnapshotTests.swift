@@ -174,3 +174,18 @@ import Testing
     }
 }
 
+
+extension SidebarSnapshotTests {
+    @Test func nativePolicyFacadesPreserveDropAndPickerResults() {
+        let collection = fixture()
+        #expect(collection.canDropInside("folder", identifier: "request|other|r"))
+        #expect(!collection.canDropInside("nested", identifier: "group|c|folder"))
+        let workspace = WorkspaceDraft(name: "Workspace", collections: [collection, CollectionDraft(id: "a", name: "A")], environments: [
+            EnvironmentDraft(id: "global", name: "Global"), EnvironmentDraft(id: "z", name: "Zulu"),
+            EnvironmentDraft(id: "a", name: "Alpha")
+        ])
+        #expect(workspace.moveCollections(for: "request|c|r").map(\.id) == ["a", "c"])
+        #expect(workspace.moveCollections(for: "group|c|folder").map(\.id) == ["c"])
+        #expect(workspace.selectableEnvironments.map(\.id) == ["a", "z"])
+    }
+}

@@ -1,283 +1,59 @@
 import Foundation
 import SystemConfiguration
-import WireboltStreamFFI
 
 final class RustRequestRunner: @unchecked Sendable, RequestRunner {
+    var sessionTransport: AppRuntimeTransport { AppRuntimeTransport.native() }
     private static let proxyMonitor = SystemProxyMonitor()
+    private let lock = NSLock()
+    private var sessions: [RunID: AppRequestRun] = [:]
 
     init() {
-        // SCDynamicStore setup is kept off the launch path; it only invalidates pooled engines.
         DispatchQueue.global(qos: .utility).async { _ = Self.proxyMonitor }
     }
 
     func proxySettingsChanged() { resetHttpEngines() }
-
-    private let lock = NSLock()
-    private var sessions: [RunID: OpaquePointer] = [:]
-    private var terminalBeforeInstall: Set<RunID> = []
-
     func resolveValues(_ values: [ValueSource], variables: [String: ValueSource]) async throws -> [String] {
-        // The common literal URL needs no bridge work or credential lookup.
-        if values.allSatisfy({ if case let .literal(text) = $0 { return !text.contains("{{") }; return false }) {
-            return values.map(\.editableValue)
-        }
-        return try await Task.detached(priority: .userInitiated) {
-            do {
-                let encoder = JSONEncoder()
-                return try resolveRequestValues(valuesJson: String(decoding: encoder.encode(values), as: UTF8.self),
-                    variablesJson: String(decoding: encoder.encode(variables), as: UTF8.self))
-            } catch let RequestPreparationError.InvalidRequest(reason) {
-                throw (try? JSONDecoder().decode(RunFailure.self, from: Data(reason.utf8))) ?? RunFailure(kind: "invalid_request", issues: [])
-            }
-        }.value
+        do {
+            return try await sessionTransport.resolveValues(values: values, variables: variables)
+        } catch let RuntimeRequestError.Failure(failure) { throw failure }
     }
-
-    func events(
-        for input: RunInput,
-        runID: RunID
-    ) -> AsyncThrowingStream<RunEvent, any Error> {
+    func events(for input: RunInput, runID: RunID) -> AsyncThrowingStream<RunEvent, any Error> {
         AsyncThrowingStream { continuation in
-            PerformanceProbe.beginPrepare(runID: runID.description)
-            let encoded: Data
-            do {
-                let encoder = JSONEncoder()
-                encoder.outputFormatting = [.sortedKeys]
-                encoded = try encoder.encode(input)
-            } catch {
-                PerformanceProbe.endPrepare(runID: runID.description)
-                continuation.finish(throwing: RustBridgeFailure.encoding)
-                return
+            let observer = RequestStreamObserver(continuation: continuation)
+            lock.withLock {
+                sessions[runID] = AppRequestRun.start(input: input.domain, observer: observer)
             }
-            PerformanceProbe.endPrepare(runID: runID.description)
-
-            let callbackBox = RunCallbackBox(
-                runID: runID,
-                continuation: continuation,
-                runner: self
-            )
-            let context = Unmanaged.passRetained(callbackBox).toOpaque()
-            let callbacks = wirebolt_run_callbacks(
-                on_prepared: wireboltOnPrepared,
-                on_head: wireboltOnHead,
-                on_chunk: wireboltOnChunk,
-                on_complete: wireboltOnComplete,
-                on_error: wireboltOnError,
-                on_cookies: wireboltOnCookies
-            )
-            let startedSession = encoded.withUnsafeBytes { bytes in
-                wirebolt_run_start(
-                    bytes.bindMemory(to: UInt8.self).baseAddress,
-                    UInt(bytes.count),
-                    callbacks,
-                    context
-                )
+            continuation.onTermination = { [weak self] _ in
+                self?.lock.withLock { self?.sessions.removeValue(forKey: runID)?.cancel() }
             }
-            guard let startedSession else {
-                Unmanaged<RunCallbackBox>.fromOpaque(context).release()
-                continuation.finish(throwing: RustBridgeFailure.start)
-                return
-            }
-            PerformanceProbe.dispatched(runID: runID.description)
-            install(startedSession, runID: runID)
-            continuation.onTermination = { [weak self] _ in self?.cancel(runID: runID) }
         }
     }
-
     func cancel(runID: RunID) {
-        lock.withLock {
-            if let session = sessions[runID] { wirebolt_run_cancel(session) }
-        }
-    }
-
-    fileprivate func finishFromCallback(runID: RunID) {
-        let active: OpaquePointer? = lock.withLock {
-            guard let session = sessions.removeValue(forKey: runID) else {
-                terminalBeforeInstall.insert(runID)
-                return nil
-            }
-            return session
-        }
-        if let active {
-            let address = UInt(bitPattern: active)
-            DispatchQueue.global(qos: .utility).async {
-                if let session = OpaquePointer(bitPattern: address) {
-                    wirebolt_run_free(session)
-                }
-            }
-        }
-    }
-
-    private func install(_ newSession: OpaquePointer, runID: RunID) {
-        let shouldFree = lock.withLock {
-            if terminalBeforeInstall.remove(runID) != nil {
-                return true
-            }
-            sessions[runID] = newSession
-            return false
-        }
-        if shouldFree { wirebolt_run_free(newSession) }
-    }
-
-    deinit {
-        let active = lock.withLock { () -> [OpaquePointer] in
-            defer { sessions.removeAll() }
-            return Array(sessions.values)
-        }
-        for session in active { wirebolt_run_free(session) }
+        lock.withLock { sessions[runID]?.cancel() }
     }
 }
 
-private final class RunCallbackBox: @unchecked Sendable {
-    let runID: RunID
+private final class RequestStreamObserver: SessionRequestObserver {
     let continuation: AsyncThrowingStream<RunEvent, any Error>.Continuation
-    let runner: RustRequestRunner
-    private let bufferLock = NSLock()
-    private var pendingBody = Data()
-    private var emittedFirstViewport = false
-    private var flushScheduled = false
-    private var terminated = false
-
-    init(
-        runID: RunID,
-        continuation: AsyncThrowingStream<RunEvent, any Error>.Continuation,
-        runner: RustRequestRunner
-    ) {
-        self.runID = runID
+    init(continuation: AsyncThrowingStream<RunEvent, any Error>.Continuation) {
         self.continuation = continuation
-        self.runner = runner
     }
-
-    func append(_ data: Data) {
-        let first = bufferLock.withLock {
-            guard !terminated else { return false }
-            pendingBody.append(data)
-            let first = !emittedFirstViewport && !data.isEmpty
-            emittedFirstViewport = emittedFirstViewport || first
-            if !flushScheduled {
-                flushScheduled = true
-                DispatchQueue.global(qos: .userInitiated).asyncAfter(deadline: .now() + .milliseconds(16)) { [weak self] in self?.flush() }
-            }
-            if pendingBody.count >= 32 * 1024 {
-                // Yield under the same lock as terminal flush: the timer and the
-                // transport callback can never publish a chunk after completion.
-                continuation.yield(.chunk(pendingBody))
-                pendingBody.removeAll(keepingCapacity: true)
-            }
-            return first
-        }
-        if first { PerformanceProbe.firstViewport(runID: runID.description) }
-    }
-
-    func flush(terminal: Bool = false) {
-        bufferLock.withLock {
-            flushScheduled = false
-            guard !terminated else { return }
-            if !pendingBody.isEmpty {
-                continuation.yield(.chunk(pendingBody))
-                pendingBody.removeAll(keepingCapacity: !terminal)
-            }
-            if terminal { terminated = true }
+    func event(event: SessionRunEvent) {
+        switch event {
+        case .prepared(let snapshot): continuation.yield(.prepared(PreparedRunSnapshot(snapshot)))
+        case .head(let head): continuation.yield(.head(head))
+        case .complete(let completion): continuation.yield(.complete(completion))
         }
     }
-
-}
-
-private enum RustBridgeFailure: Error {
-    case encoding
-    case start
-    case invalidCallback
-}
-
-private let wireboltOnPrepared: @convention(c) (
-    UnsafeMutableRawPointer?,
-    UnsafePointer<UInt8>?,
-    UInt
-) -> Void = { context, bytes, length in
-    guard let box = callbackBox(context), let data = copiedData(bytes, length) else { return }
-    do {
-        box.continuation.yield(.prepared(
-            try JSONDecoder().decode(PreparedRunSnapshot.self, from: data)
-        ))
-    } catch {
-        box.runner.cancel(runID: box.runID)
+    func bytes(data: Data) -> Bool {
+        if case .terminated = continuation.yield(.chunk(data)) { return false }
+        return true
     }
-}
-
-private let wireboltOnHead: @convention(c) (
-    UnsafeMutableRawPointer?,
-    UnsafePointer<UInt8>?,
-    UInt
-) -> Void = { context, bytes, length in
-    guard let box = callbackBox(context), let data = copiedData(bytes, length) else { return }
-    do {
-        PerformanceProbe.firstHead(runID: box.runID.description)
-        box.continuation.yield(.head(try JSONDecoder().decode(ResponseHead.self, from: data)))
-    } catch {
-        box.runner.cancel(runID: box.runID)
+    func cookies(url: String, headers: [ResponseHeaderValue]) {
+        continuation.yield(.cookies(ResponseCookies(url: url, headers: headers)))
     }
-}
-
-private let wireboltOnChunk: @convention(c) (
-    UnsafeMutableRawPointer?,
-    UnsafePointer<UInt8>?,
-    UInt
-) -> UInt8 = { context, bytes, length in
-    guard let box = callbackBox(context), let data = copiedData(bytes, length) else { return 0 }
-    box.append(data)
-    return 1
-}
-
-private let wireboltOnComplete: @convention(c) (
-    UnsafeMutableRawPointer?,
-    UnsafePointer<UInt8>?,
-    UInt
-) -> Void = { context, bytes, length in
-    guard let context else { return }
-    let box = Unmanaged<RunCallbackBox>.fromOpaque(context).takeRetainedValue()
-    defer { box.runner.finishFromCallback(runID: box.runID) }
-    box.flush(terminal: true)
-    guard let data = copiedData(bytes, length),
-          let completion = try? JSONDecoder().decode(RunCompletion.self, from: data)
-    else {
-        box.continuation.finish(throwing: RustBridgeFailure.invalidCallback)
-        return
-    }
-    box.continuation.yield(.complete(completion))
-    box.continuation.finish()
-}
-
-private let wireboltOnError: @convention(c) (
-    UnsafeMutableRawPointer?,
-    UnsafePointer<UInt8>?,
-    UInt
-) -> Void = { context, bytes, length in
-    guard let context else { return }
-    let box = Unmanaged<RunCallbackBox>.fromOpaque(context).takeRetainedValue()
-    defer { box.runner.finishFromCallback(runID: box.runID) }
-    box.flush(terminal: true)
-    guard let data = copiedData(bytes, length),
-          let failure = try? JSONDecoder().decode(RunFailure.self, from: data)
-    else {
-        box.continuation.finish(throwing: RustBridgeFailure.invalidCallback)
-        return
-    }
-    box.continuation.finish(throwing: failure)
-}
-
-private func callbackBox(_ context: UnsafeMutableRawPointer?) -> RunCallbackBox? {
-    context.map { Unmanaged<RunCallbackBox>.fromOpaque($0).takeUnretainedValue() }
-}
-
-private func copiedData(_ bytes: UnsafePointer<UInt8>?, _ length: UInt) -> Data? {
-    guard length == 0 || bytes != nil else { return nil }
-    guard let bytes else { return Data() }
-    return Data(bytes: bytes, count: Int(length))
-}
-
-private let wireboltOnCookies: @convention(c) (UnsafeMutableRawPointer?, UnsafePointer<UInt8>?, UInt) -> Void = { context, bytes, length in
-    guard let box = callbackBox(context), let data = copiedData(bytes, length) else { return }
-    do { box.continuation.yield(.cookies(try JSONDecoder().decode(ResponseCookies.self, from: data))) }
-    catch { box.runner.cancel(runID: box.runID) }
+    func finish(failure: SessionFailure?) {
+        continuation.finish(throwing: failure) }
 }
 
 /// The shared HTTP engine snapshots macOS proxy settings. Invalidate pooled engines

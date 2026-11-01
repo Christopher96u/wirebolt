@@ -104,12 +104,9 @@ func confirmUnsavedChanges(model: WireboltModel, in window: NSWindow?, quitting:
     let dirty = model.dirtySessions
     guard !dirty.isEmpty else { return true }
     let alert = NSAlert()
-    alert.messageText = dirty.count == 1
-        ? "Do you want to save the changes you made to “\(dirty[0].title)”?"
-        : "You have unsaved changes in \(dirty.count) requests. Do you want to save them?"
-    alert.informativeText = quitting
-        ? "Your changes will be lost if you quit without saving."
-        : "Your changes will be lost if you don’t save them."
+    let prompt = workspaceUnsavedPrompt(titles: dirty.map(\.title), quitting: quitting)
+    alert.messageText = prompt.message
+    alert.informativeText = prompt.detail
     alert.addButton(withTitle: "Save")
     alert.addButton(withTitle: "Cancel")
     let discard = alert.addButton(withTitle: "Don’t Save")
@@ -209,7 +206,6 @@ func saveExportedDocument(named name: String, content: String) {
 final class RecentWorkspaces {
     static let shared = RecentWorkspaces()
     private static let key = "workspace.recentPaths"
-    private static let limit = 10
     private(set) var urls: [URL]
 
     private init() {
@@ -218,8 +214,7 @@ final class RecentWorkspaces {
 
     func note(_ url: URL) {
         let url = url.standardizedFileURL
-        let updated = [url] + urls.filter { $0.path != url.path && FileManager.default.fileExists(atPath: $0.path) }
-        store(Array(updated.prefix(Self.limit)))
+        store(workspaceRecentPaths(path: url.path, paths: urls.map(\.path)).map { URL(fileURLWithPath: $0, isDirectory: true) })
     }
 
     func remove(_ url: URL) { store(urls.filter { $0.path != url.standardizedFileURL.path }) }
@@ -238,13 +233,14 @@ final class RecentWorkspaces {
 @Observable
 final class ExternalFileQueue {
     static let shared = ExternalFileQueue()
+    @ObservationIgnored private let rust = AppWorkspaceInterface()
     private(set) var pending: [URL] = []
 
-    func enqueue(_ urls: [URL]) { pending.append(contentsOf: urls.filter(\.isFileURL)) }
+    func enqueue(_ urls: [URL]) { pending = rust.enqueueFiles(urls: urls.map(\.absoluteString)).compactMap(URL.init(string:)) }
 
     func drain() -> [URL] {
         defer { pending = [] }
-        return pending
+        return rust.drainFiles().compactMap(URL.init(string:))
     }
 }
 
@@ -252,28 +248,7 @@ final class ExternalFileQueue {
 /// format chosen in the Import menu; the contents win when they clearly say otherwise.
 @MainActor
 func importExternalFile(_ url: URL, model: WireboltModel, preferred: ImportFormat? = nil) async {
-    // Bruno collections are folders of `.bru` files; a lone `.bru` file is one request.
-    let isDirectory = (try? url.resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory == true
-    if isDirectory || url.pathExtension.lowercased() == "bru" {
-        guard !isDirectory || BrunoCollectionSource.isCollection(url) else {
-            model.importFailureMessage = "“\(url.lastPathComponent)” isn’t a Bruno collection folder. Choose the folder that contains bruno.json."
-            return
-        }
-        await model.importBrunoCollection(at: url)
-        return
-    }
-    let source = await Task.detached(priority: .userInitiated) {
-        try? String(contentsOf: url, encoding: .utf8)
-    }.value
-    guard let source else {
-        model.importFailureMessage = ImportFormat.unreadableMessage(fileName: url.lastPathComponent)
-        return
-    }
-    guard let format = ImportFormat.detect(fileExtension: url.pathExtension, contents: source) ?? preferred else {
-        model.importFailureMessage = ImportFormat.unrecognizedMessage(fileName: url.lastPathComponent, contents: source)
-        return
-    }
-    await model.importDocument(source: source, format: format, url: url)
+    await model.importExternalFile(url, preferred: preferred)
 }
 
 /// Shown in its own window so help can stay open beside the workspace.

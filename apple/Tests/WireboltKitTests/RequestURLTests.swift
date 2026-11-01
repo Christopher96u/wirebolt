@@ -58,3 +58,17 @@ struct RequestURLTests {
         #expect(draft.query.map(\.name) == ["off"])
     }
 }
+
+extension RequestURLTests {
+    @Test("URL edits preserve a large body and cached display state never changes draft equality")
+    func editsOnlyURLAndQuery() {
+        let payload = String(repeating: "fixture ", count: 131_072)
+        var draft = RequestDraft(url: "https://example.invalid?a=1", body: .json(value: payload))
+        draft.editURL("https://example.invalid?a=1")
+        let same = RequestDraft(url: draft.url, query: draft.query, body: draft.body)
+        #expect(draft == same)
+        #expect(draft.body == .json(value: payload))
+        draft.url = "https://example.invalid/new"
+        #expect(draft.displayURL == "https://example.invalid/new?a=1")
+    }
+}

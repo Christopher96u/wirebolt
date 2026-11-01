@@ -1,35 +1,44 @@
 import AppKit
 import AuthenticationServices
-import CryptoKit
 import Foundation
-import Security
+import CFNetwork
+import Darwin
+import Synchronization
 
 public struct OAuth2TokenReceipt: Equatable, Sendable {
     public let expiresAt: Date?
     public let scope: String?
 }
-
-public enum OAuth2ServiceError: LocalizedError, Equatable, Sendable {
-    case invalidConfiguration
-    case authorizationCancelled
-    case authorizationFailed
-    case stateMismatch
-    case missingAuthorizationCode
-    case clientSecretUnavailable
-    case tokenEndpointRejected(Int)
-    case invalidTokenResponse
-
+public struct OAuth2ServiceError: LocalizedError, Equatable, Sendable {
+    let domain: DomainOAuthError
     public var errorDescription: String? {
-        switch self {
-        case .invalidConfiguration: "OAuth 2 configuration is incomplete."
-        case .authorizationCancelled: "Authorization was cancelled."
-        case .authorizationFailed: "The authorization server did not complete the sign-in."
-        case .stateMismatch: "The OAuth 2 state did not match."
-        case .missingAuthorizationCode: "The authorization response did not include a code."
-        case .clientSecretUnavailable: "The client secret is unavailable in Keychain."
-        case let .tokenEndpointRejected(status): "The token endpoint returned HTTP \(status)."
-        case .invalidTokenResponse: "The token endpoint returned an invalid response."
+        guard case .TransportFailure(let kind, let host) = domain else { return domainOauthErrorMessage(error: domain) }
+        let code: URLError.Code =
+            switch kind {
+            case .timeout: .timedOut
+            case .hostNotFound: .cannotFindHost
+            case .cannotConnect: .cannotConnectToHost
+            case .offline: .notConnectedToInternet
+            case .connectionLost: .networkConnectionLost
+            case .certificate: .serverCertificateUntrusted
+            case .tls: .secureConnectionFailed
+            case .decode: .cannotDecodeContentData
+            case .cancelled: .cancelled
+            case .tooManyRedirects: .httpTooManyRedirects
+            case .unsupportedUrl: .unsupportedURL
+            case .noPermissionsToReadFile: .noPermissionsToReadFile
+            case .cannotParseResponse: .cannotParseResponse
+            case .certificateExpired: .serverCertificateHasBadDate
+            case .certificateNotYetValid: .serverCertificateNotYetValid
+            case .unknown: .unknown
+            }
+        let bundle = Bundle(identifier: "com.apple.CFNetwork")
+        let key = "Err\(code == .unknown ? -998 : code.rawValue)"
+        if let host, let warning = bundle?.localizedString(forKey: key + ".w", value: "", table: nil), !warning.isEmpty {
+            return String(format: warning, host)
         }
+        let description = bundle?.localizedString(forKey: key, value: "", table: nil) ?? ""
+        return description.isEmpty ? URLError(code).localizedDescription : description
     }
 }
 
@@ -38,195 +47,136 @@ public protocol OAuth2Authorizing: AnyObject {
     func acquireToken(configuration: OAuth2Configuration) async throws -> (String, OAuth2TokenReceipt)
 }
 
+/// Native browser presentation, proxy routing, HTTP defaults and localized diagnostics.
 @MainActor
-public final class OAuth2Service: NSObject, OAuth2Authorizing, ASWebAuthenticationPresentationContextProviding {
+public final class OAuth2Service: NSObject, OAuth2Authorizing, OAuthPlatform, ASWebAuthenticationPresentationContextProviding {
     private var browserSession: ASWebAuthenticationSession?
-
-    public func acquireToken(
-        configuration: OAuth2Configuration
-    ) async throws -> (String, OAuth2TokenReceipt) {
-        guard let tokenURL = URL(string: configuration.tokenURL),
-              tokenURL.scheme == "https" || Self.isLoopback(tokenURL),
-              configuration.clientID.isEmpty == false,
-              configuration.accessTokenReference.isEmpty == false
-        else { throw OAuth2ServiceError.invalidConfiguration }
-
-        var form: [String: String] = [
-            "client_id": configuration.clientID,
-        ]
-        if configuration.scopes.isEmpty == false { form["scope"] = configuration.scopes }
-        if configuration.audience.isEmpty == false { form["audience"] = configuration.audience }
-
-        switch configuration.grant {
-        case .clientCredentials:
-            form["grant_type"] = "client_credentials"
-            guard let secret = Self.keychainSecret(named: configuration.clientSecretReference) else {
-                throw OAuth2ServiceError.clientSecretUnavailable
-            }
-            form["client_secret"] = secret
-        case .authorizationCodePKCE:
-            let verifier = Self.randomURLSafeValue(byteCount: 48)
-            let state = Self.randomURLSafeValue(byteCount: 24)
-            let challenge = Self.base64URL(Data(SHA256.hash(data: Data(verifier.utf8))))
-            let code = try await authorizationCode(
-                configuration: configuration,
-                challenge: challenge,
-                state: state
+    public func acquireToken(configuration: OAuth2Configuration) async throws -> (String, OAuth2TokenReceipt) {
+        do {
+            let receipt = try await domainAcquireToken(configuration: configuration, platform: self)
+            return (
+                receipt.token, OAuth2TokenReceipt(expiresAt: receipt.expiresAt.map(Date.init(timeIntervalSince1970:)), scope: receipt.scope)
             )
-            form["grant_type"] = "authorization_code"
-            form["code"] = code
-            form["code_verifier"] = verifier
-            form["redirect_uri"] = configuration.redirectURI
-        }
-
-        return try await exchange(form: form, tokenURL: tokenURL)
+        } catch let error as DomainOAuthError { throw OAuth2ServiceError(domain: error) }
     }
 
     public func presentationAnchor(for _: ASWebAuthenticationSession) -> ASPresentationAnchor {
         NSApplication.shared.keyWindow ?? NSApplication.shared.windows.first ?? ASPresentationAnchor()
     }
-
-    private func authorizationCode(
-        configuration: OAuth2Configuration,
-        challenge: String,
-        state: String
-    ) async throws -> String {
-        guard var components = URLComponents(string: configuration.authorizationURL),
-              components.scheme == "https" || components.host == "localhost",
-              let callbackScheme = URL(string: configuration.redirectURI)?.scheme
-        else { throw OAuth2ServiceError.invalidConfiguration }
-        var items = components.queryItems ?? []
-        items += [
-            URLQueryItem(name: "response_type", value: "code"),
-            URLQueryItem(name: "client_id", value: configuration.clientID),
-            URLQueryItem(name: "redirect_uri", value: configuration.redirectURI),
-            URLQueryItem(name: "code_challenge", value: challenge),
-            URLQueryItem(name: "code_challenge_method", value: "S256"),
-            URLQueryItem(name: "state", value: state),
-        ]
-        if configuration.scopes.isEmpty == false {
-            items.append(URLQueryItem(name: "scope", value: configuration.scopes))
-        }
-        if configuration.audience.isEmpty == false {
-            items.append(URLQueryItem(name: "audience", value: configuration.audience))
-        }
-        components.queryItems = items
-        guard let url = components.url else { throw OAuth2ServiceError.invalidConfiguration }
-
-        return try await withCheckedThrowingContinuation { continuation in
-            let session = ASWebAuthenticationSession(url: url, callbackURLScheme: callbackScheme) {
-                [weak self] callback, error in
+    nonisolated public func authorize(url: String, callbackScheme: String, completion: OAuthAuthorization) {
+        Task { @MainActor [weak self] in
+            guard let self, let url = URL(string: url) else {
+                completion.complete(callback: nil, cancelled: false)
+                return
+            }
+            let session = ASWebAuthenticationSession(url: url, callbackURLScheme: callbackScheme) { [weak self] callback, error in
                 self?.browserSession = nil
-                if let authenticationError = error as? ASWebAuthenticationSessionError,
-                   authenticationError.code == .canceledLogin
-                {
-                    continuation.resume(throwing: OAuth2ServiceError.authorizationCancelled)
-                    return
-                }
-                guard error == nil, let callback,
-                      let callbackComponents = URLComponents(url: callback, resolvingAgainstBaseURL: false)
-                else {
-                    continuation.resume(throwing: OAuth2ServiceError.authorizationFailed)
-                    return
-                }
-                let values = Dictionary(
-                    callbackComponents.queryItems?.compactMap { item in
-                        item.value.map { (item.name, $0) }
-                    } ?? [],
-                    uniquingKeysWith: { first, _ in first }
-                )
-                guard values["state"] == state else {
-                    continuation.resume(throwing: OAuth2ServiceError.stateMismatch)
-                    return
-                }
-                guard let code = values["code"], code.isEmpty == false else {
-                    continuation.resume(throwing: OAuth2ServiceError.missingAuthorizationCode)
-                    return
-                }
-                continuation.resume(returning: code)
+                let cancelled = (error as? ASWebAuthenticationSessionError)?.code == .canceledLogin
+                completion.complete(callback: error == nil ? callback?.absoluteString : nil, cancelled: cancelled)
             }
             session.presentationContextProvider = self
             session.prefersEphemeralWebBrowserSession = true
             browserSession = session
-            guard session.start() else {
+            if !session.start() {
                 browserSession = nil
-                continuation.resume(throwing: OAuth2ServiceError.authorizationFailed)
-                return
+                completion.complete(callback: nil, cancelled: false)
             }
         }
     }
-
-    private func exchange(
-        form: [String: String],
-        tokenURL: URL
-    ) async throws -> (String, OAuth2TokenReceipt) {
-        var request = URLRequest(url: tokenURL)
-        request.httpMethod = "POST"
-        request.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
-        request.httpBody = Self.encodeForm(form)
+    nonisolated public func systemProxies(url: String) -> [DomainOAuthProxy] {
+        guard let target = URL(string: url), let settings = CFNetworkCopySystemProxySettings()?.takeRetainedValue() else { return [.direct] }
+        let proxies = CFNetworkCopyProxiesForURL(target as CFURL, settings).takeRetainedValue() as NSArray
+        return Self.proxyRoutes(proxies, target: target)
+    }
+    nonisolated static func proxyRoutes(_ proxies: NSArray, target: URL) -> [DomainOAuthProxy] {
+        var routes: [DomainOAuthProxy] = []
+        for case let proxy as [String: Any] in proxies {
+            guard let type = proxy[kCFProxyTypeKey as String] as? String else { continue }
+            if type == kCFProxyTypeNone as String { routes.append(.direct); continue }
+            if type == kCFProxyTypeAutoConfigurationJavaScript as String,
+                let script = proxy[kCFProxyAutoConfigurationJavaScriptKey as String] as? String,
+                let resolved = CFNetworkCopyProxiesForAutoConfigurationScript(script as CFString, target as CFURL, nil)?.takeRetainedValue()
+            {
+                routes.append(contentsOf: proxyRoutes(resolved as NSArray, target: target))
+                continue
+            }
+            if type == kCFProxyTypeAutoConfigurationURL as String,
+                let url = proxy[kCFProxyAutoConfigurationURLKey as String] as? URL,
+                let resolved = resolveProxyConfiguration(url, target: target)
+            {
+                routes.append(contentsOf: proxyRoutes(resolved, target: target))
+                continue
+            }
+            let scheme: String
+            if type == kCFProxyTypeHTTP as String { scheme = "http" }
+            else if type == kCFProxyTypeHTTPS as String { scheme = "http" }
+            else if type == kCFProxyTypeSOCKS as String { scheme = "socks5h" }
+            else { continue }
+            guard let host = proxy[kCFProxyHostNameKey as String] as? String else { continue }
+            var endpoint = URLComponents()
+            endpoint.scheme = scheme
+            endpoint.host = host.contains(":") && !host.hasPrefix("[") ? "[\(host)]" : host
+            endpoint.port = proxy[kCFProxyPortNumberKey as String] as? Int
+            endpoint.user = proxy[kCFProxyUsernameKey as String] as? String
+            endpoint.password = proxy[kCFProxyPasswordKey as String] as? String
+            if let endpoint = endpoint.string { routes.append(.proxy(endpoint: endpoint)) }
+        }
+        return routes
+    }
+    private final class ProxyConfigurationResult {
+        var proxies: NSArray?
+        var completed = false
+    }
+    nonisolated private static func resolveProxyConfiguration(_ url: URL, target: URL) -> NSArray? {
+        let result = ProxyConfigurationResult()
+        var context = CFStreamClientContext(version: 0, info: Unmanaged.passUnretained(result).toOpaque(), retain: nil, release: nil, copyDescription: nil)
+        let source = CFNetworkExecuteProxyAutoConfigurationURL(url as CFURL, target as CFURL, { context, proxies, error in
+            let result = Unmanaged<ProxyConfigurationResult>.fromOpaque(context).takeUnretainedValue()
+            if error == nil { result.proxies = proxies as NSArray }
+            result.completed = true
+        }, &context)
+        let runLoop = CFRunLoopGetCurrent()
+        CFRunLoopAddSource(runLoop, source, .defaultMode)
+        defer { CFRunLoopSourceInvalidate(source) }
+        let deadline = Date().addingTimeInterval(30)
+        while !result.completed && deadline.timeIntervalSinceNow > 0 {
+            CFRunLoopRunInMode(.defaultMode, deadline.timeIntervalSinceNow, true)
+        }
+        return result.proxies
+    }
+    nonisolated public func requestHeaders(completion: OAuthHeadersReply) {
+        Task { completion.complete(headers: await Self.nativeHeaders()) }
+    }
+    nonisolated static func nativeHeaders() async -> DomainOAuthHeaders {
+        let bundle = Bundle.main
+        let name = bundle.object(forInfoDictionaryKey: "CFBundleName") as? String ?? ProcessInfo.processInfo.processName
+        let version = (bundle.object(forInfoDictionaryKey: "CFBundleVersion") as? String).map { "/" + $0 } ?? " (unknown version)"
+        let network = Bundle(identifier: "com.apple.CFNetwork")?.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "0"
+        var system = utsname()
+        uname(&system)
+        let release = withUnsafeBytes(of: &system.release) { bytes in
+            String(decoding: bytes.prefix(while: { $0 != 0 }), as: UTF8.self)
+        }
+        let capture = OAuthHeaderCapture()
         let configuration = URLSessionConfiguration.ephemeral
+        configuration.connectionProxyDictionary = [:]
         configuration.waitsForConnectivity = false
-        configuration.timeoutIntervalForRequest = 30
-        let (data, response) = try await URLSession(configuration: configuration).data(for: request)
-        guard let response = response as? HTTPURLResponse else {
-            throw OAuth2ServiceError.invalidTokenResponse
+        configuration.timeoutIntervalForRequest = 1
+        let session = URLSession(configuration: configuration, delegate: capture, delegateQueue: nil)
+        defer { session.invalidateAndCancel() }
+        // Port zero cannot reach a service; task metrics expose Foundation's generated headers.
+        if let url = URL(string: "http://[::1]:0") { _ = try? await session.data(from: url) }
+        return DomainOAuthHeaders(userAgent: "\(name)\(version) CFNetwork/\(network) Darwin/\(release)",
+            acceptLanguage: capture.acceptLanguage.withLock { $0 })
+    }
+    nonisolated static func encodeForm(_ form: [String: String]) -> Data { Data(domainEncodeOauthForm(form: form).utf8) }
+}
+
+private final class OAuthHeaderCapture: NSObject, URLSessionTaskDelegate, Sendable {
+    let acceptLanguage = Mutex("")
+    func urlSession(_ session: URLSession, task: URLSessionTask, didFinishCollecting metrics: URLSessionTaskMetrics) {
+        if let value = metrics.transactionMetrics.last?.request.value(forHTTPHeaderField: "Accept-Language") {
+            acceptLanguage.withLock { $0 = value }
         }
-        guard (200 ..< 300).contains(response.statusCode) else {
-            throw OAuth2ServiceError.tokenEndpointRejected(response.statusCode)
-        }
-        guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let token = object["access_token"] as? String,
-              token.isEmpty == false
-        else { throw OAuth2ServiceError.invalidTokenResponse }
-        let seconds = (object["expires_in"] as? NSNumber)?.doubleValue
-        let receipt = OAuth2TokenReceipt(
-            expiresAt: seconds.map { Date().addingTimeInterval($0) },
-            scope: object["scope"] as? String
-        )
-        return (token, receipt)
-    }
-
-    nonisolated static func encodeForm(_ form: [String: String]) -> Data {
-        var components = URLComponents()
-        components.queryItems = form.sorted(by: { $0.key < $1.key }).map {
-            URLQueryItem(name: $0.key, value: $0.value)
-        }
-        // Query encoding leaves '+' literal; form decoders interpret it as a space.
-        return Data((components.percentEncodedQuery ?? "").replacingOccurrences(of: "+", with: "%2B").utf8)
-    }
-
-    private static func keychainSecret(named name: String) -> String? {
-        guard name.isEmpty == false else { return nil }
-        let query: [CFString: Any] = [
-            kSecClass: kSecClassGenericPassword,
-            kSecAttrService: "io.github.christopher96u.wirebolt",
-            kSecAttrAccount: name,
-            kSecReturnData: true,
-            kSecMatchLimit: kSecMatchLimitOne,
-        ]
-        var value: CFTypeRef?
-        guard SecItemCopyMatching(query as CFDictionary, &value) == errSecSuccess,
-              let data = value as? Data
-        else { return nil }
-        return String(data: data, encoding: .utf8)
-    }
-
-    private static func randomURLSafeValue(byteCount: Int) -> String {
-        var bytes = [UInt8](repeating: 0, count: byteCount)
-        guard SecRandomCopyBytes(kSecRandomDefault, bytes.count, &bytes) == errSecSuccess else {
-            return UUID().uuidString.replacingOccurrences(of: "-", with: "")
-        }
-        return base64URL(Data(bytes))
-    }
-
-    private static func base64URL(_ data: Data) -> String {
-        data.base64EncodedString()
-            .replacingOccurrences(of: "+", with: "-")
-            .replacingOccurrences(of: "/", with: "_")
-            .replacingOccurrences(of: "=", with: "")
-    }
-
-    private static func isLoopback(_ url: URL) -> Bool {
-        ["localhost", "127.0.0.1", "::1"].contains(url.host?.lowercased() ?? "")
     }
 }

@@ -446,16 +446,18 @@ impl RequestAuthentication {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ApiKeyPlacement {
+    #[default]
     Header,
     Query,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Oauth2Grant {
+    #[default]
     AuthorizationCodePkce,
     ClientCredentials,
 }
@@ -527,9 +529,10 @@ pub struct MultipartPart {
     pub enabled: bool,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum MultipartPartKind {
+    #[default]
     Text,
     /// Embedded bytes stored as Base64, without an external file dependency.
     Binary,

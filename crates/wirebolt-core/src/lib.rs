@@ -27,9 +27,9 @@ pub use http_engine::{
     TlsConfigurationError,
 };
 pub use import_engine::{
-    ImportEngine, ImportError, ImportFormat, ImportedCollection, ImportedEnvironment,
-    ImportedGroup, ImportedRequest, ImportedRequestSettings, ImportedSecret, ImportedWorkspace,
-    ParsedImport,
+    BrunoFolderBundle, BrunoSourceFile, ImportEngine, ImportError, ImportFormat,
+    ImportedCollection, ImportedEnvironment, ImportedGroup, ImportedRequest,
+    ImportedRequestSettings, ImportedSecret, ImportedWorkspace, ParsedImport,
 };
 #[cfg(target_vendor = "apple")]
 pub use proxy::{KeychainSecretResolver, KeychainSecretStore};
@@ -52,7 +52,7 @@ pub use storage::{
     WorkspaceStore,
 };
 
-pub const STREAM_ABI_VERSION: u32 = 4;
+pub const STREAM_ABI_VERSION: u32 = 5;
 
 #[derive(Debug, Eq, PartialEq)]
 pub struct CoreHandshake {
@@ -81,7 +81,7 @@ mod tests {
             CoreHandshake {
                 product: "Wirebolt",
                 core_version: env!("CARGO_PKG_VERSION"),
-                stream_abi_version: 4,
+                stream_abi_version: 5,
             }
         );
     }

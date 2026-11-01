@@ -39,5 +39,9 @@ struct ClientIdentityTests {
         let legacy = "-----BEGIN RSA PRIVATE KEY-----\nProc-Type: 4,ENCRYPTED\nDEK-Info: AES-128-CBC,00\n\nZml4dHVyZQ==\n-----END RSA PRIVATE KEY-----"
         #expect(throws: ClientIdentityPEM.Failure.encryptedPrivateKey) { try ClientIdentityPEM(parsing: [Fixture.leaf, legacy]) }
         #expect(ClientIdentityPEM.Failure.encryptedPrivateKey.errorDescription?.contains("passphrase") == true)
+        #expect(ClientIdentityPEM.Failure.noCertificate.localizedDescription == "Choose a PEM file with a certificate (BEGIN CERTIFICATE).")
+        #expect(ClientIdentityPEM.Failure.noPrivateKey.localizedDescription == "Choose the certificate’s private key too, in the same PEM file or a second one.")
+        #expect(ClientIdentityPEM.Failure.multiplePrivateKeys.localizedDescription == "Choose only one private key.")
+        #expect(ClientIdentityPEM.Failure.encryptedPrivateKey.localizedDescription == "Encrypted private keys aren’t supported. Export the key without a passphrase.")
     }
 }

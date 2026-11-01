@@ -2,12 +2,7 @@ import AppKit
 import CoreText
 import SwiftUI
 
-enum SyntaxLanguage: Hashable {
-    case json
-    case xml
-    case html
-    case http
-    case plain
+extension SyntaxLanguage {
 
     var folding: CodeProjection.Syntax {
         switch self {
@@ -332,7 +327,7 @@ struct NativeCodeEditor: NSViewRepresentable {
                 let source = projection.text
                 findTask = Task { [weak self, weak view, weak state] in
                     do {
-                        let worker = Task.detached(priority: .userInitiated) { try query.matches(in: source, range: scope) }
+                        let worker = responseTask(priority: .userInitiated) { try query.matches(in: source, range: scope) }
                         let ranges = try await withTaskCancellationHandler { try await worker.value } onCancel: { worker.cancel() }
                         try Task.checkCancellation()
                         guard let self, let view, let state else { return }
@@ -498,7 +493,7 @@ struct NativeCodeEditor: NSViewRepresentable {
             let source = projection.source
             let syntax = language.folding
             foldTask = Task { [weak self, weak scroll] in
-                let worker = Task.detached(priority: .userInitiated) { CodeProjection(source: source, syntax: syntax) }
+                let worker = responseTask(priority: .userInitiated) { CodeProjection(source: source, syntax: syntax) }
                 let result = await withTaskCancellationHandler { await worker.value } onCancel: { worker.cancel() }
                 guard !Task.isCancelled, let self, let scroll, self.foldRevision == revision else { return }
                 self.projection = result
@@ -734,7 +729,7 @@ private final class CodeLayoutManager: NSLayoutManager {
 
     override func processEditing(for textStorage: NSTextStorage, edited editMask: NSTextStorageEditActions,
         range newCharRange: NSRange, changeInLength delta: Int, invalidatedRange invalidatedCharRange: NSRange) {
-        for container in textContainers { (container as? CodeTextContainer)?.invalidateParagraph() }
+        for container in textContainers { (container as? CodeTextContainer)?.invalidateParagraph(textChanged: editMask.contains(.editedCharacters)) }
         invisibleMarkers.removeAll()
         super.processEditing(for: textStorage, edited: editMask, range: newCharRange,
             changeInLength: delta, invalidatedRange: invalidatedCharRange)
@@ -935,8 +930,9 @@ private final class CodeLineRuler: NSRulerView {
         let foldLines = Set(folding ? projection.folds.map(\.line) : [])
         var line = 0
         let displayStarts = projection.collapsed.isEmpty ? starts : TextLineIndex(projection.text).starts
-        lines = displayStarts.map { offset in
-            let original = projection.collapsed.isEmpty ? offset : projection.sourceOffset(offset)
+        let originals = projection.collapsed.isEmpty ? displayStarts : projection.sourceOffsets(displayStarts)
+        lines = displayStarts.enumerated().map { lineIndex, offset in
+            let original = originals[lineIndex]
             while line + 1 < starts.count && starts[line + 1] <= original { line += 1 }
             return (offset, line, foldLines.contains(line))
         }
@@ -995,7 +991,8 @@ private final class CodeLineRuler: NSRulerView {
                 let hit = NSRect(x: ruleThickness - 17, y: origin.y, width: 16, height: max(18, size.height))
                 hitAreas.append((hit, line.number))
                 let path = NSBezierPath()
-                let x = hit.midX, y = hit.midY
+                let x = hit.midX
+                let y = hit.midY
                 let scale = (view.font?.pointSize ?? 12) / 12
                 if collapsed.contains(line.number) {
                     path.move(to: NSPoint(x: x - 2 * scale, y: y - 4 * scale)); path.line(to: NSPoint(x: x + 2 * scale, y: y)); path.line(to: NSPoint(x: x - 2 * scale, y: y + 4 * scale))
@@ -1018,7 +1015,23 @@ final class CodeTextContainer: NSTextContainer {
     private var fontMetrics: (font: NSFont, advance: Double)?
     private var maximumAdvances: [NSFont: Double] = [:]
 
-    func invalidateParagraph() { paragraph = nil }
+    private var breakWindow: (range: NSRange, breaks: CodeWrapBreaks)?
+    func invalidateParagraph(textChanged: Bool) {
+        paragraph = nil
+        if textChanged { breakWindow = nil }
+    }
+    private func breakLength(source: NSString, paragraph: NSRange, start: Int, fitting: Int) -> Int {
+        if breakWindow == nil || paragraph.location < breakWindow!.range.location || NSMaxRange(paragraph) > NSMaxRange(breakWindow!.range)
+        {
+            let location = max(0, paragraph.location - 8192)
+            let end = min(source.length, max(NSMaxRange(paragraph), location + 32768))
+            let range = source.rangeOfComposedCharacterSequences(for: NSRange(location: location, length: end - location))
+            breakWindow = (range, CodeWrapBreaks(source.substring(with: range)))
+        }
+        let window = breakWindow!
+        let origin = paragraph.location - window.range.location
+        return window.breaks.length(start: origin + start, fitting: fitting, limit: origin + paragraph.length)
+    }
 
     override var isSimpleRectangularTextContainer: Bool { true }
 
@@ -1088,7 +1101,7 @@ final class CodeTextContainer: NSTextContainer {
             fit = max(1, CTTypesetterSuggestClusterBreak(typesetter, start, available))
         }
         guard start + fit < text.length else { return rect }
-        let count = CodeTextWrapping.breakLength(in: text, start: start, fitting: fit)
+        let count = breakLength(source: storage.mutableString, paragraph: paragraph.range, start: start, fitting: fit)
         let width: Double
         if let typesetter {
             let line = CTTypesetterCreateLine(typesetter, CFRange(location: start, length: count))
@@ -1101,122 +1114,61 @@ final class CodeTextContainer: NSTextContainer {
 
 @MainActor
 enum SyntaxHighlighter {
-    private static var expressions: [String: NSRegularExpression] = [:]
-
-    private static func expression(_ pattern: String) -> NSRegularExpression? {
-        if let expression = expressions[pattern] { return expression }
-        guard let expression = try? NSRegularExpression(pattern: pattern) else { return nil }
-        expressions[pattern] = expression
-        return expression
-    }
-    static func attributedString(text: String, language: SyntaxLanguage, fontSize: Double = 12, theme value: ResolvedTheme? = nil) -> NSAttributedString {
+    static func attributedString(text: String, language: SyntaxLanguage, fontSize: Double = 12, theme value: ResolvedTheme? = nil)
+        -> NSAttributedString
+    {
         let theme = value ?? WireboltTheme.current
-        // Applying successive token passes to one large attributed string inserts
-        // into its run array repeatedly (quadratic memmoves). These grammars have
-        // no multiline tokens, so style bounded, whole-paragraph chunks and append.
-        guard language == .json || language == .plain || language == .http,
-              text.utf8.count > 16 * 1024 else {
-            return attributedChunk(text: text, language: language, fontSize: fontSize, theme: theme)
-        }
         let source = text as NSString
         let result = NSMutableAttributedString(string: "")
-        var offset = 0
-        while offset < source.length {
-            let end = NSMaxRange(source.lineRange(for: NSRange(
-                location: offset, length: min(16 * 1024, source.length - offset)
-            )))
-            result.append(attributedChunk(text: source.substring(with: NSRange(location: offset, length: end - offset)),
-                language: language, fontSize: fontSize, theme: theme))
-            offset = end
+        // One bridge call supplies all token passes and indent columns. Native
+        // attribute construction stays chunked to avoid quadratic run insertion.
+        for chunk in domainSyntaxHighlight(source: text, language: language) {
+            result.append(attributedChunk(text: source.substring(with: chunk.range.nsRange), chunk: chunk, fontSize: fontSize, theme: theme))
         }
         return result
     }
 
-    private static func attributedChunk(text: String, language: SyntaxLanguage, fontSize: Double, theme: ResolvedTheme) -> NSAttributedString {
+    private static func attributedChunk(text: String, chunk: SyntaxChunk, fontSize: Double, theme: ResolvedTheme) -> NSAttributedString {
         let paragraph = NSMutableParagraphStyle()
         paragraph.lineSpacing = CodeEditorMetrics.lineSpacing(fontSize)
         paragraph.lineBreakMode = .byCharWrapping
+        let font = NSFont.monospacedSystemFont(ofSize: fontSize, weight: .regular)
         let result = NSMutableAttributedString(
-            string: text,
-            attributes: [
-                .font: NSFont.monospacedSystemFont(ofSize: fontSize, weight: .regular),
-                .foregroundColor: theme.definition.syntaxPunctuation.nsColor,
-                .paragraphStyle: paragraph,
-            ]
-        )
-
-        let source = text as NSString
-        let spaceWidth = (" " as NSString).size(withAttributes: [.font: NSFont.monospacedSystemFont(ofSize: fontSize, weight: .regular)]).width
-        var paragraphStyles: [Int: NSParagraphStyle] = [:]
-        var cursor = 0
-        while cursor < source.length {
-            let range = source.lineRange(for: NSRange(location: cursor, length: 0))
-            var start = cursor, columns = 0
-            while start < NSMaxRange(range) {
-                if source.character(at: start) == 32 { columns += 1 }
-                else if source.character(at: start) == 9 { columns += 4 - columns % 4 }
-                else { break }
-                start += 1
+            string: text, attributes: [.font: font, .foregroundColor: theme.definition.syntaxPunctuation.nsColor, .paragraphStyle: paragraph])
+        let spaceWidth = (" " as NSString).size(withAttributes: [.font: font]).width
+        var paragraphStyles: [UInt64: NSParagraphStyle] = [:]
+        for indent in chunk.indents {
+            let style: NSParagraphStyle
+            if let cached = paragraphStyles[indent.columns] {
+                style = cached
+            } else {
+                let indented = paragraph.mutableCopy() as! NSMutableParagraphStyle
+                indented.headIndent = Double(indent.columns) * spaceWidth
+                indented.tabStops = []
+                indented.defaultTabInterval = spaceWidth * 4
+                paragraphStyles[indent.columns] = indented
+                style = indented
             }
-            if columns > 0 {
-                let indented: NSParagraphStyle
-                if let cached = paragraphStyles[columns] { indented = cached }
-                else {
-                    let style = paragraph.mutableCopy() as! NSMutableParagraphStyle
-                    style.headIndent = Double(columns) * spaceWidth
-                    style.tabStops = []
-                    style.defaultTabInterval = spaceWidth * 4
-                    indented = style
-                    paragraphStyles[columns] = style
-                }
-                result.addAttribute(.paragraphStyle, value: indented, range: range)
-            }
-            cursor = NSMaxRange(range)
+            result.addAttribute(.paragraphStyle, value: style, range: indent.range.nsRange)
         }
-
-        switch language {
-        case .json:
-            apply(#"\b(true|false)\b"#, color: theme.definition.syntaxKeyword.nsColor, to: result)
-            apply(#"\bnull\b"#, color: theme.definition.syntaxKeyword.nsColor, to: result)
-            apply(#"-?\b\d+(?:\.\d+)?\b"#, color: theme.definition.syntaxNumber.nsColor, to: result)
-            apply(#"\"(?:\\.|[^\"\\])*\""#, color: theme.definition.syntaxString.nsColor, to: result)
-            apply(#"\"(?:\\.|[^\"\\])*\"(?=\s*:)"#, color: theme.definition.syntaxKey.nsColor, to: result)
-            applyURL(to: result)
-        case .xml, .html:
-            apply(#"</?[A-Za-z][^>]*>"#, color: theme.definition.syntaxKey.nsColor, to: result)
-            apply(#"\"[^\"]*\""#, color: theme.definition.syntaxString.nsColor, to: result)
-        case .http:
-            apply(#"(?m)^[A-Z]+\s+\S+\s+HTTP/\d(?:\.\d)?$"#, color: theme.definition.syntaxKeyword.nsColor, to: result)
-            apply(#"(?m)^[A-Za-z0-9-]+(?=:)"#, color: theme.definition.syntaxKey.nsColor, to: result)
-            apply(#"•+"#, color: theme.definition.syntaxString.nsColor, to: result)
-        case .plain:
-            break
+        for token in chunk.tokens {
+            let range = token.range.nsRange
+            if token.kind == .url {
+                result.addAttributes([
+                    .underlineStyle: NSUnderlineStyle.single.rawValue,
+                    .link: (text as NSString).substring(with: range),
+                ], range: range)
+            } else {
+                let color: NSColor = switch token.kind {
+                case .keyword: theme.definition.syntaxKeyword.nsColor
+                case .number: theme.definition.syntaxNumber.nsColor
+                case .string: theme.definition.syntaxString.nsColor
+                case .key: theme.definition.syntaxKey.nsColor
+                case .url: theme.definition.syntaxPunctuation.nsColor
+                }
+                result.addAttribute(.foregroundColor, value: color, range: range)
+            }
         }
         return result
-    }
-
-    private static func apply(
-        _ pattern: String,
-        color: NSColor,
-        to text: NSMutableAttributedString
-    ) {
-        guard let expression = expression(pattern) else { return }
-        let range = NSRange(location: 0, length: text.length)
-        expression.enumerateMatches(in: text.string, range: range) { match, _, _ in
-            guard let match else { return }
-            text.addAttribute(.foregroundColor, value: color, range: match.range)
-        }
-    }
-
-    private static func applyURL(to text: NSMutableAttributedString) {
-        guard let expression = expression(#"https?://[^\"\s]+"#) else { return }
-        let range = NSRange(location: 0, length: text.length)
-        expression.enumerateMatches(in: text.string, range: range) { match, _, _ in
-            guard let match else { return }
-            text.addAttributes([
-                .underlineStyle: NSUnderlineStyle.single.rawValue,
-                .link: text.attributedSubstring(from: match.range).string,
-            ], range: match.range)
-        }
     }
 }

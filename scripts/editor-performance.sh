@@ -3,6 +3,7 @@ set -euo pipefail
 
 repo_dir="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$repo_dir"
+scripts/generate-bindings.sh
 mkdir -p build
 
 swiftc \
@@ -11,6 +12,7 @@ swiftc \
   -swift-version 6 \
   -target arm64-apple-macosx15.0 \
   -o build/editor-performance \
+  apple/Generated/wirebolt_ffi.swift \
   apple/Sources/WireboltKit/ProxySettings.swift \
   apple/Sources/WireboltKit/Models.swift \
   apple/Sources/WireboltKit/CodeFolding.swift \
@@ -28,6 +30,11 @@ swiftc \
   apple/WireboltApp/EditorFind.swift \
   apple/WireboltApp/WireboltTheme.swift \
   apple/Benchmarks/EditorWorkloads.swift \
+  -Xcc -fmodule-map-file=apple/Generated/wirebolt_ffiFFI.modulemap \
+  -licucore \
+  target/release/libwirebolt_ffi.a \
+  -framework Security \
+  -framework SystemConfiguration \
   -framework AppKit \
   -framework SwiftUI
 

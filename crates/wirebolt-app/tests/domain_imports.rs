@@ -1,0 +1,299 @@
+use std::fs;
+use wirebolt_app::domain::{git::*, imports::*};
+#[test]
+fn collection_exports_keep_all_existing_importers() {
+    for (extension, text, format) in [
+        (
+            "json",
+            r#"{"_type":"export","__export_format":4,"resources":[]}"#,
+            "insomnia",
+        ),
+        (
+            "yaml",
+            "type: collection.insomnia.rest/5.0\nschema_version: \"5.1\"\nname: Payments API",
+            "insomnia",
+        ),
+        ("yaml", "_type: export\n__export_format: 4\n", "insomnia"),
+        (
+            "json",
+            r#"{"name":"Library","version":"1","items":[],"environments":[]}"#,
+            "bruno",
+        ),
+        ("bru", "meta {\n name: Ping\n}\n", "bruno_folder"),
+        (
+            "json",
+            r#"{"info":{"_postman_id":"x"},"item":[]}"#,
+            "postman_v2",
+        ),
+        ("json", r#"{"version":1,"nodes":[]}"#, "legacy_workspace_v1"),
+    ] {
+        assert_eq!(
+            detect(extension, text),
+            Some(wirebolt_core::ImportFormat::parse(format).unwrap())
+        );
+    }
+    assert_eq!(detect("yaml", "openapi: 3.1.0\n"), None);
+}
+#[test]
+fn bruno_folders_bundle_only_supported_files_in_order() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path();
+    for (path, contents) in [
+        (
+            "bruno.json",
+            r#"{"version":"1","name":"Library","type":"collection"}"#,
+        ),
+        ("Users/folder.bru", "meta {\n name: Members\n}\n"),
+        (
+            "Users/Get member.bru",
+            "get {\n url: {{baseUrl}}/members\n}\n",
+        ),
+        (
+            "environments/Local.bru",
+            "vars {\n baseUrl: http://127.0.0.1\n}\n",
+        ),
+        ("node_modules/dependency/ignored.bru", "get {\n}\n"),
+        (".git/config.bru", "get {\n}\n"),
+        ("assets/cover.png", "not read"),
+    ] {
+        let path = root.join(path);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(path, contents).unwrap();
+    }
+    assert!(is_bruno_collection(root));
+    assert!(!is_bruno_collection(&root.join("assets")));
+    let bundle = bruno_bundle(root).unwrap();
+    assert_eq!(bundle.root, root.to_string_lossy());
+    let paths: Vec<_> = bundle.files.iter().map(|f| f.path.as_str()).collect();
+    assert_eq!(
+        paths,
+        [
+            "Users/Get member.bru",
+            "Users/folder.bru",
+            "bruno.json",
+            "environments/Local.bru"
+        ]
+    );
+    let typed = wirebolt_core::ImportEngine::parse_bruno_folder(&bundle, Some("Fallback")).unwrap();
+    let legacy = wirebolt_core::ImportEngine::parse_import(
+        ImportFormat::BrunoFolder,
+        &wirebolt_core::ImportEngine::bruno_folder_source(
+            &bundle.root,
+            &bundle
+                .files
+                .iter()
+                .map(|file| (file.path.clone(), file.contents.clone()))
+                .collect::<Vec<_>>(),
+        ),
+        Some("Fallback"),
+    )
+    .unwrap();
+    assert_eq!(format!("{typed:?}"), format!("{legacy:?}"));
+    assert_eq!(typed.workspace.collections[0].name, "Library");
+    assert_eq!(typed.workspace.collections[0].requests.len(), 1);
+    assert_eq!(typed.workspace.environments.len(), 1);
+    assert!(
+        bruno_bundle(&root.join("Users/Get member.bru"))
+            .unwrap()
+            .files
+            .iter()
+            .any(|file| file.path == "Get member.bru")
+    );
+    assert_eq!(
+        bruno_bundle(&root.join("assets")).unwrap_err(),
+        CollectionSourceError::NotACollection
+    );
+}
+const LEAF: &str =
+    "-----BEGIN CERTIFICATE-----\nZml4dHVyZS1sZWFmLWNlcnRpZmljYXRl\n-----END CERTIFICATE-----";
+const INTERMEDIATE: &str =
+    "-----BEGIN CERTIFICATE-----\nZml4dHVyZS1pbnRlcm1lZGlhdGU=\n-----END CERTIFICATE-----";
+const KEY: &str =
+    "-----BEGIN PRIVATE KEY-----\nZml4dHVyZS1wcml2YXRlLWtleQ==\n-----END PRIVATE KEY-----";
+#[test]
+fn pem_certificate_chains_and_keys_combine_from_one_or_two_sources() {
+    let identity = parse_pem(&[
+        format!("{LEAF}\r\n{INTERMEDIATE}\n"),
+        format!("Bag Attributes\n{KEY}"),
+    ])
+    .unwrap();
+    assert_eq!(identity.certificates, [LEAF, INTERMEDIATE]);
+    assert_eq!(identity.private_key, KEY);
+    assert_eq!(
+        identity.combined(),
+        format!("{LEAF}\n{INTERMEDIATE}\n{KEY}\n")
+    );
+    assert_eq!(parse_pem(&[identity.combined()]).unwrap(), identity);
+    let single = parse_pem(&[format!("{KEY}\n{LEAF}")]).unwrap();
+    assert_eq!(single.certificates, [LEAF]);
+    assert_eq!(single.private_key, KEY);
+    let rsa = KEY.replace("PRIVATE KEY", "RSA PRIVATE KEY");
+    assert_eq!(
+        parse_pem(&[LEAF.into(), rsa.clone()]).unwrap().private_key,
+        rsa
+    );
+}
+#[test]
+fn pem_rejects_missing_duplicate_and_encrypted_keys() {
+    for (sources, error) in [
+        (vec![KEY.into()], PemError::NoCertificate),
+        (vec![LEAF.into()], PemError::NoPrivateKey),
+        (vec!["not a certificate".into()], PemError::NoCertificate),
+        (vec![LEAF.into(), KEY.into(), KEY.into()], PemError::MultiplePrivateKeys),
+        (vec![LEAF.into(), KEY.replace("PRIVATE KEY", "ENCRYPTED PRIVATE KEY")], PemError::EncryptedPrivateKey),
+        (vec![LEAF.into(), "-----BEGIN RSA PRIVATE KEY-----\nProc-Type: 4,ENCRYPTED\nDEK-Info: AES-128-CBC,00\n\nZml4dHVyZQ==\n-----END RSA PRIVATE KEY-----".into()], PemError::EncryptedPrivateKey),
+    ] {
+        assert_eq!(parse_pem(&sources).unwrap_err(), error);
+    }
+}
+#[test]
+fn import_summary_preserves_counts_pluralization_and_environment_guidance() {
+    assert_eq!(
+        import_headline(&["Shop API".into()], 9, 3),
+        "Imported 9 requests in 3 folders into “Shop API”."
+    );
+    assert_eq!(
+        import_environment_line(&["Shop API".into()], "").as_deref(),
+        Some("Created the environment “Shop API” for its variables.")
+    );
+    assert_eq!(
+        import_headline(&["Imported cURL".into()], 1, 0),
+        "Imported 1 request into “Imported cURL”."
+    );
+    assert_eq!(import_environment_line(&[], ""), None);
+    assert_eq!(
+        import_headline(&["A".into(), "B".into()], 2, 1),
+        "Imported 2 requests in 1 folder into 2 collections."
+    );
+}
+#[test]
+fn git_status_words_keep_index_additions_and_conflicts() {
+    for (staged, unstaged, conflicted, expected) in [
+        (
+            wirebolt_core::GitDelta::None,
+            wirebolt_core::GitDelta::Untracked,
+            false,
+            "New",
+        ),
+        (
+            wirebolt_core::GitDelta::Added,
+            wirebolt_core::GitDelta::Modified,
+            false,
+            "New",
+        ),
+        (
+            wirebolt_core::GitDelta::Modified,
+            wirebolt_core::GitDelta::None,
+            false,
+            "Modified",
+        ),
+        (
+            wirebolt_core::GitDelta::None,
+            wirebolt_core::GitDelta::Deleted,
+            false,
+            "Deleted",
+        ),
+        (
+            wirebolt_core::GitDelta::Renamed,
+            wirebolt_core::GitDelta::None,
+            false,
+            "Renamed",
+        ),
+        (
+            wirebolt_core::GitDelta::Renamed,
+            wirebolt_core::GitDelta::Modified,
+            false,
+            "Renamed",
+        ),
+        (
+            wirebolt_core::GitDelta::Unmerged,
+            wirebolt_core::GitDelta::Unmerged,
+            false,
+            "Conflict",
+        ),
+        (
+            wirebolt_core::GitDelta::Modified,
+            wirebolt_core::GitDelta::Modified,
+            true,
+            "Conflict",
+        ),
+    ] {
+        assert_eq!(
+            git_change_kind(staged, unstaged, conflicted).title(),
+            expected
+        );
+    }
+}
+#[test]
+fn git_push_requires_a_branch_and_commits_or_publishes_new_branches() {
+    assert_eq!(
+        push_availability(Some("main".into()), Some("origin/main"), 2),
+        PushAvailability::Push
+    );
+    assert_eq!(
+        push_availability(Some("main".into()), None, 0),
+        PushAvailability::Publish {
+            branch: "main".into()
+        }
+    );
+    assert!(matches!(
+        push_availability(Some("main".into()), Some("origin/main"), 0),
+        PushAvailability::Unavailable { .. }
+    ));
+    assert!(matches!(
+        push_availability(None, None, 0),
+        PushAvailability::Unavailable { .. }
+    ));
+}
+struct PackagePolicy;
+impl CollectionDirectoryPolicy for PackagePolicy {
+    fn is_package(&self, path: &std::path::Path) -> bool {
+        path.extension().is_some_and(|e| e == "app")
+    }
+}
+#[test]
+fn bruno_skips_native_packages_and_checks_limits_while_traversing() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path();
+    fs::write(root.join("root.bru"), "get {}").unwrap();
+    fs::create_dir_all(root.join("fixture.app/Contents")).unwrap();
+    fs::write(root.join("fixture.app/Contents/hidden.bru"), "get {}").unwrap();
+    let bundle = bruno_bundle_with_policy(root, &PackagePolicy).unwrap();
+    assert!(
+        !bundle
+            .files
+            .iter()
+            .any(|file| file.path.contains("hidden.bru"))
+    );
+    let large = root.join("large.bru");
+    let file = fs::File::create(&large).unwrap();
+    file.set_len(2 * 1024 * 1024 + 1).unwrap();
+    assert_eq!(
+        bruno_bundle(root).unwrap_err(),
+        CollectionSourceError::TooLarge
+    );
+}
+
+#[test]
+fn identity_error_kinds_retain_their_existing_native_messages() {
+    for (kind, message) in [
+        (
+            PemError::NoCertificate,
+            "Choose a PEM file with a certificate (BEGIN CERTIFICATE).",
+        ),
+        (
+            PemError::NoPrivateKey,
+            "Choose the certificate’s private key too, in the same PEM file or a second one.",
+        ),
+        (
+            PemError::MultiplePrivateKeys,
+            "Choose only one private key.",
+        ),
+        (
+            PemError::EncryptedPrivateKey,
+            "Encrypted private keys aren’t supported. Export the key without a passphrase.",
+        ),
+    ] {
+        assert_eq!(pem_error_message(kind), message);
+    }
+}

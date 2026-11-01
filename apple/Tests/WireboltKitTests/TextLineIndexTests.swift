@@ -48,3 +48,29 @@ struct TextLineIndexTests {
         }
     }
 }
+
+extension TextLineIndexTests {
+    @Test func copiedFacadesKeepIndependentLineSnapshots() {
+        let original = TextLineIndex("one\ntwo\n")
+        var edited = original
+        edited.replace(NSRange(location: 0, length: 0), with: "x\n")
+        #expect(original.starts == [0, 4, 8])
+        #expect(edited.starts == [0, 2, 6, 10])
+        #expect(original.length == 8 && edited.length == 10)
+    }
+}
+
+extension TextLineIndexTests {
+    @Test func invalidBridgeRangesKeepTheIndexUnchanged() {
+        var index = TextLineIndex("one\ntwo")
+        for range in [NSRange(location: -1, length: 0), NSRange(location: 0, length: -1),
+                      NSRange(location: NSNotFound, length: 0), NSRange(location: 2, length: Int.max),
+                      NSRange(location: 8, length: 0)] {
+            index.replace(range, with: "changed\n")
+            #expect(index.starts == [0, 4])
+            #expect(index.length == 7)
+        }
+        index.replace(NSRange(location: 7, length: 0), with: "\n")
+        #expect(index.starts == [0, 4, 8])
+    }
+}

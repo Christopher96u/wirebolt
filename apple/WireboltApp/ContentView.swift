@@ -211,9 +211,9 @@ struct ContentView: View {
         )) {
             Button("OK", role: .cancel) { model.operationFailure = nil }
         } message: {
-            Text(model.operationFailure?.kind == "keychain"
+            Text(model.operationFailure?.kind == .keychain
                 ? "The credentials could not be read or saved in Keychain. Check access and try again."
-                : model.operationFailure?.kind == "export"
+                : model.operationFailure?.kind == .export
                     ? (model.exportFailureMessage ?? "The saved request could not be exported.")
                     : "The operation could not be completed. Check access to the workspace and try again.")
         }
@@ -1044,13 +1044,8 @@ private struct SidebarReorderDrop: DropDelegate {
         guard let identifier = interface.sidebarDragIdentifier else { return nil }
         let target = target
         if let folder = target.folder, info.location.y >= 6, info.location.y <= 18 {
-            let parts = identifier.split(separator: "|", omittingEmptySubsequences: false).map(String.init)
-            guard parts.count == 3 else { return nil }
-            if parts[0] == "request" { return .inside }
-            if parts[0] == "group", parts[1] == target.collection,
-               let collection = model.workspace.collections.first(where: { $0.id == target.collection }),
-               !collection.descendantGroupIDs(of: parts[2]).contains(folder) { return .inside }
-            return nil
+            return model.workspace.collections.first(where: { $0.id == target.collection })?
+                .canDropInside(folder, identifier: identifier) == true ? .inside : nil
         }
         guard model.canReorderSidebar(identifier, relativeTo: target.item,
             collectionID: target.collection, parentID: target.parent) else { return nil }
@@ -1204,11 +1199,7 @@ private struct SidebarMoveMenu: View {
             .keyboardShortcut(.downArrow, modifiers: [.command, .option])
             .disabled(!model.canMoveSidebarItem(identifier, by: 1))
         Menu("Move To") {
-            let isFolder = identifier.hasPrefix("group|")
-            let sourceCollection = identifier.split(separator: "|", omittingEmptySubsequences: false).dropFirst().first.map(String.init)
-            let collections = model.workspace.collections
-                .filter { !isFolder || $0.id == sourceCollection }
-                .sorted { ($0.order, $0.name, $0.id) < ($1.order, $1.name, $1.id) }
+            let collections = model.workspace.moveCollections(for: identifier)
             ForEach(collections) { collection in
                 if collection.id != collections.first?.id { Divider() }
                 // The root collection has no sidebar header; its items sit at the top level.
@@ -1411,7 +1402,7 @@ private struct SavedGroupRow: View {
     }
 
     private func delete() {
-        interface.requestDelete(.group(collectionID: collection.id, id: group.id), title: group.name, model: model)
+        interface.requestDelete(.group(collectionId: collection.id, id: group.id), title: group.name, model: model)
     }
 }
 
@@ -1478,7 +1469,7 @@ private struct SidebarRequestButton: View, @MainActor Equatable {
     }
 
     private func onDelete() {
-        interface.requestDelete(.request(collectionID: location.collectionID, id: location.request.id),
+        interface.requestDelete(.request(collectionId: location.collectionID, id: location.request.id),
                                 title: location.request.name, model: model)
     }
 
@@ -2272,15 +2263,6 @@ private struct RequestWorkspace: View {
     }
 }
 
-private enum WebSocketMessageKind: String, CaseIterable, Identifiable {
-    case text = "Text"
-    case json = "JSON"
-    case binary = "Binary"
-    case file = "File"
-
-    var id: Self { self }
-}
-
 private struct WebSocketRequestWorkspace: View {
     @Bindable var model: WireboltModel
     @Bindable var interface: DocumentPresentationState
@@ -2311,19 +2293,19 @@ private struct WebSocketRequestWorkspace: View {
                     // so it reads as a value rather than another section tab.
                     Menu {
                         Picker("Content Type", selection: messageKind) {
-                            ForEach(WebSocketMessageKind.allCases) { Text($0.rawValue).tag($0) }
+                            ForEach(WebSocketMessageKind.allCases) { Text($0.title).tag($0) }
                         }
                         .pickerStyle(.inline).labelsHidden()
                     } label: {
-                        Text(messageKind.wrappedValue.rawValue)
+                        Text(message.kind.title)
                     }
                     .ghostMenuStyle().controlSize(.small).fixedSize()
                     .accessibilityLabel("Content Type")
-                    .accessibilityValue(messageKind.wrappedValue.rawValue)
+                    .accessibilityValue(message.kind.title)
                     .help("Content Type")
-                    if messageKind.wrappedValue == .binary {
+                    if message.kind == .binary {
                         Picker("Binary Encoding", selection: binaryEncoding) {
-                            ForEach(WebSocketBinaryEncoding.allCases, id: \.self) { Text($0.rawValue).tag($0) }
+                            ForEach(WebSocketBinaryEncoding.allCases, id: \.self) { Text($0.title).tag($0) }
                         }.labelsHidden().controlSize(.small).frame(width: 80)
                     }
                 } else if interface.requestSection == .auth {
@@ -2360,7 +2342,7 @@ private struct WebSocketRequestWorkspace: View {
         case .body:
             if case let .file(path, contentType) = session.draft.body {
                 FileBodyEditor(path: path, contentType: contentType) { session.draft.body = .file(path: $0, contentType: $1) }
-            } else { BodyTextEditor(text: messageText, language: messageKind.wrappedValue == .json ? .json : .plain) }
+            } else { BodyTextEditor(text: messageText, language: message.kind == .json ? .json : .plain) }
         case .params:
             if interface.isBulkEditing {
                 BulkFieldEditor(fields: $session.draft.query)
@@ -2382,68 +2364,18 @@ private struct WebSocketRequestWorkspace: View {
         }
     }
 
+    private var message: SessionMessageDraft { session.draft.body.webSocketMessage }
+
     private var messageKind: Binding<WebSocketMessageKind> {
-        Binding(
-            get: {
-                switch session.draft.body {
-                case .json: .json
-                case let .text(contentType, _):
-                    switch contentType {
-                    case "application/octet-stream", "application/octet-stream; encoding=hex": .binary
-                    case "application/x-wirebolt-file": .file
-                    default: .text
-                    }
-                case .file: .file
-                case .xml, .html, .raw, .multipart, .empty, .formURLEncoded: .text
-                }
-            },
-            set: { kind in
-                session.draft.body = switch kind {
-                case .text: .text(contentType: "text/plain", value: "")
-                case .json: .json(value: "{\n  \n}")
-                case .binary: .text(contentType: "application/octet-stream", value: "")
-                case .file: .file(path: "", contentType: nil)
-                }
-            }
-        )
+        Binding(get: { message.kind }, set: { session.draft.body = .webSocketMessage($0) })
     }
 
     private var binaryEncoding: Binding<WebSocketBinaryEncoding> {
-        Binding(
-            get: {
-                if case let .text(contentType, _) = session.draft.body,
-                   contentType == WebSocketBinaryEncoding.hex.contentType { return .hex }
-                return .base64
-            },
-            set: { encoding in
-                let old = messageText.wrappedValue
-                let bytes = try? self.binaryEncoding.wrappedValue.decode(old)
-                let value = bytes.map { data in
-                    encoding == .base64 ? data.base64EncodedString() : data.map { String(format: "%02x", $0) }.joined(separator: " ")
-                } ?? old
-                session.draft.body = .text(contentType: encoding.contentType, value: value)
-            }
-        )
+        Binding(get: { message.encoding }, set: { session.draft.body = session.draft.body.reencodingMessage($0) })
     }
 
     private var messageText: Binding<String> {
-        Binding(
-            get: {
-                switch session.draft.body {
-                case let .json(value), let .text(_, value), let .xml(value),
-                     let .html(value), let .raw(_, value): value
-                case .empty, .formURLEncoded, .multipart, .file: ""
-                }
-            },
-            set: { value in
-                switch messageKind.wrappedValue {
-                case .json: session.draft.body = .json(value: value)
-                case .binary: session.draft.body = .text(contentType: binaryEncoding.wrappedValue.contentType, value: value)
-                case .file: session.draft.body = .text(contentType: "application/x-wirebolt-file", value: value)
-                case .text: session.draft.body = .text(contentType: "text/plain", value: value)
-                }
-            }
-        )
+        Binding(get: { message.text }, set: { session.draft.body = session.draft.body.editingMessage($0) })
     }
 
     private func badge(for section: RequestPanelSection) -> Int? {
@@ -4097,11 +4029,7 @@ private struct AuthenticationEditor: View {
         Binding(
             get: { model.secretMaterial(for: source) },
             set: { value in
-                let name: String
-                // A legacy shared name is never written: other requests may read it.
-                if case let .secret(existing) = source, !existing.isEmpty,
-                   !CredentialReference.isLegacyShared(existing) { name = existing }
-                else { name = CredentialReference.unique(role: role) }
+                let name = CredentialReference.editableName(for: source, role: role)
                 model.editSecret(name: name, value: value)
                 switch authentication {
                 case let .basic(username, password):
@@ -4359,57 +4287,13 @@ private struct BodyTools: View {
 
     private var kindBinding: Binding<BodyKind> {
         Binding(
-            get: {
-                switch requestBody {
-                case .empty: .empty
-                case .text: .raw
-                case .json: .json
-                case .xml: .xml
-                case .html: .html
-                case .raw: .raw
-                case .formURLEncoded: .form
-                case .multipart: .multipart
-                case .file: .file
-                }
-            },
-            set: { kind in
-                let previous: String = switch requestBody {
-                case let .text(_, value), let .json(value), let .xml(value), let .html(value), let .raw(_, value): value
-                default: ""
-                }
-                requestBody = switch kind {
-                case .empty: .empty
-                case .text: .text(contentType: nil, value: previous)
-                case .json: .json(value: previous.isEmpty ? "{\n  \n}" : previous)
-                case .xml: .xml(value: previous)
-                case .html: .html(value: previous)
-                case .raw: .raw(contentType: nil, value: previous)
-                case .form: .formURLEncoded(fields: [])
-                case .multipart: .multipart(parts: previous.isEmpty ? [] : [MultipartPart(name: "name", value: .literal(previous))])
-                case .file: .file(path: "", contentType: nil)
-                }
-            }
+            get: { requestBody.composerKind },
+            set: { requestBody = requestBody.switching(to: $0) }
         )
     }
 
     private func formatBody() {
-        switch requestBody {
-        case let .json(value):
-            guard let data = value.data(using: .utf8),
-                  let object = try? JSONSerialization.jsonObject(with: data),
-                  let formatted = try? JSONSerialization.data(
-                      withJSONObject: object,
-                      options: [.prettyPrinted, .sortedKeys]
-                  )
-            else { return }
-            requestBody = .json(value: String(decoding: formatted, as: UTF8.self))
-        case let .xml(value):
-            requestBody = .xml(value: value.replacingOccurrences(of: "><", with: ">\n<"))
-        case let .html(value):
-            requestBody = .html(value: value.replacingOccurrences(of: "><", with: ">\n<"))
-        case .empty, .text, .raw, .formURLEncoded, .multipart, .file:
-            break
-        }
+        requestBody = requestBody.formatted()
     }
 }
 
@@ -4425,19 +4309,11 @@ private struct BodyTextEditor: View {
     }
 }
 
-private enum BodyKind: CaseIterable, Identifiable {
-    case empty
-    case json
-    case text
-    case xml
-    case html
-    case raw
-    case form
-    case multipart
-    case file
+private typealias BodyKind = DomainBodyKind
 
-    static var allCases: [Self] { [.json, .form, .xml, .html, .raw, .multipart, .file, .empty] }
-    var id: Self { self }
+extension DomainBodyKind: CaseIterable, Identifiable {
+    public static var allCases: [Self] { [.json, .form, .xml, .html, .raw, .multipart, .file, .empty] }
+    public var id: Self { self }
 
     var title: String {
         switch self {
@@ -4450,15 +4326,6 @@ private enum BodyKind: CaseIterable, Identifiable {
         case .form: "Form URLEncoded"
         case .multipart: "Multipart"
         case .file: "File"
-        }
-    }
-}
-
-private extension RequestBody {
-    var canFormat: Bool {
-        switch self {
-        case .json, .xml, .html: true
-        case .empty, .text, .raw, .formURLEncoded, .multipart, .file: false
         }
     }
 }
@@ -4789,7 +4656,7 @@ private struct EnvironmentPopup: View {
     var body: some View {
         Menu {
             Button("Globals") { model.selectedEnvironmentID = nil }
-            ForEach(model.workspace.environments.filter { $0.id != WorkspaceDraft.globalEnvironmentID }.sorted(by: { $0.name < $1.name })) { environment in
+            ForEach(model.workspace.selectableEnvironments) { environment in
                 Button(environment.name) { model.selectedEnvironmentID = environment.id }
             }
             Divider()

@@ -42,6 +42,9 @@ struct SettingsModal: View {
                 DispatchQueue.main.async {
                     guard !model.isShowingAppSettings else { return }
                     if window.attachedSheet == nil {
+                        // Commit the workspace's enabled controls before AppKit
+                        // asks the captured field to become first responder.
+                        window.contentView?.layoutSubtreeIfNeeded()
                         window.makeFirstResponder(previous)
                         if let selection, let editor = window.firstResponder as? NSTextView {
                             let length = (editor.string as NSString).length

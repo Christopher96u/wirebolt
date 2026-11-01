@@ -129,7 +129,8 @@ impl ProxyPolicy {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
 pub enum ProxySource {
     AppDefault,
     SystemDefault,
@@ -244,12 +245,13 @@ impl ManualProxy {
         Ok(Self { routes })
     }
 
-    pub(crate) fn routes(&self) -> &[ProxyRoute] {
+    #[must_use]
+    pub fn routes(&self) -> &[ProxyRoute] {
         &self.routes
     }
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ProxyDestination {
     All,
@@ -282,15 +284,15 @@ impl ProxyRoute {
         self
     }
 
-    pub(crate) const fn destination(&self) -> ProxyDestination {
+    pub const fn destination(&self) -> ProxyDestination {
         self.destination
     }
 
-    pub(crate) const fn endpoint(&self) -> &ProxyEndpoint {
+    pub const fn endpoint(&self) -> &ProxyEndpoint {
         &self.endpoint
     }
 
-    pub(crate) const fn credentials(&self) -> Option<&ProxyCredentials> {
+    pub const fn credentials(&self) -> Option<&ProxyCredentials> {
         self.credentials.as_ref()
     }
 }
@@ -308,11 +310,13 @@ impl ProxyCredentials {
         Self { username, password }
     }
 
-    pub(crate) const fn username(&self) -> &SecretName {
+    #[must_use]
+    pub const fn username(&self) -> &SecretName {
         &self.username
     }
 
-    pub(crate) const fn password(&self) -> &SecretName {
+    #[must_use]
+    pub const fn password(&self) -> &SecretName {
         &self.password
     }
 }
@@ -385,7 +389,7 @@ impl ProxyEndpoint {
         self.protocol
     }
 
-    pub(crate) fn normalized(&self) -> String {
+    pub fn normalized(&self) -> String {
         let mut value = self.uri.to_string();
         if self.uri.path().is_empty() {
             value.push('/');

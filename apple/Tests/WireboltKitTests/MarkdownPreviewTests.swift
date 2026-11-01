@@ -61,6 +61,117 @@ struct MarkdownPreviewTests {
         let cache = MarkdownPreviewCache()
         #expect(try await cache.render("").text.length == 0)
         #expect(try await cache.render("**unfinished").text.string == "**unfinished")
-        #expect(try await cache.render("```\nunclosed code").text.string.contains("unclosed code"))
+        #expect(try await cache.render("```\nunclosed code").text.string == "unclosed code\n")
+    }
+}
+
+// Frozen rendering oracle from 081c6d0. Compare text and all native styling,
+// including the unstyled separators, rather than assuming CommonMark parity.
+extension MarkdownPreviewTests {
+    static let corpus: [String] = [
+        "", "# One\n\n## Two\n\n### Three\n\n#### Four\n\n##### Five\n\n###### Six",
+        "Title\n=====\n\nSubtitle\n-----", "plain *em* **strong** ***both*** ~~strike~~ ~single~",
+        "one `code` two ``a ` b`` and **`strong code`**", "```swift\nlet x = 1\n```\n\n    indented\n    code\n",
+        "- first\n- second\n  - nested\n    3. ordered\n    4. next\n- last",
+        "3. start\n4. **bold** item\n\n   paragraph\n\n5. last", "- [ ] todo\n- [x] done",
+        "> quote\n>\n> second *paragraph*\n> > nested\n> - item",
+        "[link](https://example.com/a?q=b) <https://example.com> <me@example.com>",
+        "[relative](../page) [unsafe](file:///etc/passwd) [script](javascript:alert) [mail](mailto:a@b.com)",
+        "![alt *text*](https://example.invalid/image.png) then ![empty]()",
+        "| a | b |\n| - | - |\n| **x** | `y` |", "<div>\nhello\n</div>\n\n<b>inline</b> <!-- comment -->",
+        "soft\nbreak  \nhard\\\nbreak", "before\n\n---\n\nafter\n\n***\n\nend",
+        "footnote[^1]\n\n[^1]: definition", "\\*escaped\\* &amp; &#x1F680; \\[link] \\\\ end",
+        "café é 東京 🚀 **🧑🏽‍💻**\n\nעברית العربية", "**unfinished", "```\nunclosed code",
+        "- ![image](x) **bold**\n\n---\n\n> `quote`\n> next",
+    ]
+
+    @Test(arguments: corpus) func matchesFoundationRenderer(source: String) async throws {
+        let old = try Self.legacyRender(source)
+        let new = try await MarkdownPreviewCache().render(source)
+        #expect(new.text.string == old.text.string)
+        #expect(new.text.isEqual(to: old.text))
+        #expect(new.cost == old.cost)
+    }
+    @Test("Native Markdown storage preserves normalized attributes and independent view ownership", arguments: corpus)
+    @MainActor
+    func nativeStorage(source: String) async throws {
+        let rendered = try await MarkdownPreviewCache().render(source)
+        let expected = NSTextStorage(attributedString: try Self.legacyRender(source).text)
+        expected.ensureAttributesAreFixed(in: NSRange(location: 0, length: expected.length))
+        let first = rendered.makeTextStorage()
+        let second = rendered.makeTextStorage()
+        #expect(first.isEqual(to: expected))
+        #expect(second.isEqual(to: expected))
+        first.replaceCharacters(in: NSRange(location: 0, length: first.length), with: "changed")
+        #expect(second.isEqual(to: expected))
+        #expect(rendered.text.string == expected.string)
+    }
+    static func legacyRender(_ source: String) throws -> RenderedMarkdown {
+        let markdown = try AttributedString(markdown: source, options: .init(interpretedSyntax: .full))
+        try Task.checkCancellation()
+        let output = NSMutableAttributedString(string: "")
+        var previousBlock: Int?
+        var previousItem: Int?
+        var runs = 0
+        for run in markdown.runs {
+            try Task.checkCancellation()
+            runs += 1
+            let components = run.presentationIntent?.components ?? []
+            let block = components.first?.identity
+            var heading: Int?
+            var code = false
+            var quote = false
+            var item: (id: Int, number: Int)?
+            var ordered: Bool?
+            var depth = 0
+            for component in components {
+                switch component.kind {
+                case .header(let level): heading = level
+                case .codeBlock: code = true
+                case .blockQuote: quote = true
+                case .listItem(let number): if item == nil { item = (component.identity, number) }
+                case .orderedList: if ordered == nil { ordered = true }; depth += 1
+                case .unorderedList: if ordered == nil { ordered = false }; depth += 1
+                default: break
+                }
+            }
+            let paragraph = NSMutableParagraphStyle()
+            paragraph.lineSpacing = 3
+            paragraph.paragraphSpacing = 6
+            if depth > 0 {
+                paragraph.firstLineHeadIndent = CGFloat(max(0, depth - 1)) * 20
+                paragraph.headIndent = CGFloat(depth) * 20
+            }
+            if quote { paragraph.firstLineHeadIndent += 16; paragraph.headIndent += 16 }
+            var attributes: [NSAttributedString.Key: Any] = [
+                .font: NSFont.systemFont(ofSize: 13), .foregroundColor: NSColor.labelColor,
+                .paragraphStyle: paragraph,
+            ]
+            let inline = run.inlinePresentationIntent ?? []
+            let monospace = code || inline.contains(.code)
+            var font = monospace ? NSFont.monospacedSystemFont(ofSize: 12, weight: .regular) : NSFont.systemFont(ofSize: 13)
+            if let heading { font = NSFont.systemFont(ofSize: CGFloat(max(14, 26 - heading * 2)), weight: .bold) }
+            var traits = font.fontDescriptor.symbolicTraits
+            if inline.contains(.stronglyEmphasized) { traits.insert(.bold) }
+            if inline.contains(.emphasized) { traits.insert(.italic) }
+            font = NSFont(descriptor: font.fontDescriptor.withSymbolicTraits(traits), size: font.pointSize) ?? font
+            attributes[.font] = font
+            if monospace { attributes[.backgroundColor] = NSColor.quaternaryLabelColor }
+            if quote { attributes[.foregroundColor] = NSColor.secondaryLabelColor }
+            if inline.contains(.strikethrough) { attributes[.strikethroughStyle] = NSUnderlineStyle.single.rawValue }
+            if let link = run.link, ["http", "https", "mailto"].contains(link.scheme?.lowercased() ?? "") {
+                attributes[.link] = link
+            }
+            if block != previousBlock && output.length > 0 {
+                output.append(NSAttributedString(string: "\n", attributes: [.font: NSFont.systemFont(ofSize: 13), .foregroundColor: NSColor.labelColor]))
+            }
+            if let item, item.id != previousItem {
+                output.append(NSAttributedString(string: ordered == true ? "\(item.number).  " : "•  ", attributes: attributes))
+            }
+            output.append(NSAttributedString(string: String(markdown[run.range].characters), attributes: attributes))
+            previousBlock = block
+            previousItem = item?.id
+        }
+        return RenderedMarkdown(NSAttributedString(attributedString: output), cost: output.length * 2 + runs * 256)
     }
 }

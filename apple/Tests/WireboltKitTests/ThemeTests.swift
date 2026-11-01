@@ -2,6 +2,18 @@ import Testing
 @testable import WireboltKit
 
 struct ThemeTests {
+    @Test func persistedPresetSpellingsAndLegacySelections() {
+        for (preset, value) in [(ThemePreset.black, "black"), (.paper, "paper"), (.ember, "ember")] {
+            #expect(preset.rawValue == value)
+            #expect(ThemePreset(rawValue: value) == preset)
+            #expect(domainSelectPreset(selection: value, dark: true) == preset)
+            #expect(domainSelectPreset(selection: value, dark: false) == preset)
+        }
+        #expect(domainSelectPreset(selection: "dark", dark: false) == .black)
+        #expect(domainSelectPreset(selection: "light", dark: true) == .paper)
+        #expect(ThemePreset(rawValue: "dark") == nil)
+    }
+
     @Test func textContrastOnAllSurfaces() {
         for preset in ThemePreset.allCases {
             for increased in [false, true] {
@@ -60,5 +72,20 @@ struct ThemeTests {
                 #expect(chip.foreground.contrast(with: chip.background) >= 4.5)
             }
         }
+    }
+}
+
+extension ThemeTests {
+    @Test func generatedPresetsKeepUserDefaultsValuesAndCustomChips() throws {
+        #expect(ThemePreset.allCases.map(\.rawValue) == ["black", "paper", "ember"])
+        for preset in ThemePreset.allCases {
+            #expect(ThemePreset(rawValue: preset.rawValue) == preset)
+            let theme = ResolvedTheme(preset: preset)
+            let custom = try #require(HTTPMethod(rawValue: "PROPFIND"))
+            let another = try #require(HTTPMethod(rawValue: "CUSTOM"))
+            #expect(theme.method(custom).foreground == theme.method(another).foreground)
+            #expect(theme.method(custom).background == theme.method(another).background)
+        }
+        #expect(ThemePreset(rawValue: "system") == nil)
     }
 }

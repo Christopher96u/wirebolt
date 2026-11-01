@@ -52,7 +52,7 @@ struct NetworkSettingsPage: View {
         _transportBaseline = State(initialValue: model.workspace.transport)
         _test = State(initialValue: model.makeProxyConnectionTest())
         let configuration: ProxyDocument? = switch scope {
-        case .app: model.proxyPreferences.configuration
+        case .appDefault, .systemDefault: model.proxyPreferences.configuration
         case .workspace: model.workspace.proxy
         case .request: session?.draft.proxy.document
         }
@@ -63,7 +63,7 @@ struct NetworkSettingsPage: View {
 
     private var currentConfiguration: ProxyDocument? {
         switch scope {
-        case .app: model.proxyPreferences.configuration
+        case .appDefault, .systemDefault: model.proxyPreferences.configuration
         case .workspace: model.workspace.proxy
         case .request: session?.draft.proxy.document
         }
@@ -80,7 +80,7 @@ struct NetworkSettingsPage: View {
     private var effective: EffectiveProxy {
         let value = try? form.document()
         switch scope {
-        case .app: return .resolve(request: nil, workspace: nil, app: value ?? .system)
+        case .appDefault, .systemDefault: return .resolve(request: nil, workspace: nil, app: value ?? .system)
         case .workspace: return .resolve(request: nil, workspace: value, app: model.proxyPreferences.configuration)
         case .request: return .resolve(request: value, workspace: model.workspace.proxy, app: model.proxyPreferences.configuration)
         }
@@ -117,8 +117,8 @@ struct NetworkSettingsPage: View {
                         }
                         if form.routes.count < 2 {
                             Button("Add Separate Route", systemImage: "plus") {
-                                if form.routes.first?.destination == "all" { form.routes[0].destination = "http" }
-                                var route = ProxyRouteDraft(); route.destination = "https"
+                                if form.routes.first?.destination == .all { form.routes[0].destination = .http }
+                                var route = ProxyRouteDraft(); route.destination = .https
                                 form.routes.append(route)
                             }.font(.caption)
                         }
@@ -271,7 +271,7 @@ struct NetworkSettingsPage: View {
 
     private var scopeDescription: String {
         switch scope {
-        case .app: "HTTP and WebSocket defaults for workspaces that inherit. Stored only on this Mac."
+        case .appDefault, .systemDefault: "HTTP and WebSocket defaults for workspaces that inherit. Stored only on this Mac."
         case .workspace: "Default for requests in this workspace. Shared in wirebolt.toml; credentials stay in Keychain."
         case .request: "Override the connection for this request, or inherit your workspace’s configuration."
         }
@@ -311,9 +311,9 @@ private struct ProxyRouteFields: View {
         VStack(alignment: .leading, spacing: 12) {
             HStack {
                 Picker("Destination", selection: $route.destination) {
-                    Text("All traffic").tag("all")
-                    Text("HTTP only").tag("http")
-                    Text("HTTPS only").tag("https")
+                    Text("All traffic").tag(ProxyDestination.all)
+                    Text("HTTP only").tag(ProxyDestination.http)
+                    Text("HTTPS only").tag(ProxyDestination.https)
                 }
                 if canRemove { Button("Remove Route", systemImage: "minus.circle", action: remove).labelStyle(.iconOnly).help("Remove Route") }
             }
@@ -492,7 +492,7 @@ struct TransportSettingsFields: View {
                 let sources = try await Self.readPEM(panel.urls)
                 let identity = try ClientIdentityPEM(parsing: sources)
                 // A new name per choice: Cancel in Workspace Settings keeps the previous identity intact.
-                let name = "tls.\(UUID().uuidString.lowercased()).client-identity"
+                let name = CredentialReference.unique(role: "client-identity", scope: "tls")
                 model.editSecret(name: name, value: identity.combined)
                 await model.saveSecret(name: name, value: identity.combined)
                 transport.wrappedValue.clientCertificateReference = name
@@ -511,9 +511,10 @@ struct TransportSettingsFields: View {
         Task {
             guard await present(panel, in: NSApp.keyWindow) == .OK, let url = panel.url else { return }
             do {
-                guard try await Self.readPEM([url]).first?.contains("-----BEGIN CERTIFICATE-----") == true else {
-                    throw PEMFileError(name: url.lastPathComponent)
-                }
+                try await Task.detached(priority: .userInitiated) {
+                    do { try appValidateCaPemFile(path: url.path) }
+                    catch let DomainError.Invalid(reason) { throw ProxyValidationError(reason) }
+                }.value
                 transport.wrappedValue.customCAPath = url.path
                 certificateError = nil
             } catch { certificateError = error.localizedDescription }
@@ -522,22 +523,9 @@ struct TransportSettingsFields: View {
 
     private static func readPEM(_ urls: [URL]) async throws -> [String] {
         try await Task.detached(priority: .userInitiated) {
-            try urls.map { url in
-                // PEM files are small; a larger or binary file (DER, PKCS #12) is the wrong format.
-                let size = (try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
-                guard size <= 1_048_576, let text = try? String(contentsOf: url, encoding: .utf8) else {
-                    throw PEMFileError(name: url.lastPathComponent)
-                }
-                return text
-            }
+            do { return try appReadPemFiles(paths: urls.map(\.path)) }
+            catch let DomainError.Invalid(reason) { throw ProxyValidationError(reason) }
         }.value
-    }
-}
-
-private struct PEMFileError: LocalizedError {
-    let name: String
-    var errorDescription: String? {
-        "“\(name)” isn’t a PEM certificate file. Convert DER or PKCS #12 (.p12) files to PEM first."
     }
 }
 

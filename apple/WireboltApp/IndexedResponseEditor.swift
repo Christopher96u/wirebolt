@@ -226,7 +226,7 @@ final class IndexedCodeView: NSView, NSUserInterfaceValidations {
             findTask = Task { [weak self, weak state] in
                 do {
                     if !query.text.isEmpty { try await Task.sleep(for: .milliseconds(100)) }
-                    let worker = Task.detached(priority: .userInitiated) { try index.search(query, selection: scope) }
+                    let worker = responseTask(priority: .userInitiated) { try index.search(query, selection: scope) }
                     let matches = try await withTaskCancellationHandler { try await worker.value } onCancel: { worker.cancel() }
                     try Task.checkCancellation()
                     guard let self, let state else { return }
@@ -307,17 +307,25 @@ final class IndexedCodeView: NSView, NSUserInterfaceValidations {
                     let source = row.text as NSString
                     let progressive = singleLongLine && source.length <= 2 * 1024 * 1024
                     let prefix = progressive ? source.substring(with: source.rangeOfComposedCharacterSequences(for: NSRange(location: 0, length: min(2048, source.length)))) : row.text
-                    cached = ShapedLine(text: row.text, language: language, fontSize: fontSize, appearance: effectiveAppearance.name, themeRevision: theme.revision,
-                        line: IndexedTextLine(Self.styled(prefix, language: language, fontSize: fontSize, invisibles: showsInvisibles, theme: theme), fontSize: fontSize), complete: !progressive)
+                    let prefixLength = prefix.utf16.count
+                    cached = ShapedLine(
+                        text: row.text, language: language, fontSize: fontSize, appearance: effectiveAppearance.name,
+                        themeRevision: theme.revision,
+                        line: IndexedTextLine(
+                            Self.styled(
+                                prefix,
+                                spaceRuns: row.spaceRanges?.prefix { $0.location < prefixLength }.map {
+                                    NSIntersectionRange($0, NSRange(location: 0, length: prefixLength))
+                                }, language: language, fontSize: fontSize, invisibles: showsInvisibles, theme: theme), fontSize: fontSize), complete: !progressive)
                 }
                 shapedLines.append(cached)
-                if !cached.complete { prepareLongLine(row.text) }
+                if !cached.complete { prepareLongLine(row.text, spaceRuns: row.spaceRanges) }
                 while shapedLines.count > 2 || shapedLines.reduce(0, { $0 + $1.text.utf16.count }) > 2 * 1024 * 1024 { shapedLines.removeFirst() }
                 cached.line.draw(at: CGPoint(x: gutterWidth + 4 + row.indent, y: y), visible: visibleRect)
                 hasDrawnViewport = true
                 continue
             }
-            let attributed = NSMutableAttributedString(attributedString: Self.styled(row.text, language: language, fontSize: fontSize, invisibles: showsInvisibles, theme: theme))
+            let attributed = NSMutableAttributedString(attributedString: Self.styled(row.text, spaceRuns: row.spaceRanges, language: language, fontSize: fontSize, invisibles: showsInvisibles, theme: theme))
             for range in findHighlights(row: row.number, length: attributed.length) {
                 attributed.addAttribute(.backgroundColor, value: NSColor.findHighlightColor.withAlphaComponent(0.25), range: range)
             }
@@ -335,14 +343,19 @@ final class IndexedCodeView: NSView, NSUserInterfaceValidations {
         }
     }
 
-    private func prepareLongLine(_ text: String) {
+    private func prepareLongLine(_ text: String, spaceRuns: [NSRange]?) {
         guard shapingText == nil else { return }
         shapingTask?.cancel()
         shapingText = text
-        let fontSize = fontSize, language = language, appearance = effectiveAppearance.name, invisibles = showsInvisibles, theme = theme
+        let fontSize = fontSize
+        let language = language
+        let appearance = effectiveAppearance.name
+        let invisibles = showsInvisibles
+        let theme = theme
         shapingTask = Task { [weak self] in
             do {
-                let attributed = Self.styled(text, language: language, fontSize: fontSize, invisibles: invisibles, theme: theme)
+                let attributed = Self.styled(
+                    text, spaceRuns: spaceRuns, language: language, fontSize: fontSize, invisibles: invisibles, theme: theme)
                 let line = try await IndexedTextLine.prepare(attributed, fontSize: fontSize)
                 try Task.checkCancellation()
                 guard let self, self.fontSize == fontSize, self.language == language, self.effectiveAppearance.name == appearance,
@@ -358,9 +371,9 @@ final class IndexedCodeView: NSView, NSUserInterfaceValidations {
         }
     }
 
-    private static func styled(_ text: String, language: SyntaxLanguage, fontSize: Double, invisibles: Bool, theme: ResolvedTheme) -> NSAttributedString {
+    private static func styled(_ text: String, spaceRuns: [NSRange]?, language: SyntaxLanguage, fontSize: Double, invisibles: Bool, theme: ResolvedTheme) -> NSAttributedString {
         let highlighted = SyntaxHighlighter.attributedString(text: text, language: language, fontSize: fontSize, theme: theme)
-        return invisibles ? InvisibleSpaces.marking(highlighted, attributes: [.foregroundColor: theme.definition.dim.nsColor]) : highlighted
+        return invisibles ? InvisibleSpaces.marking(highlighted, runs: spaceRuns, attributes: [.foregroundColor: theme.definition.dim.nsColor]) : highlighted
     }
 
     private func load(_ range: Range<Int>) {
@@ -368,7 +381,7 @@ final class IndexedCodeView: NSView, NSUserInterfaceValidations {
         loadTask?.cancel()
         loadingRange = range
         loadTask = Task { [weak self] in
-            let reader = Task.detached(priority: .userInitiated) { try index.rows(start: range.lowerBound, count: range.count) }
+            let reader = responseTask(priority: .userInitiated) { try index.rows(start: range.lowerBound, count: range.count) }
             let rows = try? await withTaskCancellationHandler { try await reader.value } onCancel: { reader.cancel() }
             guard !Task.isCancelled, let self, let rows else { return }
             self.cachedRows = rows
@@ -383,7 +396,7 @@ final class IndexedCodeView: NSView, NSUserInterfaceValidations {
         needsDisplay = true
         guard !query.isEmpty, let index else { return }
         findTask = Task { [weak self] in
-            let search = Task.detached(priority: .userInitiated) { try index.firstMatch(query) }
+            let search = responseTask(priority: .userInitiated) { try index.firstMatch(query) }
             let row = try? await withTaskCancellationHandler { try await search.value } onCancel: { search.cancel() }
             guard !Task.isCancelled, let self, let row else { return }
             self.scroll(NSPoint(x: 0, y: Double(row) * self.lineHeight))
@@ -620,7 +633,7 @@ final class IndexedCodeView: NSView, NSUserInterfaceValidations {
     @objc func copy(_ sender: Any?) {
         guard let index, let (start, end) = orderedSelection else { return }
         Task {
-            let result = await Task.detached(priority: .userInitiated) {
+            let result = await responseTask(priority: .userInitiated) {
                 guard let rows = try? index.rows(start: start.row, count: end.row - start.row + 1) else { return "" }
                 return rows.map { row in
                     let string = row.text as NSString

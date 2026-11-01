@@ -84,7 +84,7 @@ struct GitCollaborationView: View {
                     .textSelection(.enabled)
                     .accessibilityLabel("Git error: \(failure.reason)")
             } else if let operation = model.gitOperation {
-                Label(operationLabel(operation.outcome), systemImage: operationIcon(operation.outcome))
+                Label(sessionGitOperationLabel(outcome: operation.outcome), systemImage: operationIcon(operation.outcome))
                     .foregroundStyle(operation.outcome == .conflicted ? WireboltTheme.danger : .secondary)
             }
 
@@ -264,11 +264,7 @@ struct GitCollaborationView: View {
     }
 
     private func pushHelp(_ availability: GitPushAvailability) -> String {
-        switch availability {
-        case .push: "Push committed workspace documents to the upstream."
-        case let .publish(branch): "No upstream configured. Push \(branch) to origin and track it as the upstream."
-        case let .unavailable(reason): reason
-        }
+        sessionGitPushHelp(availability: availability)
     }
 
     private var trimmedCommitMessage: String {
@@ -308,38 +304,10 @@ struct GitCollaborationView: View {
 
     /// The Git porcelain code stays available for people who know it.
     private func porcelainHelp(_ change: GitChangeSnapshot) -> String {
-        let code = change.conflicted ? "UU" : shortLabel(change.staged) + shortLabel(change.unstaged)
-        return "Git status: \(code.replacingOccurrences(of: " ", with: "·"))"
-    }
-
-    private func shortLabel(_ delta: GitDeltaSnapshot) -> String {
-        switch delta {
-        case .none: " "
-        case .added: "A"
-        case .modified: "M"
-        case .deleted: "D"
-        case .renamed: "R"
-        case .copied: "C"
-        case .typeChanged: "T"
-        case .untracked: "?"
-        case .unmerged: "U"
-        }
-    }
-
-    private func operationLabel(_ outcome: GitOperationOutcome) -> String {
-        switch outcome {
-        case .nothingToCommit: "Nothing to commit"
-        case .committed: "Workspace documents committed"
-        case .updated: "Workspace updated from upstream"
-        case .upToDate: "Already up to date"
-        case .pushed: "Current branch pushed"
-        case .conflicted: "Pull stopped with conflicts"
-        case .mergeAborted: "Merge aborted; workspace restored to the last commit"
-        }
+        sessionGitPorcelain(staged: change.staged, unstaged: change.unstaged, conflicted: change.conflicted)
     }
 
     private func operationIcon(_ outcome: GitOperationOutcome) -> String {
         outcome == .conflicted ? "exclamationmark.triangle.fill" : "checkmark.circle"
     }
 }
-

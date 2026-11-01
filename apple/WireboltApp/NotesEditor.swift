@@ -92,7 +92,7 @@ struct MarkdownTextView: NSViewRepresentable {
     func updateNSView(_ scroll: NSScrollView, context: Context) {
         guard context.coordinator.rendered !== rendered, let text = scroll.documentView as? NSTextView else { return }
         context.coordinator.rendered = rendered
-        text.textStorage?.setAttributedString(rendered.text)
+        text.layoutManager?.replaceTextStorage(rendered.makeTextStorage())
         text.scrollToBeginningOfDocument(nil)
     }
 

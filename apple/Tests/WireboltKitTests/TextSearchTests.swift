@@ -52,3 +52,23 @@ import Testing
         #expect(matches.last?.end == selection.end)
     }
 }
+
+extension TextSearchTests {
+    @Test func preservesICUDialectAndUnicodeLineEndings() throws {
+        let source = "a\rb\nc\r\nd\u{85}e\u{2028}f\u{2029}g"
+        for pattern in [".", "^.", ".$"] {
+            let hits = try TextSearchQuery(text: pattern, regularExpression: true).matches(in: source)
+            #expect(hits.map(\.location) == [0, 2, 4, 7, 9, 11, 13])
+        }
+        #expect(try TextSearchQuery(text: "(?i)strasse", regularExpression: true).matches(in: "Straße STRASSE").count == 2)
+        #expect(try TextSearchQuery(text: #"\X"#, regularExpression: true).matches(in: "👨‍👩‍👧‍👦e\u{301}").count == 2)
+    }
+    @Test func nativeTaskCancellationInterruptsRustSearch() async throws {
+        let worker = responseTask(priority: .userInitiated) {
+            try TextSearchQuery(text: "(a|aa)+$", regularExpression: true).matches(in: String(repeating: "a", count: 2000) + "!")
+        }
+        // GCD delivers the cancellation even while the search occupies a cooperative thread.
+        DispatchQueue.global().asyncAfter(deadline: .now() + .milliseconds(2)) { worker.cancel() }
+        await #expect(throws: CancellationError.self) { try await worker.value }
+    }
+}

@@ -5,6 +5,7 @@ public enum WebSocketEvent: Sendable {
     case connected([ResponseHeader])
     case message(Data, binary: Bool, outgoing: Bool, control: String? = nil)
     case closed
+    case state(SessionSocketSnapshot)
 }
 
 public protocol WebSocketTransport: Sendable {
@@ -14,17 +15,15 @@ public protocol WebSocketTransport: Sendable {
 }
 
 public protocol WebSocketConnecting: Sendable {
-    func connection(for input: RunInput) -> any WebSocketTransport
+    func connection(for input: RunInput, state: AppSessionSocket, generation: String) -> any WebSocketTransport
 }
 
 /// A connection lifecycle entry shown in the message list.
-public enum WebSocketNotice: Equatable, Sendable {
-    case connected, disconnected, failed
-}
+public typealias WebSocketNotice = SessionSocketNotice
 
 public struct WebSocketMessage: Identifiable, Sendable {
-    public let id = UUID()
-    public let timestamp = Date()
+    public let id: UUID
+    public let timestamp: Date
     public let data: Data
     public let binary: Bool
     public let outgoing: Bool
@@ -35,6 +34,8 @@ public struct WebSocketMessage: Identifiable, Sendable {
     public var system: Bool { notice != nil }
 
     init(data: Data, binary: Bool, outgoing: Bool, notice: WebSocketNotice?, control: String?) {
+        id = UUID()
+        timestamp = Date()
         self.data = data
         self.binary = binary
         self.outgoing = outgoing
@@ -43,52 +44,65 @@ public struct WebSocketMessage: Identifiable, Sendable {
         text = String(decoding: data, as: UTF8.self)
     }
 
+    init(_ record: SessionSocketMessage) {
+        // A malformed bridge identity receives a fresh UUID on projection;
+        // the document retains that projection across repeated snapshots.
+        id = UUID(uuidString: record.id) ?? UUID()
+        timestamp = Date(timeIntervalSinceReferenceDate: record.timestamp)
+        data = record.data
+        binary = record.binary
+        outgoing = record.outgoing
+        notice = record.notice
+        control = record.control
+        text = record.text
+    }
+
     public func matches(_ query: String) -> Bool {
         query.isEmpty || text.localizedCaseInsensitiveContains(query) || control?.localizedCaseInsensitiveContains(query) == true
     }
 }
 
-public enum WebSocketStatus: Equatable, Sendable {
-    case disconnected, connecting, connected
-}
+public typealias WebSocketStatus = SessionSocketStatus
 
-public enum WebSocketBinaryEncoding: String, CaseIterable, Sendable {
-    case base64 = "Base64"
-    case hex = "Hex"
+public typealias WebSocketMessageKind = SessionMessageKind
 
-    public var contentType: String {
-        self == .hex ? "application/octet-stream; encoding=hex" : "application/octet-stream"
-    }
-
-    public func decode(_ text: String) throws -> Data {
-        let compact = text.filter { !$0.isWhitespace }
+extension SessionMessageKind: CaseIterable, Identifiable {
+    public static var allCases: [Self] { [.text, .json, .binary, .file] }
+    public var id: Self { self }
+    public var title: String {
         switch self {
-        case .base64:
-            guard let data = Data(base64Encoded: compact) else {
-                throw WebSocketUIError("Enter a valid Base64 binary message.")
-            }
-            return data
-        case .hex:
-            let bytes = Array(compact.utf8)
-            guard bytes.count.isMultiple(of: 2) else { throw WebSocketUIError("Enter a valid hexadecimal binary message.") }
-            func nibble(_ byte: UInt8) -> UInt8? {
-                switch byte {
-                case 48...57: byte - 48
-                case 65...70: byte - 55
-                case 97...102: byte - 87
-                default: nil
-                }
-            }
-            var data = Data(capacity: bytes.count / 2)
-            for offset in stride(from: 0, to: bytes.count, by: 2) {
-                guard let high = nibble(bytes[offset]), let low = nibble(bytes[offset + 1]) else {
-                    throw WebSocketUIError("Enter a valid hexadecimal binary message.")
-                }
-                data.append(high << 4 | low)
-            }
-            return data
+        case .text: "Text"
+        case .json: "JSON"
+        case .binary: "Binary"
+        case .file: "File"
         }
     }
+}
+
+public typealias WebSocketBinaryEncoding = SessionBinaryEncoding
+
+extension SessionBinaryEncoding: CaseIterable {
+    public static var allCases: [Self] { [.base64, .hex] }
+    public var title: String { self == .hex ? "Hex" : "Base64" }
+
+    public func decode(_ text: String) throws -> Data {
+        do { return try sessionDecodeBinary(text: text, hex: self == .hex) } catch let WorkspaceBridgeError.OperationFailed(reason) {
+            throw WebSocketUIError(reason)
+        }
+    }
+}
+
+/// The WebSocket message composer's view of a request body; Rust owns the kinds and encodings.
+public extension RequestBody {
+    var webSocketMessage: SessionMessageDraft { sessionMessageDraft(body: self) }
+
+    static func webSocketMessage(_ kind: WebSocketMessageKind) -> RequestBody { sessionSwitchMessage(kind: kind) }
+
+    func reencodingMessage(_ encoding: WebSocketBinaryEncoding) -> RequestBody {
+        sessionReencodeMessage(body: self, encoding: encoding)
+    }
+
+    func editingMessage(_ text: String) -> RequestBody { sessionEditMessage(body: self, text: text) }
 }
 
 @MainActor
@@ -98,103 +112,115 @@ public final class WebSocketDocumentState {
     public private(set) var messages: [WebSocketMessage] = []
     public private(set) var errorMessage: String?
     public private(set) var headers: [ResponseHeader] = []
+    @ObservationIgnored private let rust = AppSessionSocket()
     @ObservationIgnored private var connection: (any WebSocketTransport)?
     @ObservationIgnored private var receiver: Task<Void, Never>?
-    @ObservationIgnored private var generation = UUID()
-    private var retainedBytes = 0
-
+    @ObservationIgnored private var generation = ""
+    @ObservationIgnored private var firstSequence: UInt64 = 0
+    @ObservationIgnored private var nextSequence: UInt64 = 0
     public init() {}
-
     public func connect(input: RunInput, connector: any WebSocketConnecting) {
-        guard status == .disconnected else { return }
-        let generation = UUID()
+        guard let generation = rust.begin() else { return }
         self.generation = generation
-        errorMessage = nil
-        headers = []
-        status = .connecting
-        let connection = connector.connection(for: input)
+        mirror()
+        let connection = connector.connection(for: input, state: rust, generation: generation)
         self.connection = connection
         receiver = Task { [weak self] in
+            var failure: String?
+            var ownsState = false
             do {
                 for try await event in connection.events() {
                     guard let self, self.generation == generation, !Task.isCancelled else { break }
-                    switch event {
-                    case let .connected(headers):
-                        self.headers = headers
-                        self.status = .connected
-                        self.append(data: Data("Connected to \(input.url)".utf8), binary: false, outgoing: false, notice: .connected)
-                    case let .message(data, binary, outgoing, control):
-                        self.append(data: data, binary: binary, outgoing: outgoing, control: control)
-                    case .closed: self.status = .disconnected
+                    if case .state(let snapshot) = event {
+                        ownsState = true
+                        self.apply(snapshot)
+                        continue
                     }
+                    switch event {
+                    case .connected(let headers):
+                        self.rust.connected(
+                            generation: generation, headers: headers,
+                            url: input.url)
+                    case .message(let data, let binary, let outgoing, let control):
+                        self.rust.append(generation: generation, data: data, binary: binary, outgoing: outgoing, control: control)
+                    case .closed: self.rust.closed(generation: generation)
+                    case .state: break
+                    }
+                    self.mirror()
                 }
-            } catch {
-                if self?.generation == generation, !Task.isCancelled { self?.errorMessage = error.localizedDescription }
-            }
+            } catch { if !Task.isCancelled { failure = error.localizedDescription } }
             connection.disconnect()
-            if self?.generation == generation {
-                self?.append(data: Data((self?.errorMessage ?? "Disconnected").utf8), binary: false, outgoing: false, notice: self?.errorMessage == nil ? .disconnected : .failed)
-                self?.status = .disconnected
-                self?.connection = nil
+            guard let self, self.generation == generation else { return }
+            if !ownsState {
+                self.rust.finish(generation: generation, error: failure)
+                self.mirror()
             }
+            self.connection = nil
         }
     }
-
     public func disconnect() {
-        if status == .connected { append(data: Data("Disconnected".utf8), binary: false, outgoing: false, notice: .disconnected) }
-        generation = UUID()
+        rust.disconnect()
+        generation = ""
         receiver?.cancel()
         connection?.disconnect()
         connection = nil
         receiver = nil
-        status = .disconnected
+        mirror()
     }
-
     public func send(body: RequestBody) async {
         guard status == .connected, let connection else { return }
         do {
-            let data: Data
-            let binary: Bool
-            switch body {
-            case let .file(path, _):
-                data = try await Task.detached {
-                    let url = URL(fileURLWithPath: path)
-                    let size = try url.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0
-                    guard size <= 16 * 1024 * 1024 else { throw WebSocketUIError("The message exceeds the 16 MB limit.") }
-                    return try Data(contentsOf: url, options: .mappedIfSafe)
-                }.value
-                binary = true
-            case let .text(contentType, value):
-                binary = contentType?.hasPrefix("application/octet-stream") == true
-                if binary {
-                    let encoding: WebSocketBinaryEncoding = contentType == WebSocketBinaryEncoding.hex.contentType ? .hex : .base64
-                    data = try encoding.decode(value)
-                } else { data = Data(value.utf8) }
-            case let .json(value):
-                data = Data(value.utf8)
-                _ = try JSONSerialization.jsonObject(with: data, options: [.fragmentsAllowed])
-                binary = false
-            case let .raw(_, value), let .xml(value), let .html(value): data = Data(value.utf8); binary = false
-            case .empty: data = Data(); binary = false
-            default: throw WebSocketUIError("Choose a Text, JSON, Binary or File message.")
+            let value = try await Task.detached { try sessionMessageBody(body: body) }.value
+            guard connection.send(value.data, binary: value.binary) else {
+                throw WebSocketUIError("The message could not be queued. Check the connection and try again.")
             }
-            guard data.count <= 16 * 1024 * 1024 else { throw WebSocketUIError("The message exceeds the 16 MB limit.") }
-            guard connection.send(data, binary: binary) else { throw WebSocketUIError("The message could not be queued. Check the connection and try again.") }
-            errorMessage = nil
-        } catch { errorMessage = error.localizedDescription }
-    }
-
-    private func append(data: Data, binary: Bool, outgoing: Bool, notice: WebSocketNotice? = nil, control: String? = nil) {
-        while !messages.isEmpty && (messages.count >= 1_000 || retainedBytes + data.count > 16 * 1024 * 1024) {
-            retainedBytes -= messages.removeFirst().data.count
+            rust.setError(error: nil)
+        } catch let WorkspaceBridgeError.OperationFailed(reason) { rust.setError(error: Self.localizedFailure(reason, body: body)) } catch {
+            rust.setError(error: error.localizedDescription)
         }
-        messages.append(WebSocketMessage(data: data, binary: binary, outgoing: outgoing, notice: notice, control: control))
-        retainedBytes += data.count
+        mirror()
     }
-
-    public func clearMessages() { messages = []; retainedBytes = 0 }
-
-    deinit { receiver?.cancel(); connection?.disconnect() }
+    public func clearMessages() {
+        rust.clear()
+        mirror()
+    }
+    private func mirror() {
+        apply(rust.snapshot(since: nextSequence))
+    }
+    private func apply(_ state: SessionSocketSnapshot) {
+        guard state.nextSequence >= nextSequence, state.firstSequence >= firstSequence else { return }
+        let next = state.status
+        if status != next { status = next }
+        if errorMessage != state.error { errorMessage = state.error }
+        let nextHeaders = state.headers.map { ResponseHeader(name: $0.name, value: $0.value) }
+        if headers != nextHeaders { headers = nextHeaders }
+        let removed = min(messages.count, Int(clamping: state.firstSequence - firstSequence))
+        if removed > 0 { messages.removeFirst(removed) }
+        let start = state.nextSequence - UInt64(state.messages.count)
+        let skip = Int(clamping: nextSequence > start ? nextSequence - start : 0)
+        if skip < state.messages.count { messages.append(contentsOf: state.messages.dropFirst(skip).map(WebSocketMessage.init)) }
+        firstSequence = state.firstSequence
+        nextSequence = state.nextSequence
+    }
+    // Foundation owns localized Cocoa diagnostics. Successful parsing and file I/O
+    // stay in Rust; failures use the native localized error wording.
+    private static func localizedFailure(_ reason: String, body: RequestBody) -> String {
+        do {
+            switch body {
+            case .json(let value): _ = try JSONSerialization.jsonObject(with: Data(value.utf8), options: [.fragmentsAllowed])
+            case .file(let path, _):
+                let url = URL(fileURLWithPath: path)
+                let size = try url.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0
+                if size <= 16 * 1024 * 1024 { _ = try Data(contentsOf: url, options: .mappedIfSafe) }
+            default: break
+            }
+        } catch { return error.localizedDescription }
+        return reason
+    }
+    deinit {
+        receiver?.cancel()
+        connection?.disconnect()
+    }
 }
 
 public struct WebSocketUIError: LocalizedError, Sendable {
@@ -215,7 +241,7 @@ final class WebSocketEventBuffer: @unchecked Sendable {
     private var failure: (any Error)?
     private var waiter: CheckedContinuation<WebSocketEvent?, any Error>?
 
-    init(byteLimit: Int = 16 * 1024 * 1024 + 1024, eventLimit: Int = 256) {
+    init(byteLimit: Int = Int(sessionSocketMessageBytes()) + 64 * (Int(sessionSocketMessageLimit()) + 1), eventLimit: Int = 256) {
         self.byteLimit = max(1, byteLimit)
         self.eventLimit = max(1, eventLimit)
     }
@@ -225,6 +251,7 @@ final class WebSocketEventBuffer: @unchecked Sendable {
         case let .message(data, _, _, _): data.count + 64
         case let .connected(headers): headers.reduce(64) { $0 + $1.name.utf8.count + $1.value.utf8.count }
         case .closed: 64
+        case let .state(snapshot): snapshot.messages.reduce(64) { $0 + $1.data.count + 64 }
         }
         condition.lock()
         guard cost <= byteLimit else {

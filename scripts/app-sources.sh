@@ -24,7 +24,9 @@ wirebolt_app_inputs=(
   apple/Sources/WireboltKit/JSONResponseDocument.swift
   apple/Sources/WireboltKit/OAuth2Service.swift
   apple/Sources/WireboltKit/CollectionImportSources.swift
+  apple/Sources/WireboltKit/RuntimeAdapters.swift
   apple/Sources/WireboltKit/WireboltModel.swift
+  apple/Sources/WireboltKit/WorkspaceOperations.swift
   apple/Sources/WireboltKit/SidebarSnapshot.swift
   apple/Sources/WireboltKit/VariableTemplates.swift
   apple/Sources/WireboltKit/WorkspaceChrome.swift
@@ -57,6 +59,7 @@ wirebolt_app_inputs=(
   apple/WireboltApp/RustWorkspacePersistence.swift
   -Xcc -fmodule-map-file=apple/Generated/wirebolt_ffiFFI.modulemap
   -Xcc -fmodule-map-file=crates/wirebolt-ffi/include/module.modulemap
+  -licucore
   target/release/libwirebolt_ffi.a
   -framework AppKit
   -framework AuthenticationServices

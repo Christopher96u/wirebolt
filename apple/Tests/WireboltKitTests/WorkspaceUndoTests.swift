@@ -102,7 +102,7 @@ struct WorkspaceUndoTests {
         await undo(model, undoManager)
         #expect(sorted(model.workspace.collections.first) == sorted(nested))
         #expect(await persistence.commands.first == .deleteCollection(id: "api"))
-        #expect(await persistence.commands.dropFirst().first == .createCollection(CollectionDraft(id: "api", name: "API", order: 3)))
+        #expect(await persistence.commands.dropFirst().first == .createCollection(collection: CollectionDraft(id: "api", name: "API", order: 3).domain))
         #expect(model.requestMatches(nested.requests[0], normalizedQuery: "deep"))
     }
 
@@ -115,10 +115,10 @@ struct WorkspaceUndoTests {
         #expect(model.workspace.location(collectionID: "api", requestID: "deep") == nil)
         await undo(model, undoManager)
         #expect(model.workspace.location(collectionID: "api", requestID: "deep") == deep)
-        #expect(await persistence.commands.last == .saveRequest(collectionID: "api", location: deep))
+        #expect(await persistence.commands.last == .saveRequest(location: deep.domain))
         await redo(model, undoManager)
         #expect(model.workspace.location(collectionID: "api", requestID: "deep") == nil)
-        #expect(await persistence.commands.last == .deleteRequest(collectionID: "api", id: "deep"))
+        #expect(await persistence.commands.last == .deleteRequest(collectionId: "api", id: "deep"))
     }
 
     @Test("Renames of requests, folders and collections undo to the previous name")
@@ -195,7 +195,7 @@ struct WorkspaceUndoTests {
         #expect(model.canMoveSidebarItem("group|api|parent", by: 1))
         await model.moveSidebarItem("group|api|parent", by: 1)
         #expect(model.workspace.collections[0].orderedChildren(parentID: nil) == ["request:root", "group:parent"])
-        #expect(await persistence.commands.last == .reorderChildren(collectionID: "api", parentID: nil, items: ["request:root", "group:parent"]))
+        #expect(await persistence.commands.last == .reorderChildren(collectionId: "api", parentId: nil, items: ["request:root", "group:parent"]))
         #expect(!model.canMoveSidebarItem("group|api|parent", by: 1))
         await undo(model, undoManager)
         #expect(model.workspace.collections[0].orderedChildren(parentID: nil) == ["group:parent", "request:root"])
@@ -227,7 +227,7 @@ struct WorkspaceUndoTests {
         await model.deleteRequest(collectionID: "api", requestID: "root")
         await persistence.setFails(true)
         await undo(model, undoManager)
-        #expect(model.operationFailure?.kind == "workspace")
+        #expect(model.operationFailure?.kind == .workspace)
         #expect(!undoManager.canUndo && !undoManager.canRedo)
         #expect(model.workspace.location(collectionID: "api", requestID: "root") == nil)
     }
@@ -251,7 +251,7 @@ private struct UndoStubRunner: RequestRunner {
 
 private actor UndoRecorder: WorkspacePersistence {
     private var fails: Bool
-    private(set) var commands: [WorkspaceCommand] = []
+    private(set) var commands: [SessionWorkspaceCommand] = []
 
     init(fails: Bool = false) { self.fails = fails }
 
@@ -261,8 +261,8 @@ private actor UndoRecorder: WorkspacePersistence {
     func save(environment _: EnvironmentDraft) async throws {}
     func saveSecret(name _: String, value _: String) async throws {}
 
-    func apply(_ command: WorkspaceCommand) async throws -> WorkspaceDelta {
-        if fails { throw RunFailure(kind: "workspace", issues: []) }
+    func apply(_ command: SessionWorkspaceCommand) async throws -> WorkspaceDelta {
+        if fails { throw RunFailure(kind: .workspace, issues: []) }
         commands.append(command)
         return WorkspaceDelta(version: UInt64(commands.count), kind: .collection, affectedIDs: [])
     }

@@ -1,4 +1,5 @@
 import Foundation
+import Observation
 import Synchronization
 import Testing
 @testable import WireboltKit
@@ -30,6 +31,62 @@ struct WebSocketTests {
         }
         #expect(throws: WebSocketUIError.self) { try WebSocketBinaryEncoding.base64.decode("AA==!") }
         #expect(try WebSocketBinaryEncoding.hex.decode("").isEmpty)
+        for value in ["Zh==", "Zm9=", " aG Vs bG8=\n"] {
+            let compact = value.filter { !$0.isWhitespace }
+            #expect(try WebSocketBinaryEncoding.base64.decode(value) == Data(base64Encoded: compact))
+        }
+    }
+
+    @Test("The message composer keeps its kind and rewrites binary in the chosen encoding")
+    func messageComposer() {
+        let base64 = RequestBody.webSocketMessage(.binary).editingMessage("AAF/gP8=")
+        let hex = base64.reencodingMessage(.hex)
+        #expect(hex.webSocketMessage == SessionMessageDraft(kind: .binary, encoding: .hex, text: "00 01 7f 80 ff"))
+        #expect(hex.reencodingMessage(.base64) == base64)
+        #expect(RequestBody.webSocketMessage(.json).webSocketMessage.text == "{\n  \n}")
+        #expect(WebSocketMessageKind.allCases.map(\.title) == ["Text", "JSON", "Binary", "File"])
+        #expect(WebSocketMessageKind.allCases.allSatisfy { RequestBody.webSocketMessage($0).webSocketMessage.kind == $0 })
+    }
+
+    @Test("Malformed bridge message IDs receive a usable native identity")
+    func malformedMessageIdentity() {
+        var record = SessionSocketMessage(
+            id: "invalid", timestamp: 42, data: Data("message".utf8), binary: false,
+            outgoing: true, notice: nil, control: nil, text: "message")
+        let message = WebSocketMessage(record)
+        #expect(message.data == record.data)
+        #expect(message.timestamp == Date(timeIntervalSinceReferenceDate: 42))
+        #expect(message.outgoing)
+        #expect(message.text == "message")
+        record.id = UUID().uuidString
+        #expect(WebSocketMessage(record).id == UUID(uuidString: record.id))
+    }
+
+    @Test("JSON sends match Foundation acceptance and localized failures")
+    @MainActor
+    func foundationJSONParity() async {
+        let state = WebSocketDocumentState()
+        let socket = SocketFixture()
+        state.connect(input: input, connector: SocketConnector(socket: socket))
+        socket.yield(.connected([]))
+        await eventually { state.status == .connected }
+        let values = [
+            "{\"a\":1,}", "\u{feff}[1,]", "[\"comma,}\",]", "null", "1e-400",
+            String(repeating: "[", count: 512) + "0" + String(repeating: "]", count: 512),
+            "{", "[,]", "{,}", "[1,,]", " \u{feff}{}", "1e400", "\"\\uD800\"",
+            String(repeating: "[", count: 513) + "0" + String(repeating: "]", count: 513),
+        ]
+        for value in values {
+            var failure: String?
+            do { _ = try JSONSerialization.jsonObject(with: Data(value.utf8), options: [.fragmentsAllowed]) }
+            catch { failure = error.localizedDescription }
+            let sent = socket.sent.count
+            await state.send(body: .json(value: value))
+            #expect(state.errorMessage == failure, "JSON: \(value.prefix(80))")
+            #expect(socket.sent.count == sent + (failure == nil ? 1 : 0))
+            if failure == nil { #expect(socket.sent.last?.data == Data(value.utf8)) }
+        }
+        state.disconnect()
     }
 
     @Test("Reconnect ignores events from the disconnected transport")
@@ -58,6 +115,24 @@ struct WebSocketTests {
         await eventually { state.status == .disconnected }
     }
 
+    @Test("A normal server close keeps the last send error and failed notice")
+    @MainActor func closeAfterInvalidJSON() async {
+        let state = WebSocketDocumentState()
+        let socket = SocketFixture()
+        state.connect(input: input, connector: SocketConnector(socket: socket))
+        socket.yield(.connected([]))
+        await eventually { state.status == .connected }
+        await state.send(body: .json(value: "{"))
+        let error = state.errorMessage
+        #expect(error != nil)
+        socket.yield(.closed)
+        socket.finish()
+        await eventually { state.messages.last?.notice == .failed }
+        #expect(state.status == .disconnected)
+        #expect(state.errorMessage == error)
+        #expect(state.messages.last?.text == error)
+    }
+
     @Test("Text, JSON, binary and file messages use the selected transport representation")
     @MainActor
     func sendsPayloads() async throws {
@@ -68,9 +143,8 @@ struct WebSocketTests {
         await eventually { state.status == .connected }
         await state.send(body: .text(contentType: "text/plain", value: "café 東京"))
         await state.send(body: .json(value: "{\"count\":1}"))
-        let binaryBody = RequestBody.text(contentType: WebSocketBinaryEncoding.hex.contentType, value: "00 FF")
-        let restoredBody = try JSONDecoder().decode(RequestBody.self, from: JSONEncoder().encode(binaryBody))
-        await state.send(body: restoredBody)
+        let binaryBody = RequestBody.webSocketMessage(.binary).reencodingMessage(.hex).editingMessage("00 FF")
+        await state.send(body: binaryBody)
         let file = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
         try Data([1, 2, 3]).write(to: file)
         defer { try? FileManager.default.removeItem(at: file) }
@@ -134,6 +208,38 @@ struct WebSocketTests {
         #expect(state.messages.last?.text == "Connection reset")
     }
 
+    @Test("Batched socket projections ignore duplicate and cleared messages")
+    @MainActor
+    func batchedProjection() async throws {
+        let state = WebSocketDocumentState()
+        let socket = SocketFixture()
+        let connector = RetainedSocketConnector(socket: socket)
+        state.connect(input: input, connector: connector)
+        let retained = try #require(connector.retained)
+        let generation = retained.snapshot(since: 0).generation
+        retained.connected(generation: generation, headers: [], url: input.url)
+        retained.append(generation: generation, data: Data("first".utf8), binary: false, outgoing: false, control: nil)
+        let first = retained.snapshot(since: 0)
+        socket.yield(.state(first))
+        socket.yield(.state(first))
+        await eventually { state.messages.count == 2 }
+        #expect(state.messages.map(\.text) == ["Connected to \(input.url)", "first"])
+        let statusChanged = Mutex(false)
+        withObservationTracking { _ = state.status } onChange: { statusChanged.withLock { $0 = true } }
+        state.clearMessages()
+        socket.yield(.state(first))
+        retained.append(generation: generation, data: Data("second".utf8), binary: false, outgoing: false, control: nil)
+        socket.yield(.state(retained.snapshot(since: 0)))
+        await eventually { state.messages.last?.text == "second" }
+        #expect(state.messages.map(\.text) == ["second"])
+        #expect(!statusChanged.withLock { $0 })
+        retained.finish(generation: generation, error: nil)
+        socket.yield(.state(retained.snapshot(since: first.nextSequence)))
+        socket.finish()
+        await eventually { state.status == .disconnected }
+        #expect(state.messages.map(\.notice) == [nil, .disconnected])
+    }
+
     private var input: RunInput { RunInput(draft: RequestDraft(url: "ws://127.0.0.1/echo"), variables: [:]) }
 
     @MainActor
@@ -148,7 +254,7 @@ struct WebSocketTests {
 
 private struct SocketConnector: WebSocketConnecting {
     let socket: SocketFixture
-    func connection(for input: RunInput) -> any WebSocketTransport { socket }
+    func connection(for input: RunInput, state: AppSessionSocket, generation: String) -> any WebSocketTransport { socket }
 }
 
 private final class SocketFixture: WebSocketTransport {
@@ -174,4 +280,36 @@ private final class SocketFixture: WebSocketTransport {
         }
     }
     func disconnect() { state.withLock { $0.disconnections += 1 } }
+}
+
+private final class RetainedSocketConnector: WebSocketConnecting, Sendable {
+    let socket: SocketFixture
+    private let holder = Mutex<AppSessionSocket?>(nil)
+    var retained: AppSessionSocket? { holder.withLock { $0 } }
+    init(socket: SocketFixture) { self.socket = socket }
+    func connection(for input: RunInput, state: AppSessionSocket, generation: String) -> any WebSocketTransport {
+        holder.withLock { $0 = state }
+        return socket
+    }
+}
+
+extension WebSocketTests {
+    @Test func callbackBufferAcceptsTheFullRustRetentionCap() async throws {
+        let retained = AppSessionSocket()
+        let generation = try #require(retained.begin())
+        let limit = Int(sessionSocketMessageLimit())
+        let bytes = Int(sessionSocketMessageBytes())
+        for _ in 0..<limit-1 {
+            retained.append(generation: generation, data: Data(), binary: false, outgoing: false, control: nil)
+        }
+        retained.append(generation: generation, data: Data(repeating: 65, count: bytes), binary: true, outgoing: false, control: nil)
+        let snapshot = retained.snapshot(since: 0)
+        #expect(snapshot.messages.count == limit)
+        let buffer = WebSocketEventBuffer()
+        #expect(buffer.push(.state(snapshot)))
+        guard case let .state(received) = try await buffer.next() else { Issue.record("Expected retained snapshot"); return }
+        #expect(received.messages.count == limit)
+        #expect(received.messages.last?.data.count == bytes)
+        buffer.finish()
+    }
 }
