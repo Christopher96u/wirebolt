@@ -96,10 +96,10 @@ fn discard_reverts_saved_documents_and_closes_never_saved_documents() {
     assert_eq!(effects[0].saved.as_ref().unwrap().name, "A");
     assert!(effects[1].saved.is_none());
 }
-fn layout() -> AppSessionLayout {
-    AppSessionLayout {
+fn layout() -> SessionLayout {
+    SessionLayout {
         groups: vec![
-            AppSessionLayoutGroup {
+            SessionLayoutGroup {
                 tabs: ["a", "b", "c"]
                     .map(|id| SessionLayoutTab {
                         collection_id: "api".into(),
@@ -109,7 +109,7 @@ fn layout() -> AppSessionLayout {
                 selected_index: Some(2),
                 preview_index: Some(1),
             },
-            AppSessionLayoutGroup {
+            SessionLayoutGroup {
                 tabs: vec![SessionLayoutTab {
                     collection_id: "api".into(),
                     request_id: "b".into(),
@@ -127,7 +127,8 @@ fn layout_roundtrip_restores_groups_selection_and_skips_temporary_documents() {
     w.collections[0].requests = ["a", "b", "c"].map(|id| location(id, None, 0)).to_vec();
     let source = layout();
     let decoded =
-        crate::session::tabs::decode_layout(&crate::session::tabs::encode_layout(&source)).unwrap();
+        crate::session::tabs::decode_layout(&crate::session::tabs::encode_layout(&source).unwrap())
+            .unwrap();
     let mut tabs = SessionTabs::default();
     let mut docs = HashMap::new();
     let result = policy::restore(&w, &mut tabs, &mut docs, Some(decoded));

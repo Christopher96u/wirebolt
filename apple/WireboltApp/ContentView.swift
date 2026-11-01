@@ -1044,13 +1044,8 @@ private struct SidebarReorderDrop: DropDelegate {
         guard let identifier = interface.sidebarDragIdentifier else { return nil }
         let target = target
         if let folder = target.folder, info.location.y >= 6, info.location.y <= 18 {
-            let parts = identifier.split(separator: "|", omittingEmptySubsequences: false).map(String.init)
-            guard parts.count == 3 else { return nil }
-            if parts[0] == "request" { return .inside }
-            if parts[0] == "group", parts[1] == target.collection,
-               let collection = model.workspace.collections.first(where: { $0.id == target.collection }),
-               !collection.descendantGroupIDs(of: parts[2]).contains(folder) { return .inside }
-            return nil
+            return model.workspace.collections.first(where: { $0.id == target.collection })?
+                .canDropInside(folder, identifier: identifier) == true ? .inside : nil
         }
         guard model.canReorderSidebar(identifier, relativeTo: target.item,
             collectionID: target.collection, parentID: target.parent) else { return nil }
@@ -1204,11 +1199,7 @@ private struct SidebarMoveMenu: View {
             .keyboardShortcut(.downArrow, modifiers: [.command, .option])
             .disabled(!model.canMoveSidebarItem(identifier, by: 1))
         Menu("Move To") {
-            let isFolder = identifier.hasPrefix("group|")
-            let sourceCollection = identifier.split(separator: "|", omittingEmptySubsequences: false).dropFirst().first.map(String.init)
-            let collections = model.workspace.collections
-                .filter { !isFolder || $0.id == sourceCollection }
-                .sorted { ($0.order, $0.name, $0.id) < ($1.order, $1.name, $1.id) }
+            let collections = model.workspace.moveCollections(for: identifier)
             ForEach(collections) { collection in
                 if collection.id != collections.first?.id { Divider() }
                 // The root collection has no sidebar header; its items sit at the top level.
@@ -2394,7 +2385,7 @@ private struct WebSocketRequestWorkspace: View {
                     default: .text
                     }
                 case .file: .file
-                case .xml, .html, .raw, .multipart, .empty, .formUrlEncoded: .text
+                case .xml, .html, .raw, .multipart, .empty, .formURLEncoded: .text
                 }
             },
             set: { kind in
@@ -2432,7 +2423,7 @@ private struct WebSocketRequestWorkspace: View {
                 switch session.draft.body {
                 case let .json(value), let .text(_, value), let .xml(value),
                      let .html(value), let .raw(_, value): value
-                case .empty, .formUrlEncoded, .multipart, .file: ""
+                case .empty, .formURLEncoded, .multipart, .file: ""
                 }
             },
             set: { value in
@@ -4097,11 +4088,7 @@ private struct AuthenticationEditor: View {
         Binding(
             get: { model.secretMaterial(for: source) },
             set: { value in
-                let name: String
-                // A legacy shared name is never written: other requests may read it.
-                if case let .secret(existing) = source, !existing.isEmpty,
-                   !CredentialReference.isLegacyShared(existing) { name = existing }
-                else { name = CredentialReference.unique(role: role) }
+                let name = CredentialReference.editableName(for: source, role: role)
                 model.editSecret(name: name, value: value)
                 switch authentication {
                 case let .basic(username, password):
@@ -4268,12 +4255,12 @@ private struct BodyEditor: View {
                     get: { value },
                     set: { requestBody = .raw(contentType: contentType, value: $0) }
                 ))
-            case let .formUrlEncoded(fields):
+            case let .formURLEncoded(fields):
                 FieldEditor(
                     title: "Form Fields",
                     fields: Binding(
                         get: { fields },
-                        set: { requestBody = .formUrlEncoded(fields: $0) }
+                        set: { requestBody = .formURLEncoded(fields: $0) }
                     ),
                     kind: .query
                 )
@@ -4728,7 +4715,7 @@ private struct EnvironmentPopup: View {
     var body: some View {
         Menu {
             Button("Globals") { model.selectedEnvironmentID = nil }
-            ForEach(model.workspace.environments.filter { $0.id != WorkspaceDraft.globalEnvironmentID }.sorted(by: { $0.name < $1.name })) { environment in
+            ForEach(model.workspace.selectableEnvironments) { environment in
                 Button(environment.name) { model.selectedEnvironmentID = environment.id }
             }
             Divider()

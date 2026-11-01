@@ -1,5 +1,6 @@
-//! Collection-source recognition and bounded Bruno filesystem bundles.
+//! Collection-source recognition, bounded Bruno filesystem bundles and import summary labels.
 use serde::Serialize;
+use std::fmt::Write as _;
 use std::{fs, path::Path};
 pub use wirebolt_core::ImportFormat;
 #[must_use]
@@ -335,3 +336,38 @@ impl std::fmt::Display for CollectionSourceError {
     }
 }
 impl std::error::Error for CollectionSourceError {}
+
+#[must_use]
+pub fn import_headline(names: &[String], requests: i64, groups: i64) -> String {
+    fn counted(n: i64, noun: &str) -> String {
+        format!("{n} {noun}{}", if n == 1 { "" } else { "s" })
+    }
+    let mut text = format!("Imported {}", counted(requests, "request"));
+    if groups > 0 {
+        let _ = write!(text, " in {}", counted(groups, "folder"));
+    }
+    match names {
+        [] => text.push('.'),
+        [name] => {
+            let _ = write!(text, " into “{name}”.");
+        }
+        _ => {
+            let _ = write!(text, " into {} collections.", names.len());
+        }
+    }
+    text
+}
+
+#[must_use]
+pub fn import_environment_line(names: &[String], localized_list: &str) -> Option<String> {
+    match names {
+        [] => None,
+        [name] => Some(format!(
+            "Created the environment “{name}” for its variables."
+        )),
+        _ => Some(format!(
+            "Created {} environments: {localized_list}.",
+            names.len()
+        )),
+    }
+}

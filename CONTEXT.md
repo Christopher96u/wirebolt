@@ -51,7 +51,7 @@ its workspace. Runtime storage remains outside Git-visible workspace files.
 
 - Rust owns workspace persistence, import parsing, the editable request/workspace/
   environment records, variable editing and resolution, cURL exports, proxy policy, forms
-  and probe state, editor tokenization/indent columns, bounded PEM file input, sidebar indexes, chrome labels, theme/contrast computation,
+  and probe state, editor tokenization/indent columns, bounded PEM file input, sidebar indexes/drop eligibility/menu ordering, chrome labels, typed theme/contrast computation,
   OAuth 2 protocol logic, immutable request preparation, HTTP transport, and TLS input.
 - Rust also owns response body storage, indexing, search, folding, wrapping policy,
   JSON parsing, Markdown run assembly/cache policy, run history, and cookie policy in `wirebolt-app::response`.
@@ -64,6 +64,9 @@ its workspace. Runtime storage remains outside Git-visible workspace files.
   `wirebolt-app::session`. Its runtime commands own send/cancel orchestration,
   per-run cookie scoping, history/activity revisions, environment selection, secret
   editing/release, proxy/transport writes, OAuth acquisition and cURL coordination.
+- Rust domain modules separate stable identities (`identity`), editable URL/query state
+  (`url`), native chrome labels (`chrome`), import summaries (`imports`) and Git
+  presentation (`git`) from request/credential policy (`request`).
 - Swift projects typed Rust records and owns macOS interaction,
   window composition, native response rendering and font measurement, Keychain
   platform adapters, and observation facades. The complete native ownership audit is

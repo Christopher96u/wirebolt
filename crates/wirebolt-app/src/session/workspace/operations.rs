@@ -796,7 +796,7 @@ impl WorkspaceOperations {
         &self,
         tabs: &mut crate::session::tabs::SessionTabs,
         documents: &mut HashMap<String, crate::session::tabs::SessionTabDocument>,
-        layout: Option<crate::session::tabs::AppSessionLayout>,
+        layout: Option<crate::session::tabs::SessionLayout>,
     ) -> super::lifecycle::WorkspaceRestore {
         super::lifecycle::restore(&lock(&self.workspace.workspace), tabs, documents, layout)
     }

@@ -1,5 +1,5 @@
 use std::fs;
-use wirebolt_app::domain::{imports::*, request::*};
+use wirebolt_app::domain::{git::*, imports::*};
 #[test]
 fn collection_exports_keep_all_existing_importers() {
     for (extension, text, format) in [

@@ -1,5 +1,5 @@
 //! One indexed outline per workspace revision; filtering returns row positions in one batch.
-use super::models::{DomainCollection, DomainGroup};
+use super::models::{DomainCollection, DomainEnvironment, DomainGroup};
 use std::{
     cmp::Ordering,
     collections::{HashMap, HashSet, VecDeque},
@@ -248,22 +248,21 @@ pub fn ordered_children(c: &DomainCollection, parent: Option<&str>) -> Vec<Strin
 }
 #[must_use]
 pub fn subtree(c: &DomainCollection, root: Option<&str>) -> Vec<u64> {
+    group_subtree(&c.groups, root)
+}
+fn group_subtree(groups: &[DomainGroup], root: Option<&str>) -> Vec<u64> {
     let mut result: Vec<_> = root
-        .and_then(|id| c.groups.iter().position(|g| g.id == id))
+        .and_then(|id| groups.iter().position(|g| g.id == id))
         .into_iter()
         .map(|i| i as u64)
         .collect();
     let mut visited: HashSet<_> = result
         .iter()
-        .map(|&i| {
-            c.groups[usize::try_from(i).unwrap_or(usize::MAX)]
-                .id
-                .as_str()
-        })
+        .map(|&i| groups[usize::try_from(i).unwrap_or(usize::MAX)].id.as_str())
         .collect();
     let mut queue = VecDeque::from([root]);
     while let Some(parent) = queue.pop_front() {
-        for (i, g) in c.groups.iter().enumerate() {
+        for (i, g) in groups.iter().enumerate() {
             if g.parent_id.as_deref() == parent && visited.insert(&g.id) {
                 result.push(i as u64);
                 queue.push_back(Some(&g.id));
@@ -535,4 +534,51 @@ impl From<&DomainCollection> for DomainSidebarCollection {
                 .collect(),
         }
     }
+}
+
+/// Folder-center drops allow requests across collections and folders within their own tree.
+#[must_use]
+pub fn can_drop_inside(
+    collection: &DomainSidebarCollection,
+    folder: &str,
+    identifier: &str,
+) -> bool {
+    let parts: Vec<_> = identifier.split('|').collect();
+    match parts.as_slice() {
+        ["request", _, _] => true,
+        ["group", source, group] if *source == collection.id => {
+            !group_subtree(&collection.groups, Some(group))
+                .into_iter()
+                .any(|i| collection.groups[usize::try_from(i).unwrap_or(usize::MAX)].id == folder)
+        }
+        _ => false,
+    }
+}
+
+/// Move menus retain workspace order, with canonical name and ID tie breakers.
+#[must_use]
+pub fn move_collections(collections: &[DomainSidebarCollection], identifier: &str) -> Vec<u64> {
+    let folder = identifier.starts_with("group|");
+    let source = identifier.split('|').nth(1);
+    let mut indices: Vec<_> = (0..collections.len())
+        .filter(|&i| !folder || Some(collections[i].id.as_str()) == source)
+        .collect();
+    indices.sort_by(|&a, &b| {
+        let (a, b) = (&collections[a], &collections[b]);
+        a.order
+            .cmp(&b.order)
+            .then_with(|| canonical_compare(&a.name, &b.name))
+            .then_with(|| a.id.cmp(&b.id))
+    });
+    indices.into_iter().map(|i| i as u64).collect()
+}
+
+/// The environment picker excludes globals and sorts names using canonical comparison.
+#[must_use]
+pub fn selectable_environments(environments: &[DomainEnvironment]) -> Vec<u64> {
+    let mut indices: Vec<_> = (0..environments.len())
+        .filter(|&i| environments[i].id != "global")
+        .collect();
+    indices.sort_by(|&a, &b| canonical_compare(&environments[a].name, &environments[b].name));
+    indices.into_iter().map(|i| i as u64).collect()
 }

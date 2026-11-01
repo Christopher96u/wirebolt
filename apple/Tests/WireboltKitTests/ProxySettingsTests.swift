@@ -256,3 +256,22 @@ private final class ProbeRunner: RequestRunner {
     }
     func cancel(runID: RunID) {}
 }
+
+extension ProxySettingsTests {
+    @Test func invalidBridgeIdentityGetsOneStableNativeUUID() {
+        var input = domainProxyRouteInput(route: nil)
+        input.id = "invalid"
+        let draft = ProxyRouteDraft(domain: input)
+        #expect(draft.id == draft.id)
+        #expect(UUID(uuidString: draft.domain.id) == draft.id)
+        #expect(ProxyRouteDraft(domain: draft.domain).id == draft.id)
+    }
+    @Test func generatedProxyEnumsKeepPreferenceRawValues() {
+        #expect(ProxyScope.allCases.map(\.rawValue) == ["app", "workspace", "request"])
+        #expect(ProxyFormDraft.Mode.allCases.map(\.rawValue) == ["inherit", "system", "direct", "manual"])
+        for scope in ProxyScope.allCases { #expect(ProxyScope(rawValue: scope.rawValue) == scope) }
+        for mode in ProxyFormDraft.Mode.allCases { #expect(ProxyFormDraft.Mode(rawValue: mode.rawValue) == mode) }
+        #expect(ProxyScope(rawValue: "unknown") == nil)
+        #expect(ProxyFormDraft.Mode(rawValue: "unknown") == nil)
+    }
+}

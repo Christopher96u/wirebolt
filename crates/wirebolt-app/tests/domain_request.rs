@@ -1,7 +1,7 @@
 use wirebolt_app::domain::DomainAuthenticationKind;
 mod support;
 use support::*;
-use wirebolt_app::domain::{models::*, request::*};
+use wirebolt_app::domain::{chrome::*, models::*, request::*, url::*};
 
 #[test]
 fn imported_url_parameters_are_separated() {
@@ -409,4 +409,30 @@ fn transport_labels_use_workspace_settings_unless_request_overrides() {
 fn credential_role_sanitizing_uses_extended_grapheme_clusters() {
     assert_eq!(sanitized("e\u{301}👨‍👩‍👧"), "--");
     assert_eq!(sanitized(""), "value");
+}
+
+#[test]
+fn credential_edits_copy_shared_names_and_reuse_private_names() {
+    for name in [
+        "auth.api-key",
+        "oauth.client-secret",
+        "oauth.access-token",
+        "",
+    ] {
+        let source = secret(name);
+        let first = editable_credential_reference(&source, "api-key");
+        let second = editable_credential_reference(&source, "api-key");
+        assert_ne!(first, name);
+        assert_ne!(first, second);
+        assert!(owned_reference(&first));
+        assert!(!legacy_reference(&first));
+    }
+    assert_eq!(
+        editable_credential_reference(&secret("chosen.name"), "token"),
+        "chosen.name"
+    );
+    assert!(owned_reference(&editable_credential_reference(
+        &DomainValueSource::literal("material"),
+        "password"
+    )));
 }

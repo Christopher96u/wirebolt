@@ -109,8 +109,8 @@ struct PreviewTabTests {
         store.select(tabID: pinned.id)
         let layout = store.layout
         #expect(layout.groups.first?.previewIndex == 1)
-        let data = sessionEncodeLayout(layout: layout.sessionRecord)
-        let decoded = SessionLayout(try #require(sessionDecodeLayout(data: data)))
+        let data = try sessionEncodeLayout(layout: layout.sessionRecord)
+        let decoded = SessionLayout(try sessionDecodeLayout(data: data))
 
         let restored = DocumentSessionStore()
         let locations = ["a": Self.location("a"), "b": Self.location("b")]
@@ -125,7 +125,7 @@ struct PreviewTabTests {
     @Test("Layouts saved before preview tabs decode with every tab kept open")
     @MainActor func legacyLayoutDecodes() throws {
         let legacy = #"{"groups":[{"tabs":[{"collectionID":"api","requestID":"a"}],"selectedIndex":0}],"activeGroupIndex":0}"#
-        let layout = SessionLayout(try #require(sessionDecodeLayout(data: Data(legacy.utf8))))
+        let layout = SessionLayout(try sessionDecodeLayout(data: Data(legacy.utf8)))
         #expect(layout.groups.first?.previewIndex == nil)
     }
 }
@@ -136,4 +136,26 @@ private struct PreviewRunner: RequestRunner {
     }
 
     func cancel(runID _: RunID) {}
+}
+
+@Test @MainActor func missingBridgeTabProjectionRetainsAndSelectsAReplacement() {
+    for preview in [false, true] {
+        let store = DocumentSessionStore()
+        let draft = RequestDraft(id: "saved", name: "Saved")
+        let candidate = DocumentSession(collectionID: "c", requestID: draft.id, draft: draft, savedDraft: draft)
+        let opened = store.retainOpenedSession("missing", candidate: candidate, groupID: nil, preview: preview)
+        #expect(opened === candidate)
+        #expect(store.sessions[candidate.id] === candidate)
+        #expect(store.activeSession === candidate)
+        #expect(store.isPreview(tabID: candidate.id) == preview)
+    }
+}
+
+@Test func corruptLayoutPreferencesRemainAbsent() throws {
+    let name = "layout-corruption-\(UUID())"
+    let defaults = try #require(UserDefaults(suiteName: name))
+    defer { defaults.removePersistentDomain(forName: name) }
+    defaults.set(["/workspace": Data("corrupt".utf8)], forKey: SessionLayoutStore.defaultsKey)
+    #expect(SessionLayoutStore(defaults: defaults).layout(forWorkspace: "/workspace") == nil)
+    #expect(throws: WorkspaceBridgeError.self) { try sessionDecodeLayout(data: Data("corrupt".utf8)) }
 }

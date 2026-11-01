@@ -1,8 +1,5 @@
 //! Editor groups, preview replacement, navigation and compatible layout persistence.
-use crate::domain::{
-    DomainRequestDraft,
-    request::{separate_url_query, unique_id},
-};
+use crate::domain::{DomainRequestDraft, identity::unique_id, url::separate_url_query};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 
@@ -156,7 +153,7 @@ pub struct SessionLayoutTab {
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct AppSessionLayoutGroup {
+pub struct SessionLayoutGroup {
     pub tabs: Vec<SessionLayoutTab>,
     pub selected_index: Option<i64>,
     #[serde(default)]
@@ -164,8 +161,8 @@ pub struct AppSessionLayoutGroup {
 }
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct AppSessionLayout {
-    pub groups: Vec<AppSessionLayoutGroup>,
+pub struct SessionLayout {
+    pub groups: Vec<SessionLayoutGroup>,
     pub active_group_index: i64,
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -409,7 +406,7 @@ impl SessionTabs {
         }
     }
     #[must_use]
-    pub fn layout(&self, documents: &HashMap<String, SessionTabDocument>) -> AppSessionLayout {
+    pub fn layout(&self, documents: &HashMap<String, SessionTabDocument>) -> SessionLayout {
         let groups: Vec<_> = self
             .groups
             .iter()
@@ -433,7 +430,7 @@ impl SessionTabs {
                 }
                 Some((
                     &group.id,
-                    AppSessionLayoutGroup {
+                    SessionLayoutGroup {
                         selected_index: tabs
                             .iter()
                             .position(|(id, _)| Some(*id) == group.selected_tab_id.as_ref())
@@ -447,7 +444,7 @@ impl SessionTabs {
                 ))
             })
             .collect();
-        AppSessionLayout {
+        SessionLayout {
             active_group_index: groups
                 .iter()
                 .position(|(id, _)| *id == &self.active_group_id)
@@ -464,7 +461,7 @@ pub struct SessionRestoreResult {
 impl SessionTabs {
     pub fn restore(
         &mut self,
-        layout: &AppSessionLayout,
+        layout: &SessionLayout,
         resolved: Vec<Option<crate::domain::DomainLocation>>,
         documents: &mut HashMap<String, SessionTabDocument>,
     ) -> Vec<SessionDocument> {
@@ -522,13 +519,17 @@ impl SessionTabs {
         restored
     }
 }
-#[must_use]
-pub fn decode_layout(data: &[u8]) -> Option<AppSessionLayout> {
-    serde_json::from_slice(data).ok()
+/// # Errors
+/// Returns a session-layout decoding diagnostic for invalid preference bytes.
+pub fn decode_layout(data: &[u8]) -> Result<SessionLayout, super::persistence::WorkspaceError> {
+    super::serialization::decode(data, "session layout")
 }
-#[must_use]
-pub fn encode_layout(layout: &AppSessionLayout) -> Vec<u8> {
-    serde_json::to_vec(layout).unwrap_or_default()
+/// # Errors
+/// Returns a session-layout encoding diagnostic if serialization fails.
+pub fn encode_layout(
+    layout: &SessionLayout,
+) -> Result<Vec<u8>, super::persistence::WorkspaceError> {
+    super::serialization::encode(layout, "session layout")
 }
 #[must_use]
 pub fn existing_workspace_paths(paths: Vec<String>) -> Vec<String> {

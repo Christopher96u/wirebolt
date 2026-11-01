@@ -99,7 +99,7 @@ struct FieldTextInput: View {
 
     private var openReference: OpenVariableReference? {
         guard variables != nil, isFocused, dismissedText != text, text.contains("{{"),
-              case .selection(let range)? = selection?.indices, range.isEmpty,
+              case let .selection(range)? = selection?.indices, range.isEmpty,
               // The selection can briefly refer to the previous text while typing.
               range.lowerBound <= text.endIndex, let caret = range.lowerBound.samePosition(in: text.utf16)
         else { return nil }
@@ -128,9 +128,9 @@ enum VariableHighlighting {
         var result = Text(verbatim: "")
         for segment in VariableDisplaySegment.segments(of: text) {
             switch segment {
-            case .text(let plain):
+            case let .text(plain):
                 result = Text("\(result)\(Text(verbatim: plain))")
-            case .variable(let name):
+            case let .variable(name):
                 let color = catalog.entry(named: name) == nil ? theme.definition.error.color : theme.definition.variableForeground.color
                 // The spaces pad the chip; the renderer trims part of them back.
                 let chip = Text(verbatim: " \(name) ").foregroundStyle(color).customAttribute(VariableChipRun())

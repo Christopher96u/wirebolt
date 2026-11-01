@@ -217,7 +217,7 @@ struct EnvironmentEditor: View {
     @ViewBuilder
     private func valueField(_ variable: Binding<EnvironmentVariableDraft>, height: Double) -> some View {
         let row = variable.wrappedValue
-        if case .secret(let name) = row.value {
+        if case let .secret(name) = row.value {
             let material = Binding(
                 get: { stagedSecrets[name] ?? model.secretMaterial(for: row.value) },
                 set: { stagedSecrets[name] = $0 }
@@ -257,7 +257,7 @@ struct EnvironmentEditor: View {
             let name = row.makeSecretReference(environmentID: selectedID)
             stagedSecrets[name] = row.value.editableValue
             variable.wrappedValue.value = .secret(name)
-        } else if case .secret(let name) = row.value {
+        } else if case let .secret(name) = row.value {
             variable.wrappedValue.value = .literal(stagedSecrets[name] ?? model.secretMaterial(for: row.value))
             stagedSecrets.removeValue(forKey: name)
             revealedSecretIDs.remove(row.id)
@@ -333,7 +333,7 @@ struct EnvironmentEditor: View {
         defer { isSaving = false }
         // Values first: a saved reference must never point at a value that was not stored.
         let referenced = Set(environments.flatMap(\.variables).compactMap { row -> String? in
-            if case .secret(let name) = row.value { name } else { nil }
+            if case let .secret(name) = row.value { name } else { nil }
         })
         guard await model.saveSecrets(stagedSecrets.filter { referenced.contains($0.key) }) else {
             validationMessage = "The secret values could not be saved in Keychain. Your edits are still open."

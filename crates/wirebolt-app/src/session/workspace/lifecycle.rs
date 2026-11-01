@@ -2,7 +2,7 @@
 use crate::{
     domain::{DomainRequestDraft, DomainWorkspace},
     session::tabs::{
-        AppSessionLayout, SessionDocument, SessionEditorGroup, SessionRestoreResult,
+        SessionDocument, SessionEditorGroup, SessionLayout, SessionRestoreResult,
         SessionTabDocument, SessionTabs,
     },
 };
@@ -52,7 +52,7 @@ pub fn restore(
     workspace: &DomainWorkspace,
     tabs: &mut SessionTabs,
     documents: &mut HashMap<String, SessionTabDocument>,
-    layout: Option<AppSessionLayout>,
+    layout: Option<SessionLayout>,
 ) -> WorkspaceRestore {
     let active = tabs
         .snapshot(documents)
@@ -81,7 +81,7 @@ pub fn restore(
         {
             let draft = location.request.clone();
             let document = SessionDocument::new(
-                crate::domain::request::unique_id(),
+                crate::domain::identity::unique_id(),
                 crate::session::tabs::SessionKind::Http,
                 Some(location.collection_id.clone()),
                 None,

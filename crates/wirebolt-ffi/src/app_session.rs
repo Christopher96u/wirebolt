@@ -10,7 +10,7 @@ use wirebolt_app::{
     domain::{
         DomainAuthentication, DomainBody, DomainCollection, DomainEnvironment, DomainGroup,
         DomainLocation, DomainOAuthConfiguration, DomainProxy, DomainRequestDraft, DomainRunInput,
-        DomainTransport, DomainValueSource, DomainWorkspace, request::PushAvailability,
+        DomainTransport, DomainValueSource, DomainWorkspace, git::PushAvailability,
     },
     response::{ResponseHeaderValue, StoredCookie},
     session::{
@@ -30,9 +30,9 @@ use wirebolt_app::{
             RuntimeTransport, RuntimeTransportSettings, RuntimeTransportSnapshot,
         },
         tabs::{
-            AppSessionLayout, AppSessionLayoutGroup, SessionCloseScope, SessionDocument,
-            SessionEditorGroup, SessionKind, SessionLayoutTab, SessionRestoreResult,
-            SessionTabDocument, SessionTabSnapshot, SessionTabs,
+            SessionCloseScope, SessionDocument, SessionEditorGroup, SessionKind, SessionLayout,
+            SessionLayoutGroup, SessionLayoutTab, SessionRestoreResult, SessionTabDocument,
+            SessionTabSnapshot, SessionTabs,
         },
         websocket::{
             SessionSocket, SessionSocketMessage, SessionSocketNotice, SessionSocketSnapshot,
@@ -48,8 +48,8 @@ use wirebolt_app::{
                 WorkspaceSidebarState, WorkspaceUnsavedPrompt,
             },
             io::{
-                WorkspaceExport, WorkspaceFailure, WorkspaceGitAction, WorkspaceGitChange,
-                WorkspaceGitDelta, WorkspaceGitOperation, WorkspaceGitOutcome, WorkspaceGitStatus,
+                GitDelta, WorkspaceExport, WorkspaceFailure, WorkspaceGitAction,
+                WorkspaceGitChange, WorkspaceGitOperation, WorkspaceGitOutcome, WorkspaceGitStatus,
                 WorkspaceIO, WorkspaceImportSummary, WorkspaceImportedEnvironment, WorkspaceReply,
             },
             lifecycle::{WorkspaceClose, WorkspaceDiscard, WorkspaceRestore},

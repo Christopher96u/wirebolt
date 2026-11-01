@@ -40,7 +40,7 @@ pub(super) fn format(source: &str) -> Option<String> {
 }
 
 // NSDecimalNumber retains a 128-bit unsigned mantissa and a signed 8-bit
-// decimal exponent. Overflow discards low digits, matching the old formatter.
+// decimal exponent. Overflow discards low digits before decimal rounding.
 fn decimal(mantissa: &str, exponent: &str, negative: bool) -> Option<String> {
     let fraction = mantissa
         .split_once('.')

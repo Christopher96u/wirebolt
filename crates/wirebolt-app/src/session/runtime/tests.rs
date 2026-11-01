@@ -190,7 +190,7 @@ fn command(
         document,
         run,
         context: context(),
-        id: request::unique_id(),
+        id: identity::unique_id(),
         directory: directory.into(),
         transport,
         observer: Arc::new(Changes::default()),

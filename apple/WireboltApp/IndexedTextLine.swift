@@ -61,8 +61,7 @@ final class IndexedTextLine: @unchecked Sendable {
 
     @MainActor func draw(at point: CGPoint, visible: CGRect) {
         guard let context = NSGraphicsContext.current?.cgContext else { return }
-        let left = visible.minX - point.x - margin
-        let right = visible.maxX - point.x + margin
+        let left = visible.minX - point.x - margin, right = visible.maxX - point.x + margin
         context.saveGState()
         defer { context.restoreGState() }
         context.clip(to: visible)

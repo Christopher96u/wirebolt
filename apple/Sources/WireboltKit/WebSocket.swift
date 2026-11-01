@@ -67,9 +67,7 @@ public struct WebSocketMessage: Identifiable, Sendable {
     }
 }
 
-public enum WebSocketStatus: Equatable, Sendable {
-    case disconnected, connecting, connected
-}
+public typealias WebSocketStatus = SessionSocketStatus
 
 public enum WebSocketBinaryEncoding: String, CaseIterable, Sendable {
     case base64 = "Base64"
@@ -158,12 +156,7 @@ public final class WebSocketDocumentState {
     }
     private func mirror() {
         let state = rust.snapshot(since: nextSequence)
-        let next: WebSocketStatus =
-            switch state.status {
-            case .disconnected: .disconnected
-            case .connecting: .connecting
-            case .connected: .connected
-            }
+        let next = state.status
         if status != next { status = next }
         if errorMessage != state.error { errorMessage = state.error }
         let nextHeaders = state.headers.map { ResponseHeader(name: $0.name, value: $0.value) }

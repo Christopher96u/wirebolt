@@ -1,8 +1,17 @@
 import Foundation
 import Observation
 
-public enum ProxyScope: String, CaseIterable, Sendable {
-    case app, workspace, request
+public typealias ProxyScope = RuntimeProxyScope
+
+extension RuntimeProxyScope: RawRepresentable, CaseIterable {
+    public static var allCases: [Self] { [.app, .workspace, .request] }
+    public var rawValue: String {
+        switch self { case .app: "app"; case .workspace: "workspace"; case .request: "request" }
+    }
+    public init?(rawValue: String) {
+        guard let value = Self.allCases.first(where: { $0.rawValue == rawValue }) else { return nil }
+        self = value
+    }
     public var title: String {
         domainProxyScopeTitle(scope: domain)
     }
@@ -76,7 +85,7 @@ extension ProxyDocument {
 public struct ProxyRouteDraft: Identifiable, Equatable {
     var domain: ProxyRouteInput
     public static let protocols = ["http", "https", "socks4", "socks4a", "socks5", "socks5h"]
-    public var id: UUID { UUID(uuidString: domain.id)! }
+    public let id: UUID
     public var destination: String {
         get { domain.destination }
         set { domain.destination = newValue }
@@ -113,8 +122,14 @@ public struct ProxyRouteDraft: Identifiable, Equatable {
         get { domain.credentials.map(ProxyCredentialsDocument.init(domain:)) }
         set { domain.credentials = newValue?.domain }
     }
-    init(domain: ProxyRouteInput) { self.domain = domain }
-    public init(route: ProxyRouteDocument? = nil) { domain = domainProxyRouteInput(route: route?.domain) }
+    init(domain: ProxyRouteInput) {
+        var domain = domain
+        let parsedID = UUID(uuidString: domain.id)
+        id = parsedID ?? UUID()
+        if parsedID == nil { domain.id = id.uuidString.lowercased() }
+        self.domain = domain
+    }
+    public init(route: ProxyRouteDocument? = nil) { self.init(domain: domainProxyRouteInput(route: route?.domain)) }
     public var needsCredentials: Bool { domainProxyNeedsCredentials(input: domain) }
     public var credentialReferences: ProxyCredentialsDocument? {
         domainProxyCredentialReferences(input: domain).map(ProxyCredentialsDocument.init(domain:))
@@ -128,11 +143,11 @@ public struct ProxyRouteDraft: Identifiable, Equatable {
 }
 
 public struct ProxyFormDraft: Equatable {
-    public enum Mode: String, CaseIterable { case inherit, system, direct, manual }
+    public typealias Mode = ProxyFormMode
     private var domain: ProxyFormInput
     public var mode: Mode {
-        get { Mode(domain: domain.mode) }
-        set { domain.mode = newValue.domain }
+        get { domain.mode }
+        set { domain.mode = newValue }
     }
     public var routes: [ProxyRouteDraft] {
         get { domain.routes.map { ProxyRouteDraft(domain: $0) } }
@@ -209,21 +224,13 @@ private extension ProxyScope {
     }
 }
 
-private extension ProxyFormDraft.Mode {
-    init(domain: ProxyFormMode) {
-        self = switch domain {
-        case .inherit: .inherit
-        case .system: .system
-        case .direct: .direct
-        case .manual: .manual
-        }
+extension ProxyFormMode: RawRepresentable, CaseIterable {
+    public static var allCases: [Self] { [.inherit, .system, .direct, .manual] }
+    public var rawValue: String {
+        switch self { case .inherit: "inherit"; case .system: "system"; case .direct: "direct"; case .manual: "manual" }
     }
-    var domain: ProxyFormMode {
-        switch self {
-        case .inherit: .inherit
-        case .system: .system
-        case .direct: .direct
-        case .manual: .manual
-        }
+    public init?(rawValue: String) {
+        guard let value = Self.allCases.first(where: { $0.rawValue == rawValue }) else { return nil }
+        self = value
     }
 }

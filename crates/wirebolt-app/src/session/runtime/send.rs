@@ -426,7 +426,7 @@ async fn prepare_cookies(
             lock(&observer.cookies).header(url.trim(), crate::response::unix_time())
     {
         draft.headers.push(crate::domain::DomainField {
-            id: crate::domain::request::unique_id(),
+            id: crate::domain::identity::unique_id(),
             name: "Cookie".into(),
             value: DomainValueSource::literal(header),
             enabled: true,

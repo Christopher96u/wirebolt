@@ -1,44 +1,17 @@
-//! Draft editing, stable row identity, credential references and transport labels.
-use super::models::{
-    DomainApiKeyPlacement, DomainAuthentication, DomainAuthenticationKind, DomainBody,
-    DomainEnvironment, DomainField, DomainOAuthConfiguration, DomainOAuthGrant, DomainProxy,
-    DomainRequestDraft, DomainTransport, DomainValueSource, DomainVariable, DomainWorkspace,
+//! Request fields, authentication and credential ownership, environment migration and run inputs.
+use super::{
+    identity::unique_id,
+    models::{
+        DomainApiKeyPlacement, DomainAuthentication, DomainAuthenticationKind, DomainBody,
+        DomainEnvironment, DomainField, DomainOAuthConfiguration, DomainOAuthGrant, DomainProxy,
+        DomainRequestDraft, DomainTransport, DomainValueSource, DomainVariable, DomainWorkspace,
+    },
 };
-use percent_encoding::percent_decode_str;
-use std::fmt::Write as _;
 use std::{
     collections::{HashMap, HashSet},
     sync::LazyLock,
 };
 
-#[must_use]
-/// # Panics
-/// Panics if the operating system cannot provide random bytes.
-pub fn unique_id() -> String {
-    let mut b = [0u8; 16];
-    getrandom::fill(&mut b).expect("operating system randomness");
-    b[6] = (b[6] & 15) | 64;
-    b[8] = (b[8] & 63) | 128;
-    format!(
-        "{:02x}{:02x}{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}",
-        b[0],
-        b[1],
-        b[2],
-        b[3],
-        b[4],
-        b[5],
-        b[6],
-        b[7],
-        b[8],
-        b[9],
-        b[10],
-        b[11],
-        b[12],
-        b[13],
-        b[14],
-        b[15]
-    )
-}
 #[must_use]
 pub fn normalize_method(value: &str) -> Option<String> {
     let s = value.trim().to_uppercase();
@@ -63,6 +36,16 @@ pub fn legacy_reference(name: &str) -> bool {
         name,
         "auth.api-key" | "oauth.client-secret" | "oauth.access-token"
     )
+}
+/// Chooses a writable per-request name, copying legacy shared credentials on edit.
+#[must_use]
+pub fn editable_credential_reference(source: &DomainValueSource, role: &str) -> String {
+    match source {
+        DomainValueSource::Secret { secret } if !secret.is_empty() && !legacy_reference(secret) => {
+            secret.clone()
+        }
+        _ => credential_reference(role, "auth"),
+    }
 }
 #[must_use]
 pub fn owned_reference(name: &str) -> bool {
@@ -192,94 +175,6 @@ pub fn new_auth(kind: DomainAuthenticationKind) -> DomainAuthentication {
         DomainAuthenticationKind::None => DomainAuthentication::None,
     }
 }
-// URLComponents query encoding: query punctuation is legal except the item delimiters.
-#[must_use]
-pub fn encode_query(text: &str) -> String {
-    let mut out = String::new();
-    for b in text.bytes() {
-        if b.is_ascii_alphanumeric() || b"-._~!$'()*+,/:;?@".contains(&b) {
-            out.push(char::from(b));
-        } else {
-            use std::fmt::Write;
-            write!(out, "%{b:02X}").expect("String write");
-        }
-    }
-    out
-}
-#[must_use]
-pub fn display_url(draft: &DomainRequestDraft) -> String {
-    let query: Vec<_> = draft
-        .query
-        .iter()
-        .filter(|f| f.enabled)
-        .map(|f| {
-            format!(
-                "{}={}",
-                encode_query(&f.name),
-                encode_query(f.value.editable())
-            )
-        })
-        .collect();
-    if query.is_empty() {
-        return draft.url.clone();
-    }
-    let (prefix, fragment) = draft
-        .url
-        .split_once('#')
-        .map_or((draft.url.as_str(), String::new()), |(p, f)| {
-            (p, format!("#{f}"))
-        });
-    format!(
-        "{prefix}{}{}{fragment}",
-        if prefix.contains('?') { '&' } else { '?' },
-        query
-            .join("&")
-            .replace("%7B%7B", "{{")
-            .replace("%7D%7D", "}}")
-    )
-}
-#[must_use]
-pub fn edit_url(mut draft: DomainRequestDraft, text: &str) -> DomainRequestDraft {
-    let (prefix, fragment) = text
-        .split_once('#')
-        .map_or((text, String::new()), |(p, f)| (p, format!("#{f}")));
-    let Some((base, query)) = prefix.split_once('?') else {
-        draft.url = text.into();
-        draft.query.retain(|f| !f.enabled);
-        return draft;
-    };
-    let mut previous: Vec<_> = draft.query.iter().filter(|f| f.enabled).cloned().collect();
-    let disabled: Vec<_> = draft.query.into_iter().filter(|f| !f.enabled).collect();
-    draft.query = if query.is_empty() {
-        vec![]
-    } else {
-        query
-            .split('&')
-            .map(|item| {
-                let (n, v) = item.split_once('=').unwrap_or((item, ""));
-                let name = percent_decode_str(n).decode_utf8_lossy().into_owned();
-                let value = percent_decode_str(v).decode_utf8_lossy().into_owned();
-                let mut field = previous.iter().position(|f| f.name == name).map_or_else(
-                    || DomainField {
-                        id: unique_id(),
-                        name: name.clone(),
-                        value: DomainValueSource::literal(&value),
-                        enabled: true,
-                        sensitive: false,
-                    },
-                    |i| previous.remove(i),
-                );
-                if field.value.editable() != value {
-                    field.value = DomainValueSource::literal(value);
-                }
-                field
-            })
-            .collect()
-    };
-    draft.query.extend(disabled);
-    draft.url = format!("{base}{fragment}");
-    draft
-}
 #[must_use]
 pub fn parse_bulk(source: &str, previous: Vec<DomainField>) -> Vec<DomainField> {
     let mut unused = previous;
@@ -377,55 +272,6 @@ pub fn workspace_references(w: &DomainWorkspace) -> Vec<String> {
     refs.into_iter().collect()
 }
 #[must_use]
-pub fn workspace_name(name: &str) -> String {
-    if name.trim().is_empty() {
-        "Wirebolt".into()
-    } else {
-        name.into()
-    }
-}
-#[must_use]
-pub fn window_title(workspace: &str, request: Option<&str>) -> String {
-    let w = workspace_name(workspace);
-    request
-        .filter(|r| !r.is_empty())
-        .map_or_else(|| w.clone(), |r| format!("{w} — {r}"))
-}
-#[must_use]
-pub fn tab_description(method: &str, ws: bool, dirty: bool, preview: bool) -> String {
-    let mut p = vec![if ws { "WebSocket" } else { method }];
-    if dirty {
-        p.push("Edited");
-    }
-    if preview {
-        p.push("Preview");
-    }
-    p.join(", ")
-}
-#[derive(Clone, Debug, PartialEq)]
-pub struct TimeoutPresentation {
-    pub text: Option<String>,
-    pub seconds: Option<f64>,
-    pub suffix: String,
-}
-#[must_use]
-pub fn timeout_presentation(ms: u64) -> TimeoutPresentation {
-    let (text, seconds, suffix) = if ms == 0 {
-        (Some("No limit".into()), None, "")
-    } else if ms < 1000 {
-        (Some(format!("{ms} ms")), None, "")
-    } else if ms.is_multiple_of(60_000) {
-        (Some(format!("{} min", ms / 60_000)), None, "")
-    } else {
-        (None, Some(milliseconds_as_seconds(ms)), " s")
-    };
-    TimeoutPresentation {
-        text,
-        seconds,
-        suffix: suffix.into(),
-    }
-}
-#[must_use]
 pub fn auth_title(kind: DomainAuthenticationKind) -> String {
     match kind {
         DomainAuthenticationKind::Basic => "Basic",
@@ -466,133 +312,6 @@ pub fn sanitized(text: &str) -> String {
     }
 }
 
-/// Uses the same floating-point representation as native timeout formatting.
-#[must_use]
-#[expect(
-    clippy::cast_precision_loss,
-    reason = "Timeouts are rendered as floating-point seconds, matching the existing native formatter."
-)]
-pub fn milliseconds_as_seconds(ms: u64) -> f64 {
-    ms as f64 / 1000.0
-}
-#[must_use]
-pub fn import_headline(names: &[String], requests: i64, groups: i64) -> String {
-    fn counted(n: i64, noun: &str) -> String {
-        format!("{n} {noun}{}", if n == 1 { "" } else { "s" })
-    }
-    let mut text = format!("Imported {}", counted(requests, "request"));
-    if groups > 0 {
-        let _ = write!(text, " in {}", counted(groups, "folder"));
-    }
-    match names {
-        [] => text.push('.'),
-        [name] => {
-            let _ = write!(text, " into “{name}”.");
-        }
-        _ => {
-            let _ = write!(text, " into {} collections.", names.len());
-        }
-    }
-    text
-}
-#[must_use]
-pub fn import_environment_line(names: &[String], localized_list: &str) -> Option<String> {
-    match names {
-        [] => None,
-        [name] => Some(format!(
-            "Created the environment “{name}” for its variables."
-        )),
-        _ => Some(format!(
-            "Created {} environments: {localized_list}.",
-            names.len()
-        )),
-    }
-}
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum DomainGitChangeKind {
-    New,
-    Modified,
-    Deleted,
-    Renamed,
-    Copied,
-    TypeChanged,
-    Conflicted,
-}
-impl DomainGitChangeKind {
-    #[must_use]
-    pub fn title(self) -> String {
-        match self {
-            Self::New => "New",
-            Self::Modified => "Modified",
-            Self::Deleted => "Deleted",
-            Self::Renamed => "Renamed",
-            Self::Copied => "Copied",
-            Self::TypeChanged => "Type Changed",
-            Self::Conflicted => "Conflict",
-        }
-        .into()
-    }
-}
-#[must_use]
-pub fn git_change_kind(
-    staged: wirebolt_core::GitDelta,
-    unstaged: wirebolt_core::GitDelta,
-    conflicted: bool,
-) -> DomainGitChangeKind {
-    use DomainGitChangeKind as K;
-    use wirebolt_core::GitDelta as D;
-    let deltas = [staged, unstaged];
-    if conflicted || deltas.contains(&D::Unmerged) {
-        return K::Conflicted;
-    }
-    for (choices, kind) in [
-        (&[D::Added, D::Untracked][..], K::New),
-        (&[D::Deleted][..], K::Deleted),
-        (&[D::Renamed][..], K::Renamed),
-        (&[D::Copied][..], K::Copied),
-        (&[D::TypeChanged][..], K::TypeChanged),
-    ] {
-        if deltas.iter().any(|delta| choices.contains(delta)) {
-            return kind;
-        }
-    }
-    K::Modified
-}
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum PushAvailability {
-    Push,
-    Publish { branch: String },
-    Unavailable { reason: String },
-}
-#[must_use]
-pub fn push_availability(
-    branch: Option<String>,
-    upstream: Option<&str>,
-    ahead: u64,
-) -> PushAvailability {
-    let Some(branch) = branch else {
-        return PushAvailability::Unavailable {
-            reason: "Check out a branch to push. HEAD is detached.".into(),
-        };
-    };
-    if upstream.is_none() {
-        return PushAvailability::Publish { branch };
-    }
-    if ahead == 0 {
-        return PushAvailability::Unavailable {
-            reason: "No local commits to push.".into(),
-        };
-    }
-    PushAvailability::Push
-}
-#[must_use]
-pub fn separate_url_query(mut draft: DomainRequestDraft) -> DomainRequestDraft {
-    let explicit = std::mem::take(&mut draft.query);
-    let url = draft.url.clone();
-    let mut result = edit_url(draft, &url);
-    result.query.extend(explicit);
-    result
-}
 #[must_use]
 pub fn legacy_environment(
     id: String,
@@ -660,6 +379,14 @@ pub fn run_input(
     }
 }
 #[must_use]
+pub fn effective_transport(
+    request: DomainTransport,
+    workspace: DomainTransport,
+    inherits: bool,
+) -> DomainTransport {
+    if inherits { workspace } else { request }
+}
+#[must_use]
 pub const fn clamp_redirects(value: i64) -> i64 {
     if value < 0 {
         0
@@ -668,56 +395,4 @@ pub const fn clamp_redirects(value: i64) -> i64 {
     } else {
         value
     }
-}
-/// The complete result of one URL edit, independent of request bodies and credentials.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct UrlQueryEdit {
-    pub url: String,
-    pub query: Vec<DomainField>,
-    pub display_url: String,
-}
-#[must_use]
-pub fn edit_url_query(url: String, query: Vec<DomainField>, text: &str) -> UrlQueryEdit {
-    let draft = edit_url(
-        DomainRequestDraft {
-            url,
-            query,
-            ..DomainRequestDraft::default()
-        },
-        text,
-    );
-    UrlQueryEdit {
-        display_url: display_url(&draft),
-        url: draft.url,
-        query: draft.query,
-    }
-}
-#[must_use]
-pub fn display_url_query(url: String, query: Vec<DomainField>) -> String {
-    display_url(&DomainRequestDraft {
-        url,
-        query,
-        ..DomainRequestDraft::default()
-    })
-}
-#[must_use]
-pub fn separate_url_query_values(url: String, query: Vec<DomainField>) -> UrlQueryEdit {
-    let draft = separate_url_query(DomainRequestDraft {
-        url,
-        query,
-        ..DomainRequestDraft::default()
-    });
-    UrlQueryEdit {
-        display_url: display_url(&draft),
-        url: draft.url,
-        query: draft.query,
-    }
-}
-#[must_use]
-pub fn effective_transport(
-    request: DomainTransport,
-    workspace: DomainTransport,
-    inherits: bool,
-) -> DomainTransport {
-    if inherits { workspace } else { request }
 }

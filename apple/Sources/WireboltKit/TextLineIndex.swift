@@ -12,8 +12,10 @@ public struct TextLineIndex: Sendable {
         length = Int(clamping: snapshot.length)
     }
     public mutating func replace(_ range: NSRange, with text: String) {
-        precondition(range.location >= 0 && NSMaxRange(range) <= length)
-        let update = try! rust.replacing(range: range.responseRange, text: text)
+        // Invalid bridge ranges leave both the Rust index and native mirror unchanged.
+        guard range.location >= 0, range.length >= 0, range.location <= length,
+              range.length <= length - range.location,
+              let update = try? rust.replacing(range: range.responseRange, text: text) else { return }
         rust = update.index
         let change = update.change
         let first = Int(clamping: change.first)

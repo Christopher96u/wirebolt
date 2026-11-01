@@ -156,23 +156,74 @@ pub fn semantic(name: DomainSemanticColor) -> AdaptiveColor {
         }
     }
 }
+/// The finite set of visual HTTP/WebSocket method treatments, including custom verbs.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum MethodChipKind {
+    Get,
+    Post,
+    Put,
+    Patch,
+    Delete,
+    Head,
+    Options,
+    Query,
+    Custom,
+    WebSocket,
+}
+impl MethodChipKind {
+    pub const ALL: [Self; 10] = [
+        Self::Get,
+        Self::Post,
+        Self::Put,
+        Self::Patch,
+        Self::Delete,
+        Self::Head,
+        Self::Options,
+        Self::Query,
+        Self::Custom,
+        Self::WebSocket,
+    ];
+    #[must_use]
+    pub const fn method(self) -> &'static str {
+        match self {
+            Self::Get => "GET",
+            Self::Post => "POST",
+            Self::Put => "PUT",
+            Self::Patch => "PATCH",
+            Self::Delete => "DELETE",
+            Self::Head => "HEAD",
+            Self::Options => "OPTIONS",
+            Self::Query => "QUERY",
+            Self::Custom => "CUSTOM",
+            Self::WebSocket => "WS",
+        }
+    }
+    fn color(self) -> AdaptiveColor {
+        semantic(match self {
+            Self::Get => DomainSemanticColor::Green,
+            Self::Post => DomainSemanticColor::Blue,
+            Self::Put => DomainSemanticColor::Orange,
+            Self::Patch => DomainSemanticColor::Purple,
+            Self::Delete => DomainSemanticColor::Red,
+            Self::Head => DomainSemanticColor::Teal,
+            Self::Options => DomainSemanticColor::Pink,
+            Self::Query => DomainSemanticColor::Yellow,
+            Self::Custom => DomainSemanticColor::Neutral,
+            Self::WebSocket => DomainSemanticColor::Indigo,
+        })
+    }
+}
 #[must_use]
 pub fn method_color(method: &str, ws: bool) -> AdaptiveColor {
-    semantic(if ws {
-        DomainSemanticColor::Indigo
-    } else {
-        match method {
-            "GET" => DomainSemanticColor::Green,
-            "POST" => DomainSemanticColor::Blue,
-            "PUT" => DomainSemanticColor::Orange,
-            "PATCH" => DomainSemanticColor::Purple,
-            "DELETE" => DomainSemanticColor::Red,
-            "HEAD" => DomainSemanticColor::Teal,
-            "OPTIONS" => DomainSemanticColor::Pink,
-            "QUERY" => DomainSemanticColor::Yellow,
-            _ => DomainSemanticColor::Neutral,
-        }
-    })
+    if ws {
+        return MethodChipKind::WebSocket.color();
+    }
+    MethodChipKind::ALL
+        .into_iter()
+        .filter(|kind| *kind != MethodChipKind::WebSocket)
+        .find(|kind| kind.method() == method)
+        .unwrap_or(MethodChipKind::Custom)
+        .color()
 }
 #[must_use]
 pub fn status_class(status: u16) -> DomainStatusClass {
@@ -263,25 +314,23 @@ pub struct ResolvedTokens {
     pub hairline: RgbColor,
     pub card_border: RgbColor,
     pub focus_border: RgbColor,
-    pub chips: std::collections::HashMap<String, DomainMethodChip>,
+    pub chips: std::collections::HashMap<MethodChipKind, DomainMethodChip>,
 }
 #[must_use]
 pub fn resolve(preset: DomainThemePreset, increased: bool) -> ResolvedTokens {
     let d = theme(preset);
     let s = [d.window, d.sidebar, d.card];
     let mut chips = std::collections::HashMap::new();
-    for method in [
-        "GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS", "QUERY", "CUSTOM", "WS",
-    ] {
-        let index = match method {
-            "GET" => Some(0),
-            "POST" => Some(1),
-            "PUT" => Some(2),
-            "DELETE" => Some(3),
-            "WS" => Some(4),
+    for kind in MethodChipKind::ALL {
+        let index = match kind {
+            MethodChipKind::Get => Some(0),
+            MethodChipKind::Post => Some(1),
+            MethodChipKind::Put => Some(2),
+            MethodChipKind::Delete => Some(3),
+            MethodChipKind::WebSocket => Some(4),
             _ => None,
         };
-        let adaptive = method_color(method, method == "WS");
+        let adaptive = kind.color();
         let dark = preset != DomainThemePreset::Paper;
         let foreground = if increased {
             if dark {
@@ -297,7 +346,7 @@ pub fn resolve(preset: DomainThemePreset, increased: bool) -> ResolvedTokens {
             adaptive.light
         };
         chips.insert(
-            method.into(),
+            kind,
             DomainMethodChip {
                 background: index.map_or(d.tab_active, |i| d.method_backgrounds[i]),
                 foreground,

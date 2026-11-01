@@ -57,11 +57,26 @@ fn methods_have_distinct_hues_and_readable_chips() {
         DomainThemePreset::Ember,
     ] {
         let t = resolve(preset, false);
-        let colors: HashSet<_> = METHODS.iter().map(|m| t.chips[*m].foreground).collect();
+        let colors: HashSet<_> = METHODS
+            .iter()
+            .map(|m| {
+                t.chips[&MethodChipKind::ALL
+                    .into_iter()
+                    .find(|kind| kind.method() == *m)
+                    .unwrap()]
+                    .foreground
+            })
+            .collect();
         assert_eq!(colors.len(), METHODS.len());
-        assert_ne!(t.chips["WS"].foreground, t.chips["GET"].foreground);
+        assert_ne!(
+            t.chips[&MethodChipKind::WebSocket].foreground,
+            t.chips[&MethodChipKind::Get].foreground
+        );
         for method in METHODS {
-            let c = &t.chips[method];
+            let c = &t.chips[&MethodChipKind::ALL
+                .into_iter()
+                .find(|kind| kind.method() == method)
+                .unwrap()];
             assert!(c.foreground.contrast(c.background) >= 4.5);
         }
     }
@@ -119,4 +134,26 @@ fn contrast_math_matches_wcag_reference_values() {
     let white = RgbColor::hex(0x00ff_ffff);
     assert!((black.contrast(white) - 21.0).abs() < 0.001);
     assert!((RgbColor::hex(0x0077_7777).contrast(white) - 4.48).abs() < 0.01);
+}
+
+#[test]
+fn resolved_chips_cover_every_typed_method_and_custom_verbs() {
+    for preset in [
+        DomainThemePreset::Black,
+        DomainThemePreset::Paper,
+        DomainThemePreset::Ember,
+    ] {
+        for increased in [false, true] {
+            let tokens = resolve(preset, increased);
+            assert_eq!(tokens.chips.len(), MethodChipKind::ALL.len());
+            for kind in MethodChipKind::ALL {
+                assert!(tokens.chips.contains_key(&kind));
+            }
+            assert_eq!(
+                method_color("PROPFIND", false),
+                method_color("CUSTOM", false)
+            );
+            assert_eq!(method_color("WS", false), method_color("CUSTOM", false));
+        }
+    }
 }

@@ -4,10 +4,10 @@
     reason = "UniFFI lifts owned records at the boundary."
 )]
 use super::{
-    AppSessionLayout, AppSessionLayoutGroup, Arc, DomainLocation, DomainRequestDraft, HashMap,
-    Mutex, SessionCloseScope, SessionDocument, SessionDocumentEffect, SessionEditorGroup,
-    SessionKind, SessionLayoutTab, SessionRestoreResult, SessionTabDocument, SessionTabSnapshot,
-    SessionTabs, WorkspaceClose, lock,
+    Arc, DomainLocation, DomainRequestDraft, HashMap, Mutex, SessionCloseScope, SessionDocument,
+    SessionDocumentEffect, SessionEditorGroup, SessionKind, SessionLayout, SessionLayoutGroup,
+    SessionLayoutTab, SessionRestoreResult, SessionTabDocument, SessionTabSnapshot, SessionTabs,
+    WorkspaceClose, lock,
 };
 #[uniffi::remote(Enum)]
 pub enum SessionKind {
@@ -53,15 +53,16 @@ pub struct SessionLayoutTab {
 }
 
 #[uniffi::remote(Record)]
-pub struct AppSessionLayoutGroup {
+pub struct SessionLayoutGroup {
     tabs: Vec<SessionLayoutTab>,
     selected_index: Option<i64>,
     preview_index: Option<i64>,
 }
 
 #[uniffi::remote(Record)]
-pub struct AppSessionLayout {
-    groups: Vec<AppSessionLayoutGroup>,
+#[uniffi(name = "RustSessionLayout")]
+pub struct SessionLayout {
+    groups: Vec<SessionLayoutGroup>,
     active_group_index: i64,
 }
 
@@ -150,13 +151,13 @@ impl AppSessionTabs {
     pub fn remove_all(&self) {
         *lock(&self.tabs) = (SessionTabs::default(), HashMap::new());
     }
-    pub fn layout(&self) -> AppSessionLayout {
+    pub fn layout(&self) -> SessionLayout {
         let state = lock(&self.tabs);
         state.0.layout(&state.1)
     }
     pub fn restore(
         &self,
-        layout: AppSessionLayout,
+        layout: SessionLayout,
         resolved: Vec<Option<DomainLocation>>,
     ) -> SessionRestoreResult {
         let mut state = lock(&self.tabs);
@@ -209,12 +210,14 @@ pub fn session_tab_destination(
 }
 
 #[uniffi::export]
-pub fn session_decode_layout(data: Vec<u8>) -> Option<AppSessionLayout> {
+pub fn session_decode_layout(data: Vec<u8>) -> Result<SessionLayout, crate::WorkspaceBridgeError> {
     wirebolt_app::session::tabs::decode_layout(&data)
 }
 
 #[uniffi::export]
-pub fn session_encode_layout(layout: AppSessionLayout) -> Vec<u8> {
+pub fn session_encode_layout(
+    layout: SessionLayout,
+) -> Result<Vec<u8>, crate::WorkspaceBridgeError> {
     wirebolt_app::session::tabs::encode_layout(&layout)
 }
 

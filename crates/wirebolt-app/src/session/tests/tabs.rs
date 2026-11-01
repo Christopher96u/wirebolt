@@ -126,7 +126,7 @@ fn layout_roundtrip_remembers_preview_selection_and_split() {
 }
 #[test]
 fn legacy_layout_defaults_preview_to_none() {
-    let layout:AppSessionLayout=serde_json::from_str(r#"{"groups":[{"tabs":[{"collectionID":"api","requestID":"a"}],"selectedIndex":0}],"activeGroupIndex":0}"#).unwrap();
+    let layout:SessionLayout=serde_json::from_str(r#"{"groups":[{"tabs":[{"collectionID":"api","requestID":"a"}],"selectedIndex":0}],"activeGroupIndex":0}"#).unwrap();
     assert_eq!(layout.groups[0].preview_index, None);
 }
 #[test]
@@ -176,8 +176,8 @@ fn back_forward_and_new_selection_clear_forward_history() {
 }
 #[test]
 fn restore_skips_deleted_requests_and_empty_groups() {
-    let layout = AppSessionLayout {
-        groups: vec![AppSessionLayoutGroup {
+    let layout = SessionLayout {
+        groups: vec![SessionLayoutGroup {
             tabs: vec![SessionLayoutTab {
                 collection_id: "api".into(),
                 request_id: "missing".into(),
@@ -238,6 +238,7 @@ fn legacy_signed_layout_indices_remain_decodable_and_fall_back_to_last_tab() {
     );
     assert!(tabs.groups[0].preview_tab_id.is_none());
     assert!(
-        super::super::tabs::decode_layout(&super::super::tabs::encode_layout(&layout)).is_some()
+        super::super::tabs::decode_layout(&super::super::tabs::encode_layout(&layout).unwrap())
+            .is_ok()
     );
 }

@@ -155,7 +155,7 @@ pub struct ProxyRouteInput {
 #[must_use]
 pub fn route_input(route: Option<DomainProxyRoute>) -> ProxyRouteInput {
     let mut input = ProxyRouteInput {
-        id: super::request::unique_id(),
+        id: super::identity::unique_id(),
         destination: "all".into(),
         scheme: "http".into(),
         host: String::new(),
@@ -325,7 +325,7 @@ impl ConnectionProbe {
                     is_running: true,
                     message: None,
                     succeeded: false,
-                    run_id: Some(super::request::unique_id()),
+                    run_id: Some(super::identity::unique_id()),
                 };
                 Some(draft)
             }
