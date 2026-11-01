@@ -2,7 +2,7 @@ use super::super::run::*;
 use crate::lock;
 use crate::response::{StoredCookie, VIEWPORT_BYTES};
 use crate::{
-    domain::proxy::{DomainProxySource, ResolvedDomainProxy},
+    domain::proxy::{ProxySource, ResolvedDomainProxy},
     response::{FailureIssue, ResponseIssueKind},
 };
 use std::time::{Duration, Instant};
@@ -242,14 +242,11 @@ fn shared_transport_projection_preserves_redaction_proxy_source_and_timing() {
         transport: wirebolt_core::TransportSettings::default(),
         proxy: ResolvedDomainProxy {
             configuration: crate::domain::DomainProxy::Direct,
-            source: DomainProxySource::AppDefault,
+            source: ProxySource::AppDefault,
         },
     };
     let projected = SessionPrepared::from(&snapshot);
-    assert_eq!(
-        projected.proxy.unwrap().source,
-        DomainProxySource::AppDefault
-    );
+    assert_eq!(projected.proxy.unwrap().source, ProxySource::AppDefault);
     assert_eq!(projected.url, "[REDACTED]");
     assert!(projected.headers[0].redacted);
     assert_eq!(projected.headers[0].value, "••••••••");

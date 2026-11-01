@@ -117,3 +117,13 @@ pub fn session_message_body(
         .map(|(data, binary)| SessionMessageBody { data, binary })
         .map_err(|reason| crate::WorkspaceBridgeError::OperationFailed { reason })
 }
+
+#[uniffi::export]
+pub fn session_socket_message_limit() -> u64 {
+    wirebolt_app::session::websocket::MESSAGE_LIMIT as u64
+}
+
+#[uniffi::export]
+pub fn session_socket_message_bytes() -> u64 {
+    wirebolt_app::session::websocket::MESSAGE_BYTES as u64
+}

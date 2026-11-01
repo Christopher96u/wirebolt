@@ -1,16 +1,14 @@
 //! Explicit conversion between editable application records and validated storage records.
 use super::persistence::WorkspaceError;
 use crate::domain::{
-    DomainApiKeyPlacement, DomainAuthentication, DomainBody, DomainEnvironment, DomainField,
-    DomainGroup, DomainMultipartKind, DomainMultipartPart, DomainOAuthConfiguration,
-    DomainOAuthGrant, DomainProxy, DomainProxyCredentials, DomainProxyRoute, DomainRequestDraft,
-    DomainTransport, DomainValueSource, DomainVariable,
+    DomainAuthentication, DomainBody, DomainEnvironment, DomainField, DomainGroup,
+    DomainMultipartPart, DomainOAuthConfiguration, DomainProxy, DomainProxyCredentials,
+    DomainProxyRoute, DomainRequestDraft, DomainTransport, DomainValueSource, DomainVariable,
 };
 use wirebolt_core::{
-    ApiKeyPlacement, Environment, EnvironmentVariable, Group, ManualProxy, MultipartPart,
-    MultipartPartKind, Oauth2Configuration, Oauth2Grant, ProxyCredentials, ProxyEndpoint,
-    ProxyMode, ProxyRoute, Request, RequestAuthentication, RequestBody, RequestHeader,
-    RequestValueField, SecretName, TransportSettings, ValueSource,
+    Environment, EnvironmentVariable, Group, ManualProxy, MultipartPart, Oauth2Configuration,
+    ProxyCredentials, ProxyEndpoint, ProxyMode, ProxyRoute, Request, RequestAuthentication,
+    RequestBody, RequestHeader, RequestValueField, SecretName, TransportSettings, ValueSource,
 };
 fn invalid() -> WorkspaceError {
     WorkspaceError::operation("workspace snapshot could not be projected")
@@ -90,10 +88,7 @@ pub fn variable_from_core(v: EnvironmentVariable) -> DomainVariable {
 }
 pub fn oauth_to_core(v: DomainOAuthConfiguration) -> Result<Oauth2Configuration, WorkspaceError> {
     Ok(Oauth2Configuration {
-        grant: match v.grant {
-            DomainOAuthGrant::AuthorizationCodePkce => Oauth2Grant::AuthorizationCodePkce,
-            DomainOAuthGrant::ClientCredentials => Oauth2Grant::ClientCredentials,
-        },
+        grant: v.grant,
         authorization_url: v.authorization_url,
         token_url: v.token_url,
         client_id: v.client_id,
@@ -106,10 +101,7 @@ pub fn oauth_to_core(v: DomainOAuthConfiguration) -> Result<Oauth2Configuration,
 }
 pub fn oauth_from_core(v: Oauth2Configuration) -> DomainOAuthConfiguration {
     DomainOAuthConfiguration {
-        grant: match v.grant {
-            Oauth2Grant::AuthorizationCodePkce => DomainOAuthGrant::AuthorizationCodePkce,
-            Oauth2Grant::ClientCredentials => DomainOAuthGrant::ClientCredentials,
-        },
+        grant: v.grant,
         authorization_url: v.authorization_url,
         token_url: v.token_url,
         client_id: v.client_id,
@@ -124,11 +116,7 @@ pub fn part_to_core(v: DomainMultipartPart) -> Result<MultipartPart, WorkspaceEr
     Ok(MultipartPart {
         id: v.id,
         name: v.name,
-        kind: match v.kind {
-            DomainMultipartKind::Text => MultipartPartKind::Text,
-            DomainMultipartKind::Binary => MultipartPartKind::Binary,
-            DomainMultipartKind::File => MultipartPartKind::File,
-        },
+        kind: v.kind,
         value: value_to_core(v.value)?,
         file_path: v.file_path,
         file_name: v.file_name,
@@ -140,11 +128,7 @@ pub fn part_from_core(v: MultipartPart) -> DomainMultipartPart {
     DomainMultipartPart {
         id: v.id,
         name: v.name,
-        kind: match v.kind {
-            MultipartPartKind::Text => DomainMultipartKind::Text,
-            MultipartPartKind::Binary => DomainMultipartKind::Binary,
-            MultipartPartKind::File => DomainMultipartKind::File,
-        },
+        kind: v.kind,
         value: value_from_core(v.value),
         file_path: v.file_path,
         file_name: v.file_name,
@@ -189,10 +173,7 @@ pub fn auth_to_core(v: DomainAuthentication) -> Result<RequestAuthentication, Wo
             name,
             value,
         } => RequestAuthentication::ApiKey {
-            placement: match placement {
-                DomainApiKeyPlacement::Header => ApiKeyPlacement::Header,
-                DomainApiKeyPlacement::Query => ApiKeyPlacement::Query,
-            },
+            placement,
             name,
             value: value_to_core(value)?,
         },
@@ -216,10 +197,7 @@ pub fn auth_from_core(v: RequestAuthentication) -> DomainAuthentication {
             name,
             value,
         } => DomainAuthentication::ApiKey {
-            placement: match placement {
-                ApiKeyPlacement::Header => DomainApiKeyPlacement::Header,
-                ApiKeyPlacement::Query => DomainApiKeyPlacement::Query,
-            },
+            placement,
             name,
             value: value_from_core(value),
         },
@@ -302,7 +280,7 @@ pub fn proxy_to_core(v: DomainProxy) -> Result<ProxyMode, WorkspaceError> {
                     .into_iter()
                     .map(|r| {
                         let mut route = ProxyRoute::new(
-                            r.destination,
+                            r.destination.ok_or_else(invalid)?,
                             ProxyEndpoint::new(&r.endpoint).map_err(|_| invalid())?,
                         );
                         if let Some(c) = r.credentials {
@@ -328,7 +306,7 @@ pub fn proxy_from_core(v: ProxyMode) -> DomainProxy {
                 .routes()
                 .iter()
                 .map(|r| DomainProxyRoute {
-                    destination: r.destination(),
+                    destination: Some(r.destination()),
                     endpoint: r.endpoint().normalized(),
                     credentials: r.credentials().map(|c| DomainProxyCredentials {
                         username: c.username().as_str().into(),
@@ -375,6 +353,7 @@ pub fn group_from_core(g: Group) -> DomainGroup {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use wirebolt_core::{ApiKeyPlacement, MultipartPartKind, Oauth2Grant};
     fn field() -> DomainField {
         DomainField {
             id: "stable-row".into(),
@@ -397,6 +376,10 @@ mod tests {
                 content_type: None,
                 value: "hi".into(),
             },
+            DomainBody::Text {
+                content_type: Some("application/octet-stream; encoding=hex".into()),
+                value: "00 FF".into(),
+            },
             DomainBody::Json { value: "{}".into() },
             DomainBody::Xml {
                 value: "<x/>".into(),
@@ -417,9 +400,9 @@ mod tests {
             assert_eq!(body_from_core(body_to_core(body.clone()).unwrap()), body);
         }
         for kind in [
-            DomainMultipartKind::Text,
-            DomainMultipartKind::Binary,
-            DomainMultipartKind::File,
+            MultipartPartKind::Text,
+            MultipartPartKind::Binary,
+            MultipartPartKind::File,
         ] {
             let body = DomainBody::Multipart {
                 parts: vec![DomainMultipartPart {
@@ -442,8 +425,8 @@ mod tests {
             secret: "api.token".into(),
         };
         for grant in [
-            DomainOAuthGrant::AuthorizationCodePkce,
-            DomainOAuthGrant::ClientCredentials,
+            Oauth2Grant::AuthorizationCodePkce,
+            Oauth2Grant::ClientCredentials,
         ] {
             let auth = DomainAuthentication::Oauth2 {
                 configuration: DomainOAuthConfiguration {
@@ -470,12 +453,12 @@ mod tests {
                 token: value.clone(),
             },
             DomainAuthentication::ApiKey {
-                placement: DomainApiKeyPlacement::Header,
+                placement: ApiKeyPlacement::Header,
                 name: "X-Key".into(),
                 value: value.clone(),
             },
             DomainAuthentication::ApiKey {
-                placement: DomainApiKeyPlacement::Query,
+                placement: ApiKeyPlacement::Query,
                 name: "key".into(),
                 value,
             },
@@ -512,7 +495,7 @@ mod tests {
             DomainProxy::System,
             DomainProxy::Manual {
                 routes: vec![DomainProxyRoute {
-                    destination: wirebolt_core::ProxyDestination::All,
+                    destination: Some(wirebolt_core::ProxyDestination::All),
                     endpoint: "http://localhost:8080/".into(),
                     credentials: Some(DomainProxyCredentials {
                         username: "proxy.user".into(),
@@ -530,7 +513,7 @@ mod tests {
         assert!(
             proxy_to_core(DomainProxy::Manual {
                 routes: vec![DomainProxyRoute {
-                    destination: wirebolt_core::ProxyDestination::All,
+                    destination: Some(wirebolt_core::ProxyDestination::All),
                     endpoint: "not a proxy endpoint".into(),
                     credentials: None
                 }]

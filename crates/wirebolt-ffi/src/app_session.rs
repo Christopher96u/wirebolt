@@ -23,8 +23,8 @@ use wirebolt_app::{
         },
         runtime as app_runtime,
         runtime::{
-            RequestActivity, RunObserver, RuntimeAuthorizer, RuntimeContext, RuntimeInput,
-            RuntimeOAuthSnapshot, RuntimeObserver, RuntimeOperationError, RuntimeProxyScope,
+            ProxySource, RequestActivity, RunObserver, RuntimeAuthorizer, RuntimeContext,
+            RuntimeInput, RuntimeOAuthSnapshot, RuntimeObserver, RuntimeOperationError,
             RuntimeRequestError, RuntimeRequestKey, RuntimeRuns, RuntimeSendAction,
             RuntimeSettingsPlatform, RuntimeSnapshot, RuntimeState, RuntimeTokenReceipt,
             RuntimeTransport, RuntimeTransportSettings, RuntimeTransportSnapshot,
@@ -42,7 +42,7 @@ use wirebolt_app::{
             SessionDeleteTarget, SessionDocumentEffect, SessionWorkspaceCommand,
             SessionWorkspaceEdit, SessionWorkspacePlan,
             actions::WorkspaceAction,
-            files::{WorkspaceImportFile, WorkspaceSelectionProblem},
+            files::{WorkspaceImportFile, WorkspaceOpenMode, WorkspaceSelectionProblem},
             interface::{
                 WorkspaceDirtyClose, WorkspaceSidebarAction, WorkspaceSidebarResult,
                 WorkspaceSidebarState, WorkspaceUnsavedPrompt,

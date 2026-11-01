@@ -1228,6 +1228,7 @@ pub enum ResponseIssueKind {
     ConflictingHeader,
     InvalidJson,
     InvalidBody,
+    InvalidProxyDestination,
     FileUnavailable,
     InvalidTemplate,
     TemplateTooDeep,

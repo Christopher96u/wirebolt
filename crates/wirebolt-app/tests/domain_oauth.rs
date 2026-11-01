@@ -172,7 +172,7 @@ async fn invalid_token_endpoints_and_missing_secrets_fail_before_exchange() {
         );
     }
     let mut c = configuration();
-    c.grant = DomainOAuthGrant::ClientCredentials;
+    c.grant = Oauth2Grant::ClientCredentials;
     c.token_url = "https://auth.example/token".into();
     c.client_id = "client".into();
     assert_eq!(
@@ -295,7 +295,7 @@ fn captured_form(request: &str) -> BTreeMap<String, String> {
 async fn client_credentials_exchange_preserves_form_and_receipt() {
     let (endpoint, server) = token_server();
     let mut c = configuration();
-    c.grant = DomainOAuthGrant::ClientCredentials;
+    c.grant = Oauth2Grant::ClientCredentials;
     c.token_url = endpoint;
     c.client_id = "client".into();
     c.scopes = "read write".into();
@@ -352,7 +352,7 @@ fn oauth_ignores_environment_proxy_variables() {
     if std::env::var_os(CHILD).is_some() {
         let (endpoint, server) = token_server();
         let mut c = configuration();
-        c.grant = DomainOAuthGrant::ClientCredentials;
+        c.grant = Oauth2Grant::ClientCredentials;
         c.token_url = endpoint;
         c.client_id = "client".into();
         let runtime = tokio::runtime::Runtime::new().unwrap();
@@ -431,7 +431,7 @@ async fn oauth_resolves_system_proxy_and_bypass_again_after_redirect() {
         ..Default::default()
     });
     let mut c = configuration();
-    c.grant = DomainOAuthGrant::ClientCredentials;
+    c.grant = Oauth2Grant::ClientCredentials;
     c.client_id = "client".into();
     c.token_url = "http://localhost:9/start?route=proxy".into();
     let receipt = tokio::time::timeout(
@@ -480,7 +480,7 @@ async fn oauth_tries_ordered_system_proxy_and_explicit_direct_fallbacks() {
             ..Default::default()
         });
         let mut c = configuration();
-        c.grant = DomainOAuthGrant::ClientCredentials;
+        c.grant = Oauth2Grant::ClientCredentials;
         c.client_id = "client".into();
         c.token_url = if direct {
             endpoint
@@ -512,7 +512,7 @@ async fn oauth_does_not_add_a_direct_fallback_to_system_proxy_settings() {
         ..Default::default()
     });
     let mut c = configuration();
-    c.grant = DomainOAuthGrant::ClientCredentials;
+    c.grant = Oauth2Grant::ClientCredentials;
     c.client_id = "client".into();
     c.token_url = format!("http://{}/token", destination.local_addr().unwrap());
     assert!(matches!(
@@ -555,7 +555,7 @@ async fn oauth_redirects_preserve_methods_cookies_and_full_destination_urls() {
         });
         let platform = Arc::new(Platform::default());
         let mut c = configuration();
-        c.grant = DomainOAuthGrant::ClientCredentials;
+        c.grant = Oauth2Grant::ClientCredentials;
         c.client_id = "client".into();
         c.token_url = format!("http://{address}/start?initial=1");
         let receipt = tokio::time::timeout(
@@ -619,7 +619,7 @@ async fn oauth_redirect_failures_preserve_native_error_classes() {
             }
         });
         let mut c = configuration();
-        c.grant = DomainOAuthGrant::ClientCredentials;
+        c.grant = Oauth2Grant::ClientCredentials;
         c.client_id = "client".into();
         c.token_url = format!("http://{address}/token");
         let error = tokio::time::timeout(

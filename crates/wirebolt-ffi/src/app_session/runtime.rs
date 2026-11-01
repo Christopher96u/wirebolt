@@ -6,9 +6,9 @@
 use super::{
     AppDocumentSession, AppSecretPlatform, AppSessionSecrets, Arc, DomainEnvironment,
     DomainOAuthConfiguration, DomainProxy, DomainRequestDraft, DomainRunInput, DomainTransport,
-    DomainValueSource, HashMap, Mutex, RequestActivity, ResponseHeaderValue, RunObserver,
-    RuntimeAuthorizer, RuntimeContext, RuntimeInput, RuntimeOAuthSnapshot, RuntimeObserver,
-    RuntimeOperationError, RuntimeProxyScope, RuntimeRequestError, RuntimeRequestKey, RuntimeRuns,
+    DomainValueSource, HashMap, Mutex, ProxySource, RequestActivity, ResponseHeaderValue,
+    RunObserver, RuntimeAuthorizer, RuntimeContext, RuntimeInput, RuntimeOAuthSnapshot,
+    RuntimeObserver, RuntimeOperationError, RuntimeRequestError, RuntimeRequestKey, RuntimeRuns,
     RuntimeSendAction, RuntimeSettingsPlatform, RuntimeSnapshot, RuntimeState, RuntimeTokenReceipt,
     RuntimeTransport, RuntimeTransportSettings, RuntimeTransportSnapshot, SessionFailure,
     SessionHistoryEntry, SessionKind, SessionRunEvent, SessionSocketStatus,
@@ -387,7 +387,7 @@ impl AppSessionRuntime {
     pub async fn apply_proxy(
         &self,
         configuration: Option<DomainProxy>,
-        scope: RuntimeProxyScope,
+        scope: ProxySource,
         has_session: bool,
         secrets: HashMap<String, String>,
         secret_platform: Option<Arc<AppSecretPlatform>>,
@@ -584,25 +584,25 @@ impl AppRuntimeSettings {
 impl RuntimeSettingsPlatform for AppRuntimeSettings {
     async fn proxy(
         &self,
-        scope: RuntimeProxyScope,
+        scope: ProxySource,
         configuration: Option<DomainProxy>,
     ) -> Result<(), RuntimeOperationError> {
         match scope {
-            RuntimeProxyScope::Request => Ok(()),
-            RuntimeProxyScope::Workspace => {
+            ProxySource::Request => Ok(()),
+            ProxySource::Workspace => {
                 self.apply_command(SessionWorkspaceCommand::SaveWorkspaceProxy {
                     proxy: configuration,
                 })
                 .await
             }
-            RuntimeProxyScope::AppDefault => {
+            ProxySource::AppDefault => {
                 self.foreign_operation(|reply| {
                     self.foreign
                         .app_proxy(configuration.unwrap_or(DomainProxy::System), reply);
                 })
                 .await
             }
-            RuntimeProxyScope::SystemDefault => Err(RuntimeOperationError::Unsupported),
+            ProxySource::SystemDefault => Err(RuntimeOperationError::Unsupported),
         }
     }
     async fn transport(&self, value: DomainTransport) -> Result<(), RuntimeOperationError> {

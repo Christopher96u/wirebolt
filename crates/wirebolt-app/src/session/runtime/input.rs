@@ -61,6 +61,27 @@ impl RuntimeContext {
 /// # Errors
 /// Returns a redacted invalid-input failure.
 pub fn transport_input(input: DomainRunInput) -> Result<transport::RunInput, SessionFailure> {
+    for proxy in [
+        &input.app_proxy,
+        &input.workspace_proxy,
+        &input.request_proxy,
+    ]
+    .into_iter()
+    .flatten()
+    {
+        if let DomainProxy::Manual { routes } = proxy
+            && routes.iter().any(|route| route.destination.is_none())
+        {
+            return Err(SessionFailure {
+                kind: crate::response::ResponseFailureKind::InvalidInput,
+                issues: vec![crate::response::FailureIssue {
+                    path: String::new(),
+                    kind: crate::response::ResponseIssueKind::InvalidProxyDestination,
+                    reference: None,
+                }],
+            });
+        }
+    }
     let convert = || -> Result<transport::RunInput, crate::session::persistence::WorkspaceError> {
         Ok(transport::RunInput {
             method: input.method,

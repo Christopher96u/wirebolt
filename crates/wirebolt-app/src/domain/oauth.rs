@@ -1,7 +1,7 @@
 //! OAuth 2 protocol computation over browser, credential, trust and native HTTP adapters.
 mod network;
 mod transport;
-use super::models::{DomainOAuthConfiguration, DomainOAuthGrant};
+use super::models::{DomainOAuthConfiguration, Oauth2Grant};
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use network::network_error;
 pub use network::network_failure;
@@ -265,7 +265,7 @@ pub async fn acquire(
         form.insert("audience".into(), c.audience.clone());
     }
     match c.grant {
-        DomainOAuthGrant::ClientCredentials => {
+        Oauth2Grant::ClientCredentials => {
             form.insert("grant_type".into(), "client_credentials".into());
             let secret = platform
                 .read_secret(c.client_secret_reference.clone())
@@ -273,7 +273,7 @@ pub async fn acquire(
                 .ok_or(DomainOAuthError::ClientSecretUnavailable)?;
             form.insert("client_secret".into(), secret);
         }
-        DomainOAuthGrant::AuthorizationCodePkce => {
+        Oauth2Grant::AuthorizationCodePkce => {
             let verifier = random_url_safe(48)?;
             let state = random_url_safe(24)?;
             let (url, callback) = authorization_url(&c, &pkce_challenge(&verifier), &state)?;

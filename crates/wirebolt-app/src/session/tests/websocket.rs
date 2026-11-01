@@ -90,3 +90,43 @@ fn json_messages_preserve_foundation_tolerance_and_original_bytes() {
         );
     }
 }
+
+#[test]
+fn normal_server_close_preserves_the_last_send_error_and_failed_notice() {
+    let mut socket = SessionSocket::default();
+    let generation = socket.begin().unwrap();
+    socket.connected(&generation, vec![], "wss://example.com");
+    let error = message_body(&DomainBody::Json { value: "{".into() }).unwrap_err();
+    socket.set_error(Some(error.clone()));
+    socket.closed(&generation);
+    socket.finish(&generation, None);
+    let snapshot = socket.snapshot();
+    assert_eq!(snapshot.status, SessionSocketStatus::Disconnected);
+    assert_eq!(snapshot.error.as_deref(), Some(error.as_str()));
+    let notice = snapshot.messages.last().unwrap();
+    assert_eq!(notice.notice, Some(SessionSocketNotice::Failed));
+    assert_eq!(notice.text, error);
+}
+
+#[test]
+fn receive_error_replaces_a_send_error_but_a_clean_close_stays_disconnected() {
+    for previous in [None, Some("send failed".into())] {
+        let mut socket = SessionSocket::default();
+        let generation = socket.begin().unwrap();
+        socket.set_error(previous);
+        socket.finish(&generation, Some("receive failed".into()));
+        let snapshot = socket.snapshot();
+        assert_eq!(snapshot.error.as_deref(), Some("receive failed"));
+        assert_eq!(snapshot.messages.last().unwrap().text, "receive failed");
+    }
+    let mut socket = SessionSocket::default();
+    let generation = socket.begin().unwrap();
+    socket.finish(&generation, None);
+    let snapshot = socket.snapshot();
+    assert!(snapshot.error.is_none());
+    assert_eq!(
+        snapshot.messages[0].notice,
+        Some(SessionSocketNotice::Disconnected)
+    );
+    assert_eq!(snapshot.messages[0].text, "Disconnected");
+}

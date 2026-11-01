@@ -107,12 +107,21 @@ pub enum WorkspaceSelectionProblem {
     NotFound,
     AlreadyExists,
 }
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WorkspaceOpenMode {
+    Open,
+    Create,
+    OpenOrCreate,
+}
 #[must_use]
-pub fn selection_problem(path: &Path, mode: &str) -> Option<WorkspaceSelectionProblem> {
+pub fn selection_problem(
+    path: &Path,
+    mode: WorkspaceOpenMode,
+) -> Option<WorkspaceSelectionProblem> {
     let exists = path.join("wirebolt.toml").exists();
     match (mode, exists) {
-        ("open", false) => Some(WorkspaceSelectionProblem::NotFound),
-        ("create", true) => Some(WorkspaceSelectionProblem::AlreadyExists),
+        (WorkspaceOpenMode::Open, false) => Some(WorkspaceSelectionProblem::NotFound),
+        (WorkspaceOpenMode::Create, true) => Some(WorkspaceSelectionProblem::AlreadyExists),
         _ => None,
     }
 }

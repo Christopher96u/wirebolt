@@ -1,5 +1,5 @@
 //! Proxy editor policy and isolated connection-test messages.
-pub use wirebolt_core::{ProxyDestination, ProxySource as DomainProxySource};
+pub use wirebolt_core::{ProxyDestination, ProxySource};
 
 use super::models::{
     DomainProxy, DomainProxyCredentials, DomainProxyRoute, DomainRequestDraft, DomainTransport,
@@ -20,7 +20,10 @@ pub fn validate(proxy: &DomainProxy) -> Result<(), String> {
     }
     let mut destinations = HashSet::new();
     for route in routes {
-        let covered = match route.destination {
+        let destination = route
+            .destination
+            .ok_or("Choose All, HTTP or HTTPS destinations.")?;
+        let covered = match destination {
             ProxyDestination::All => &[ProxyDestination::Http, ProxyDestination::Https][..],
             ProxyDestination::Http => &[ProxyDestination::Http][..],
             ProxyDestination::Https => &[ProxyDestination::Https][..],
@@ -76,7 +79,7 @@ pub fn validate(proxy: &DomainProxy) -> Result<(), String> {
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ResolvedDomainProxy {
     pub configuration: DomainProxy,
-    pub source: DomainProxySource,
+    pub source: ProxySource,
 }
 #[must_use]
 pub fn resolve(
@@ -87,17 +90,17 @@ pub fn resolve(
     if let Some(configuration) = request {
         ResolvedDomainProxy {
             configuration,
-            source: DomainProxySource::Request,
+            source: ProxySource::Request,
         }
     } else if let Some(configuration) = workspace {
         ResolvedDomainProxy {
             configuration,
-            source: DomainProxySource::Workspace,
+            source: ProxySource::Workspace,
         }
     } else {
         ResolvedDomainProxy {
             configuration: app,
-            source: DomainProxySource::AppDefault,
+            source: ProxySource::AppDefault,
         }
     }
 }
@@ -117,7 +120,7 @@ pub fn summary(proxy: &DomainProxy, url: Option<&str>) -> String {
                 .and_then(|s| {
                     routes
                         .iter()
-                        .find(|r| destination_matches(r.destination, s))
+                        .find(|r| r.destination.is_some_and(|d| destination_matches(d, s)))
                 })
                 .or_else(|| {
                     if scheme.is_none() {
@@ -157,7 +160,7 @@ fn explicit_port(endpoint: &str) -> Option<u16> {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ProxyRouteInput {
     pub id: String,
-    pub destination: ProxyDestination,
+    pub destination: Option<ProxyDestination>,
     pub scheme: String,
     pub host: String,
     pub port: String,
@@ -171,7 +174,7 @@ pub struct ProxyRouteInput {
 pub fn route_input(route: Option<DomainProxyRoute>) -> ProxyRouteInput {
     let mut input = ProxyRouteInput {
         id: super::identity::unique_id(),
-        destination: ProxyDestination::All,
+        destination: Some(ProxyDestination::All),
         scheme: "http".into(),
         host: String::new(),
         port: "8080".into(),
@@ -428,18 +431,18 @@ pub fn form_secrets(input: &ProxyFormInput) -> std::collections::HashMap<String,
     secrets
 }
 #[must_use]
-pub fn needs_indicator(configuration: &DomainProxy, source: DomainProxySource) -> bool {
+pub fn needs_indicator(configuration: &DomainProxy, source: ProxySource) -> bool {
     validate(configuration).is_err()
-        || source == DomainProxySource::Request
-        || source == DomainProxySource::Workspace
+        || source == ProxySource::Request
+        || source == ProxySource::Workspace
 }
 #[must_use]
-pub fn scope_title(scope: DomainProxySource) -> String {
+pub fn scope_title(scope: ProxySource) -> String {
     match scope {
-        DomainProxySource::Workspace => "Workspace",
-        DomainProxySource::Request => "Request",
-        DomainProxySource::SystemDefault => "System default",
-        DomainProxySource::AppDefault => "App default",
+        ProxySource::Workspace => "Workspace",
+        ProxySource::Request => "Request",
+        ProxySource::SystemDefault => "System default",
+        ProxySource::AppDefault => "App default",
     }
     .into()
 }

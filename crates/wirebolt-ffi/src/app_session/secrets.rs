@@ -139,9 +139,6 @@ impl AppSessionSecrets {
             inner: Arc::new(wirebolt_app::session::secrets::SessionSecrets::default()),
         })
     }
-    pub fn edit_batch(&self, values: HashMap<String, String>) {
-        self.inner.edit_batch(values);
-    }
     pub fn reset_editor(&self) {
         self.inner.reset_editor();
     }
@@ -202,14 +199,6 @@ impl AppSessionSecrets {
             .copy(renames, platform.as_ref())
             .await
             .map_err(secret_error)
-    }
-    pub async fn purge(
-        &self,
-        in_use: Vec<String>,
-        others: Vec<String>,
-        platform: Arc<AppSecretPlatform>,
-    ) {
-        self.inner.purge(in_use, others, platform.as_ref()).await;
     }
 }
 

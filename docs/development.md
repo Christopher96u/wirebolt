@@ -88,8 +88,10 @@ expose editable values and presentation policy, `app_*` functions expose respons
 operations and bounded platform-file input, `session_*` functions expose session
 policy/codecs, and `workspace_*` functions expose workspace interface actions.
 The editor syntax surface is `domain_syntax_highlight` (`domain_syntax.rs`).
-Proxy destinations and sources reuse the core enums; Bruno folders cross as typed
-bundles through the import path. The C control surface uses ABI revision 5.
+API key placement, OAuth grants, multipart kinds, proxy destinations and proxy
+sources reuse the core enums. Workspace open/create selection uses a typed mode;
+Bruno folders cross as typed bundles through the import path. The C control
+surface uses ABI revision 5.
 `App` prefixes identify bridge objects; session layout records use `SessionLayout`,
 `SessionLayoutGroup` and `SessionLayoutTab` in Rust. The generated Swift layout
 record is named `RustSessionLayout` to distinguish it from the native persistence

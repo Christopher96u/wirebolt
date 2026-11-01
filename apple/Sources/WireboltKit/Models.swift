@@ -44,9 +44,9 @@ extension RequestField: Identifiable {
     }
 }
 
-public typealias APIKeyPlacement = DomainApiKeyPlacement
+public typealias APIKeyPlacement = ApiKeyPlacement
 
-public typealias OAuth2Grant = DomainOAuthGrant
+public typealias OAuth2Grant = Oauth2Grant
 
 extension OAuth2Grant {
     public static let authorizationCodePKCE = Self.authorizationCodePkce
@@ -149,8 +149,6 @@ public extension RequestAuthentication {
 }
 
 public typealias RequestBody = DomainBody
-
-public typealias MultipartPartKind = DomainMultipartKind
 
 public typealias MultipartPart = DomainMultipartPart
 
@@ -740,22 +738,11 @@ extension GitChangeKind {
 }
 
 /// What the Push button can do for the current status.
-public enum GitPushAvailability: Equatable, Sendable {
-    /// Push commits to the configured upstream.
-    case push
-    /// No upstream yet: pushing publishes the branch to `origin` and tracks it.
-    case publish(branch: String)
-    /// The button stays visible but disabled, with this reason as help.
-    case unavailable(reason: String)
-}
+public typealias GitPushAvailability = PushAvailability
 
 extension GitStatusSnapshot {
     public var pushAvailability: GitPushAvailability {
-        switch domainPushAvailability(branch: branch, upstream: upstream, ahead: ahead) {
-        case .push: .push
-        case .publish(let branch): .publish(branch: branch)
-        case .unavailable(let reason): .unavailable(reason: reason)
-        }
+        domainPushAvailability(branch: branch, upstream: upstream, ahead: ahead)
     }
 }
 
@@ -777,18 +764,12 @@ extension GitStatusSnapshot {
 public typealias GitOperationSnapshot = WorkspaceGitOperation
 
 /// Git failures that mean the workspace cannot use Git yet, each with its own guidance.
-public enum GitRepositoryProblem: Equatable, Sendable {
-    case notRepository
-    case notRepositoryRoot
-    case gitUnavailable
+public typealias GitRepositoryProblem = WorkspaceRepositoryProblem
 
+extension GitRepositoryProblem {
     public init?(kind: WorkspaceFailureKind) {
-        switch workspaceRepositoryProblem(kind: kind) {
-        case .notRepository: self = .notRepository
-        case .notRepositoryRoot: self = .notRepositoryRoot
-        case .gitUnavailable: self = .gitUnavailable
-        case nil: return nil
-        }
+        guard let problem = workspaceRepositoryProblem(kind: kind) else { return nil }
+        self = problem
     }
 }
 

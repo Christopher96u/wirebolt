@@ -1,5 +1,6 @@
 //! Editable records at the application boundary. Storage owns file validation.
 use serde::{Deserialize, Serialize};
+pub use wirebolt_core::{ApiKeyPlacement, MultipartPartKind, Oauth2Grant};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum DomainValueSource {
@@ -66,7 +67,7 @@ pub struct DomainField {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(default)]
 pub struct DomainOAuthConfiguration {
-    pub grant: DomainOAuthGrant,
+    pub grant: Oauth2Grant,
     pub authorization_url: String,
     pub token_url: String,
     pub client_id: String,
@@ -82,7 +83,7 @@ pub struct DomainOAuthConfiguration {
 pub struct DomainMultipartPart {
     pub id: String,
     pub name: String,
-    pub kind: DomainMultipartKind,
+    pub kind: MultipartPartKind,
     pub value: DomainValueSource,
     pub file_path: Option<String>,
     pub file_name: Option<String>,
@@ -178,9 +179,18 @@ pub struct DomainWorkspace {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DomainProxyRoute {
-    pub destination: wirebolt_core::ProxyDestination,
+    /// Unknown persisted strings stay invalid until the user repairs the route.
+    #[serde(deserialize_with = "proxy_destination")]
+    pub destination: Option<wirebolt_core::ProxyDestination>,
     pub endpoint: String,
     pub credentials: Option<DomainProxyCredentials>,
+}
+
+fn proxy_destination<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<wirebolt_core::ProxyDestination>, D::Error> {
+    let value = String::deserialize(deserializer)?;
+    Ok(serde_json::from_value(serde_json::Value::String(value)).ok())
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -190,31 +200,6 @@ pub struct DomainProxyCredentials {
     pub password: String,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-#[derive(Default)]
-pub enum DomainOAuthGrant {
-    #[default]
-    AuthorizationCodePkce,
-    ClientCredentials,
-}
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-#[derive(Default)]
-pub enum DomainApiKeyPlacement {
-    #[default]
-    Header,
-    Query,
-}
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-#[derive(Default)]
-pub enum DomainMultipartKind {
-    #[default]
-    Text,
-    Binary,
-    File,
-}
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 #[derive(Default)]
@@ -229,7 +214,7 @@ pub enum DomainAuthentication {
         token: DomainValueSource,
     },
     ApiKey {
-        placement: DomainApiKeyPlacement,
+        placement: ApiKeyPlacement,
         name: String,
         value: DomainValueSource,
     },

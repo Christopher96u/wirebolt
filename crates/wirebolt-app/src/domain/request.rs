@@ -2,9 +2,9 @@
 use super::{
     identity::unique_id,
     models::{
-        DomainApiKeyPlacement, DomainAuthentication, DomainAuthenticationKind, DomainBody,
-        DomainEnvironment, DomainField, DomainOAuthConfiguration, DomainOAuthGrant, DomainProxy,
-        DomainRequestDraft, DomainTransport, DomainValueSource, DomainVariable, DomainWorkspace,
+        ApiKeyPlacement, DomainAuthentication, DomainAuthenticationKind, DomainBody,
+        DomainEnvironment, DomainField, DomainOAuthConfiguration, DomainProxy, DomainRequestDraft,
+        DomainTransport, DomainValueSource, DomainVariable, DomainWorkspace, Oauth2Grant,
     },
 };
 use std::{
@@ -153,7 +153,7 @@ pub fn new_auth(kind: DomainAuthenticationKind) -> DomainAuthentication {
             },
         },
         DomainAuthenticationKind::ApiKey => DomainAuthentication::ApiKey {
-            placement: DomainApiKeyPlacement::Header,
+            placement: ApiKeyPlacement::Header,
             name: "X-API-Key".into(),
             value: DomainValueSource::Secret {
                 secret: credential_reference("api-key", "auth"),
@@ -161,7 +161,7 @@ pub fn new_auth(kind: DomainAuthenticationKind) -> DomainAuthentication {
         },
         DomainAuthenticationKind::Oauth2 => DomainAuthentication::Oauth2 {
             configuration: DomainOAuthConfiguration {
-                grant: DomainOAuthGrant::AuthorizationCodePkce,
+                grant: Oauth2Grant::AuthorizationCodePkce,
                 authorization_url: String::new(),
                 token_url: String::new(),
                 client_id: String::new(),

@@ -12,7 +12,7 @@ struct RustWorkspacePersistence: WorkspacePersistence, GitCollaboration {
         path: URL = Self.defaultWorkspaceURL,
         mode: WorkspaceOpenMode = .openOrCreate
     ) throws {
-        switch workspaceSelectionProblem(path: path.path, mode: mode.rawValue) {
+        switch workspaceSelectionProblem(path: path.path, mode: mode) {
         case .notFound: throw WorkspaceSelectionError.workspaceNotFound
         case .alreadyExists: throw WorkspaceSelectionError.workspaceAlreadyExists
         case nil:
@@ -135,12 +135,6 @@ struct RustWorkspacePersistence: WorkspacePersistence, GitCollaboration {
             .appending(path: "Default", directoryHint: .isDirectory)
     }
 
-}
-
-enum WorkspaceOpenMode: String {
-    case open
-    case create
-    case openOrCreate
 }
 
 enum WorkspaceSelectionError: LocalizedError {

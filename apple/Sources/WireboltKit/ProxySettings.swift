@@ -1,16 +1,17 @@
 import Foundation
 import Observation
 
-public typealias ProxyScope = DomainProxySource
+public typealias ProxyScope = ProxySource
 
-extension DomainProxySource: RawRepresentable, CaseIterable {
+extension ProxySource: RawRepresentable, CaseIterable {
     public static var app: Self { .appDefault }
-    public static var allCases: [Self] { [.app, .workspace, .request] }
+    public static var allCases: [Self] { [.app, .workspace, .request, .systemDefault] }
+    public static var editableScopes: [Self] { [.app, .workspace, .request] }
     public var rawValue: String {
         switch self { case .appDefault: "app"; case .workspace: "workspace"; case .request: "request"; case .systemDefault: "systemDefault" }
     }
     public init?(rawValue: String) {
-        guard let value = (Self.allCases + [.systemDefault]).first(where: { $0.rawValue == rawValue }) else { return nil }
+        guard let value = Self.allCases.first(where: { $0.rawValue == rawValue }) else { return nil }
         self = value
     }
     public var title: String {
@@ -21,9 +22,6 @@ extension DomainProxySource: RawRepresentable, CaseIterable {
 public typealias EffectiveProxy = ResolvedDomainProxy
 
 extension EffectiveProxy {
-    public typealias Source = DomainProxySource
-
-
     public static func resolve(request: ProxyDocument?, workspace: ProxyDocument?, app: ProxyDocument) -> Self {
         domainResolveProxy(request: request, workspace: workspace, app: app)
     }
@@ -86,7 +84,7 @@ public struct ProxyRouteDraft: Identifiable, Equatable {
     var domain: ProxyRouteInput
     public static let protocols = ["http", "https", "socks4", "socks4a", "socks5", "socks5h"]
     public let id: UUID
-    public var destination: ProxyDestination {
+    public var destination: ProxyDestination? {
         get { domain.destination }
         set { domain.destination = newValue }
     }

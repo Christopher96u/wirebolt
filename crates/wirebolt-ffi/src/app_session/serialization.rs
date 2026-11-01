@@ -3,11 +3,7 @@
     clippy::needless_pass_by_value,
     reason = "UniFFI lifts owned records at the boundary."
 )]
-use super::{DomainBody, DomainEnvironment, DomainProxy, DomainRunInput};
-#[uniffi::export]
-pub fn session_encode_input(value: DomainRunInput) -> Result<Vec<u8>, crate::WorkspaceBridgeError> {
-    wirebolt_app::session::serialization::encode_input(&value)
-}
+use super::DomainProxy;
 #[uniffi::export]
 pub fn session_encode_proxy(value: DomainProxy) -> Result<Vec<u8>, crate::WorkspaceBridgeError> {
     wirebolt_app::session::serialization::encode_proxy(&value)
@@ -15,24 +11,4 @@ pub fn session_encode_proxy(value: DomainProxy) -> Result<Vec<u8>, crate::Worksp
 #[uniffi::export]
 pub fn session_decode_proxy(data: Vec<u8>) -> Result<DomainProxy, crate::WorkspaceBridgeError> {
     wirebolt_app::session::serialization::decode_proxy(&data)
-}
-#[uniffi::export]
-pub fn session_encode_environment(
-    value: DomainEnvironment,
-) -> Result<Vec<u8>, crate::WorkspaceBridgeError> {
-    wirebolt_app::session::serialization::encode_environment(&value)
-}
-#[uniffi::export]
-pub fn session_decode_environment(
-    data: Vec<u8>,
-) -> Result<DomainEnvironment, crate::WorkspaceBridgeError> {
-    wirebolt_app::session::serialization::decode_environment(&data)
-}
-#[uniffi::export]
-pub fn session_encode_body(value: DomainBody) -> Result<Vec<u8>, crate::WorkspaceBridgeError> {
-    wirebolt_app::session::serialization::encode_body(&value)
-}
-#[uniffi::export]
-pub fn session_decode_body(data: Vec<u8>) -> Result<DomainBody, crate::WorkspaceBridgeError> {
-    wirebolt_app::session::serialization::decode_body(&data)
 }

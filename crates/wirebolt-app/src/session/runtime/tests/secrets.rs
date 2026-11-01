@@ -115,7 +115,7 @@ async fn legacy_migration_copies_only_shared_auth_names_and_keeps_legacy_items()
     let secrets = SessionSecrets::default();
     let draft = DomainRequestDraft {
         authentication: DomainAuthentication::ApiKey {
-            placement: DomainApiKeyPlacement::Header,
+            placement: ApiKeyPlacement::Header,
             name: "X-API-Key".into(),
             value: DomainValueSource::Secret {
                 secret: "auth.api-key".into(),

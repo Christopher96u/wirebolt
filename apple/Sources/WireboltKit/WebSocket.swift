@@ -19,9 +19,7 @@ public protocol WebSocketConnecting: Sendable {
 }
 
 /// A connection lifecycle entry shown in the message list.
-public enum WebSocketNotice: Equatable, Sendable {
-    case connected, disconnected, failed
-}
+public typealias WebSocketNotice = SessionSocketNotice
 
 public struct WebSocketMessage: Identifiable, Sendable {
     public let id: UUID
@@ -54,13 +52,7 @@ public struct WebSocketMessage: Identifiable, Sendable {
         data = record.data
         binary = record.binary
         outgoing = record.outgoing
-        notice = record.notice.map {
-            switch $0 {
-            case .connected: .connected
-            case .disconnected: .disconnected
-            case .failed: .failed
-            }
-        }
+        notice = record.notice
         control = record.control
         text = record.text
     }
@@ -223,19 +215,18 @@ final class WebSocketEventBuffer: @unchecked Sendable {
     private var failure: (any Error)?
     private var waiter: CheckedContinuation<WebSocketEvent?, any Error>?
 
-    init(byteLimit: Int = 16 * 1024 * 1024 + 64 * 1001, eventLimit: Int = 256) {
+    init(byteLimit: Int = Int(sessionSocketMessageBytes()) + 64 * (Int(sessionSocketMessageLimit()) + 1), eventLimit: Int = 256) {
         self.byteLimit = max(1, byteLimit)
         self.eventLimit = max(1, eventLimit)
     }
 
     func push(_ event: WebSocketEvent) -> Bool {
-        let cost: Int =
-            switch event {
-            case .message(let data, _, _, _): data.count + 64
-            case .connected(let headers): headers.reduce(64) { $0 + $1.name.utf8.count + $1.value.utf8.count }
-            case .closed: 64
-            case .state(let snapshot): snapshot.messages.reduce(64) { $0 + $1.data.count + 64 }
-            }
+        let cost: Int = switch event {
+        case let .message(data, _, _, _): data.count + 64
+        case let .connected(headers): headers.reduce(64) { $0 + $1.name.utf8.count + $1.value.utf8.count }
+        case .closed: 64
+        case let .state(snapshot): snapshot.messages.reduce(64) { $0 + $1.data.count + 64 }
+        }
         condition.lock()
         guard cost <= byteLimit else {
             condition.unlock()
@@ -245,17 +236,13 @@ final class WebSocketEventBuffer: @unchecked Sendable {
         while !ended && waiter == nil && (pending.count - head >= eventLimit || bytes + cost > byteLimit) {
             condition.wait()
         }
-        guard !ended else {
-            condition.unlock()
-            return false
-        }
+        guard !ended else { condition.unlock(); return false }
         if let consumer = waiter {
             waiter = nil
             condition.unlock()
             consumer.resume(returning: event)
         } else {
-            pending.append((event, cost))
-            bytes += cost
+            pending.append((event, cost)); bytes += cost
             condition.unlock()
         }
         return true
@@ -265,20 +252,16 @@ final class WebSocketEventBuffer: @unchecked Sendable {
         try await withCheckedThrowingContinuation { continuation in
             condition.lock()
             if head < pending.count, let (event, cost) = pending[head] {
-                pending[head] = nil
-                head += 1
-                bytes -= cost
-                if head >= 128 {
-                    pending.removeFirst(head)
-                    head = 0
-                }
+                pending[head] = nil; head += 1; bytes -= cost
+                if head >= 128 { pending.removeFirst(head); head = 0 }
                 condition.broadcast()
                 condition.unlock()
                 continuation.resume(returning: event)
             } else if ended {
                 let error = failure
                 condition.unlock()
-                if let error { continuation.resume(throwing: error) } else { continuation.resume(returning: nil) }
+                if let error { continuation.resume(throwing: error) }
+                else { continuation.resume(returning: nil) }
             } else {
                 precondition(waiter == nil, "Only one WebSocket receiver is supported")
                 waiter = continuation
@@ -292,18 +275,15 @@ final class WebSocketEventBuffer: @unchecked Sendable {
         condition.lock()
         ended = true
         if let error { failure = error }
-        if discardingPending {
-            pending.removeAll()
-            head = 0
-            bytes = 0
-        }
+        if discardingPending { pending.removeAll(); head = 0; bytes = 0 }
         let consumer = waiter
         waiter = nil
         let error = failure
         condition.broadcast()
         condition.unlock()
         if let consumer {
-            if let error { consumer.resume(throwing: error) } else { consumer.resume(returning: nil) }
+            if let error { consumer.resume(throwing: error) }
+            else { consumer.resume(returning: nil) }
         }
     }
 }

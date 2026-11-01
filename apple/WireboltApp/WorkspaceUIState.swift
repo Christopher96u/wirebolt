@@ -210,7 +210,7 @@ final class WorkspaceUIState {
         _ = closeRevision
         guard let request = rustInterface.closeRequest() else { return nil }
         return DirtyCloseRequest(
-            scope: TabCloseScope(request.scope), groupID: request.groupId,
+            scope: request.scope, groupID: request.groupId,
             documentTitles: request.titles, documentIDs: request.ids)
     }
     var workspaceNamePrompt: WorkspaceNamePrompt?
@@ -496,7 +496,7 @@ final class WorkspaceUIState {
         guard blocked.isEmpty else {
             rustInterface.blockClose(
                 request: WorkspaceDirtyClose(
-                    scope: scope.sessionRecord, groupId: groupID,
+                    scope: scope, groupId: groupID,
                     ids: blocked.map(\.id), titles: blocked.map(\.title)))
             closeRevision += 1
             return
@@ -515,14 +515,14 @@ final class WorkspaceUIState {
         closeRevision += 1
         Task {
             guard await model.saveDocuments(request.ids) else { return }
-            close(TabCloseScope(request.scope), model: model, in: request.groupId)
+            close(request.scope, model: model, in: request.groupId)
         }
     }
 
     func confirmDirtyClose(model: WireboltModel) {
         guard let request = rustInterface.takeClose() else { return }
         closeRevision += 1
-        close(TabCloseScope(request.scope), model: model, groupID: request.groupId, allowDirty: true)
+        close(request.scope, model: model, groupID: request.groupId, allowDirty: true)
     }
 
     func presentation(for session: DocumentSession) -> DocumentPresentationState {

@@ -146,7 +146,7 @@ fn every_body_transition_preserves_only_text_and_resets_metadata() {
                     assert_eq!(parts.len(), 1);
                     assert!(!parts[0].id.is_empty());
                     assert_eq!(parts[0].name, "name");
-                    assert_eq!(parts[0].kind, DomainMultipartKind::Text);
+                    assert_eq!(parts[0].kind, MultipartPartKind::Text);
                     assert_eq!(parts[0].value, DomainValueSource::literal(value));
                     assert!(parts[0].enabled);
                     assert_eq!(

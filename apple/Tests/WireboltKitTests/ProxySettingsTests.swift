@@ -266,8 +266,24 @@ extension ProxySettingsTests {
         #expect(UUID(uuidString: draft.domain.id) == draft.id)
         #expect(ProxyRouteDraft(domain: draft.domain).id == draft.id)
     }
+    @Test @MainActor func handEditedUnknownDestinationStaysManual() throws {
+        let suite = "WireboltProxyTests.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        defaults.set(Data(#"{"mode":"manual","routes":[{"destination":"ftp","endpoint":"http://localhost:8080"}]}"#.utf8), forKey: ProxyPreferences.key)
+        let preferences = ProxyPreferences(defaults: defaults)
+        guard case let .manual(routes) = preferences.configuration else { Issue.record("Expected manual proxy"); return }
+        #expect(routes.count == 1)
+        #expect(routes[0].destination == nil)
+        for _ in 0..<2 {
+            #expect(throws: ProxyValidationError("Choose All, HTTP or HTTPS destinations.")) {
+                try preferences.configuration.validate()
+            }
+        }
+    }
     @Test func generatedProxyEnumsKeepPreferenceRawValues() {
-        #expect(ProxyScope.allCases.map(\.rawValue) == ["app", "workspace", "request"])
+        #expect(ProxyScope.allCases.map(\.rawValue) == ["app", "workspace", "request", "systemDefault"])
+        #expect(ProxyScope.editableScopes.map(\.rawValue) == ["app", "workspace", "request"])
         #expect(ProxyFormDraft.Mode.allCases.map(\.rawValue) == ["inherit", "system", "direct", "manual"])
         for scope in ProxyScope.allCases { #expect(ProxyScope(rawValue: scope.rawValue) == scope) }
         for mode in ProxyFormDraft.Mode.allCases { #expect(ProxyFormDraft.Mode(rawValue: mode.rawValue) == mode) }

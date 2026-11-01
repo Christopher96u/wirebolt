@@ -427,8 +427,8 @@ struct WireboltModelTests {
         #expect(saved?.1 == "api")
     }
 
-    @Test("encodes secret references without secret material")
-    func encodesRequestInput() throws {
+    @Test("projects secret references in typed run input")
+    func projectsRequestInput() throws {
         let draft = RequestDraft(
             method: .post,
             url: "https://example.com",
@@ -447,18 +447,15 @@ struct WireboltModelTests {
                 )
             ),
         ])
-        let data = try encodeDomain(RunInput(
+        let input = RunInput(
             draft: draft,
             variables: [:],
             workspaceProxy: workspaceProxy
-        ))
-        let json = String(decoding: data, as: UTF8.self)
+        ).domain
 
-        #expect(json.contains("api.token"))
-        #expect(json.contains("request_proxy"))
-        #expect(json.contains("proxy.internal"))
-        #expect(json.contains("proxy.username"))
-        #expect(json.contains("secret material") == false)
+        #expect(input.authentication == .bearer(token: .secret("api.token")))
+        #expect(input.requestProxy == .direct)
+        #expect(input.workspaceProxy == workspaceProxy)
     }
 
     @Test("round-trips a manual workspace proxy without secret material")
@@ -709,15 +706,14 @@ struct WireboltModelTests {
                 EnvironmentVariableDraft(id: "first", key: "host", value: .literal("example.com"), enabled: true, order: 1),
             ]
         )
-        let data = try encodeDomain(environment)
-        let decoded = try decodeDomain(EnvironmentDraft.self, from: data)
+        let decoded = EnvironmentDraft(domain: environment.domain)
 
         #expect(decoded == environment)
         #expect(decoded.variables.map(\.id) == ["second", "first"])
         #expect(decoded.enabledValues == ["host": .literal("example.com")])
     }
 
-    @Test("custom methods and stable field IDs survive request encoding")
+    @Test("custom methods and stable field IDs survive typed projection")
     func customMethodAndFields() throws {
         let method = try #require(HTTPMethod(rawValue: "PURGE"))
         let draft = RequestDraft(
@@ -726,11 +722,8 @@ struct WireboltModelTests {
             headers: [RequestField(id: "stable-header", name: "X-Test", value: .literal("yes"))]
         )
         let input = RunInput(draft: draft, variables: [:])
-        let data = try encodeDomain(input)
-        let json = String(decoding: data, as: UTF8.self)
-
-        #expect(json.contains("PURGE"))
-        #expect(json.contains("stable-header"))
+        #expect(input.domain.method == "PURGE")
+        #expect(input.domain.headers.map(\.id) == ["stable-header"])
     }
 
     @Test("request transport visibly inherits workspace defaults until overridden")
@@ -805,8 +798,8 @@ struct WireboltModelTests {
         await model.send()
         #expect(await persistence.savedSecret?.0 == "test.token")
         #expect(await persistence.savedSecret?.1 == "fixture-token-material")
-        let encoded = try encodeDomain(RunInput(draft: model.draft, variables: [:]))
-        #expect(!String(decoding: encoded, as: UTF8.self).contains("fixture-token-material"))
+        let input = RunInput(draft: model.draft, variables: [:]).domain
+        #expect(input.authentication == .bearer(token: .secret("test.token")))
     }
 
     @Test("Cancellation has a terminal presentation and ignores late callbacks")
@@ -845,8 +838,8 @@ struct WireboltModelTests {
 
         #expect(await persistence.savedSecret?.0 == "oauth.test-token")
         #expect(await persistence.savedSecret?.1 == "access-material")
-        let encoded = try encodeDomain(RunInput(draft: session.draft, variables: [:]))
-        #expect(String(decoding: encoded, as: UTF8.self).contains("access-material") == false)
+        let input = RunInput(draft: session.draft, variables: [:]).domain
+        #expect(input.authentication == .oauth2(configuration: configuration))
         #expect(model.oauthReceipts[session.id] != nil)
     }
     @Test("Send reads the current editor projection after credential storage finishes")
@@ -1198,13 +1191,8 @@ private actor PausedSecretPersistence: WorkspacePersistence {
 }
 
 // Verify the Rust-owned interchange format while keeping native facade assertions.
-func encodeDomain(_ value: RunInput) throws -> Data { try sessionEncodeInput(value: value.domain) }
 func encodeDomain(_ value: ProxyDocument) throws -> Data { try sessionEncodeProxy(value: value) }
-func encodeDomain(_ value: EnvironmentDraft) throws -> Data { try sessionEncodeEnvironment(value: value.domain) }
-func encodeDomain(_ value: RequestBody) throws -> Data { try sessionEncodeBody(value: value) }
 func decodeDomain(_: ProxyDocument.Type, from data: Data) throws -> ProxyDocument { try sessionDecodeProxy(data: data) }
-func decodeDomain(_: EnvironmentDraft.Type, from data: Data) throws -> EnvironmentDraft { EnvironmentDraft(domain: try sessionDecodeEnvironment(data: data)) }
-func decodeDomain(_: RequestBody.Type, from data: Data) throws -> RequestBody { try sessionDecodeBody(data: data) }
 
 @Test("Default typed persistence preserves collection-qualified request identity")
 func defaultPersistenceDeltaKeepsLocationIdentity() async throws {

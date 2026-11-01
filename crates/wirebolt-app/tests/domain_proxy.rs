@@ -12,17 +12,22 @@ fn typed_destinations_keep_persisted_spellings() {
         let source =
             format!(r#"{{"destination":"{spelling}","endpoint":"http://localhost:8080"}}"#);
         let route: DomainProxyRoute = serde_json::from_str(&source).unwrap();
-        assert_eq!(route.destination, destination);
+        assert_eq!(route.destination, Some(destination));
         assert_eq!(
             serde_json::to_value(route).unwrap()["destination"],
             spelling
         );
     }
-    assert!(
-        serde_json::from_str::<DomainProxyRoute>(
-            r#"{"destination":"invalid","endpoint":"http://localhost:8080"}"#
-        )
-        .is_err()
+    let invalid: DomainProxyRoute =
+        serde_json::from_str(r#"{"destination":"invalid","endpoint":"http://localhost:8080"}"#)
+            .unwrap();
+    assert!(invalid.destination.is_none());
+    assert_eq!(
+        validate(&DomainProxy::Manual {
+            routes: vec![invalid]
+        })
+        .unwrap_err(),
+        "Choose All, HTTP or HTTPS destinations."
     );
 }
 #[test]
@@ -32,7 +37,7 @@ fn precedence_replaces_the_whole_policy() {
             resolve(None, None, app.clone()),
             ResolvedDomainProxy {
                 configuration: app.clone(),
-                source: DomainProxySource::AppDefault
+                source: ProxySource::AppDefault
             }
         );
         for workspace in [manual(), DomainProxy::System, DomainProxy::Direct] {
@@ -40,7 +45,7 @@ fn precedence_replaces_the_whole_policy() {
                 resolve(None, Some(workspace.clone()), app.clone()),
                 ResolvedDomainProxy {
                     configuration: workspace.clone(),
-                    source: DomainProxySource::Workspace
+                    source: ProxySource::Workspace
                 }
             );
             for request in [manual(), DomainProxy::System, DomainProxy::Direct] {
@@ -48,7 +53,7 @@ fn precedence_replaces_the_whole_policy() {
                     resolve(Some(request.clone()), Some(workspace.clone()), app.clone()),
                     ResolvedDomainProxy {
                         configuration: request,
-                        source: DomainProxySource::Request
+                        source: ProxySource::Request
                     }
                 );
             }
@@ -96,7 +101,7 @@ fn credentials_serialize_references_and_preserve_unchanged_names() {
 fn summary_maps_websocket_schemes_and_bypasses_unmatched_routes() {
     let configuration = DomainProxy::Manual {
         routes: vec![DomainProxyRoute {
-            destination: wirebolt_core::ProxyDestination::Https,
+            destination: Some(wirebolt_core::ProxyDestination::Https),
             endpoint: "socks5h://localhost:1080".into(),
             credentials: None,
         }],
@@ -161,7 +166,7 @@ fn cancelling_a_queued_probe_invalidates_old_completions() {
 fn validation_rejects_paths_overlaps_empty_policies_and_unsupported_protocols() {
     assert!(validate(&DomainProxy::Manual { routes: vec![] }).is_err());
     let route = |destination, endpoint: &str| DomainProxyRoute {
-        destination,
+        destination: Some(destination),
         endpoint: endpoint.into(),
         credentials: None,
     };
@@ -248,19 +253,16 @@ fn probe_failure_messages_keep_categories_and_timeouts() {
 #[test]
 fn composer_indicators_show_overrides_and_invalid_policies() {
     for app in [DomainProxy::System, DomainProxy::Direct, manual()] {
-        assert!(!needs_indicator(&app, DomainProxySource::AppDefault));
+        assert!(!needs_indicator(&app, ProxySource::AppDefault));
         assert!(needs_indicator(
             &DomainProxy::System,
-            DomainProxySource::Workspace
+            ProxySource::Workspace
         ));
-        assert!(needs_indicator(
-            &DomainProxy::Direct,
-            DomainProxySource::Request
-        ));
+        assert!(needs_indicator(&DomainProxy::Direct, ProxySource::Request));
     }
     assert!(needs_indicator(
         &DomainProxy::Manual { routes: vec![] },
-        DomainProxySource::AppDefault
+        ProxySource::AppDefault
     ));
 }
 #[test]
@@ -268,12 +270,12 @@ fn proxy_routes_match_unresolved_url_authorities_and_reject_normalized_paths() {
     let configuration = DomainProxy::Manual {
         routes: vec![
             DomainProxyRoute {
-                destination: wirebolt_core::ProxyDestination::Http,
+                destination: Some(wirebolt_core::ProxyDestination::Http),
                 endpoint: "http://plain:8080".into(),
                 credentials: None,
             },
             DomainProxyRoute {
-                destination: wirebolt_core::ProxyDestination::Https,
+                destination: Some(wirebolt_core::ProxyDestination::Https),
                 endpoint: "socks5h://secure:1080".into(),
                 credentials: None,
             },
@@ -292,7 +294,7 @@ fn proxy_routes_match_unresolved_url_authorities_and_reject_normalized_paths() {
         assert!(
             validate(&DomainProxy::Manual {
                 routes: vec![DomainProxyRoute {
-                    destination: wirebolt_core::ProxyDestination::All,
+                    destination: Some(wirebolt_core::ProxyDestination::All),
                     endpoint: endpoint.into(),
                     credentials: None
                 }]

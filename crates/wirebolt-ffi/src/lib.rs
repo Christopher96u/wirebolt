@@ -6,7 +6,7 @@ mod app_session;
 mod domain_syntax;
 mod native_transport;
 
-use wirebolt_app::session::transport::{clear_manual_http_engines, shared_http_engine};
+use wirebolt_app::session::transport::shared_http_engine;
 
 use std::{
     error::Error,
@@ -122,64 +122,46 @@ impl WorkspaceBridge {
 }
 #[derive(Debug)]
 struct PlatformWorkspaceSecrets;
+#[cfg(target_vendor = "apple")]
 impl WorkspaceSecrets for PlatformWorkspaceSecrets {
     fn read(&self, name: &str) -> Result<Option<String>, WorkspaceBridgeError> {
         let name = SecretName::new(name)
             .map_err(|_| WorkspaceBridgeError::operation("secret name is invalid"))?;
-        #[cfg(target_vendor = "apple")]
-        {
-            wirebolt_core::KeychainSecretStore::default()
-                .read(&name)
-                .map_err(|_| WorkspaceBridgeError::operation("secret could not be read"))
-        }
-        #[cfg(not(target_vendor = "apple"))]
-        {
-            let _ = name;
-            Err(WorkspaceBridgeError::operation(
-                "secret storage is unavailable",
-            ))
-        }
+        wirebolt_core::KeychainSecretStore::default()
+            .read(&name)
+            .map_err(|_| WorkspaceBridgeError::operation("secret could not be read"))
     }
     fn save(&self, name: &str, value: &str) -> Result<(), WorkspaceBridgeError> {
         let name = SecretName::new(name)
             .map_err(|_| WorkspaceBridgeError::operation("secret name is invalid"))?;
-        #[cfg(target_vendor = "apple")]
-        {
-            wirebolt_core::KeychainSecretStore::default()
-                .save(&name, value)
-                .map_err(|_| WorkspaceBridgeError::operation("secret could not be saved"))?;
-            clear_manual_http_engines();
-            Ok(())
-        }
-        #[cfg(not(target_vendor = "apple"))]
-        {
-            let _ = (name, value);
-            Err(WorkspaceBridgeError::operation(
-                "secret storage is unavailable",
-            ))
-        }
+        wirebolt_core::KeychainSecretStore::default()
+            .save(&name, value)
+            .map_err(|_| WorkspaceBridgeError::operation("secret could not be saved"))
     }
     fn remove(&self, name: &str) -> Result<(), WorkspaceBridgeError> {
         let name = SecretName::new(name)
             .map_err(|_| WorkspaceBridgeError::operation("secret name is invalid"))?;
-        #[cfg(target_vendor = "apple")]
-        {
-            let store = wirebolt_core::KeychainSecretStore::default();
-            if store.remove(&name).is_err() && !matches!(store.read(&name), Ok(None)) {
-                return Err(WorkspaceBridgeError::operation(
-                    "secret could not be deleted",
-                ));
-            }
-            clear_manual_http_engines();
-            Ok(())
-        }
-        #[cfg(not(target_vendor = "apple"))]
-        {
-            let _ = name;
-            Err(WorkspaceBridgeError::operation(
-                "secret storage is unavailable",
-            ))
-        }
+        wirebolt_core::KeychainSecretStore::default()
+            .remove(&name)
+            .map_err(|_| WorkspaceBridgeError::operation("secret could not be deleted"))
+    }
+}
+#[cfg(not(target_vendor = "apple"))]
+impl WorkspaceSecrets for PlatformWorkspaceSecrets {
+    fn read(&self, _: &str) -> Result<Option<String>, WorkspaceBridgeError> {
+        Err(WorkspaceBridgeError::operation(
+            "secret storage is unavailable",
+        ))
+    }
+    fn save(&self, _: &str, _: &str) -> Result<(), WorkspaceBridgeError> {
+        Err(WorkspaceBridgeError::operation(
+            "secret storage is unavailable",
+        ))
+    }
+    fn remove(&self, _: &str) -> Result<(), WorkspaceBridgeError> {
+        Err(WorkspaceBridgeError::operation(
+            "secret storage is unavailable",
+        ))
     }
 }
 #[uniffi::export]
@@ -322,25 +304,7 @@ impl WorkspaceBridge {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::{
-        io::{Read, Write},
-        net::TcpListener,
-        process::Command,
-        sync::Mutex,
-        thread,
-        time::Duration,
-    };
-    use wirebolt_app::{
-        response::FailureIssue,
-        session::{
-            run::{SessionFailure, SessionPrepared},
-            transport::{
-                PreparedRunSnapshotDocument, RunFailureDocument, RunInput, TransportObserver,
-            },
-        },
-    };
-    use wirebolt_core::{RunCancellation, RunHead};
-
+    use std::process::Command;
     use wirebolt_app::{
         domain::{DomainCollection, DomainGroup, DomainLocation, DomainRequestDraft},
         session::{
@@ -602,97 +566,6 @@ mod tests {
     }
 
     #[test]
-    fn a_failed_app_proxy_never_retries_the_destination_directly() {
-        let destination = TcpListener::bind("127.0.0.1:0").unwrap();
-        destination.set_nonblocking(true).unwrap();
-        let unused = TcpListener::bind("127.0.0.1:0").unwrap();
-        let proxy_address = unused.local_addr().unwrap();
-        drop(unused);
-        let input = serde_json::json!({"method":"GET", "url":format!("http://{}/must-not-arrive", destination.local_addr().unwrap()),
-            "app_proxy":{"mode":"manual", "routes":[{"destination":"all", "endpoint":format!("http://{proxy_address}")}]}});
-        let (events, state) = run_to_completion(&input.to_string());
-        assert_eq!(events, ["prepared", "error"]);
-        assert_eq!(
-            state.failure.lock().unwrap().as_ref().unwrap().kind,
-            wirebolt_app::response::ResponseFailureKind::Connection
-        );
-        assert!(
-            matches!(destination.accept(), Err(error) if error.kind() == std::io::ErrorKind::WouldBlock)
-        );
-    }
-
-    #[test]
-    fn app_proxy_routes_over_the_stream_bridge_and_request_direct_bypasses_it() {
-        for direct in [false, true] {
-            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-            listener.set_nonblocking(true).unwrap();
-            let address = listener.local_addr().unwrap();
-            let server = thread::spawn(move || {
-                let deadline = std::time::Instant::now() + Duration::from_secs(5);
-                let mut stream = loop {
-                    if let Ok((stream, _)) = listener.accept() {
-                        break stream;
-                    }
-                    assert!(
-                        std::time::Instant::now() < deadline,
-                        "proxy was never reached"
-                    );
-                    thread::sleep(Duration::from_millis(5));
-                };
-                stream
-                    .set_read_timeout(Some(Duration::from_secs(2)))
-                    .unwrap();
-                let mut bytes = [0_u8; 4096];
-                let count = stream.read(&mut bytes).unwrap();
-                stream
-                    .write_all(
-                        b"HTTP/1.1 200 OK\r\nContent-Length: 4\r\nConnection: close\r\n\r\npong",
-                    )
-                    .unwrap();
-                String::from_utf8_lossy(&bytes[..count]).into_owned()
-            });
-            let endpoint = if direct {
-                "http://127.0.0.1:9".to_owned()
-            } else {
-                format!("http://{address}")
-            };
-            let url = if direct {
-                format!("http://{address}/proxy-test")
-            } else {
-                "http://127.0.0.1:9/proxy-test".to_owned()
-            };
-            let mut input = serde_json::json!({"method":"GET","url":url,"app_proxy":{"mode":"manual","routes":[{"destination":"all","endpoint":endpoint}]}});
-            if direct {
-                input["request_proxy"] = serde_json::json!({"mode":"direct"});
-            }
-            let (events, state) = run_to_completion(&input.to_string());
-            assert_eq!(events, ["prepared", "head", "chunk:pong", "complete"]);
-            let snapshot = state.prepared.lock().unwrap().clone().unwrap();
-            assert_eq!(
-                snapshot.proxy.as_ref().unwrap().source,
-                if direct {
-                    wirebolt_app::domain::proxy::DomainProxySource::Request
-                } else {
-                    wirebolt_app::domain::proxy::DomainProxySource::AppDefault
-                }
-            );
-            assert_eq!(
-                matches!(
-                    snapshot.proxy.unwrap().configuration,
-                    wirebolt_app::domain::DomainProxy::Direct
-                ),
-                direct
-            );
-            let request = server.join().unwrap();
-            assert!(request.starts_with(if direct {
-                "GET /proxy-test "
-            } else {
-                "GET http://127.0.0.1:9/proxy-test "
-            }));
-        }
-    }
-
-    #[test]
     fn imports_after_reopening_keep_previously_imported_collections() {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().to_string_lossy().into_owned();
@@ -899,55 +772,6 @@ mod tests {
         assert_eq!(summary.url, "https://api.example.com/v1/items");
         assert_eq!(summary.header_count, 1);
         assert_eq!(summary.body_bytes, 13);
-    }
-
-    #[test]
-    fn transport_observer_delivers_head_chunks_and_completion_in_order() {
-        let listener = TcpListener::bind("127.0.0.1:0").expect("bind loopback server");
-        let address = listener.local_addr().expect("loopback address");
-        let server = thread::spawn(move || {
-            let (mut stream, _) = listener.accept().expect("accept HTTP client");
-            let mut request = [0_u8; 2048];
-            let _ = stream.read(&mut request).expect("read HTTP request");
-            stream
-                .write_all(
-                    b"HTTP/1.1 200 OK\r\nContent-Length: 4\r\nX-Wirebolt: ffi\r\nConnection: close\r\n\r\npong",
-                )
-                .expect("write HTTP response");
-        });
-        let input = serde_json::json!({
-            "method": "GET",
-            "url": format!("http://{address}/ffi"),
-            "workspace_proxy": { "mode": "direct" }
-        })
-        .to_string();
-        let (events, _state) = run_to_completion(&input);
-        server.join().expect("HTTP server");
-        assert_eq!(events, ["prepared", "head", "chunk:pong", "complete"]);
-    }
-
-    #[test]
-    fn transport_failures_retain_kind_and_empty_issues() {
-        let input = serde_json::json!({
-            "method": "GET",
-            "url": "http://127.0.0.1:1/refused",
-            "workspace_proxy": { "mode": "direct" }
-        })
-        .to_string();
-        let (events, state) = run_to_completion(&input);
-
-        assert_eq!(events, ["prepared", "error"]);
-        let failure = state
-            .failure
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .clone()
-            .expect("failure document");
-        assert!(failure.issues.is_empty());
-        assert_eq!(
-            failure.kind,
-            wirebolt_app::response::ResponseFailureKind::Connection
-        );
     }
 
     #[test]
@@ -1182,57 +1006,5 @@ mod tests {
         let reopened = WorkspaceBridge::open_or_create(path, "Ignored".into()).expect("reopen");
         let snapshot = reopened.inner.domain_snapshot().expect("snapshot");
         assert_eq!(snapshot.name, "Checkout Team");
-    }
-
-    fn run_to_completion(input: &str) -> (Vec<String>, Arc<TestTransportObserver>) {
-        let observer = Arc::new(TestTransportObserver::default());
-        let input: RunInput = serde_json::from_str(input).unwrap();
-        SHARED_RUNTIME
-            .as_ref()
-            .unwrap()
-            .block_on(wirebolt_app::session::transport::execute(
-                input,
-                RunCancellation::new(),
-                observer.clone(),
-                wirebolt_core::NoSecrets,
-            ));
-        let events = lock(&observer.events).clone();
-        assert!(
-            events
-                .last()
-                .is_some_and(|event| matches!(event.as_str(), "complete" | "error"))
-        );
-        (events, observer)
-    }
-    #[derive(Debug, Default)]
-    struct TestTransportObserver {
-        events: Mutex<Vec<String>>,
-        failure: Mutex<Option<SessionFailure>>,
-        prepared: Mutex<Option<SessionPrepared>>,
-    }
-    impl TransportObserver for TestTransportObserver {
-        fn prepared(&self, snapshot: &PreparedRunSnapshotDocument) {
-            assert_eq!(snapshot.method, "GET");
-            *lock(&self.prepared) = Some(SessionPrepared::from(snapshot));
-            lock(&self.events).push("prepared".into());
-        }
-        fn head(&self, head: &RunHead, _: &[FailureIssue]) {
-            assert_eq!(head.status, 200);
-            lock(&self.events).push("head".into());
-        }
-        fn chunk(&self, bytes: &[u8]) -> bool {
-            lock(&self.events).push(format!("chunk:{}", String::from_utf8_lossy(bytes)));
-            true
-        }
-        fn cookies(&self, _: &str, _: Vec<(String, String)>) {}
-        fn complete(&self, received: u64, decoded: u64, _: Duration) {
-            assert_eq!(received, 4);
-            assert_eq!(decoded, 4);
-            lock(&self.events).push("complete".into());
-        }
-        fn failure(&self, failure: &RunFailureDocument) {
-            *lock(&self.failure) = Some(SessionFailure::from(failure));
-            lock(&self.events).push("error".into());
-        }
     }
 }

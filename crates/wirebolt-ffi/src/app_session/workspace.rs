@@ -13,9 +13,9 @@ use super::{
     SessionWorkspaceNodeKind, SessionWorkspacePlan, WorkspaceAction, WorkspaceBridge,
     WorkspaceClose, WorkspaceDiscard, WorkspaceExport, WorkspaceFailure, WorkspaceGitAction,
     WorkspaceGitOperation, WorkspaceGitStatus, WorkspaceImport, WorkspaceImportFile,
-    WorkspaceImportSummary, WorkspaceLoad, WorkspaceMutation, WorkspacePresentation,
-    WorkspaceRepositoryProblem, WorkspaceRestore, WorkspaceSave, WorkspaceSelectionProblem,
-    WorkspaceUndoToken,
+    WorkspaceImportSummary, WorkspaceLoad, WorkspaceMutation, WorkspaceOpenMode,
+    WorkspacePresentation, WorkspaceRepositoryProblem, WorkspaceRestore, WorkspaceSave,
+    WorkspaceSelectionProblem, WorkspaceUndoToken,
 };
 use crate::lock;
 use wirebolt_app::session::workspace::operations::WorkspaceImportSource;
@@ -267,17 +267,6 @@ impl AppWorkspaceSession {
 pub struct SessionCommandBatchResult {
     pub completed: u64,
     pub failure_reason: Option<String>,
-}
-
-#[uniffi::export]
-impl AppWorkspaceSession {
-    pub fn partial(
-        &self,
-        plan: SessionWorkspacePlan,
-        completed: u64,
-    ) -> Option<SessionWorkspacePlan> {
-        self.inner.partial(plan, completed)
-    }
 }
 
 #[uniffi::export]
@@ -739,6 +728,13 @@ pub enum WorkspaceSelectionProblem {
     AlreadyExists,
 }
 
+#[uniffi::remote(Enum)]
+pub enum WorkspaceOpenMode {
+    Open,
+    Create,
+    OpenOrCreate,
+}
+
 #[uniffi::export]
 pub fn workspace_read_document(path: String) -> Option<String> {
     wirebolt_app::session::workspace::files::read_document(Path::new(&path))
@@ -747,9 +743,9 @@ pub fn workspace_read_document(path: String) -> Option<String> {
 #[uniffi::export]
 pub fn workspace_selection_problem(
     path: String,
-    mode: String,
+    mode: WorkspaceOpenMode,
 ) -> Option<WorkspaceSelectionProblem> {
-    wirebolt_app::session::workspace::files::selection_problem(Path::new(&path), &mode)
+    wirebolt_app::session::workspace::files::selection_problem(Path::new(&path), mode)
 }
 
 #[uniffi::export]

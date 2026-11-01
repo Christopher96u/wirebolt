@@ -271,7 +271,9 @@ impl SessionPersistence {
     ///
     /// Returns [`WorkspaceError`] for invalid names or Keychain failures.
     pub fn save_secret(&self, name: &str, value: &str) -> Result<(), WorkspaceError> {
-        self.secrets.save(name, value)
+        self.secrets.save(name, value)?;
+        super::transport::clear_manual_http_engines();
+        Ok(())
     }
 
     /// Removes a credential Wirebolt created once nothing references it. A missing item
@@ -281,7 +283,13 @@ impl SessionPersistence {
     ///
     /// Returns [`WorkspaceError`] for invalid names or Keychain failures.
     pub fn delete_secret(&self, name: &str) -> Result<(), WorkspaceError> {
-        self.secrets.remove(name)
+        if let Err(error) = self.secrets.remove(name)
+            && !matches!(self.secrets.read(name), Ok(None))
+        {
+            return Err(error);
+        }
+        super::transport::clear_manual_http_engines();
+        Ok(())
     }
 
     /// Returns a read-only Git status snapshot without fetching.

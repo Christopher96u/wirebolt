@@ -2,7 +2,7 @@ use super::*;
 use crate::lock;
 #[derive(Debug, Default)]
 struct Settings {
-    writes: Mutex<Vec<(RuntimeProxyScope, Option<DomainProxy>)>>,
+    writes: Mutex<Vec<(ProxySource, Option<DomainProxy>)>>,
     transports: Mutex<Vec<DomainTransport>>,
     fails: AtomicBool,
 }
@@ -10,7 +10,7 @@ struct Settings {
 impl RuntimeSettingsPlatform for Settings {
     async fn proxy(
         &self,
-        scope: RuntimeProxyScope,
+        scope: ProxySource,
         configuration: Option<DomainProxy>,
     ) -> Result<(), RuntimeOperationError> {
         if self.fails.load(Ordering::Relaxed) {
@@ -31,10 +31,10 @@ impl RuntimeSettingsPlatform for Settings {
 async fn proxy_applies_only_selected_scope_and_persists_workspace_reset() {
     let platform = Settings::default();
     for (scope, configuration) in [
-        (RuntimeProxyScope::AppDefault, Some(DomainProxy::Direct)),
-        (RuntimeProxyScope::Workspace, Some(DomainProxy::System)),
-        (RuntimeProxyScope::Request, Some(DomainProxy::Direct)),
-        (RuntimeProxyScope::Workspace, None),
+        (ProxySource::AppDefault, Some(DomainProxy::Direct)),
+        (ProxySource::Workspace, Some(DomainProxy::System)),
+        (ProxySource::Request, Some(DomainProxy::Direct)),
+        (ProxySource::Workspace, None),
     ] {
         apply_proxy(
             configuration.clone(),
@@ -54,7 +54,7 @@ async fn proxy_applies_only_selected_scope_and_persists_workspace_reset() {
     assert!(
         apply_proxy(
             None,
-            RuntimeProxyScope::AppDefault,
+            ProxySource::AppDefault,
             true,
             HashMap::new(),
             None,
@@ -66,7 +66,7 @@ async fn proxy_applies_only_selected_scope_and_persists_workspace_reset() {
     assert!(
         apply_proxy(
             None,
-            RuntimeProxyScope::Request,
+            ProxySource::Request,
             false,
             HashMap::new(),
             None,
@@ -85,7 +85,7 @@ async fn proxy_keychain_failure_and_failed_persistence_never_activate_policy() {
     assert!(
         apply_proxy(
             Some(DomainProxy::Direct),
-            RuntimeProxyScope::Workspace,
+            ProxySource::Workspace,
             true,
             HashMap::from([("proxy.user".into(), "fixture".into())]),
             Some(&secrets),
@@ -98,7 +98,7 @@ async fn proxy_keychain_failure_and_failed_persistence_never_activate_policy() {
     secrets.fails.store(false, Ordering::Relaxed);
     apply_proxy(
         Some(DomainProxy::Direct),
-        RuntimeProxyScope::Workspace,
+        ProxySource::Workspace,
         true,
         HashMap::from([("proxy.user".into(), "fixture".into())]),
         Some(&secrets),
@@ -111,7 +111,7 @@ async fn proxy_keychain_failure_and_failed_persistence_never_activate_policy() {
     assert!(
         apply_proxy(
             None,
-            RuntimeProxyScope::Workspace,
+            ProxySource::Workspace,
             true,
             HashMap::new(),
             Some(&secrets),
@@ -127,7 +127,7 @@ async fn invalid_proxy_fails_before_any_platform_write() {
     let platform = Settings::default();
     let error = apply_proxy(
         Some(DomainProxy::Manual { routes: vec![] }),
-        RuntimeProxyScope::Workspace,
+        ProxySource::Workspace,
         true,
         HashMap::new(),
         None,
@@ -178,7 +178,7 @@ async fn resolved_curl_exports_keychain_references_and_effective_proxy() {
     let mut context = context();
     context.app_proxy = DomainProxy::Manual {
         routes: vec![DomainProxyRoute {
-            destination: wirebolt_core::ProxyDestination::All,
+            destination: Some(wirebolt_core::ProxyDestination::All),
             endpoint: "http://localhost:8080".into(),
             credentials: Some(DomainProxyCredentials {
                 username: "proxy.user".into(),
@@ -257,5 +257,43 @@ async fn socket_captures_policy_and_inherits_transport_until_reconnect() {
     assert_eq!(
         context.input(DomainRequestDraft::default()).app_proxy,
         Some(DomainProxy::System)
+    );
+}
+
+#[test]
+fn hand_edited_proxy_destinations_remain_manual_and_fail_every_send() {
+    let destination = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    destination.set_nonblocking(true).unwrap();
+    for invalid in ["ftp", "HTTP", "", " all"] {
+        let proxy = crate::session::serialization::decode_proxy(
+            format!(r#"{{"mode":"manual","routes":[{{"destination":"{invalid}","endpoint":"http://localhost:8080"}}]}}"#).as_bytes()
+        ).unwrap();
+        assert!(
+            matches!(&proxy, DomainProxy::Manual { routes } if routes.len() == 1 && routes[0].destination.is_none())
+        );
+        assert_eq!(
+            crate::domain::proxy::validate(&proxy).unwrap_err(),
+            "Choose All, HTTP or HTTPS destinations."
+        );
+        let mut context = context();
+        context.app_proxy = proxy;
+        for _ in 0..2 {
+            let input = context.input(DomainRequestDraft {
+                url: format!(
+                    "http://{}/must-not-arrive",
+                    destination.local_addr().unwrap()
+                ),
+                ..Default::default()
+            });
+            let failure = transport_input(input).unwrap_err();
+            assert_eq!(failure.kind, ResponseFailureKind::InvalidInput);
+            assert_eq!(
+                failure_message(&failure.kind, &failure.issues, None).message,
+                "Choose All, HTTP or HTTPS destinations."
+            );
+        }
+    }
+    assert!(
+        matches!(destination.accept(), Err(error) if error.kind() == std::io::ErrorKind::WouldBlock)
     );
 }

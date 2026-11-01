@@ -379,3 +379,38 @@ fn history_preserves_typed_failures_and_unknown_legacy_codes() {
         assert_eq!(serde_json::to_value(kind).unwrap(), code);
     }
 }
+
+#[test]
+fn secure_cookies_accept_uppercase_https_schemes() {
+    let mut jar = ResponseCookieJar::new(None);
+    let received = jar.store(&[header("a=b; Secure")], "HTTPS://example.com/login", 0.0);
+    assert!(received[0].secure);
+    assert_eq!(jar.header("HTTPS://example.com/", 0.0), Some("a=b".into()));
+    assert_eq!(jar.header("http://example.com/", 0.0), None);
+}
+
+#[test]
+fn cookies_skip_a_blank_first_segment() {
+    let mut jar = ResponseCookieJar::new(None);
+    let received = jar.store(&[header(" ; a=b; Secure")], "https://example.com/", 0.0);
+    assert_eq!(received.len(), 1);
+    assert_eq!(received[0].name, "a");
+    assert_eq!(received[0].value, "b");
+    assert!(received[0].secure);
+}
+
+#[test]
+fn a_cookie_attribute_with_an_empty_name_is_not_secure() {
+    let mut jar = ResponseCookieJar::new(None);
+    let received = jar.store(&[header("a=b; =secure")], "https://example.com/", 0.0);
+    assert!(!received[0].secure);
+    assert_eq!(jar.header("http://example.com/", 0.0), Some("a=b".into()));
+}
+
+#[test]
+fn cookies_ignore_blank_trailing_segments_without_panicking() {
+    let mut jar = ResponseCookieJar::new(None);
+    let received = jar.store(&[header("a=b; ;")], "https://example.com/", 0.0);
+    assert_eq!(received.len(), 1);
+    assert_eq!(jar.header("https://example.com/", 0.0), Some("a=b".into()));
+}

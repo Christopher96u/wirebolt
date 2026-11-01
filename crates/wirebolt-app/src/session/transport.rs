@@ -275,7 +275,7 @@ fn prepared_run_snapshot(
                         .routes()
                         .iter()
                         .map(|route| crate::domain::DomainProxyRoute {
-                            destination: route.destination(),
+                            destination: Some(route.destination()),
                             endpoint: route.endpoint().into(),
                             credentials: None,
                         })

@@ -11,10 +11,7 @@ public struct RunID: CustomStringConvertible, Hashable, Sendable {
     public var description: String { rawValue.uuidString.lowercased() }
 }
 
-public enum DocumentKind: String, Codable, Equatable, Sendable {
-    case http
-    case webSocket = "web_socket"
-}
+public typealias DocumentKind = SessionKind
 
 @MainActor
 @Observable
@@ -65,12 +62,12 @@ public final class DocumentSession: Identifiable {
         savedDraft: RequestDraft? = nil
     ) {
         let rust = AppDocumentSession(
-            id: id, kind: kind.rust, collectionId: collectionID,
+            id: id, kind: kind, collectionId: collectionID,
             requestId: requestID, draft: draft.domain, savedDraft: savedDraft?.domain, note: note)
         let document = rust.document()
         self.rust = rust
         self.id = document.id
-        self.kind = DocumentKind(document.kind)
+        self.kind = document.kind
         self.collectionID = document.collectionId
         self.requestID = document.requestId
         self.draft = RequestDraft(domain: document.draft)
@@ -82,7 +79,7 @@ public final class DocumentSession: Identifiable {
     public var isRunning: Bool { activeRunID != nil }
     var tabProjection: SessionTabDocument {
         SessionTabDocument(
-            id: id, kind: kind.rust,
+            id: id, kind: kind,
             collectionId: collectionID, requestId: requestID, dirty: isDirty, touched: isTouched)
     }
     func synchronizeDraft() { rust.edit(draft: draft.domain) }
@@ -237,10 +234,6 @@ public final class DocumentSession: Identifiable {
     }
 }
 
-extension DocumentKind {
-    var rust: SessionKind { self == .http ? .http : .webSocket }
-    init(_ record: SessionKind) { self = record == .http ? .http : .webSocket }
-}
 extension PreparedRunSnapshot {
     var sessionRecord: SessionPrepared { record }
     init(_ record: SessionPrepared) { self.record = record }
@@ -332,12 +325,7 @@ public struct SessionLayoutStore {
     }
 }
 
-public enum TabCloseScope: Equatable, Sendable {
-    case one(String)
-    case others(String)
-    case rightOf(String)
-    case all
-}
+public typealias TabCloseScope = SessionCloseScope
 
 @MainActor
 @Observable
@@ -426,7 +414,7 @@ public final class DocumentSessionStore {
         let result = rust.restore(layout: layout.sessionRecord, resolved: layout.groups.flatMap { $0.tabs }.map { resolve($0)?.domain })
         let restored = result.documents.map { document in
             DocumentSession(
-                id: document.id, kind: DocumentKind(document.kind), collectionID: document.collectionId,
+                id: document.id, kind: document.kind, collectionID: document.collectionId,
                 requestID: document.requestId, draft: RequestDraft(domain: document.draft),
                 savedDraft: document.savedDraft.map(RequestDraft.init(domain:)))
         }
@@ -441,7 +429,7 @@ public final class DocumentSessionStore {
         let restored = application.restoreTabs(tabs: rust, layout: layout?.sessionRecord)
         let projected = restored.result.documents.map { document in
             DocumentSession(
-                id: document.id, kind: DocumentKind(document.kind), collectionID: document.collectionId,
+                id: document.id, kind: document.kind, collectionID: document.collectionId,
                 requestID: document.requestId, draft: RequestDraft(domain: document.draft),
                 savedDraft: document.savedDraft.map(RequestDraft.init(domain:)))
         }
@@ -580,7 +568,7 @@ public final class DocumentSessionStore {
         allowDirty: Bool = false
     ) -> [DocumentSession] {
         synchronizeTabs()
-        let blocked = rust.close(scope: scope.sessionRecord, group: groupID, allowDirty: allowDirty)
+        let blocked = rust.close(scope: scope, group: groupID, allowDirty: allowDirty)
         guard blocked.isEmpty else { return blocked.compactMap { sessions[$0] } }
         mirrorTabs()
         return []
@@ -593,7 +581,7 @@ public final class DocumentSessionStore {
             session.synchronizeDraft()
             return session.rust.document()
         }
-        let result = rust.closeWorkspace(documents: documents, scope: scope.sessionRecord, group: groupID, allowDirty: allowDirty)
+        let result = rust.closeWorkspace(documents: documents, scope: scope, group: groupID, allowDirty: allowDirty)
         let closed = result.removed.compactMap { effect -> DocumentSession? in
             guard let session = sessions[effect.id] else { return nil }
             if let saved = effect.saved { session.markSaved(RequestDraft(domain: saved)) }
@@ -651,16 +639,6 @@ extension SessionLayout {
             }, activeGroupIndex: Int(record.activeGroupIndex))
     }
 }
-extension TabCloseScope {
-    var sessionRecord: SessionCloseScope {
-        switch self {
-        case .one(let id): .one(id: id)
-        case .others(let id): .others(id: id)
-        case .rightOf(let id): .rightOf(id: id)
-        case .all: .all
-        }
-    }
-}
 
 extension EditorGroup {
     var workspaceRecord: SessionEditorGroup {
@@ -671,12 +649,7 @@ extension EditorGroup {
 }
 
 extension TabCloseScope {
-    init(_ record: SessionCloseScope) {
-        switch record {
-        case .one(let id): self = .one(id)
-        case .others(let id): self = .others(id)
-        case .rightOf(let id): self = .rightOf(id)
-        case .all: self = .all
-        }
-    }
+    public static func one(_ id: String) -> Self { .one(id: id) }
+    public static func others(_ id: String) -> Self { .others(id: id) }
+    public static func rightOf(_ id: String) -> Self { .rightOf(id: id) }
 }

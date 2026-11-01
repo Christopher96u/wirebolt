@@ -19,19 +19,19 @@ use wirebolt_app::domain::{
     curl::CurlExport,
     imports::{BrunoFolderBundle, BrunoSourceFile, CollectionSourceError, PemError},
     models::{
-        DomainApiKeyPlacement, DomainAuthentication, DomainAuthenticationKind, DomainBody,
+        ApiKeyPlacement, DomainAuthentication, DomainAuthenticationKind, DomainBody,
         DomainCollection, DomainEnvironment, DomainField, DomainGroup, DomainLocation,
-        DomainMultipartKind, DomainMultipartPart, DomainOAuthConfiguration, DomainOAuthGrant,
-        DomainProxy, DomainProxyCredentials, DomainProxyRoute, DomainRequestDraft, DomainTransport,
-        DomainValueSource, DomainVariable, DomainWorkspace,
+        DomainMultipartPart, DomainOAuthConfiguration, DomainProxy, DomainProxyCredentials,
+        DomainProxyRoute, DomainRequestDraft, DomainTransport, DomainValueSource, DomainVariable,
+        DomainWorkspace, MultipartPartKind, Oauth2Grant,
     },
     oauth::{
         DomainNetworkFailure, DomainOAuthError, DomainOAuthHeaders, DomainOAuthPlatform,
         DomainOAuthProxy, DomainTokenReceipt,
     },
     proxy::{
-        ConnectionProbe, DomainProxySource, ProbeState, ProxyFormInput, ProxyFormMode,
-        ProxyRouteInput, ResolvedDomainProxy,
+        ConnectionProbe, ProbeState, ProxyFormInput, ProxyFormMode, ProxyRouteInput, ProxySource,
+        ResolvedDomainProxy,
     },
     sidebar::{
         DomainSidebarCollection, DomainSidebarRequest, SidebarIndex, SidebarOutcome, SidebarRow,
@@ -51,7 +51,7 @@ use wirebolt_core::ProxyDestination;
 #[uniffi::remote(Record)]
 pub struct ProxyRouteInput {
     pub id: String,
-    pub destination: wirebolt_core::ProxyDestination,
+    pub destination: Option<wirebolt_core::ProxyDestination>,
     pub scheme: String,
     pub host: String,
     pub port: String,
@@ -114,7 +114,7 @@ pub struct DomainField {
 
 #[uniffi::remote(Record)]
 pub struct DomainOAuthConfiguration {
-    pub grant: DomainOAuthGrant,
+    pub grant: Oauth2Grant,
     pub authorization_url: String,
     pub token_url: String,
     pub client_id: String,
@@ -129,7 +129,7 @@ pub struct DomainOAuthConfiguration {
 pub struct DomainMultipartPart {
     pub id: String,
     pub name: String,
-    pub kind: DomainMultipartKind,
+    pub kind: MultipartPartKind,
     pub value: DomainValueSource,
     pub file_path: Option<String>,
     pub file_name: Option<String>,
@@ -217,7 +217,7 @@ pub struct DomainWorkspace {
 
 #[uniffi::remote(Record)]
 pub struct DomainProxyRoute {
-    pub destination: wirebolt_core::ProxyDestination,
+    pub destination: Option<wirebolt_core::ProxyDestination>,
     pub endpoint: String,
     pub credentials: Option<DomainProxyCredentials>,
 }
@@ -235,19 +235,19 @@ pub enum DomainOAuthProxy {
 }
 
 #[uniffi::remote(Enum)]
-pub enum DomainOAuthGrant {
+pub enum Oauth2Grant {
     AuthorizationCodePkce,
     ClientCredentials,
 }
 
 #[uniffi::remote(Enum)]
-pub enum DomainApiKeyPlacement {
+pub enum ApiKeyPlacement {
     Header,
     Query,
 }
 
 #[uniffi::remote(Enum)]
-pub enum DomainMultipartKind {
+pub enum MultipartPartKind {
     Text,
     Binary,
     File,
@@ -264,7 +264,7 @@ pub enum DomainAuthentication {
         token: DomainValueSource,
     },
     ApiKey {
-        placement: DomainApiKeyPlacement,
+        placement: ApiKeyPlacement,
         name: String,
         value: DomainValueSource,
     },
@@ -586,7 +586,7 @@ pub struct OwnedAuthentication {
 #[uniffi::remote(Record)]
 pub struct ResolvedDomainProxy {
     pub configuration: DomainProxy,
-    pub source: DomainProxySource,
+    pub source: ProxySource,
 }
 #[derive(Clone, Debug, uniffi::Record)]
 pub struct DomainPemIdentity {
@@ -1131,7 +1131,7 @@ pub fn domain_active_count(fields: Vec<DomainField>) -> u64 {
 }
 #[uniffi::export]
 #[must_use]
-pub fn domain_proxy_needs_indicator(configuration: DomainProxy, source: DomainProxySource) -> bool {
+pub fn domain_proxy_needs_indicator(configuration: DomainProxy, source: ProxySource) -> bool {
     domain::proxy::needs_indicator(&configuration, source)
 }
 #[uniffi::export]
@@ -1452,7 +1452,7 @@ pub fn domain_effective_transport(
 }
 #[uniffi::export]
 #[must_use]
-pub fn domain_proxy_scope_title(scope: DomainProxySource) -> String {
+pub fn domain_proxy_scope_title(scope: ProxySource) -> String {
     domain::proxy::scope_title(scope)
 }
 #[uniffi::export]
@@ -1550,7 +1550,7 @@ pub enum DomainImportFormat {
     BrunoFolder,
 }
 #[uniffi::remote(Enum)]
-pub enum DomainProxySource {
+pub enum ProxySource {
     Request,
     Workspace,
     AppDefault,
@@ -1652,16 +1652,12 @@ mod choice_tests {
         }
         assert_eq!(domain_detect_import("txt".into(), "unknown".into()), None);
         for (request, workspace, expected) in [
-            (None, None, DomainProxySource::AppDefault),
-            (
-                None,
-                Some(DomainProxy::System),
-                DomainProxySource::Workspace,
-            ),
+            (None, None, ProxySource::AppDefault),
+            (None, Some(DomainProxy::System), ProxySource::Workspace),
             (
                 Some(DomainProxy::Direct),
                 Some(DomainProxy::System),
-                DomainProxySource::Request,
+                ProxySource::Request,
             ),
         ] {
             assert_eq!(

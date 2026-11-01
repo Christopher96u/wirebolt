@@ -7,6 +7,7 @@ use base64::{
 };
 use std::collections::VecDeque;
 pub const MESSAGE_BYTES: usize = 16 * 1024 * 1024;
+pub const MESSAGE_LIMIT: usize = 1000;
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum SessionSocketStatus {
     Disconnected,
@@ -135,7 +136,7 @@ impl SessionSocket {
         control: Option<String>,
     ) {
         while !self.messages.is_empty()
-            && (self.messages.len() >= 1000 || self.bytes + data.len() > MESSAGE_BYTES)
+            && (self.messages.len() >= MESSAGE_LIMIT || self.bytes + data.len() > MESSAGE_BYTES)
         {
             if let Some(message) = self.messages.pop_front() {
                 self.bytes -= message.data.len();
@@ -159,7 +160,9 @@ impl SessionSocket {
         if !self.accepts(generation) {
             return;
         }
-        self.error = error;
+        if let Some(error) = error {
+            self.error = Some(error);
+        }
         self.notice(
             self.error.clone().unwrap_or_else(|| "Disconnected".into()),
             if self.error.is_some() {

@@ -104,6 +104,24 @@ struct WebSocketTests {
         await eventually { state.status == .disconnected }
     }
 
+    @Test("A normal server close keeps the last send error and failed notice")
+    @MainActor func closeAfterInvalidJSON() async {
+        let state = WebSocketDocumentState()
+        let socket = SocketFixture()
+        state.connect(input: input, connector: SocketConnector(socket: socket))
+        socket.yield(.connected([]))
+        await eventually { state.status == .connected }
+        await state.send(body: .json(value: "{"))
+        let error = state.errorMessage
+        #expect(error != nil)
+        socket.yield(.closed)
+        socket.finish()
+        await eventually { state.messages.last?.notice == .failed }
+        #expect(state.status == .disconnected)
+        #expect(state.errorMessage == error)
+        #expect(state.messages.last?.text == error)
+    }
+
     @Test("Text, JSON, binary and file messages use the selected transport representation")
     @MainActor
     func sendsPayloads() async throws {
@@ -115,8 +133,7 @@ struct WebSocketTests {
         await state.send(body: .text(contentType: "text/plain", value: "café 東京"))
         await state.send(body: .json(value: "{\"count\":1}"))
         let binaryBody = RequestBody.text(contentType: WebSocketBinaryEncoding.hex.contentType, value: "00 FF")
-        let restoredBody = try decodeDomain(RequestBody.self, from: encodeDomain(binaryBody))
-        await state.send(body: restoredBody)
+        await state.send(body: binaryBody)
         let file = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
         try Data([1, 2, 3]).write(to: file)
         defer { try? FileManager.default.removeItem(at: file) }
@@ -262,5 +279,26 @@ private final class RetainedSocketConnector: WebSocketConnecting, Sendable {
     func connection(for input: RunInput, state: AppSessionSocket, generation: String) -> any WebSocketTransport {
         holder.withLock { $0 = state }
         return socket
+    }
+}
+
+extension WebSocketTests {
+    @Test func callbackBufferAcceptsTheFullRustRetentionCap() async throws {
+        let retained = AppSessionSocket()
+        let generation = try #require(retained.begin())
+        let limit = Int(sessionSocketMessageLimit())
+        let bytes = Int(sessionSocketMessageBytes())
+        for _ in 0..<limit-1 {
+            retained.append(generation: generation, data: Data(), binary: false, outgoing: false, control: nil)
+        }
+        retained.append(generation: generation, data: Data(repeating: 65, count: bytes), binary: true, outgoing: false, control: nil)
+        let snapshot = retained.snapshot(since: 0)
+        #expect(snapshot.messages.count == limit)
+        let buffer = WebSocketEventBuffer()
+        #expect(buffer.push(.state(snapshot)))
+        guard case let .state(received) = try await buffer.next() else { Issue.record("Expected retained snapshot"); return }
+        #expect(received.messages.count == limit)
+        #expect(received.messages.last?.data.count == bytes)
+        buffer.finish()
     }
 }

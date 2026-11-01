@@ -2,8 +2,8 @@
 use super::models::{DomainMultipartPart, DomainTransport};
 use super::{
     models::{
-        DomainApiKeyPlacement, DomainAuthentication, DomainBody, DomainField, DomainMultipartKind,
-        DomainProxy, DomainProxyRoute, DomainRequestDraft, DomainValueSource,
+        ApiKeyPlacement, DomainAuthentication, DomainBody, DomainField, DomainProxy,
+        DomainProxyRoute, DomainRequestDraft, DomainValueSource, MultipartPartKind,
     },
     url::{display_url, encode_query},
     variables,
@@ -240,7 +240,10 @@ pub fn proxy_route(proxy: &DomainProxy, url: &str) -> Option<DomainProxyRoute> {
     let scheme = super::proxy::url_scheme(url.trim())?;
     routes
         .iter()
-        .find(|r| super::proxy::destination_matches(r.destination, &scheme))
+        .find(|r| {
+            r.destination
+                .is_some_and(|d| super::proxy::destination_matches(d, &scheme))
+        })
         .cloned()
 }
 #[must_use]
@@ -334,7 +337,7 @@ pub fn value_sources(d: &DomainRequestDraft) -> Vec<DomainValueSource> {
         DomainBody::Multipart { parts } => {
             for p in parts.iter().filter(|p| p.enabled) {
                 sources.push(DomainValueSource::literal(&p.name));
-                if p.kind != DomainMultipartKind::File {
+                if p.kind != MultipartPartKind::File {
                     sources.push(p.value.clone());
                 }
             }
@@ -373,7 +376,7 @@ fn authentication_arguments(
             value,
         } => {
             let (n, v) = (e.template(name), e.expand(value));
-            if *placement == DomainApiKeyPlacement::Query {
+            if *placement == ApiKeyPlacement::Query {
                 query.push((n, v));
             } else {
                 auth.extend([
@@ -516,7 +519,7 @@ fn multipart_arguments(e: &mut Export<'_>, args: &mut Vec<String>, parts: &[Doma
     for p in parts.iter().filter(|p| p.enabled) {
         let value = e.expand(&p.value);
         let mut form = match p.kind {
-            DomainMultipartKind::Text => {
+            MultipartPartKind::Text => {
                 if let Some(plain) = value.plain() {
                     Text::literal(form_quote(&plain))
                 } else {
@@ -524,11 +527,11 @@ fn multipart_arguments(e: &mut Export<'_>, args: &mut Vec<String>, parts: &[Doma
                     Text::literal(format!("<{}", e.stream(&command)))
                 }
             }
-            DomainMultipartKind::File => Text::literal(format!(
+            MultipartPartKind::File => Text::literal(format!(
                 "@{}",
                 form_quote(p.file_path.as_deref().unwrap_or_default())
             )),
-            DomainMultipartKind::Binary => {
+            MultipartPartKind::Binary => {
                 let command = format!("printf %s {} | base64 --decode", e.word(&value));
                 Text::literal(format!("@{}", e.stream(&command)))
             }

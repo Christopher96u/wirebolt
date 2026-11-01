@@ -134,3 +134,72 @@ fn native_workspace_io_executes_typed_load_commands_import_export_and_git() {
         matches!(store.workspace_io(WorkspaceIO::Git{action:WorkspaceGitAction::Initialize}),WorkspaceReply::GitStatus{status} if !status.merging)
     );
 }
+
+#[test]
+fn typed_workspace_modes_preserve_open_create_and_open_or_create_checks() {
+    let dir = tempfile::tempdir().unwrap();
+    assert_eq!(
+        selection_problem(dir.path(), WorkspaceOpenMode::Open),
+        Some(WorkspaceSelectionProblem::NotFound)
+    );
+    for mode in [WorkspaceOpenMode::Create, WorkspaceOpenMode::OpenOrCreate] {
+        assert_eq!(selection_problem(dir.path(), mode), None);
+    }
+    std::fs::write(dir.path().join("wirebolt.toml"), "").unwrap();
+    assert_eq!(
+        selection_problem(dir.path(), WorkspaceOpenMode::Create),
+        Some(WorkspaceSelectionProblem::AlreadyExists)
+    );
+    for mode in [WorkspaceOpenMode::Open, WorkspaceOpenMode::OpenOrCreate] {
+        assert_eq!(selection_problem(dir.path(), mode), None);
+    }
+}
+
+#[derive(Debug)]
+struct RemovalSecrets {
+    existing: Result<Option<String>, crate::session::persistence::WorkspaceError>,
+    remove_fails: bool,
+}
+impl crate::session::persistence::WorkspaceSecrets for RemovalSecrets {
+    fn read(&self, _: &str) -> Result<Option<String>, crate::session::persistence::WorkspaceError> {
+        self.existing.clone()
+    }
+    fn save(&self, _: &str, _: &str) -> Result<(), crate::session::persistence::WorkspaceError> {
+        Ok(())
+    }
+    fn remove(&self, _: &str) -> Result<(), crate::session::persistence::WorkspaceError> {
+        if self.remove_fails {
+            Err(crate::session::persistence::WorkspaceError::operation(
+                "delete failed",
+            ))
+        } else {
+            Ok(())
+        }
+    }
+}
+#[test]
+fn secret_removal_treats_only_confirmed_missing_items_as_removed() {
+    use crate::session::persistence::{SessionPersistence, WorkspaceError};
+    for (existing, remove_fails, succeeds) in [
+        (Ok(None), true, true),
+        (Ok(Some("still present".into())), true, false),
+        (Err(WorkspaceError::operation("read failed")), true, false),
+        (Err(WorkspaceError::operation("read failed")), false, true),
+    ] {
+        let dir = tempfile::tempdir().unwrap();
+        let store = SessionPersistence::open_or_create(
+            dir.path().to_string_lossy().into_owned(),
+            "Secrets".into(),
+            Arc::new(RemovalSecrets {
+                existing,
+                remove_fails,
+            }),
+        )
+        .unwrap();
+        let result = store.delete_secret("owned.secret");
+        assert_eq!(result.is_ok(), succeeds);
+        if !succeeds {
+            assert_eq!(result.unwrap_err().to_string(), "delete failed");
+        }
+    }
+}

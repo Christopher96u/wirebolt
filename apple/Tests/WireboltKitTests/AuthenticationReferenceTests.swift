@@ -44,14 +44,16 @@ struct AuthenticationReferenceTests {
         }
     }
 
-    @Test("A new API key request encodes the reference, never material")
-    func apiKeyEncodesOnlyReference() throws {
+    @Test("A new API key request projects its typed reference")
+    func apiKeyProjectsOnlyReference() throws {
         var draft = RequestDraft(url: "https://api.example.com/v1/orders")
         draft.authentication = .new(.apiKey)
-        let encoded = String(decoding: try encodeDomain(RunInput(draft: draft, variables: [:])), as: UTF8.self)
+        let input = RunInput(draft: draft, variables: [:]).domain
         let name = try #require(references(draft.authentication).first)
-        #expect(encoded.contains(#""kind":"api_key""#))
-        #expect(encoded.contains(name))
+        guard case let .apiKey(placement, key, value) = input.authentication else { Issue.record("Expected API key"); return }
+        #expect(placement == .header)
+        #expect(key == "X-API-Key")
+        #expect(value == .secret(name))
     }
 
     @Test("Editing the API key value stages Keychain material under the request's own name")

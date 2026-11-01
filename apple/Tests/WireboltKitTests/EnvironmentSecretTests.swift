@@ -34,9 +34,7 @@ struct EnvironmentSecretTests {
         #expect(await keychain.saved[reference] == "fixture-environment-token")
         #expect(model.secretMaterial(for: .secret(reference)) == "fixture-environment-token")
         let stored = try #require(await keychain.environments.last)
-        let encoded = String(decoding: try encodeDomain(stored), as: UTF8.self)
-        #expect(encoded.contains(#"{"secret":"\#(reference)"}"#))
-        #expect(!encoded.contains("fixture-environment-token"))
+        #expect(stored.domain.variables.first?.value == .secret(reference))
         #expect(model.activeVariables["token"] == .secret(reference))
     }
 

@@ -1,6 +1,6 @@
 //! Native preference and interchange codecs. Interfaces never duplicate field defaults.
 use super::persistence::WorkspaceError;
-use crate::domain::{DomainBody, DomainEnvironment, DomainProxy, DomainRunInput};
+use crate::domain::DomainProxy;
 pub(crate) fn encode(
     value: &impl serde::Serialize,
     record: &str,
@@ -14,11 +14,6 @@ pub(crate) fn decode<T: serde::de::DeserializeOwned>(
 ) -> Result<T, WorkspaceError> {
     serde_json::from_slice(data)
         .map_err(|_| WorkspaceError::operation(&format!("{record} could not be decoded")))
-}
-/// # Errors
-/// Returns an invalid interchange record error.
-pub fn encode_input(value: &DomainRunInput) -> Result<Vec<u8>, WorkspaceError> {
-    encode(value, "run input")
 }
 /// # Errors
 /// Returns an invalid preference record error.
@@ -46,52 +41,36 @@ pub fn encode_proxy(value: &DomainProxy) -> Result<Vec<u8>, WorkspaceError> {
 pub fn decode_proxy(data: &[u8]) -> Result<DomainProxy, WorkspaceError> {
     decode(data, "proxy preferences")
 }
-/// # Errors
-/// Returns an invalid environment record error.
-pub fn encode_environment(value: &DomainEnvironment) -> Result<Vec<u8>, WorkspaceError> {
-    encode(value, "environment")
-}
-/// # Errors
-/// Returns an invalid environment record error.
-pub fn decode_environment(data: &[u8]) -> Result<DomainEnvironment, WorkspaceError> {
-    decode(data, "environment")
-}
-/// # Errors
-/// Returns an invalid message body error.
-pub fn encode_body(value: &DomainBody) -> Result<Vec<u8>, WorkspaceError> {
-    encode(
-        &super::conversions::body_to_core(value.clone())?,
-        "message body",
-    )
-}
-/// # Errors
-/// Returns an invalid message body error.
-pub fn decode_body(data: &[u8]) -> Result<DomainBody, WorkspaceError> {
-    decode(data, "message body").map(super::conversions::body_from_core)
-}
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{
+        domain::DomainBody,
+        session::conversions::{body_from_core, body_to_core},
+    };
+    fn decode_body(data: &[u8]) -> DomainBody {
+        body_from_core(serde_json::from_slice(data).unwrap())
+    }
     #[test]
     fn body_codec_uses_storage_defaults_and_omissions() {
-        let body = decode_body(br#"{"kind":"form_url_encoded","fields":[{"name":"q","value":"hello","enabled":true}]}"#).unwrap();
+        let body = decode_body(br#"{"kind":"form_url_encoded","fields":[{"name":"q","value":"hello","enabled":true}]}"#);
         let DomainBody::FormUrlEncoded { fields } = &body else {
             panic!("form")
         };
         assert!(!fields[0].id.is_empty());
         assert!(!fields[0].sensitive);
-        let encoded = encode_body(&body).unwrap();
+        let encoded = serde_json::to_vec(&body_to_core(body.clone()).unwrap()).unwrap();
         let json = String::from_utf8(encoded.clone()).unwrap();
         assert!(!json.contains("sensitive"));
-        assert_eq!(decode_body(&encoded).unwrap(), body);
-        assert!(decode_body(b"{}").is_err());
+        assert_eq!(decode_body(&encoded), body);
+        assert!(serde_json::from_slice::<wirebolt_core::RequestBody>(b"{}").is_err());
     }
     #[test]
     fn proxy_preferences_preserve_existing_strings_and_optional_credentials() {
         let proxy = DomainProxy::Manual {
             routes: vec![crate::domain::DomainProxyRoute {
-                destination: wirebolt_core::ProxyDestination::All,
+                destination: Some(wirebolt_core::ProxyDestination::All),
                 endpoint: "http://localhost:8080".into(),
                 credentials: None,
             }],
@@ -110,8 +89,14 @@ mod diagnostic_tests {
     fn decode_errors_identify_the_record_without_exposing_input() {
         for (error, record) in [
             (decode_proxy(b"private").unwrap_err(), "proxy preferences"),
-            (decode_environment(b"private").unwrap_err(), "environment"),
-            (decode_body(b"private").unwrap_err(), "message body"),
+            (
+                decode::<crate::domain::DomainEnvironment>(b"private", "environment").unwrap_err(),
+                "environment",
+            ),
+            (
+                decode::<wirebolt_core::RequestBody>(b"private", "message body").unwrap_err(),
+                "message body",
+            ),
             (
                 crate::session::tabs::decode_layout(b"private").unwrap_err(),
                 "session layout",

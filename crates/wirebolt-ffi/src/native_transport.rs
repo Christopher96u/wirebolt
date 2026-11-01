@@ -223,6 +223,54 @@ mod tests {
             None,
         )
     }
+    struct InvalidProxyRequest(mpsc::Sender<Option<SessionFailure>>);
+    impl SessionRequestObserver for InvalidProxyRequest {
+        fn event(&self, _: SessionRunEvent) {
+            panic!("invalid proxy must fail before preparation")
+        }
+        fn bytes(&self, _: Vec<u8>) -> bool {
+            panic!("invalid proxy must not receive bytes")
+        }
+        fn cookies(&self, _: String, _: Vec<ResponseHeaderValue>) {
+            panic!("invalid proxy must not receive cookies")
+        }
+        fn finish(&self, failure: Option<SessionFailure>) {
+            self.0.send(failure).unwrap();
+        }
+    }
+    #[test]
+    fn hand_edited_invalid_app_proxy_fails_repeated_typed_sends_without_direct_fallback() {
+        let destination = TcpListener::bind("127.0.0.1:0").unwrap();
+        destination.set_nonblocking(true).unwrap();
+        let proxy = wirebolt_app::session::serialization::decode_proxy(
+            br#"{"mode":"manual","routes":[{"destination":"ftp","endpoint":"http://localhost:8080"}]}"#,
+        ).unwrap();
+        for _ in 0..2 {
+            let mut input = input(format!(
+                "http://{}/must-not-arrive",
+                destination.local_addr().unwrap()
+            ));
+            input.workspace_proxy = None;
+            input.app_proxy = Some(proxy.clone());
+            let (sender, receiver) = mpsc::channel();
+            let run = AppRequestRun::start(input, Arc::new(InvalidProxyRequest(sender)));
+            let failure = receiver
+                .recv_timeout(Duration::from_secs(5))
+                .unwrap()
+                .unwrap();
+            assert_eq!(
+                wirebolt_app::response::failure_message(&failure.kind, &failure.issues, None)
+                    .message,
+                "Choose All, HTTP or HTTPS destinations.",
+            );
+            drop(run);
+            assert!(receiver.try_recv().is_err());
+        }
+        assert!(
+            matches!(destination.accept(), Err(error) if error.kind() == std::io::ErrorKind::WouldBlock)
+        );
+    }
+
     #[test]
     fn websocket_handshake_uses_the_app_manual_proxy() {
         use std::io::Write;
@@ -257,7 +305,7 @@ mod tests {
         input.workspace_proxy = None;
         input.app_proxy = Some(wirebolt_app::domain::DomainProxy::Manual {
             routes: vec![wirebolt_app::domain::DomainProxyRoute {
-                destination: wirebolt_core::ProxyDestination::All,
+                destination: Some(wirebolt_core::ProxyDestination::All),
                 endpoint: format!("http://{address}"),
                 credentials: None,
             }],

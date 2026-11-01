@@ -184,7 +184,7 @@ fn auth_headers_query_bodies_and_variables_read_keychain_at_execution() {
 }
 fn part(
     name: &str,
-    kind: DomainMultipartKind,
+    kind: MultipartPartKind,
     value: DomainValueSource,
     mime: Option<&str>,
     filename: Option<&str>,
@@ -210,7 +210,7 @@ fn api_keys_oauth_and_multipart_keep_secret_material_out_of_exports() {
     ]);
     let mut d = request("https://example.com/");
     d.authentication = DomainAuthentication::ApiKey {
-        placement: DomainApiKeyPlacement::Query,
+        placement: ApiKeyPlacement::Query,
         name: "api_key".into(),
         value: secret("api.key"),
     };
@@ -235,21 +235,21 @@ fn api_keys_oauth_and_multipart_keep_secret_material_out_of_exports() {
         parts: vec![
             part(
                 "note",
-                DomainMultipartKind::Text,
+                MultipartPartKind::Text,
                 secret("part.secret"),
                 Some("text/plain"),
                 None,
             ),
             part(
                 "plain",
-                DomainMultipartKind::Text,
+                MultipartPartKind::Text,
                 DomainValueSource::literal("visible"),
                 None,
                 None,
             ),
             part(
                 "blob",
-                DomainMultipartKind::Binary,
+                MultipartPartKind::Binary,
                 secret("binary.secret"),
                 None,
                 Some("a.bin"),
@@ -294,7 +294,7 @@ fn forms_keep_repeated_enabled_fields_and_binary_multipart_bytes() {
     d.body = DomainBody::Multipart {
         parts: vec![part(
             "file",
-            DomainMultipartKind::Binary,
+            MultipartPartKind::Binary,
             DomainValueSource::literal("AAH/"),
             None,
             Some("a.bin"),
@@ -345,7 +345,7 @@ fn binary_stream_descriptors_follow_identity_descriptors() {
     d.body = DomainBody::Multipart {
         parts: vec![part(
             "file",
-            DomainMultipartKind::Binary,
+            MultipartPartKind::Binary,
             DomainValueSource::literal("AAH/"),
             None,
             Some("a.bin"),
@@ -367,7 +367,7 @@ fn proxy_arguments_quote_keychain_credentials_and_preserve_bypass() {
     );
     let config = DomainProxy::Manual {
         routes: vec![DomainProxyRoute {
-            destination: wirebolt_core::ProxyDestination::Https,
+            destination: Some(wirebolt_core::ProxyDestination::Https),
             endpoint: "http://localhost:8080".into(),
             credentials: Some(DomainProxyCredentials {
                 username: "proxy.user".into(),

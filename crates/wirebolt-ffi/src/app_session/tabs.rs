@@ -169,11 +169,6 @@ impl AppSessionTabs {
             snapshot: tabs.snapshot(documents),
         }
     }
-    pub fn restore_groups(&self, groups: Vec<SessionEditorGroup>, active_group_id: String) {
-        let mut state = lock(&self.tabs);
-        state.0.groups = groups;
-        state.0.active_group_id = active_group_id;
-    }
 }
 
 #[uniffi::remote(Record)]
