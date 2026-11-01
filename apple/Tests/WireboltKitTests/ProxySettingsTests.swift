@@ -5,7 +5,7 @@ import Synchronization
 
 @Suite("Proxy settings")
 struct ProxySettingsTests {
-    static let manual = ProxyDocument.manual(routes: [ProxyRouteDocument(destination: "all", endpoint: "http://localhost:8080")])
+    static let manual = ProxyDocument.manual(routes: [ProxyRouteDocument(destination: .all, endpoint: "http://localhost:8080")])
 
     @Test("Request overrides workspace, workspace overrides app, and each selection replaces the whole policy")
     func precedence() {
@@ -80,7 +80,7 @@ struct ProxySettingsTests {
 
     @Test("Route preview maps WebSocket schemes and reports bypass when no route matches")
     func summaries() {
-        let config = ProxyDocument.manual(routes: [ProxyRouteDocument(destination: "https", endpoint: "socks5h://localhost:1080")])
+        let config = ProxyDocument.manual(routes: [ProxyRouteDocument(destination: .https, endpoint: "socks5h://localhost:1080")])
         let effective = EffectiveProxy.resolve(request: nil, workspace: config, app: .direct)
         #expect(effective.summary(for: "wss://example.com") == "SOCKS5H · localhost:1080")
         #expect(effective.summary(for: "http://example.com") == "Direct · No matching proxy route")
@@ -125,7 +125,7 @@ struct ProxySettingsTests {
         let model = WireboltModel(runner: ProxyRunner(), persistence: persistence)
         try await model.applyProxy(document, scope: .workspace, secrets: form.secrets)
         #expect(await persistence.savedSecrets == form.secrets)
-        #expect(await persistence.commands == [.saveWorkspaceProxy(proxy: document?.domain)])
+        #expect(await persistence.commands == [.saveWorkspaceProxy(proxy: document)])
         let failing = ProxyPersistence(rejectSecrets: true)
         let other = WireboltModel(runner: ProxyRunner(), persistence: failing)
         do { try await other.applyProxy(document, scope: .workspace, secrets: form.secrets); Issue.record("Keychain failure should stop the save") }

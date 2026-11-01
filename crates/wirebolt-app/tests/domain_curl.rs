@@ -367,7 +367,7 @@ fn proxy_arguments_quote_keychain_credentials_and_preserve_bypass() {
     );
     let config = DomainProxy::Manual {
         routes: vec![DomainProxyRoute {
-            destination: "https".into(),
+            destination: wirebolt_core::ProxyDestination::Https,
             endpoint: "http://localhost:8080".into(),
             credentials: Some(DomainProxyCredentials {
                 username: "proxy.user".into(),

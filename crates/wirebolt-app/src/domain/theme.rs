@@ -373,13 +373,12 @@ pub fn resolve(preset: DomainThemePreset, increased: bool) -> ResolvedTokens {
 }
 #[must_use]
 pub fn select_preset(selection: &str, dark: bool) -> DomainThemePreset {
-    match selection {
-        "black" | "dark" => DomainThemePreset::Black,
-        "paper" | "light" => DomainThemePreset::Paper,
-        "ember" => DomainThemePreset::Ember,
+    DomainThemePreset::from_preference(selection).unwrap_or(match selection {
+        "dark" => DomainThemePreset::Black,
+        "light" => DomainThemePreset::Paper,
         _ if dark => DomainThemePreset::Black,
         _ => DomainThemePreset::Paper,
-    }
+    })
 }
 
 const BLACK: [u32; 36] = [
@@ -547,6 +546,22 @@ pub enum DomainThemePreset {
     Black,
     Paper,
     Ember,
+}
+impl DomainThemePreset {
+    #[must_use]
+    pub const fn preference_value(self) -> &'static str {
+        match self {
+            Self::Black => "black",
+            Self::Paper => "paper",
+            Self::Ember => "ember",
+        }
+    }
+    #[must_use]
+    pub fn from_preference(value: &str) -> Option<Self> {
+        [Self::Black, Self::Paper, Self::Ember]
+            .into_iter()
+            .find(|preset| preset.preference_value() == value)
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

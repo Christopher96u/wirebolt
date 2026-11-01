@@ -69,7 +69,7 @@ impl Text {
 #[derive(Debug)]
 struct Export<'a> {
     variables: &'a HashMap<String, DomainValueSource>,
-    hex: &'a HashSet<String>,
+    hex_encoded_secrets: &'a HashSet<String>,
     names: Vec<String>,
     streams: Vec<String>,
 }
@@ -79,7 +79,7 @@ impl Export<'_> {
             "security find-generic-password -s {} -a {} -w{}",
             shell_quote(SERVICE),
             shell_quote(name),
-            if self.hex.contains(name) {
+            if self.hex_encoded_secrets.contains(name) {
                 " | xxd -r -p"
             } else {
                 ""
@@ -167,11 +167,11 @@ fn form_quote(s: &str) -> String {
 pub fn export(
     d: &DomainRequestDraft,
     variables: &HashMap<String, DomainValueSource>,
-    hex: &HashSet<String>,
+    hex_encoded_secrets: &HashSet<String>,
 ) -> CurlExport {
     let mut e = Export {
         variables,
-        hex,
+        hex_encoded_secrets,
         names: vec![],
         streams: vec![],
     };
@@ -240,7 +240,7 @@ pub fn proxy_route(proxy: &DomainProxy, url: &str) -> Option<DomainProxyRoute> {
     let scheme = super::proxy::url_scheme(url.trim())?;
     routes
         .iter()
-        .find(|r| r.destination == "all" || r.destination == scheme)
+        .find(|r| super::proxy::destination_matches(r.destination, &scheme))
         .cloned()
 }
 #[must_use]
@@ -248,7 +248,11 @@ pub fn proxy_route(proxy: &DomainProxy, url: &str) -> Option<DomainProxyRoute> {
     clippy::implicit_hasher,
     reason = "The application uses the standard hasher; no caller supplies custom hashing."
 )]
-pub fn proxy_arguments(proxy: &DomainProxy, url: &str, hex: &HashSet<String>) -> String {
+pub fn proxy_arguments(
+    proxy: &DomainProxy,
+    url: &str,
+    hex_encoded_secrets: &HashSet<String>,
+) -> String {
     match proxy {
         DomainProxy::System => String::new(),
         DomainProxy::Direct => " --noproxy '*'".into(),
@@ -261,7 +265,7 @@ pub fn proxy_arguments(proxy: &DomainProxy, url: &str, hex: &HashSet<String>) ->
                 let variables = HashMap::new();
                 let e = Export {
                     variables: &variables,
-                    hex,
+                    hex_encoded_secrets,
                     names: vec![],
                     streams: vec![],
                 };

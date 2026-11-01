@@ -87,6 +87,10 @@ pub enum WorkspaceIO {
         source: String,
         name: Option<String>,
     },
+    ImportBrunoFolder {
+        bundle: wirebolt_core::BrunoFolderBundle,
+        name: Option<String>,
+    },
     Export {
         target: WorkspaceExport,
     },

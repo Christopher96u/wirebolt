@@ -6,7 +6,7 @@ pub mod domain;
 pub mod response;
 pub mod session;
 
-/// Recovers application state after a worker panic, matching existing lock policy.
+/// Recovers application state after a worker panic.
 pub fn lock<T>(value: &std::sync::Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     value
         .lock()

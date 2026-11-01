@@ -242,6 +242,20 @@ impl SessionPersistence {
         self.commit_imported(parse_import(format, source, Some(name))?)
     }
 
+    /// Commits a typed Bruno collection folder without a serialization round-trip.
+    ///
+    /// # Errors
+    /// Returns the importer's user-facing reason or a storage failure.
+    pub fn commit_bruno_folder(
+        &self,
+        bundle: &wirebolt_core::BrunoFolderBundle,
+        name: Option<&str>,
+    ) -> Result<ImportCommit, WorkspaceError> {
+        let imported = ImportEngine::parse_bruno_folder(bundle, name)
+            .map_err(|error| WorkspaceError::operation(error.reason()))?;
+        self.commit_imported(imported)
+    }
+
     /// Reads a credential only for the authentication editor, never diagnostics.
     ///
     /// # Errors
@@ -1131,7 +1145,7 @@ pub struct SessionWorkspaceDelta {
 impl SessionPersistence {
     /// Applies a typed command directly to the core store.
     /// # Errors
-    /// Returns the existing workspace operation error.
+    /// Returns the workspace operation error.
     pub fn apply_session_command(
         &self,
         command: super::workspace::SessionWorkspaceCommand,

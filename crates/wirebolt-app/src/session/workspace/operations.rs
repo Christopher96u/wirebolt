@@ -40,9 +40,18 @@ pub struct WorkspacePresentation {
     pub operation_failure: Option<crate::response::ResponseFailureKind>,
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
+pub enum WorkspaceImportSource {
+    Document {
+        source: String,
+        format: wirebolt_core::ImportFormat,
+    },
+    BrunoFolder {
+        bundle: wirebolt_core::BrunoFolderBundle,
+    },
+}
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct WorkspaceImport {
-    pub source: String,
-    pub format: wirebolt_core::ImportFormat,
+    pub source: WorkspaceImportSource,
     pub name: Option<String>,
     pub display_name: Option<String>,
     pub selected: Option<String>,
@@ -692,7 +701,6 @@ impl WorkspaceOperations {
     ) -> Option<WorkspaceLoad> {
         let WorkspaceImport {
             source,
-            format,
             name,
             display_name,
             selected,
@@ -703,13 +711,17 @@ impl WorkspaceOperations {
             .iter()
             .map(|c| c.id.clone())
             .collect();
-        let outcome = platform
-            .execute(WorkspaceIO::Import {
+        let request = match source {
+            WorkspaceImportSource::Document { source, format } => WorkspaceIO::Import {
                 format,
                 source,
                 name,
-            })
-            .await;
+            },
+            WorkspaceImportSource::BrunoFolder { bundle } => {
+                WorkspaceIO::ImportBrunoFolder { bundle, name }
+            }
+        };
+        let outcome = platform.execute(request).await;
         if let WorkspaceReply::Imported { ref summary } = outcome
             && let WorkspaceReply::Loaded { workspace } = platform.execute(WorkspaceIO::Load).await
         {

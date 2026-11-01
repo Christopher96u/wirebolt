@@ -1,12 +1,5 @@
 //! Proxy editor policy and isolated connection-test messages.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum DomainProxySource {
-    Request,
-    Workspace,
-    AppDefault,
-    SystemDefault,
-}
+pub use wirebolt_core::{ProxyDestination, ProxySource as DomainProxySource};
 
 use super::models::{
     DomainProxy, DomainProxyCredentials, DomainProxyRoute, DomainRequestDraft, DomainTransport,
@@ -27,16 +20,13 @@ pub fn validate(proxy: &DomainProxy) -> Result<(), String> {
     }
     let mut destinations = HashSet::new();
     for route in routes {
-        if !["all", "http", "https"].contains(&route.destination.as_str()) {
-            return Err("Choose All, HTTP or HTTPS destinations.".into());
-        }
-        let covered = if route.destination == "all" {
-            vec!["http", "https"]
-        } else {
-            vec![route.destination.as_str()]
+        let covered = match route.destination {
+            ProxyDestination::All => &[ProxyDestination::Http, ProxyDestination::Https][..],
+            ProxyDestination::Http => &[ProxyDestination::Http][..],
+            ProxyDestination::Https => &[ProxyDestination::Https][..],
         };
         for destination in covered {
-            if !destinations.insert(destination) {
+            if !destinations.insert(*destination) {
                 return Err("Proxy routes overlap. Use one route for all traffic, or separate HTTP and HTTPS routes.".into());
             }
         }
@@ -127,7 +117,7 @@ pub fn summary(proxy: &DomainProxy, url: Option<&str>) -> String {
                 .and_then(|s| {
                     routes
                         .iter()
-                        .find(|r| r.destination == "all" || r.destination == *s)
+                        .find(|r| destination_matches(r.destination, s))
                 })
                 .or_else(|| {
                     if scheme.is_none() {
@@ -151,6 +141,14 @@ pub fn summary(proxy: &DomainProxy, url: Option<&str>) -> String {
         }
     }
 }
+#[must_use]
+pub fn destination_matches(destination: ProxyDestination, scheme: &str) -> bool {
+    match destination {
+        ProxyDestination::All => true,
+        ProxyDestination::Http => scheme == "http",
+        ProxyDestination::Https => scheme == "https",
+    }
+}
 fn explicit_port(endpoint: &str) -> Option<u16> {
     let authority = endpoint.split_once("://")?.1.split('/').next()?;
     let (_, port) = authority.rsplit_once(':')?;
@@ -159,7 +157,7 @@ fn explicit_port(endpoint: &str) -> Option<u16> {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ProxyRouteInput {
     pub id: String,
-    pub destination: String,
+    pub destination: ProxyDestination,
     pub scheme: String,
     pub host: String,
     pub port: String,
@@ -173,7 +171,7 @@ pub struct ProxyRouteInput {
 pub fn route_input(route: Option<DomainProxyRoute>) -> ProxyRouteInput {
     let mut input = ProxyRouteInput {
         id: super::identity::unique_id(),
-        destination: "all".into(),
+        destination: ProxyDestination::All,
         scheme: "http".into(),
         host: String::new(),
         port: "8080".into(),
@@ -244,7 +242,7 @@ pub fn route_document(input: &ProxyRouteInput) -> Result<DomainProxyRoute, Strin
         format!(":{}", input.port)
     };
     let route = DomainProxyRoute {
-        destination: input.destination.clone(),
+        destination: input.destination,
         endpoint: format!("{}://{host}{port}", input.scheme),
         credentials: credential_references(input),
     };

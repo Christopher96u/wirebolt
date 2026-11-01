@@ -87,12 +87,16 @@ Bridge names follow their application responsibility: `domain_*` free functions
 expose editable values and presentation policy, `app_*` functions expose response
 operations and bounded platform-file input, `session_*` functions expose session
 policy/codecs, and `workspace_*` functions expose workspace interface actions.
+The editor syntax surface is `domain_syntax_highlight` (`domain_syntax.rs`).
+Proxy destinations and sources reuse the core enums; Bruno folders cross as typed
+bundles through the import path. The C control surface uses ABI revision 5.
 `App` prefixes identify bridge objects; session layout records use `SessionLayout`,
 `SessionLayoutGroup` and `SessionLayoutTab` in Rust. The generated Swift layout
 record is named `RustSessionLayout` to distinguish it from the native persistence
 facade. Git delta values use the core `GitDelta` type throughout Rust and the bridge.
 Swift aliases generated enums and keeps only native spelling conveniences and
-small `RawRepresentable` extensions for persisted preference strings.
+small `RawRepresentable` extensions for persisted preference strings, with theme
+preset spellings supplied by Rust.
 
 Read [CONTEXT.md](../CONTEXT.md) for workspace vocabulary, ownership and invariants.
 

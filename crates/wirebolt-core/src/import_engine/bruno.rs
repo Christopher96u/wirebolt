@@ -10,8 +10,8 @@ use std::collections::BTreeSet;
 use serde_json::{Map, Value, json};
 
 use super::{
-    ImportError, ImportedEnvironment, ImportedGroup, ImportedRequest, ParsedImport,
-    SecretCollector,
+    BrunoFolderBundle, BrunoSourceFile, ImportError, ImportedEnvironment, ImportedGroup,
+    ImportedRequest, ParsedImport, SecretCollector,
     bru::{self, BruContent, BruFile, BruPair},
     support::{
         Diagnostics, Row, array, empty_collection, environment, field, flag, header,
@@ -44,14 +44,32 @@ pub(super) fn folder_source(root: &str, files: &[(String, String)]) -> String {
 pub(super) fn parse_folder(source: &str, name: Option<&str>) -> Result<ParsedImport, ImportError> {
     let bundle: Value = serde_json::from_str(source)
         .map_err(|_| ImportError::new("The Bruno collection folder couldn't be read."))?;
-    let root_directory = text(&bundle, "root");
-    let files = array(&bundle, "files")
+    let bundle = BrunoFolderBundle {
+        root: text(&bundle, "root").into(),
+        files: array(&bundle, "files")
+            .iter()
+            .map(|file| BrunoSourceFile {
+                path: text(file, "path").into(),
+                contents: text(file, "contents").into(),
+            })
+            .collect(),
+    };
+    parse_folder_bundle(&bundle, name)
+}
+
+pub(super) fn parse_folder_bundle(
+    bundle: &BrunoFolderBundle,
+    name: Option<&str>,
+) -> Result<ParsedImport, ImportError> {
+    let root_directory = bundle.root.as_str();
+    let files = bundle
+        .files
         .iter()
         .take(MAX_FILES)
         .filter_map(|file| {
-            let path = text(file, "path").trim_start_matches("./");
+            let path = file.path.trim_start_matches("./");
             (!path.is_empty() && !is_ignored(path))
-                .then(|| (path.to_owned(), text(file, "contents")))
+                .then(|| (path.to_owned(), file.contents.as_str()))
         })
         .collect::<Vec<_>>();
     let mut diagnostics = Diagnostics::default();

@@ -33,6 +33,7 @@ public protocol WorkspacePersistence: Sendable {
     func deleteSecret(name: String) async throws
     func apply(_ command: SessionWorkspaceCommand) async throws -> WorkspaceDelta
     func applySessionCommands(_ commands: [SessionWorkspaceCommand]) async -> SessionCommandBatchResult
+    func commitBrunoFolder(bundle: BrunoFolderBundle, name: String?) async throws -> ImportSummary
     func commitImport(format: ImportFormat, source: String) async throws -> ImportResult
     func commitImportFile(format: ImportFormat, source: String, name: String) async throws -> ImportResult
     func exportCollection(id: String) async throws -> String
@@ -79,6 +80,10 @@ extension WorkspacePersistence {
             }
             return SessionCommandBatchResult(completed: completed, failureReason: nil)
         } catch { return SessionCommandBatchResult(completed: completed, failureReason: error.localizedDescription) }
+    }
+
+    public func commitBrunoFolder(bundle _: BrunoFolderBundle, name _: String?) async throws -> ImportSummary {
+        throw WorkspaceMutationError.unsupported
     }
 
     public func commitImport(format _: ImportFormat, source _: String) async throws -> ImportResult {
@@ -139,8 +144,7 @@ public final class WireboltModel {
     @ObservationIgnored private var mirroringWorkspace = false
     @ObservationIgnored private var workspaceNeedsSynchronization = true
     @ObservationIgnored private var sidebarSnapshot: SidebarSnapshot?
-    @ObservationIgnored private var sidebarVisibleCache:
-        (query: String, collapsed: Set<String>, expanded: Set<String>, rows: [SidebarSnapshot.Row])?
+    @ObservationIgnored private var sidebarVisibleCache: (query: String, collapsed: Set<String>, expanded: Set<String>, rows: [SidebarSnapshot.Row])?
     /// The unfiltered outline, kept apart from the last filter's rows so clearing a filter
     /// (or deleting its last character) shows the outline without recomputing it.
     @ObservationIgnored private var sidebarUnfilteredCache: (collapsed: Set<String>, expanded: Set<String>, rows: [SidebarSnapshot.Row])?
@@ -148,17 +152,11 @@ public final class WireboltModel {
     public func sidebarRows(query: String, collapsed: Set<String>, expanded: Set<String>) -> [SidebarSnapshot.Row] {
         let collections = workspace.collections
         let filtering = !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-        if filtering, let cache = sidebarVisibleCache, cache.query == query, cache.collapsed == collapsed, cache.expanded == expanded {
-            return cache.rows
-        }
+        if filtering, let cache = sidebarVisibleCache, cache.query == query, cache.collapsed == collapsed, cache.expanded == expanded { return cache.rows }
         if !filtering, let cache = sidebarUnfilteredCache, cache.collapsed == collapsed, cache.expanded == expanded { return cache.rows }
         if sidebarSnapshot == nil { sidebarSnapshot = SidebarSnapshot(collections: collections) }
         let rows = sidebarSnapshot!.visible(query: query, collapsedCollections: collapsed, expandedGroups: expanded)
-        if filtering {
-            sidebarVisibleCache = (query, collapsed, expanded, rows)
-        } else {
-            sidebarUnfilteredCache = (collapsed, expanded, rows)
-        }
+        if filtering { sidebarVisibleCache = (query, collapsed, expanded, rows) } else { sidebarUnfilteredCache = (collapsed, expanded, rows) }
         return rows
     }
     public var selectedEnvironmentID: String? { didSet { runtime.selectEnvironment(id: selectedEnvironmentID) } }
@@ -172,7 +170,7 @@ public final class WireboltModel {
     public private(set) var gitFailure: GitFailure?
     public private(set) var isGitBusy = false
     public private(set) var isImporting = false
-    public var importFailureMessage: String?
+        public var importFailureMessage: String?
     /// The last successful import, until the user dismisses its summary.
     public var importSummary: ImportSummary?
     public private(set) var historyEntries: [RunHistoryEntry] = []
@@ -265,7 +263,7 @@ public final class WireboltModel {
 
     public var selectedRequestID: String? {
         guard let session = sessions.activeSession,
-            let collectionID = session.collectionID
+              let collectionID = session.collectionID
         else { return nil }
         return "\(collectionID)/\(session.requestID)"
     }
@@ -296,7 +294,7 @@ public final class WireboltModel {
     public var isRunning: Bool { sessions.activeSession?.isRunning ?? false }
 
     public var activeVariables: [String: ValueSource] {
-        runtime.activeVariables(environments: workspace.environments.map(\.domain)).mapValues(ValueSource.init(domain:))
+        runtime.activeVariables(environments: workspace.environments.map(\.domain))
     }
 
     public var hasUnsavedRequestChanges: Bool {
@@ -343,10 +341,9 @@ public final class WireboltModel {
 
     private func applySave(_ result: WorkspaceSave, session target: DocumentSession? = nil) {
         guard let session = target ?? sessions.session(id: result.documentId) else { return }
-        let authentication = RequestAuthentication(
-            domain: workspaceSavedAuthentication(
-                current: session.draft.authentication.domain,
-                original: result.originalAuthentication, saved: result.draft.authentication))
+        let authentication = workspaceSavedAuthentication(
+            current: session.draft.authentication,
+            original: result.originalAuthentication, saved: result.draft.authentication)
         if authentication != session.draft.authentication { session.draft.authentication = authentication }
         if let location = result.location {
             session.recordSavedDraft(RequestDraft(domain: location.request))
@@ -636,11 +633,11 @@ public final class WireboltModel {
     ) async throws {
         do {
             try await runtime.applyProxy(
-                configuration: configuration?.domain, scope: scope,
+                configuration: configuration, scope: scope,
                 hasSession: session != nil, secrets: secrets, secretPlatform: persistence?.sessionSecretPlatform,
                 platform: runtimeSettings())
             switch scope {
-            case .app: break
+            case .appDefault, .systemDefault: break
             case .workspace: workspace.proxy = configuration
             case .request: session?.draft.proxy = ProxySelection(document: configuration)
             }
@@ -663,7 +660,9 @@ public final class WireboltModel {
             }
         }
     }
+
     public func flushWorkspaceTransport() async { await transportSave?.value }
+
     public func saveWorkspaceTransport() async {
         guard persistence != nil else { return }
         do { try await runtime.saveTransport(value: workspace.transport.domain, platform: runtimeSettings()) } catch {
@@ -690,14 +689,17 @@ public final class WireboltModel {
             return nil
         }
     }
+
     public func secretMaterial(for source: ValueSource) -> String {
         _ = editedSecrets
-        return rustSecrets.material(source: source.domain)
+        return rustSecrets.material(source: source)
     }
+
     public func editSecret(name: String, value: String) {
         rustSecrets.edit(name: name, value: value)
         mirrorSecretEdits()
     }
+
     public func loadSecret(_ source: ValueSource) async {
         guard case .secret(let name) = source, let persistence else { return }
         do {
@@ -705,6 +707,7 @@ public final class WireboltModel {
             mirrorSecretEdits()
         } catch { operationFailure = RunFailure(kind: .keychain, issues: []) }
     }
+
     private func flushSecrets() async throws {
         guard let persistence else {
             if !rustSecrets.dirty().isEmpty { throw WorkspaceMutationError.unsupported }
@@ -817,10 +820,10 @@ public final class WireboltModel {
         guard beginImport() else { return }
         do {
             let source = try await Task.detached(priority: .userInitiated) { try BrunoCollectionSource.bundle(at: url) }.value
-            _ = await commitDocument(
-                source: source, format: .brunoFolder, fileName: url.deletingPathExtension().lastPathComponent,
+            _ = await commitImport(
+                source: .brunoFolder(bundle: source), fileName: url.deletingPathExtension().lastPathComponent,
                 displayName: url.lastPathComponent)
-        } catch BrunoCollectionSource.ReadError.tooLarge { finishImportFailure("“\(url.lastPathComponent)” is too large to import.") } catch
+        } catch let error as BrunoCollectionSource.ReadError where error == .tooLarge { finishImportFailure("“\(url.lastPathComponent)” is too large to import.") } catch
         { finishImportFailure("“\(url.lastPathComponent)” isn’t a Bruno collection or couldn’t be read.") }
     }
 
@@ -843,12 +846,17 @@ public final class WireboltModel {
     private func commitDocument(
         source: String, format: ImportFormat, fileName: String? = nil, displayName: String? = nil, pasted: Bool = false
     ) async -> String? {
+        await commitImport(source: .document(source: source, format: format), fileName: fileName, displayName: displayName, pasted: pasted)
+    }
+    private func commitImport(
+        source: WorkspaceImportSource, fileName: String? = nil, displayName: String? = nil, pasted: Bool = false
+    ) async -> String? {
         guard let persistence else { return nil }
         await flushWorkspaceTransport()
         synchronizeWorkspace()
         let loaded = await rustOperations.import(
             request: WorkspaceImport(
-                source: source, format: format, name: fileName,
+                source: source, name: fileName,
                 displayName: displayName, selected: selectedEnvironmentID, pasted: pasted), platform: persistence.sessionWorkspacePlatform)
         let value = rustOperations.presentation()
         if let loaded {
@@ -982,7 +990,7 @@ public final class WireboltModel {
         for group in sessions.groups {
             let ids = group.tabIDs.filter { id in
                 guard let session = sessions.session(id: id),
-                    session.collectionID == collectionID
+                      session.collectionID == collectionID
                 else { return false }
                 return requestID == nil || session.requestID == requestID
             }
@@ -1226,8 +1234,8 @@ private final class SessionSecretAdapter: SessionSecretPlatform {
 extension WireboltModel {
     fileprivate var runtimeContext: RuntimeContext {
         RuntimeContext(
-            transport: workspace.transport.domain, workspaceProxy: workspace.proxy?.domain,
-            appProxy: proxyPreferences.configuration.domain, variables: activeVariables.mapValues(\.domain))
+            transport: workspace.transport.domain, workspaceProxy: workspace.proxy,
+            appProxy: proxyPreferences.configuration, variables: activeVariables)
     }
     fileprivate func runtimeObserver(for session: DocumentSession, requireOpen: Bool = false, oauth: Bool = false)
         -> RuntimePresentationObserver

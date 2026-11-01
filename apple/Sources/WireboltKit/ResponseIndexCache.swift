@@ -33,6 +33,7 @@ public actor ResponseIndexCache {
         } catch ResponseError.Cancelled { throw CancellationError() }
     }
 }
+
 public enum ResponseTextPresentation {
     public static func usesIndex(byteCount: UInt64, preview: String) -> Bool { appUsesTextIndex(bytes: byteCount, preview: preview) }
 }

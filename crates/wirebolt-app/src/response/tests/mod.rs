@@ -1,4 +1,4 @@
-//! Behavioral cases ported from the Swift response suites. Native font and
+//! Response behavior tests. Native font and
 //! attributed-string assertions remain in Swift as platform-adapter coverage.
 mod folding;
 mod formatting;

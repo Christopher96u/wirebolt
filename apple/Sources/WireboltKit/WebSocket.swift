@@ -150,7 +150,7 @@ public final class WebSocketDocumentState {
     public func send(body: RequestBody) async {
         guard status == .connected, let connection else { return }
         do {
-            let value = try await Task.detached { try sessionMessageBody(body: body.domain) }.value
+            let value = try await Task.detached { try sessionMessageBody(body: body) }.value
             guard connection.send(value.data, binary: value.binary) else {
                 throw WebSocketUIError("The message could not be queued. Check the connection and try again.")
             }

@@ -63,14 +63,8 @@ fn bruno_folders_bundle_only_supported_files_in_order() {
     assert!(is_bruno_collection(root));
     assert!(!is_bruno_collection(&root.join("assets")));
     let bundle = bruno_bundle(root).unwrap();
-    let document: serde_json::Value = serde_json::from_str(&bundle).unwrap();
-    assert_eq!(document["root"], root.to_string_lossy().as_ref());
-    let paths: Vec<_> = document["files"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|f| f["path"].as_str().unwrap())
-        .collect();
+    assert_eq!(bundle.root, root.to_string_lossy());
+    let paths: Vec<_> = bundle.files.iter().map(|f| f.path.as_str()).collect();
     assert_eq!(
         paths,
         [
@@ -80,10 +74,30 @@ fn bruno_folders_bundle_only_supported_files_in_order() {
             "environments/Local.bru"
         ]
     );
+    let typed = wirebolt_core::ImportEngine::parse_bruno_folder(&bundle, Some("Fallback")).unwrap();
+    let legacy = wirebolt_core::ImportEngine::parse_import(
+        ImportFormat::BrunoFolder,
+        &wirebolt_core::ImportEngine::bruno_folder_source(
+            &bundle.root,
+            &bundle
+                .files
+                .iter()
+                .map(|file| (file.path.clone(), file.contents.clone()))
+                .collect::<Vec<_>>(),
+        ),
+        Some("Fallback"),
+    )
+    .unwrap();
+    assert_eq!(format!("{typed:?}"), format!("{legacy:?}"));
+    assert_eq!(typed.workspace.collections[0].name, "Library");
+    assert_eq!(typed.workspace.collections[0].requests.len(), 1);
+    assert_eq!(typed.workspace.environments.len(), 1);
     assert!(
         bruno_bundle(&root.join("Users/Get member.bru"))
             .unwrap()
-            .contains(r#""path":"Get member.bru""#)
+            .files
+            .iter()
+            .any(|file| file.path == "Get member.bru")
     );
     assert_eq!(
         bruno_bundle(&root.join("assets")).unwrap_err(),
@@ -245,7 +259,12 @@ fn bruno_skips_native_packages_and_checks_limits_while_traversing() {
     fs::create_dir_all(root.join("fixture.app/Contents")).unwrap();
     fs::write(root.join("fixture.app/Contents/hidden.bru"), "get {}").unwrap();
     let bundle = bruno_bundle_with_policy(root, &PackagePolicy).unwrap();
-    assert!(!bundle.contains("hidden.bru"));
+    assert!(
+        !bundle
+            .files
+            .iter()
+            .any(|file| file.path.contains("hidden.bru"))
+    );
     let large = root.join("large.bru");
     let file = fs::File::create(&large).unwrap();
     file.set_len(2 * 1024 * 1024 + 1).unwrap();

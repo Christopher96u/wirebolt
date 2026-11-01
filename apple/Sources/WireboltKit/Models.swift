@@ -60,9 +60,15 @@ extension OAuth2Configuration {
     public var clientID: String { get { clientId } set { clientId = newValue } }
     public var redirectURI: String { get { redirectUri } set { redirectUri = newValue } }
     public init(
-        grant: OAuth2Grant = .authorizationCodePKCE, authorizationURL: String = "", tokenURL: String = "", clientID: String = "",
-        clientSecretReference: String = CredentialReference.unique(role: "oauth-client-secret"), scopes: String = "", audience: String = "",
-        redirectURI: String = "wirebolt://oauth/callback", accessTokenReference: String = CredentialReference.unique(role: "oauth-access-token")
+        grant: OAuth2Grant = .authorizationCodePKCE,
+        authorizationURL: String = "",
+        tokenURL: String = "",
+        clientID: String = "",
+        clientSecretReference: String = CredentialReference.unique(role: "oauth-client-secret"),
+        scopes: String = "",
+        audience: String = "",
+        redirectURI: String = "wirebolt://oauth/callback",
+        accessTokenReference: String = CredentialReference.unique(role: "oauth-access-token")
     ) {
         self.init(grant: grant, authorizationUrl: authorizationURL, tokenUrl: tokenURL, clientId: clientID,
                   clientSecretReference: clientSecretReference, scopes: scopes, audience: audience, redirectUri: redirectURI,
@@ -95,7 +101,7 @@ public enum CredentialReference {
     }
 
     static func sanitized(_ text: String) -> String {
-        domainSanitized(text: text)
+        domainSanitizeCredentialReference(text: text)
     }
 }
 
@@ -108,20 +114,20 @@ extension ValueSource {
 extension RequestAuthentication {
     /// Keychain names this authentication reads or writes.
     public var secretReferences: [String] {
-        domainAuthReferences(authentication: domain)
+        domainAuthReferences(authentication: self)
     }
 
     /// The same authentication with each Keychain name passed through `rename`.
     public func renamingSecrets(_ rename: (String) -> String) -> RequestAuthentication {
         let names = Dictionary(secretReferences.map { ($0, rename($0)) }, uniquingKeysWith: { first, _ in first })
-        return RequestAuthentication(domain: domainRenameAuth(authentication: domain, names: names))
+        return domainRenameAuth(authentication: self, names: names)
     }
 
     /// Fresh per-request names for every credential, for a copy of a request (`all`) or for
     /// migrating legacy shared names only. Returns the new authentication and old → new names.
     public func withOwnKeychainNames(onlyLegacy: Bool) -> (RequestAuthentication, [String: String]) {
-        let result = domainOwnAuth(authentication: domain, onlyLegacy: onlyLegacy)
-        return (RequestAuthentication(domain: result.authentication), result.renames)
+        let result = domainOwnAuth(authentication: self, onlyLegacy: onlyLegacy)
+        return (result.authentication, result.renames)
     }
 }
 
@@ -133,12 +139,12 @@ extension DomainAuthenticationKind: CaseIterable {
 
 public extension RequestAuthentication {
     var kind: AuthenticationKind {
-        domainAuthKind(authentication: domain)
+        domainAuthKind(authentication: self)
     }
 
     /// An empty authentication of `kind` whose secrets use fresh Keychain names.
     static func new(_ kind: AuthenticationKind) -> RequestAuthentication {
-        RequestAuthentication(domain: domainNewAuth(kind: kind))
+        domainNewAuth(kind: kind)
     }
 }
 
@@ -191,12 +197,12 @@ public struct TransportSettings: Equatable, Sendable {
         set { domain.readTimeoutMs = newValue }
     }
     public var clientCertificateReference: String? {
-        get { domain.clientCertificateReference.map { $0 } }
-        set { domain.clientCertificateReference = newValue.map { $0 } }
+        get { domain.clientCertificateReference }
+        set { domain.clientCertificateReference = newValue }
     }
     public var customCAPath: String? {
-        get { domain.customCaPath.map { $0 } }
-        set { domain.customCaPath = newValue.map { $0 } }
+        get { domain.customCaPath }
+        set { domain.customCaPath = newValue }
     }
     public init(
         validateTLS: Bool = true,
@@ -262,16 +268,16 @@ public struct RequestDraft: Equatable, Sendable {
         set { domain.headers = newValue }
     }
     public var authentication: RequestAuthentication {
-        get { RequestAuthentication(domain: domain.authentication) }
-        set { domain.authentication = newValue.domain }
+        get { domain.authentication }
+        set { domain.authentication = newValue }
     }
     public var body: RequestBody {
-        get { RequestBody(domain: domain.body) }
-        set { domain.body = newValue.domain }
+        get { domain.body }
+        set { domain.body = newValue }
     }
     public var proxy: ProxySelection {
-        get { ProxySelection(document: domain.proxy.map(ProxyDocument.init(domain:))) }
-        set { domain.proxy = newValue.document?.domain }
+        get { ProxySelection(document: domain.proxy) }
+        set { domain.proxy = newValue.document }
     }
     public var transport: TransportSettings {
         get { TransportSettings(domain: domain.transport) }
@@ -350,8 +356,8 @@ public struct EnvironmentVariableDraft: Identifiable, Equatable, Sendable {
         set { domain.key = newValue }
     }
     public var value: ValueSource {
-        get { ValueSource(domain: domain.value) }
-        set { domain.value = newValue.domain }
+        get { domain.value }
+        set { domain.value = newValue }
     }
     public var enabled: Bool {
         get { domain.enabled }
@@ -374,7 +380,6 @@ public struct EnvironmentVariableDraft: Identifiable, Equatable, Sendable {
         self.enabled = enabled
         self.order = order
     }
-
 }
 
 extension EnvironmentVariableDraft {
@@ -437,13 +442,12 @@ public struct EnvironmentDraft: Identifiable, Equatable, Sendable {
     }
 
     public init(id: String, name: String, legacyVariables: [String: ValueSource]) {
-        self.init(domain: domainLegacyEnvironment(id: id, name: name, values: legacyVariables.mapValues(\.domain)))
+        self.init(domain: domainLegacyEnvironment(id: id, name: name, values: legacyVariables))
     }
 
     public var enabledValues: [String: ValueSource] {
-        domainEnabledValues(environment: domain).mapValues(ValueSource.init(domain:))
+        domainEnabledValues(environment: domain)
     }
-
 }
 
 public struct RequestLocation: Identifiable, Equatable, Sendable {
@@ -463,8 +467,8 @@ public struct RequestLocation: Identifiable, Equatable, Sendable {
         set { domain.collectionId = newValue }
     }
     public var groupID: String? {
-        get { domain.groupId.map { $0 } }
-        set { domain.groupId = newValue.map { $0 } }
+        get { domain.groupId }
+        set { domain.groupId = newValue }
     }
     public var order: Int {
         get { Int(domain.order) }
@@ -500,8 +504,8 @@ public struct GroupDraft: Identifiable, Equatable, Sendable {
         set { domain.name = newValue }
     }
     public var parentID: String? {
-        get { domain.parentId.map { $0 } }
-        set { domain.parentId = newValue.map { $0 } }
+        get { domain.parentId }
+        set { domain.parentId = newValue }
     }
     public var order: Int {
         get { Int(domain.order) }
@@ -668,7 +672,7 @@ public struct WorkspaceDraft: Equatable, Sendable {
         set { domain.name = newValue }
     }
     public var proxy: ProxyDocument? {
-        get { domain.proxy.map { ProxyDocument(domain: $0) } }
+        get { domain.proxy }
         set { domain.proxy = newValue }
     }
     public var transport: TransportSettings {
@@ -857,12 +861,12 @@ public struct RunInput: Sendable {
     public var url: String { domain.url }
     public var query: [RequestField] { domain.query }
     public var headers: [RequestField] { domain.headers }
-    public var authentication: RequestAuthentication { RequestAuthentication(domain: domain.authentication) }
-    public var body: RequestBody { RequestBody(domain: domain.body) }
+    public var authentication: RequestAuthentication { domain.authentication }
+    public var body: RequestBody { domain.body }
     public var variables: [String: ValueSource] { domain.variables }
-    public var appProxy: ProxyDocument? { domain.appProxy.map(ProxyDocument.init(domain:)) }
-    public var workspaceProxy: ProxyDocument? { domain.workspaceProxy.map(ProxyDocument.init(domain:)) }
-    public var requestProxy: ProxyDocument? { domain.requestProxy.map(ProxyDocument.init(domain:)) }
+    public var appProxy: ProxyDocument? { domain.appProxy }
+    public var workspaceProxy: ProxyDocument? { domain.workspaceProxy }
+    public var requestProxy: ProxyDocument? { domain.requestProxy }
     public var totalTimeoutMS: UInt64 { domain.totalTimeoutMs }
     public var readTimeoutMS: UInt64 { domain.readTimeoutMs }
     public var maxResponseBytes: UInt64? { domain.maxResponseBytes }
@@ -877,8 +881,8 @@ public struct RunInput: Sendable {
     public init(draft: RequestDraft, variables: [String: ValueSource], workspaceProxy: ProxyDocument? = nil, appProxy: ProxyDocument? = nil)
     {
         domain = domainRunInput(
-            draft: draft.domain, variables: variables.mapValues(\.domain), workspaceProxy: workspaceProxy?.domain,
-            appProxy: appProxy?.domain)
+            draft: draft.domain, variables: variables, workspaceProxy: workspaceProxy,
+            appProxy: appProxy)
     }
 
 }
@@ -888,7 +892,7 @@ public typealias ProxyDocument = DomainProxy
 public typealias ProxyRouteDocument = DomainProxyRoute
 
 extension ProxyRouteDocument {
-    public init(destination: String, endpoint: String) { self.init(destination: destination, endpoint: endpoint, credentials: nil) }
+    public init(destination: ProxyDestination, endpoint: String) { self.init(destination: destination, endpoint: endpoint, credentials: nil) }
 }
 
 public typealias ProxyCredentialsDocument = DomainProxyCredentials
@@ -896,7 +900,7 @@ public typealias ProxyCredentialsDocument = DomainProxyCredentials
 extension RequestField {
     /// Bulk editing changes values, not the credential storage or redaction policy.
     public static func parseBulk(_ source: String, preserving previous: [RequestField]) -> [RequestField] {
-        domainParseBulk(source: source, previous: previous.map(\.domain)).map(RequestField.init(domain:))
+        domainParseBulk(source: source, previous: previous)
     }
 }
 
@@ -910,10 +914,10 @@ public extension RequestBody {
     var composerKind: DomainBodyKind { domainBodyKind(body: domainKind) }
     var canFormat: Bool { domainBodyCanFormat(kind: domainKind) }
     func switching(to kind: DomainBodyKind) -> RequestBody {
-        RequestBody(domain: domainSwitchBody(body: domain, kind: kind))
+        domainSwitchBody(body: self, kind: kind)
     }
     func formatted() -> RequestBody {
-        RequestBody(domain: domainFormatBody(body: domain, ordering: NativeBodyKeyOrdering()))
+        domainFormatBody(body: self, ordering: NativeBodyKeyOrdering())
     }
 }
 
@@ -941,24 +945,6 @@ private extension RequestBody {
         }
     }
 }
-
-protocol NativeDomainValue {}
-extension NativeDomainValue {
-    var domain: Self { self }
-    init(domain: Self) { self = domain }
-}
-extension DomainValueSource: NativeDomainValue {}
-extension DomainField: NativeDomainValue {}
-extension DomainApiKeyPlacement: NativeDomainValue {}
-extension DomainOAuthGrant: NativeDomainValue {}
-extension DomainOAuthConfiguration: NativeDomainValue {}
-extension DomainAuthentication: NativeDomainValue {}
-extension DomainBody: NativeDomainValue {}
-extension DomainMultipartKind: NativeDomainValue {}
-extension DomainMultipartPart: NativeDomainValue {}
-extension DomainProxy: NativeDomainValue {}
-extension DomainProxyRoute: NativeDomainValue {}
-extension DomainProxyCredentials: NativeDomainValue {}
 
 protocol NativeSessionValue {}
 extension NativeSessionValue {

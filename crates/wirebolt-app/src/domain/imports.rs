@@ -1,8 +1,7 @@
 //! Collection-source recognition, bounded Bruno filesystem bundles and import summary labels.
-use serde::Serialize;
 use std::fmt::Write as _;
 use std::{fs, path::Path};
-pub use wirebolt_core::ImportFormat;
+pub use wirebolt_core::{BrunoFolderBundle, BrunoSourceFile, ImportFormat};
 #[must_use]
 pub fn detect_collection(
     extension: &str,
@@ -99,16 +98,6 @@ pub fn is_bruno_collection(path: &Path) -> bool {
             })
         })
 }
-#[derive(Debug, Serialize)]
-struct SourceFile {
-    path: String,
-    contents: String,
-}
-#[derive(Debug, Serialize)]
-struct Bundle {
-    root: String,
-    files: Vec<SourceFile>,
-}
 /// A native package-folder decision; the core never imports an Apple API.
 pub trait CollectionDirectoryPolicy: Send + Sync {
     fn is_package(&self, path: &Path) -> bool;
@@ -121,7 +110,7 @@ impl CollectionDirectoryPolicy for NoPackages {
 }
 /// # Errors
 /// Returns `notACollection` for unreadable sources or `tooLarge` for a bundle over its limits.
-pub fn bruno_bundle(path: &Path) -> Result<String, CollectionSourceError> {
+pub fn bruno_bundle(path: &Path) -> Result<BrunoFolderBundle, CollectionSourceError> {
     bruno_bundle_with_policy(path, &NoPackages)
 }
 /// # Errors
@@ -129,7 +118,7 @@ pub fn bruno_bundle(path: &Path) -> Result<String, CollectionSourceError> {
 pub fn bruno_bundle_with_policy(
     path: &Path,
     policy: &dyn CollectionDirectoryPolicy,
-) -> Result<String, CollectionSourceError> {
+) -> Result<BrunoFolderBundle, CollectionSourceError> {
     if !path.exists() {
         return Err(CollectionSourceError::NotACollection);
     }
@@ -146,7 +135,7 @@ pub fn bruno_bundle_with_policy(
         files.sort_by(|a, b| a.path.cmp(&b.path));
         files
     } else {
-        vec![SourceFile {
+        vec![BrunoSourceFile {
             path: path
                 .file_name()
                 .ok_or(CollectionSourceError::NotACollection)?
@@ -161,16 +150,15 @@ pub fn bruno_bundle_with_policy(
     } else {
         path.parent().unwrap_or_else(|| Path::new(""))
     };
-    serde_json::to_string(&Bundle {
+    Ok(BrunoFolderBundle {
         root: root.to_string_lossy().into_owned(),
         files,
     })
-    .map_err(|_| CollectionSourceError::NotACollection)
 }
 fn collect(
     root: &Path,
     current: &Path,
-    files: &mut Vec<SourceFile>,
+    files: &mut Vec<BrunoSourceFile>,
     total: &mut u64,
     policy: &dyn CollectionDirectoryPolicy,
 ) -> Result<(), CollectionSourceError> {
@@ -212,7 +200,7 @@ fn collect(
         let Ok(relative) = canonical.strip_prefix(root) else {
             continue;
         };
-        files.push(SourceFile {
+        files.push(BrunoSourceFile {
             path: relative.to_string_lossy().into_owned(),
             contents: fs::read_to_string(&path)
                 .map_err(|_| CollectionSourceError::NotACollection)?,

@@ -5,18 +5,9 @@ public struct CodeFold: Equatable, Sendable {
     public let range: NSRange
     var rust: Fold { Fold(line: UInt64(max(0, line)), range: range.responseRange) }
 }
+
 public struct CodeProjection: Sendable {
-    public enum Syntax: Sendable {
-        case json, xml, html, none
-        var rust: CodeSyntax {
-            switch self {
-            case .json: .json
-            case .xml: .xml
-            case .html: .html
-            case .none: .none
-            }
-        }
-    }
+    public typealias Syntax = CodeSyntax
     public let source: String
     public let text: String
     public let folds: [CodeFold]
@@ -35,7 +26,7 @@ public struct CodeProjection: Sendable {
     }
     public init(source: String, collapsed: Set<Int> = [], syntax: Syntax = .json) {
         let projection = try? responseCall {
-            try AppCodeProjection(source: source, collapsed: collapsed.map { UInt64(max(0, $0)) }, syntax: syntax.rust, cancellation: $0)
+            try AppCodeProjection(source: source, collapsed: collapsed.map { UInt64(max(0, $0)) }, syntax: syntax, cancellation: $0)
         }
         self.init(source: source, rust: projection ?? AppCodeProjection.unfolded(source: source, folds: []), unfolded: collapsed.isEmpty)
     }

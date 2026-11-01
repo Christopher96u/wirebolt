@@ -7,9 +7,9 @@ extension RgbColor {
     public func contrast(with other: PaletteColor) -> Double { domainContrast(color: self, other: other) }
 }
 public typealias AdaptivePaletteColor = AdaptiveColor
-public enum HTTPStatusClass: String, Equatable, Sendable {
-    case informational, success, redirection, clientError, serverError
-    public init(status: UInt16) { self = Self(domain: domainStatusClass(status: status)) }
+public typealias HTTPStatusClass = DomainStatusClass
+extension DomainStatusClass {
+    public init(status: UInt16) { self = domainStatusClass(status: status) }
 }
 public enum SemanticPalette {
     public static let lightBackgrounds = domainBackgrounds(dark: false)
@@ -31,16 +31,4 @@ public enum SemanticPalette {
         webSocket ? indigo : methods[method.rawValue] ?? neutral
     }
     public static func status(_ status: UInt16) -> AdaptivePaletteColor { domainStatusColor(status: status) }
-}
-
-private extension HTTPStatusClass {
-    init(domain: DomainStatusClass) {
-        self = switch domain {
-        case .informational: .informational
-        case .success: .success
-        case .redirection: .redirection
-        case .clientError: .clientError
-        case .serverError: .serverError
-        }
-    }
 }

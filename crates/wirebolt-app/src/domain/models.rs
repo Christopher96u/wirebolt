@@ -176,10 +176,9 @@ pub struct DomainWorkspace {
     pub environments: Vec<DomainEnvironment>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
-#[serde(default)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DomainProxyRoute {
-    pub destination: String,
+    pub destination: wirebolt_core::ProxyDestination,
     pub endpoint: String,
     pub credentials: Option<DomainProxyCredentials>,
 }

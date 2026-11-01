@@ -52,7 +52,7 @@ struct NetworkSettingsPage: View {
         _transportBaseline = State(initialValue: model.workspace.transport)
         _test = State(initialValue: model.makeProxyConnectionTest())
         let configuration: ProxyDocument? = switch scope {
-        case .app: model.proxyPreferences.configuration
+        case .appDefault, .systemDefault: model.proxyPreferences.configuration
         case .workspace: model.workspace.proxy
         case .request: session?.draft.proxy.document
         }
@@ -63,7 +63,7 @@ struct NetworkSettingsPage: View {
 
     private var currentConfiguration: ProxyDocument? {
         switch scope {
-        case .app: model.proxyPreferences.configuration
+        case .appDefault, .systemDefault: model.proxyPreferences.configuration
         case .workspace: model.workspace.proxy
         case .request: session?.draft.proxy.document
         }
@@ -80,7 +80,7 @@ struct NetworkSettingsPage: View {
     private var effective: EffectiveProxy {
         let value = try? form.document()
         switch scope {
-        case .app: return .resolve(request: nil, workspace: nil, app: value ?? .system)
+        case .appDefault, .systemDefault: return .resolve(request: nil, workspace: nil, app: value ?? .system)
         case .workspace: return .resolve(request: nil, workspace: value, app: model.proxyPreferences.configuration)
         case .request: return .resolve(request: value, workspace: model.workspace.proxy, app: model.proxyPreferences.configuration)
         }
@@ -117,8 +117,8 @@ struct NetworkSettingsPage: View {
                         }
                         if form.routes.count < 2 {
                             Button("Add Separate Route", systemImage: "plus") {
-                                if form.routes.first?.destination == "all" { form.routes[0].destination = "http" }
-                                var route = ProxyRouteDraft(); route.destination = "https"
+                                if form.routes.first?.destination == .all { form.routes[0].destination = .http }
+                                var route = ProxyRouteDraft(); route.destination = .https
                                 form.routes.append(route)
                             }.font(.caption)
                         }
@@ -271,7 +271,7 @@ struct NetworkSettingsPage: View {
 
     private var scopeDescription: String {
         switch scope {
-        case .app: "HTTP and WebSocket defaults for workspaces that inherit. Stored only on this Mac."
+        case .appDefault, .systemDefault: "HTTP and WebSocket defaults for workspaces that inherit. Stored only on this Mac."
         case .workspace: "Default for requests in this workspace. Shared in wirebolt.toml; credentials stay in Keychain."
         case .request: "Override the connection for this request, or inherit your workspace’s configuration."
         }
@@ -311,9 +311,9 @@ private struct ProxyRouteFields: View {
         VStack(alignment: .leading, spacing: 12) {
             HStack {
                 Picker("Destination", selection: $route.destination) {
-                    Text("All traffic").tag("all")
-                    Text("HTTP only").tag("http")
-                    Text("HTTPS only").tag("https")
+                    Text("All traffic").tag(ProxyDestination.all)
+                    Text("HTTP only").tag(ProxyDestination.http)
+                    Text("HTTPS only").tag(ProxyDestination.https)
                 }
                 if canRemove { Button("Remove Route", systemImage: "minus.circle", action: remove).labelStyle(.iconOnly).help("Remove Route") }
             }

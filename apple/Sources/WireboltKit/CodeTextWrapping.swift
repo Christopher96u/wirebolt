@@ -6,6 +6,7 @@ public struct CodeTextWrapping: Hashable, Sendable {
     public let fontName: String
     public let fontSize: Double
     public let width: Double
+
     public init(fontName: String, fontSize: Double, width: Double) {
         self.fontName = fontName
         self.fontSize = fontSize

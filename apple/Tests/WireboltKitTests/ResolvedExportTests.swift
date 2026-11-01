@@ -29,7 +29,7 @@ struct ResolvedExportTests {
     @MainActor
     func proxyRouting() async throws {
         let model = WireboltModel(runner: ExportResolver())
-        model.workspace.proxy = .manual(routes: [ProxyRouteDocument(destination: "https", endpoint: "http://proxy.test:8080", credentials: ProxyCredentialsDocument(username: "token", password: "token"))])
+        model.workspace.proxy = .manual(routes: [ProxyRouteDocument(destination: .https, endpoint: "http://proxy.test:8080", credentials: ProxyCredentialsDocument(username: "token", password: "token"))])
         var draft = RequestDraft(url: "https://{{host}}/echo")
         let command = try #require(await model.curlCommand(for: draft))
         #expect(command.contains("--proxy 'http://proxy.test:8080' --noproxy ''"))

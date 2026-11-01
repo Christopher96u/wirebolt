@@ -19,9 +19,10 @@ public final class ProxyConnectionTest {
         if message != snapshot.message { message = snapshot.message }
         if succeeded != snapshot.succeeded { succeeded = snapshot.succeeded }
     }
+
     public func start(configuration: ProxyDocument, url: String) {
         cancel()
-        let draft = state.start(configuration: configuration.domain, url: url)
+        let draft = state.start(configuration: configuration, url: url)
         synchronize()
         guard let draft, let token = state.snapshot().runId, let uuid = UUID(uuidString: token) else { return }
         let id = RunID(rawValue: uuid)

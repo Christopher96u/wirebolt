@@ -38,6 +38,7 @@ private final class RustWebSocketConnection: @unchecked Sendable, WebSocketTrans
     func send(_ data: Data, binary: Bool) -> Bool {
         lock.withLock { !disconnected && (session?.send(data: data, binary: binary) ?? false) }
     }
+
     func disconnect() {
         buffer.finish(CancellationError(), discardingPending: true)
         lock.withLock {

@@ -527,14 +527,14 @@ final class WorkspaceUIState {
 
     func presentation(for session: DocumentSession) -> DocumentPresentationState {
         if let existing = presentationByTabID[session.id] { return existing }
-        let state = DocumentPresentationState(requestSection: RequestPanelSection(rawValue: workspaceRequestSection(body: session.draft.body.domain)) ?? .params)
+        let state = DocumentPresentationState(requestSection: RequestPanelSection(rawValue: workspaceRequestSection(body: session.draft.body)) ?? .params)
         presentationByTabID[session.id] = state
         return state
     }
 
     private func activatePresentation(for tabID: String, defaultBody: RequestBody) {
         if presentationByTabID[tabID] == nil {
-            let state = DocumentPresentationState(requestSection: RequestPanelSection(rawValue: workspaceRequestSection(body: defaultBody.domain)) ?? .params)
+            let state = DocumentPresentationState(requestSection: RequestPanelSection(rawValue: workspaceRequestSection(body: defaultBody)) ?? .params)
             presentationByTabID[tabID] = state
         }
         activeTabID = tabID

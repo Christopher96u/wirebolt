@@ -138,12 +138,7 @@ impl std::fmt::Display for RuntimeOperationError {
     }
 }
 impl std::error::Error for RuntimeOperationError {}
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum RuntimeProxyScope {
-    App,
-    Workspace,
-    Request,
-}
+pub use wirebolt_core::ProxySource as RuntimeProxyScope;
 #[async_trait]
 pub trait RuntimeSettingsPlatform: Send + Sync {
     async fn proxy(
@@ -167,11 +162,14 @@ pub async fn apply_proxy(
     secret_platform: Option<&dyn SessionSecretPlatform>,
     platform: &dyn RuntimeSettingsPlatform,
 ) -> Result<(), RuntimeOperationError> {
+    if scope == RuntimeProxyScope::SystemDefault {
+        return Err(RuntimeOperationError::Unsupported);
+    }
     if let Some(configuration) = &configuration {
         proxy::validate(configuration)
             .map_err(|reason| RuntimeOperationError::Validation { reason })?;
     }
-    if scope == RuntimeProxyScope::App && configuration.is_none() {
+    if scope == RuntimeProxyScope::AppDefault && configuration.is_none() {
         return Err(RuntimeOperationError::Validation {
             reason: "Choose an app default.".into(),
         });

@@ -1,5 +1,5 @@
 //! Typed persistence seam. Production calls the core directly; foreign implementations
-//! keep test stores and platform adapters usable without moving policy back to Swift.
+//! serve test stores and platform adapters.
 use super::SessionWorkspaceCommand;
 use crate::{
     domain::DomainWorkspace,
@@ -179,6 +179,10 @@ pub enum WorkspaceIO {
         source: String,
         name: Option<String>,
     },
+    ImportBrunoFolder {
+        bundle: wirebolt_core::BrunoFolderBundle,
+        name: Option<String>,
+    },
     Export {
         target: WorkspaceExport,
     },
@@ -260,6 +264,12 @@ impl SessionPersistence {
                     summary: commit.summary,
                 })
             }
+            WorkspaceIO::ImportBrunoFolder { bundle, name } => workspace_result(
+                self.commit_bruno_folder(&bundle, name.as_deref()),
+                |commit| WorkspaceReply::Imported {
+                    summary: commit.summary,
+                },
+            ),
             WorkspaceIO::Export { target } => workspace_result(
                 match target {
                     WorkspaceExport::Workspace => self.export_workspace_json(),

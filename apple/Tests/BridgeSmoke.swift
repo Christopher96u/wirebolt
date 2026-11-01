@@ -10,7 +10,7 @@ enum BridgeSmoke {
         guard handshake.product == "Wirebolt" else {
             fatalError("unexpected product")
         }
-        guard handshake.streamAbiVersion == streamABIVersion else {
+        guard handshake.streamAbiVersion == 5, streamABIVersion == WIREBOLT_STREAM_ABI_VERSION else {
             fatalError("bridge versions disagree")
         }
         // A control operation on the UniFFI surface, not the streaming C ABI.
@@ -50,8 +50,8 @@ enum BridgeSmoke {
             guard workspace.collections.map(\.id) == ["custom"] else {
                 fatalError("opening a workspace mutated its collections")
             }
-            let proxy = ProxyDocument.manual(routes: [ProxyRouteDocument(destination: "all", endpoint: "http://localhost:8080")])
-            _ = try await persistence.apply(.saveWorkspaceProxy(proxy: proxy.domain))
+            let proxy = ProxyDocument.manual(routes: [ProxyRouteDocument(destination: .all, endpoint: "http://localhost:8080")])
+            _ = try await persistence.apply(.saveWorkspaceProxy(proxy: proxy))
             let withProxy = try await persistence.load()
             let normalizedProxy = try ProxyFormDraft(configuration: withProxy.proxy).document()
             precondition(normalizedProxy == proxy, "workspace proxy must cross the Swift/Rust persistence bridge")
@@ -113,6 +113,19 @@ enum BridgeSmoke {
         precondition(model.workspace.location(collectionID: "custom", requestID: session.requestID)?.request.url == "https://example.invalid/workspace-bridge")
         let exported = await model.exportCollection(id: "custom")
         precondition(exported?.contains("workspace-bridge") == true)
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent("wirebolt-bruno-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: folder) }
+        do {
+            try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+            try #"{"name":"Typed Bruno"}"#.write(to: folder.appendingPathComponent("bruno.json"), atomically: true, encoding: .utf8)
+            try "meta {\n  name: Ping\n}\nget {\n  url: https://example.invalid/bruno\n}\n".write(
+                to: folder.appendingPathComponent("ping.bru"), atomically: true, encoding: .utf8)
+            await model.importBrunoCollection(at: folder)
+            precondition(model.importFailureMessage == nil && model.importSummary?.requestCount == 1)
+            precondition(model.workspace.collections.contains {
+                $0.name == "Typed Bruno" && $0.requests.first?.request.url == "https://example.invalid/bruno"
+            }, "typed Bruno bundles must retain collection and request contents through persistence")
+        } catch { fatalError("Bruno fixture failed: \(error)") }
     }
 
     @MainActor

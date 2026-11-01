@@ -124,8 +124,10 @@ async fn successful_import_publishes_summary_and_selects_created_environment_and
         .ops
         .import(
             WorkspaceImport {
-                source: "{}".into(),
-                format: wirebolt_core::ImportFormat::PostmanV2,
+                source: WorkspaceImportSource::Document {
+                    source: "{}".into(),
+                    format: wirebolt_core::ImportFormat::PostmanV2,
+                },
                 name: Some("shop".into()),
                 display_name: Some("shop.json".into()),
                 selected: None,
@@ -172,8 +174,10 @@ async fn failed_import_and_paste_report_reason_without_summary() {
             h.ops
                 .import(
                     WorkspaceImport {
-                        source: "{}".into(),
-                        format: wirebolt_core::ImportFormat::Har,
+                        source: WorkspaceImportSource::Document {
+                            source: "{}".into(),
+                            format: wirebolt_core::ImportFormat::Har
+                        },
                         name: None,
                         display_name: name,
                         selected: None,
@@ -213,8 +217,10 @@ async fn import_keeps_existing_environment_and_existing_tabs_selection_policy() 
         .ops
         .import(
             WorkspaceImport {
-                source: "{}".into(),
-                format: wirebolt_core::ImportFormat::Har,
+                source: WorkspaceImportSource::Document {
+                    source: "{}".into(),
+                    format: wirebolt_core::ImportFormat::Har,
+                },
                 name: None,
                 display_name: None,
                 selected: Some("keep".into()),

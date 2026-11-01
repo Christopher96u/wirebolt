@@ -86,28 +86,17 @@ public struct SidebarSnapshot: Sendable {
     static func foldedForComparison(_ text: String) -> String { domainNormalizeSearch(text: text) }
 }
 public enum SidebarNavigation {
-    public enum Outcome: Equatable, Sendable {
-        case select(String), expand(String), collapse(String), none
-        init(domain: SidebarOutcome) {
-            self =
-                switch domain {
-                case .select(let id): .select(id)
-                case .expand(let id): .expand(id)
-                case .collapse(let id): .collapse(id)
-                case .none: .none
-                }
-        }
-    }
+    public typealias Outcome = SidebarOutcome
     public static func step(from current: String?, by delta: Int, in rows: [SidebarSnapshot.Row]) -> String? {
         domainSidebarStep(rows: rows.map(\.metadata), current: current, delta: Int64(delta))
     }
     public static func left(from current: String?, in rows: [SidebarSnapshot.Row], isExpanded: (SidebarSnapshot.Row) -> Bool) -> Outcome {
         let expanded = current.flatMap { id in rows.first { $0.id == id } }.map(isExpanded) ?? false
-        return Outcome(domain: domainSidebarArrow(rows: rows.map(\.metadata), current: current, right: false, expanded: expanded))
+        return domainSidebarArrow(rows: rows.map(\.metadata), current: current, right: false, expanded: expanded)
     }
     public static func right(from current: String?, in rows: [SidebarSnapshot.Row], isExpanded: (SidebarSnapshot.Row) -> Bool) -> Outcome {
         let expanded = current.flatMap { id in rows.first { $0.id == id } }.map(isExpanded) ?? false
-        return Outcome(domain: domainSidebarArrow(rows: rows.map(\.metadata), current: current, right: true, expanded: expanded))
+        return domainSidebarArrow(rows: rows.map(\.metadata), current: current, right: true, expanded: expanded)
     }
     public static func typeSelect(_ prefix: String, from current: String?, in rows: [SidebarSnapshot.Row]) -> String? {
         domainSidebarTypeSelect(rows: rows.map(\.metadata), current: current, prefix: prefix)
@@ -150,4 +139,10 @@ public extension WorkspaceDraft {
             return environments.indices.contains(index) ? environments[index] : nil
         }
     }
+}
+
+extension SidebarOutcome {
+    public static func select(_ id: String) -> Self { .select(id: id) }
+    public static func expand(_ id: String) -> Self { .expand(id: id) }
+    public static func collapse(_ id: String) -> Self { .collapse(id: id) }
 }
