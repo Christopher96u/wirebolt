@@ -5,8 +5,8 @@ repo_dir="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$repo_dir"
 
 scripts/cargo.sh test --workspace --all-features
-swift test --package-path apple
 scripts/generate-bindings.sh
+swift test --package-path apple
 
 mkdir -p build
 

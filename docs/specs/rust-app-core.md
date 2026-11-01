@@ -68,3 +68,22 @@ Wave 2 starts from the integrated result of wave 1. Agents edit app-target (`app
 Each agent reviews its own branch with the process in `/Users/chris96u/.claude/skills/code-review/SKILL.md` (two axes: **Standards** — `CONTRIBUTING.md`, `docs/development.md`, the smell baseline in that skill; **Spec** — this document), against the branch's starting commit, then fixes every hard finding. The orchestrator then reviews the integrated branch the same way before opening the pull request.
 
 Commit subjects are single-line and imperative; no `Co-authored-by` or tool attribution lines (`CONTRIBUTING.md`).
+
+## What remains in Swift and why
+
+Wave 1 domain files (the response/session owners add their remaining files during integration):
+
+| File | What remains and why |
+| --- | --- |
+| `WireboltKit/Models.swift` | Thin projections of typed Rust request, workspace, environment and run-input records; Codable compatibility for existing adapters; runtime response/Git event envelopes consumed by the wave 2 orchestration. Child arrays and URL-edit display results are cached native projections for cheap view reads; the URL bridge carries no request body. |
+| `WireboltKit/VariableTemplates.swift` | Native UTF-16/NSRange projections, cached completion entries and a batched Foundation locale-comparison foreign trait; all parsing, merging, masking and matching are Rust. |
+| `WireboltKit/CurlExport.swift` | Typed export facade and Keychain-service identity; expansion, quoting and argument construction are Rust. |
+| `WireboltKit/ProxySettings.swift` | Observable UserDefaults preferences, native UUID/error projections and typed proxy-form facades. |
+| `WireboltKit/ProxyConnectionTest.swift` | Main-actor observation and task/event relay to the existing RequestRunner integration seam; Rust owns probe state, stale-event checks, draft construction, validation and results. The runner is the wave 2 transport adapter. |
+| `WireboltKit/SidebarSnapshot.swift` | Shared native row projections and expansion presentation state, with one batched Rust index/filter call; rendering reads cached metadata. |
+| `WireboltKit/WorkspaceChrome.swift` | Typed label facades and Apple locale-aware numeric formatting of Rust-selected timeout units. |
+| `WireboltKit/CollectionImportSources.swift` | URL/error projections and a native package-folder foreign trait; recognition, filesystem traversal, limits and bundle construction are Rust. |
+| `WireboltKit/ThemeDefinition.swift` | Cached token projections and the observable ThemeStore; all presets, density, geometry, typography and contrast resolution are Rust. |
+| `WireboltKit/SemanticPalette.swift` | Cached native color projections for renderers; color selection, luminance and contrast are Rust. |
+| `WireboltKit/OAuth2Service.swift` | ASWebAuthenticationSession presentation and Keychain access implement the Rust foreign trait; native error localization preserves network diagnostics; protocol requests, PKCE and token parsing/exchange are Rust. |
+| `WireboltApp/RustWorkspacePersistence.swift` | Existing wave 2 persistence adapter; load uses a typed snapshot, while existing command/import/Git adapters retain their compatibility encoding. |

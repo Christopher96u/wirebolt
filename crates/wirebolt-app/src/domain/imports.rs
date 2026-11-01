@@ -1,0 +1,292 @@
+//! Collection-source recognition and bounded Bruno filesystem bundles.
+use serde::Serialize;
+use std::{fs, path::Path};
+#[must_use]
+pub fn detect_collection(
+    extension: &str,
+    contents: &str,
+    root: Option<&serde_json::Value>,
+) -> Option<String> {
+    if extension.eq_ignore_ascii_case("bru") {
+        return Some("bruno_folder".into());
+    }
+    let Some(root) = root else {
+        return contents
+            .split('\n')
+            .filter(|s| !s.is_empty())
+            .take(40)
+            .any(|l| {
+                let l = l.trim().replace(['\"', '\''], "");
+                [
+                    "type: collection.insomnia.rest/5",
+                    "type: spec.insomnia.rest/5",
+                    "type: environment.insomnia.rest/5",
+                    "__export_format:",
+                ]
+                .iter()
+                .any(|p| l.starts_with(p))
+            })
+            .then(|| "insomnia".into());
+    };
+    if root.get("__export_format").is_some()
+        && (root.get("resources").is_some()
+            || root.get("_type").and_then(serde_json::Value::as_str) == Some("export"))
+    {
+        return Some("insomnia".into());
+    }
+    if root
+        .get("version")
+        .and_then(serde_json::Value::as_str)
+        .is_some_and(|s| !s.is_empty())
+        && root.get("name").is_some_and(serde_json::Value::is_string)
+        && root.get("items").is_some_and(serde_json::Value::is_array)
+    {
+        return Some("bruno".into());
+    }
+    None
+}
+#[must_use]
+pub fn detect(extension: &str, contents: &str) -> Option<String> {
+    let trimmed = contents.trim();
+    let command = trimmed
+        .lines()
+        .map(str::trim)
+        .find(|l| !l.is_empty() && !l.starts_with('#'))
+        .unwrap_or_default();
+    if command.starts_with("curl ") || command.starts_with("curl\t") {
+        return Some("curl".into());
+    }
+    let root: Option<serde_json::Value> = serde_json::from_str(trimmed)
+        .ok()
+        .filter(serde_json::Value::is_object);
+    let Some(root) = root else {
+        return detect_collection(extension, trimmed, None);
+    };
+    if root
+        .get("log")
+        .and_then(|l| l.get("entries"))
+        .is_some_and(serde_json::Value::is_array)
+    {
+        return Some("har".into());
+    }
+    if root.get("info").is_some_and(|i| {
+        i.is_object() && (i.get("schema").is_some() || i.get("_postman_id").is_some())
+    }) {
+        return Some("postman_v2".into());
+    }
+    if root.get("version").and_then(serde_json::Value::as_i64) == Some(1)
+        && root.get("nodes").is_some_and(serde_json::Value::is_array)
+    {
+        return Some("legacy_workspace_v1".into());
+    }
+    detect_collection(extension, trimmed, Some(&root))
+        .or_else(|| extension.eq_ignore_ascii_case("har").then(|| "har".into()))
+}
+#[must_use]
+pub fn is_bruno_collection(path: &Path) -> bool {
+    path.join("bruno.json").exists()
+        || fs::read_dir(path).is_ok_and(|entries| {
+            entries.flatten().any(|e| {
+                e.file_name()
+                    .to_string_lossy()
+                    .to_lowercase()
+                    .ends_with(".bru")
+            })
+        })
+}
+#[derive(Debug, Serialize)]
+struct SourceFile {
+    path: String,
+    contents: String,
+}
+#[derive(Debug, Serialize)]
+struct Bundle {
+    root: String,
+    files: Vec<SourceFile>,
+}
+/// A native package-folder decision; the core never imports an Apple API.
+pub trait CollectionDirectoryPolicy: Send + Sync {
+    fn is_package(&self, path: &Path) -> bool;
+}
+struct NoPackages;
+impl CollectionDirectoryPolicy for NoPackages {
+    fn is_package(&self, _path: &Path) -> bool {
+        false
+    }
+}
+/// # Errors
+/// Returns `notACollection` for unreadable sources or `tooLarge` for a bundle over its limits.
+pub fn bruno_bundle(path: &Path) -> Result<String, String> {
+    bruno_bundle_with_policy(path, &NoPackages)
+}
+/// # Errors
+/// Returns `notACollection` for unreadable sources or `tooLarge` for a bundle over its limits.
+pub fn bruno_bundle_with_policy(
+    path: &Path,
+    policy: &dyn CollectionDirectoryPolicy,
+) -> Result<String, String> {
+    if !path.exists() {
+        return Err("notACollection".into());
+    }
+    let files = if path.is_dir() {
+        let root = path.canonicalize().map_err(|_| "notACollection")?;
+        let mut files = vec![];
+        let mut total = 0;
+        collect(&root, &root, &mut files, &mut total, policy)?;
+        if files.is_empty() {
+            return Err("notACollection".into());
+        }
+        files.sort_by(|a, b| a.path.cmp(&b.path));
+        files
+    } else {
+        vec![SourceFile {
+            path: path
+                .file_name()
+                .ok_or("notACollection")?
+                .to_string_lossy()
+                .into_owned(),
+            contents: fs::read_to_string(path).map_err(|_| "notACollection")?,
+        }]
+    };
+    let root = if path.is_dir() {
+        path
+    } else {
+        path.parent().unwrap_or_else(|| Path::new(""))
+    };
+    serde_json::to_string(&Bundle {
+        root: root.to_string_lossy().into_owned(),
+        files,
+    })
+    .map_err(|_| "notACollection".into())
+}
+fn collect(
+    root: &Path,
+    current: &Path,
+    files: &mut Vec<SourceFile>,
+    total: &mut u64,
+    policy: &dyn CollectionDirectoryPolicy,
+) -> Result<(), String> {
+    for entry in fs::read_dir(current).map_err(|_| "notACollection")? {
+        let entry = entry.map_err(|_| "notACollection")?;
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if name.starts_with('.') || name == "node_modules" {
+            continue;
+        }
+        let path = entry.path();
+        let kind = entry.file_type().map_err(|_| "notACollection")?;
+        if kind.is_dir() {
+            if !policy.is_package(&path) {
+                collect(root, &path, files, total, policy)?;
+            }
+            continue;
+        }
+        let name = name.to_lowercase();
+        if !Path::new(&name)
+            .extension()
+            .is_some_and(|e| e.eq_ignore_ascii_case("bru"))
+            && name != "bruno.json"
+            && name != "opencollection.yml"
+        {
+            continue;
+        }
+        let size = fs::metadata(&path).map_err(|_| "notACollection")?.len();
+        *total = total.saturating_add(size);
+        if files.len() >= 5000 || size > 2 * 1024 * 1024 || *total > 64 * 1024 * 1024 {
+            return Err("tooLarge".into());
+        }
+        let canonical = path.canonicalize().map_err(|_| "notACollection")?;
+        let Ok(relative) = canonical.strip_prefix(root) else {
+            continue;
+        };
+        files.push(SourceFile {
+            path: relative.to_string_lossy().into_owned(),
+            contents: fs::read_to_string(&path).map_err(|_| "notACollection")?,
+        });
+    }
+    Ok(())
+}
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PemIdentity {
+    pub certificates: Vec<String>,
+    pub private_key: String,
+}
+/// # Errors
+/// Returns the missing, duplicate or encrypted identity component.
+pub fn parse_pem(sources: &[String]) -> Result<PemIdentity, String> {
+    let mut certificates = vec![];
+    let mut keys = vec![];
+    for source in sources {
+        let mut label: Option<String> = None;
+        let mut lines = vec![];
+        for line in source.lines() {
+            let line = line.trim();
+            if label.is_none() {
+                if let Some(name) = line
+                    .strip_prefix("-----BEGIN ")
+                    .and_then(|s| s.strip_suffix("-----"))
+                {
+                    label = Some(name.into());
+                    lines = vec![line];
+                }
+            } else {
+                lines.push(line);
+                if label
+                    .as_ref()
+                    .is_some_and(|s| line == format!("-----END {s}-----"))
+                {
+                    let name = label.take().unwrap_or_default();
+                    let text = lines.join("\n");
+                    if name == "CERTIFICATE" {
+                        certificates.push(text);
+                    } else if name == "ENCRYPTED PRIVATE KEY"
+                        || (name.ends_with("PRIVATE KEY")
+                            && text.contains("Proc-Type: 4,ENCRYPTED"))
+                    {
+                        return Err("encryptedPrivateKey".into());
+                    } else if ["PRIVATE KEY", "RSA PRIVATE KEY", "EC PRIVATE KEY"]
+                        .contains(&name.as_str())
+                    {
+                        keys.push(text);
+                    }
+                }
+            }
+        }
+    }
+    if certificates.is_empty() {
+        return Err("noCertificate".into());
+    }
+    if keys.is_empty() {
+        return Err("noPrivateKey".into());
+    }
+    if keys.len() != 1 {
+        return Err("multiplePrivateKeys".into());
+    }
+    Ok(PemIdentity {
+        certificates,
+        private_key: keys.remove(0),
+    })
+}
+impl PemIdentity {
+    #[must_use]
+    pub fn combined(&self) -> String {
+        self.certificates
+            .iter()
+            .chain(std::iter::once(&self.private_key))
+            .map(String::as_str)
+            .collect::<Vec<_>>()
+            .join("\n")
+            + "\n"
+    }
+}
+#[must_use]
+pub fn pem_error_message(kind: &str) -> String {
+    match kind {
+        "noCertificate" => "Choose a PEM file with a certificate (BEGIN CERTIFICATE).",
+        "multiplePrivateKeys" => "Choose only one private key.",
+        "encryptedPrivateKey" => {
+            "Encrypted private keys aren’t supported. Export the key without a passphrase."
+        }
+        _ => "Choose the certificate’s private key too, in the same PEM file or a second one.",
+    }
+    .into()
+}

@@ -89,3 +89,20 @@ struct VariableTemplateTests {
         #expect(catalog.completions(matching: "T").map(\.name) == ["token", "host"])
     }
 }
+
+extension VariableTemplateTests {
+    @Test("Native locale ordering and matching are preserved through the batched Rust catalog")
+    func nativeLocaleComparison() {
+        #expect(VariableCatalog.empty.summary(for: "{{undefined}}") == "undefined: not defined in the active environments")
+        let names = ["host10", "host2", "Á", "a", "a-b", "a_b", "straße", "strasse", "İ", "東京"]
+        let environment = EnvironmentDraft(id: "global", name: "Global", variables: names.map { EnvironmentVariableDraft(key: $0) })
+        let catalog = VariableCatalog(environments: [environment], selectedEnvironmentID: nil)
+        let sorted = names.sorted { $0.localizedStandardCompare($1) == .orderedAscending }
+        #expect(catalog.entries.map(\.name) == sorted)
+        for prefix in ["S", "ss", "i", "東京"] {
+            let starts = sorted.filter { $0.range(of: prefix, options: [.caseInsensitive, .anchored]) != nil }
+            let contains = sorted.filter { $0.range(of: prefix, options: [.caseInsensitive, .anchored]) == nil && $0.localizedCaseInsensitiveContains(prefix) }
+            #expect(catalog.completions(matching: prefix).map(\.name) == starts + contains)
+        }
+    }
+}
