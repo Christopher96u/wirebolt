@@ -188,13 +188,13 @@ extension RunHistoryEntry {
     var sessionRecord: SessionHistoryEntry {
         SessionHistoryEntry(
             id: id, requestId: requestID, createdAt: createdAt.timeIntervalSinceReferenceDate,
-            prepared: prepared.sessionRecord, responseHead: responseHead?.sessionRecord, completion: completion?.sessionRecord,
-            failure: failure?.sessionRecord, bodyPath: bodyPath)
+            prepared: prepared.sessionRecord, responseHead: responseHead, completion: completion,
+            failure: failure, bodyPath: bodyPath)
     }
     init(_ record: SessionHistoryEntry) {
         self.init(
             id: record.id, requestID: record.requestId, createdAt: Date(timeIntervalSinceReferenceDate: record.createdAt),
-            prepared: PreparedRunSnapshot(record.prepared), responseHead: record.responseHead.map(ResponseHead.init),
-            completion: record.completion.map(RunCompletion.init), failure: record.failure.map(RunFailure.init), bodyPath: record.bodyPath)
+            prepared: PreparedRunSnapshot(record.prepared), responseHead: record.responseHead,
+            completion: record.completion, failure: record.failure, bodyPath: record.bodyPath)
     }
 }

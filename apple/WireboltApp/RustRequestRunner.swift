@@ -15,7 +15,7 @@ final class RustRequestRunner: @unchecked Sendable, RequestRunner {
     func resolveValues(_ values: [ValueSource], variables: [String: ValueSource]) async throws -> [String] {
         do {
             return try await sessionTransport.resolveValues(values: values, variables: variables)
-        } catch let RuntimeRequestError.Failure(failure) { throw RunFailure(failure) }
+        } catch let RuntimeRequestError.Failure(failure) { throw failure }
     }
     func events(for input: RunInput, runID: RunID) -> AsyncThrowingStream<RunEvent, any Error> {
         AsyncThrowingStream { continuation in
@@ -41,8 +41,8 @@ private final class RequestStreamObserver: SessionRequestObserver {
     func event(event: SessionRunEvent) {
         switch event {
         case .prepared(let snapshot): continuation.yield(.prepared(PreparedRunSnapshot(snapshot)))
-        case .head(let head): continuation.yield(.head(ResponseHead(head)))
-        case .complete(let completion): continuation.yield(.complete(RunCompletion(completion)))
+        case .head(let head): continuation.yield(.head(head))
+        case .complete(let completion): continuation.yield(.complete(completion))
         }
     }
     func bytes(data: Data) -> Bool {
@@ -50,10 +50,10 @@ private final class RequestStreamObserver: SessionRequestObserver {
         return true
     }
     func cookies(url: String, headers: [ResponseHeaderValue]) {
-        continuation.yield(.cookies(ResponseCookies(url: url, headers: headers.map { ResponseHeader(name: $0.name, value: $0.value) })))
+        continuation.yield(.cookies(ResponseCookies(url: url, headers: headers)))
     }
     func finish(failure: SessionFailure?) {
-        continuation.finish(throwing: failure.map(RunFailure.init)) }
+        continuation.finish(throwing: failure) }
 }
 
 /// The shared HTTP engine snapshots macOS proxy settings. Invalidate pooled engines

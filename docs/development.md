@@ -92,13 +92,14 @@ API key placement, OAuth grants, multipart kinds, proxy destinations and proxy
 sources reuse the core enums. Workspace open/create selection uses a typed mode;
 Bruno folders cross as typed bundles through the import path. The C control
 surface uses ABI revision 5.
-`App` prefixes identify bridge objects; session layout records use `SessionLayout`,
+Most bridge objects use an `App` prefix; session layout records use `SessionLayout`,
 `SessionLayoutGroup` and `SessionLayoutTab` in Rust. The generated Swift layout
 record is named `RustSessionLayout` to distinguish it from the native persistence
 facade. Git delta values use the core `GitDelta` type throughout Rust and the bridge.
-Swift aliases generated enums and keeps only native spelling conveniences and
-small `RawRepresentable` extensions for persisted preference strings, with theme
-preset spellings supplied by Rust.
+Swift aliases the generated domain enums and adds only display titles, case lists
+and small `RawRepresentable` extensions for persisted preference strings, with theme
+preset spellings supplied by Rust. Swift's own enums are view state: panel sections,
+renderers, filters, drop positions and picker tags such as `ProxySelection`.
 
 Read [CONTEXT.md](../CONTEXT.md) for workspace vocabulary, ownership and invariants.
 

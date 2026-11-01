@@ -37,6 +37,17 @@ struct WebSocketTests {
         }
     }
 
+    @Test("The message composer keeps its kind and rewrites binary in the chosen encoding")
+    func messageComposer() {
+        let base64 = RequestBody.webSocketMessage(.binary).editingMessage("AAF/gP8=")
+        let hex = base64.reencodingMessage(.hex)
+        #expect(hex.webSocketMessage == SessionMessageDraft(kind: .binary, encoding: .hex, text: "00 01 7f 80 ff"))
+        #expect(hex.reencodingMessage(.base64) == base64)
+        #expect(RequestBody.webSocketMessage(.json).webSocketMessage.text == "{\n  \n}")
+        #expect(WebSocketMessageKind.allCases.map(\.title) == ["Text", "JSON", "Binary", "File"])
+        #expect(WebSocketMessageKind.allCases.allSatisfy { RequestBody.webSocketMessage($0).webSocketMessage.kind == $0 })
+    }
+
     @Test("Malformed bridge message IDs receive a usable native identity")
     func malformedMessageIdentity() {
         var record = SessionSocketMessage(
@@ -132,7 +143,7 @@ struct WebSocketTests {
         await eventually { state.status == .connected }
         await state.send(body: .text(contentType: "text/plain", value: "café 東京"))
         await state.send(body: .json(value: "{\"count\":1}"))
-        let binaryBody = RequestBody.text(contentType: WebSocketBinaryEncoding.hex.contentType, value: "00 FF")
+        let binaryBody = RequestBody.webSocketMessage(.binary).reencodingMessage(.hex).editingMessage("00 FF")
         await state.send(body: binaryBody)
         let file = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
         try Data([1, 2, 3]).write(to: file)

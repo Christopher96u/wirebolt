@@ -130,3 +130,136 @@ fn receive_error_replaces_a_send_error_but_a_clean_close_stays_disconnected() {
     );
     assert_eq!(snapshot.messages[0].text, "Disconnected");
 }
+#[test]
+fn composer_reads_the_kind_encoding_and_text_of_any_body() {
+    use SessionBinaryEncoding::{Base64, Hex};
+    use SessionMessageKind::{Binary, File, Json, Text};
+    let text = |content_type: Option<&str>| DomainBody::Text {
+        content_type: content_type.map(Into::into),
+        value: "AQI=".into(),
+    };
+    let read = |body: &DomainBody| {
+        let draft = message_draft(body);
+        (draft.kind, draft.encoding)
+    };
+    assert_eq!(
+        read(&text(Some("application/octet-stream"))),
+        (Binary, Base64)
+    );
+    assert_eq!(
+        read(&text(Some("application/octet-stream; encoding=hex"))),
+        (Binary, Hex)
+    );
+    assert_eq!(
+        read(&text(Some("application/x-wirebolt-file"))),
+        (File, Base64)
+    );
+    // Only the two composer content types are binary; anything else edits as text.
+    assert_eq!(
+        read(&text(Some("application/octet-stream; x=1"))),
+        (Text, Base64)
+    );
+    assert_eq!(read(&text(None)), (Text, Base64));
+    assert_eq!(
+        read(&DomainBody::Json { value: "{}".into() }),
+        (Json, Base64)
+    );
+    let file = DomainBody::File {
+        path: "/tmp/a".into(),
+        content_type: None,
+    };
+    assert_eq!(read(&file), (File, Base64));
+    assert_eq!(read(&DomainBody::Empty), (Text, Base64));
+    assert_eq!(message_draft(&text(None)).text, "AQI=");
+    assert_eq!(message_draft(&file).text, "");
+    assert_eq!(
+        message_draft(&DomainBody::Raw {
+            content_type: None,
+            value: "raw".into()
+        })
+        .text,
+        "raw"
+    );
+}
+#[test]
+fn composer_switches_kinds_to_empty_messages() {
+    assert_eq!(
+        switching_message(SessionMessageKind::Json),
+        DomainBody::Json {
+            value: "{\n  \n}".into()
+        }
+    );
+    for kind in [
+        SessionMessageKind::Text,
+        SessionMessageKind::Json,
+        SessionMessageKind::Binary,
+        SessionMessageKind::File,
+    ] {
+        assert_eq!(message_draft(&switching_message(kind)).kind, kind);
+    }
+}
+#[test]
+fn composer_reencodes_binary_and_keeps_text_it_cannot_decode() {
+    let base64 = editing_message(
+        &switching_message(SessionMessageKind::Binary),
+        "AAF/gP8=".into(),
+    );
+    let hex = reencoding_message(&base64, SessionBinaryEncoding::Hex);
+    assert_eq!(
+        hex,
+        DomainBody::Text {
+            content_type: Some("application/octet-stream; encoding=hex".into()),
+            value: "00 01 7f 80 ff".into()
+        }
+    );
+    assert_eq!(
+        reencoding_message(&hex, SessionBinaryEncoding::Base64),
+        base64
+    );
+    let typo = editing_message(&hex, "zz".into());
+    assert_eq!(
+        message_draft(&reencoding_message(&typo, SessionBinaryEncoding::Base64)).text,
+        "zz"
+    );
+}
+#[test]
+fn composer_edits_keep_the_kind_and_encoding() {
+    let hex = reencoding_message(
+        &switching_message(SessionMessageKind::Binary),
+        SessionBinaryEncoding::Hex,
+    );
+    let edited = message_draft(&editing_message(&hex, "ff".into()));
+    assert_eq!(
+        (edited.kind, edited.encoding, edited.text.as_str()),
+        (SessionMessageKind::Binary, SessionBinaryEncoding::Hex, "ff")
+    );
+    assert_eq!(
+        editing_message(
+            &DomainBody::Json {
+                value: String::new()
+            },
+            "[]".into()
+        ),
+        DomainBody::Json { value: "[]".into() }
+    );
+    assert_eq!(
+        editing_message(
+            &DomainBody::Xml {
+                value: String::new()
+            },
+            "<a/>".into()
+        ),
+        DomainBody::Text {
+            content_type: Some("text/plain".into()),
+            value: "<a/>".into()
+        }
+    );
+    let typed_path = DomainBody::Text {
+        content_type: Some("application/x-wirebolt-file".into()),
+        value: String::new(),
+    };
+    assert_eq!(
+        message_draft(&editing_message(&typed_path, "/tmp/a".into())).kind,
+        SessionMessageKind::File
+    );
+}

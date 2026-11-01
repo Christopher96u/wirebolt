@@ -420,7 +420,7 @@ public final class WireboltModel {
         } onCancel: {
             runtime.cancel(document: session.rust)
         }
-        if let failure { operationFailure = RunFailure(failure) }
+        if let failure { operationFailure = failure }
         mirrorSecretEdits()
         session.mirror()
         mirrorRuntime()
@@ -682,7 +682,7 @@ public final class WireboltModel {
             try await flushSecrets()
             return try await runtime.curlCommand(draft: draft.domain, context: context, transport: runner.sessionTransport)
         } catch let RuntimeRequestError.Failure(failure) {
-            operationFailure = RunFailure(failure)
+            operationFailure = failure
             return nil
         } catch {
             operationFailure = (error as? RunFailure) ?? RunFailure(kind: .export, issues: [])
@@ -978,6 +978,7 @@ public final class WireboltModel {
         }
     }
 
+    /// Describes what a deletion removes besides the item itself; empty when nothing else is lost.
     public func deleteConsequences(_ target: SessionDeleteTarget) -> String {
         if workspaceNeedsSynchronization {
             rustWorkspace.replace(workspace: workspace.domain)

@@ -30,6 +30,7 @@ Changes under **Unreleased** are on `main` but not in a published build yet. Dow
 - The composer showed the request's own timeout when the request used the workspace's, and **0 s** for no limit.
 - With **Follow redirects**, a 301, 302, 307 or 308 that must resend the request content (for example a QUERY or PUT) was returned instead of followed. Content up to 64 KiB is now sent again.
 - Variables in query parameters showed percent-encoded in the URL, and typing `{{` in a URL whose query had encoded values encoded them twice.
+- Cookies: `Secure` cookies were dropped for `HTTPS://` URLs written in upper case, a blank first `Set-Cookie` segment was read as the cookie, `=secure` counted as the `Secure` attribute, and blank trailing segments such as `a=b; ;` could crash.
 
 ## 1.0.0-rc.1
 

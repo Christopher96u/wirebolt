@@ -264,13 +264,7 @@ struct GitCollaborationView: View {
     }
 
     private func pushHelp(_ availability: GitPushAvailability) -> String {
-        let value: PushAvailability =
-            switch availability {
-            case .push: .push
-            case .publish(let branch): .publish(branch: branch)
-            case .unavailable(let reason): .unavailable(reason: reason)
-            }
-        return sessionGitPushHelp(availability: value)
+        sessionGitPushHelp(availability: availability)
     }
 
     private var trimmedCommitMessage: String {

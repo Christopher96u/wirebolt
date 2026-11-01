@@ -89,11 +89,7 @@ struct WorkspaceNamePrompt: Identifiable, Equatable {
     let initialName: String
 }
 
-enum WorkspaceDeleteTarget: Equatable {
-    case collection(id: String)
-    case group(collectionID: String, id: String)
-    case request(collectionID: String, id: String)
-}
+typealias WorkspaceDeleteTarget = SessionDeleteTarget
 
 struct WorkspaceDeleteRequest: Identifiable, Equatable {
     let id = UUID()
@@ -387,7 +383,7 @@ final class WorkspaceUIState {
     /// also removes other items or discards unsaved edits (HIG: no alerts for common,
     /// undoable actions).
     func requestDelete(_ target: WorkspaceDeleteTarget, title: String, model: WireboltModel) {
-        let detail = deleteConsequences(of: target, model: model)
+        let detail = model.deleteConsequences(target)
         if detail.isEmpty {
             performDelete(target, model: model)
         } else {
@@ -404,16 +400,16 @@ final class WorkspaceUIState {
             case .collection(let collection):
                 requestDelete(.collection(id: collection.id), title: collection.name, model: model)
             case .group(let collection, let group):
-                requestDelete(.group(collectionID: collection.id, id: group.id), title: group.name, model: model)
+                requestDelete(.group(collectionId: collection.id, id: group.id), title: group.name, model: model)
             case .request(let location):
-                requestDelete(.request(collectionID: location.collectionID, id: location.request.id), title: location.request.name, model: model)
+                requestDelete(.request(collectionId: location.collectionID, id: location.request.id), title: location.request.name, model: model)
             }
             return
         }
         guard let session = model.sessions.activeSession, let collectionID = session.collectionID,
               let location = model.workspace.location(collectionID: collectionID, requestID: session.requestID)
         else { return }
-        requestDelete(.request(collectionID: collectionID, id: location.request.id), title: location.request.name, model: model)
+        requestDelete(.request(collectionId: collectionID, id: location.request.id), title: location.request.name, model: model)
     }
 
     func confirmWorkspaceDelete(model: WireboltModel) {
@@ -442,17 +438,6 @@ final class WorkspaceUIState {
     /// Keeps a preview tab open (double-click on the tab or Keep Open).
     func pinTab(id: String, model: WireboltModel) {
         model.sessions.pin(tabID: id)
-    }
-
-    /// Describes what a deletion removes besides the item itself; empty when nothing else is lost.
-    func deleteConsequences(of target: WorkspaceDeleteTarget, model: WireboltModel) -> String {
-        let target: SessionDeleteTarget =
-            switch target {
-            case .collection(let id): .collection(id: id)
-            case .group(let collectionID, let id): .group(collectionId: collectionID, id: id)
-            case .request(let collectionID, let id): .request(collectionId: collectionID, id: id)
-            }
-        return model.deleteConsequences(target)
     }
 
     func openInNewSplit(tabID: String, model: WireboltModel) {

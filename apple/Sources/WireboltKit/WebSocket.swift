@@ -64,19 +64,45 @@ public struct WebSocketMessage: Identifiable, Sendable {
 
 public typealias WebSocketStatus = SessionSocketStatus
 
-public enum WebSocketBinaryEncoding: String, CaseIterable, Sendable {
-    case base64 = "Base64"
-    case hex = "Hex"
+public typealias WebSocketMessageKind = SessionMessageKind
 
-    public var contentType: String {
-        self == .hex ? "application/octet-stream; encoding=hex" : "application/octet-stream"
+extension SessionMessageKind: CaseIterable, Identifiable {
+    public static var allCases: [Self] { [.text, .json, .binary, .file] }
+    public var id: Self { self }
+    public var title: String {
+        switch self {
+        case .text: "Text"
+        case .json: "JSON"
+        case .binary: "Binary"
+        case .file: "File"
+        }
     }
+}
+
+public typealias WebSocketBinaryEncoding = SessionBinaryEncoding
+
+extension SessionBinaryEncoding: CaseIterable {
+    public static var allCases: [Self] { [.base64, .hex] }
+    public var title: String { self == .hex ? "Hex" : "Base64" }
 
     public func decode(_ text: String) throws -> Data {
         do { return try sessionDecodeBinary(text: text, hex: self == .hex) } catch let WorkspaceBridgeError.OperationFailed(reason) {
             throw WebSocketUIError(reason)
         }
     }
+}
+
+/// The WebSocket message composer's view of a request body; Rust owns the kinds and encodings.
+public extension RequestBody {
+    var webSocketMessage: SessionMessageDraft { sessionMessageDraft(body: self) }
+
+    static func webSocketMessage(_ kind: WebSocketMessageKind) -> RequestBody { sessionSwitchMessage(kind: kind) }
+
+    func reencodingMessage(_ encoding: WebSocketBinaryEncoding) -> RequestBody {
+        sessionReencodeMessage(body: self, encoding: encoding)
+    }
+
+    func editingMessage(_ text: String) -> RequestBody { sessionEditMessage(body: self, text: text) }
 }
 
 @MainActor
@@ -113,7 +139,7 @@ public final class WebSocketDocumentState {
                     switch event {
                     case .connected(let headers):
                         self.rust.connected(
-                            generation: generation, headers: headers.map { ResponseHeaderValue(name: $0.name, value: $0.value) },
+                            generation: generation, headers: headers,
                             url: input.url)
                     case .message(let data, let binary, let outgoing, let control):
                         self.rust.append(generation: generation, data: data, binary: binary, outgoing: outgoing, control: control)

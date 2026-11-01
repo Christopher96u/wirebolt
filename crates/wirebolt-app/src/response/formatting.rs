@@ -106,7 +106,6 @@ pub enum ResponseIssueKind {
     ConflictingHeader,
     InvalidJson,
     InvalidBody,
-    InvalidProxyDestination,
     FileUnavailable,
     InvalidTemplate,
     TemplateTooDeep,
@@ -128,7 +127,6 @@ impl ResponseIssueKind {
             Self::ConflictingHeader => "conflicting_header",
             Self::InvalidJson => "invalid_json",
             Self::InvalidBody => "invalid_body",
-            Self::InvalidProxyDestination => "invalid_proxy_destination",
             Self::FileUnavailable => "file_unavailable",
             Self::InvalidTemplate => "invalid_template",
             Self::TemplateTooDeep => "template_too_deep",
@@ -151,7 +149,6 @@ impl From<String> for ResponseIssueKind {
             "conflicting_header" => Self::ConflictingHeader,
             "invalid_json" => Self::InvalidJson,
             "invalid_body" => Self::InvalidBody,
-            "invalid_proxy_destination" => Self::InvalidProxyDestination,
             "file_unavailable" => Self::FileUnavailable,
             "invalid_template" => Self::InvalidTemplate,
             "template_too_deep" => Self::TemplateTooDeep,
@@ -476,9 +473,6 @@ pub fn describe_issue(issue: &FailureIssue) -> String {
         ResponseIssueKind::ConflictingHeader => "Two headers conflict with each other.".to_string(),
         ResponseIssueKind::InvalidJson => "The JSON body isn’t valid.".to_string(),
         ResponseIssueKind::InvalidBody => "The body isn’t valid.".to_string(),
-        ResponseIssueKind::InvalidProxyDestination => {
-            "Choose All, HTTP or HTTPS destinations.".into()
-        }
         ResponseIssueKind::FileUnavailable => "The body file can’t be read.".to_string(),
         ResponseIssueKind::InvalidTemplate => "A {{variable}} template isn’t valid.".to_string(),
         ResponseIssueKind::TemplateTooDeep => "Variables are nested too deeply.".to_string(),

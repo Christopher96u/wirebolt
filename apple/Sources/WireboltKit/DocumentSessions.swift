@@ -126,14 +126,14 @@ public final class DocumentSession: Identifiable {
             }
             return
         case .prepared(let snapshot): rust.consume(runId: runID.description, event: .prepared(snapshot: snapshot.sessionRecord))
-        case .head(let head): rust.consume(runId: runID.description, event: .head(head: head.sessionRecord))
+        case .head(let head): rust.consume(runId: runID.description, event: .head(head: head))
         case .complete(let value):
             await flush(runID)
             progressTask?.cancel()
             progressTask = nil
             let rust = rust
             await Task.detached(priority: .userInitiated) {
-                rust.consume(runId: runID.description, event: .complete(completion: value.sessionRecord))
+                rust.consume(runId: runID.description, event: .complete(completion: value))
             }.value
         }
         guard activeRunID == runID else { return }
@@ -154,7 +154,7 @@ public final class DocumentSession: Identifiable {
         progressTask?.cancel()
         progressTask = nil
         let rust = rust
-        await Task.detached(priority: .userInitiated) { rust.finish(runId: runID.description, failure: failure?.sessionRecord) }.value
+        await Task.detached(priority: .userInitiated) { rust.finish(runId: runID.description, failure: failure) }.value
         guard activeRunID == runID else { return }
         mirror()
     }
@@ -206,23 +206,23 @@ public final class DocumentSession: Identifiable {
         let bytes = entry.completion?.bytesReceived ?? UInt64(viewport.count)
         rust.restore(
             snapshot: SessionRunSnapshot(
-                head: entry.responseHead?.sessionRecord, prepared: entry.prepared.sessionRecord,
+                head: entry.responseHead, prepared: entry.prepared.sessionRecord,
                 text: String(decoding: viewport, as: UTF8.self), data: viewport, bytes: bytes, truncated: bytes > UInt64(viewport.count),
-                completion: entry.completion?.sessionRecord, failure: entry.failure?.sessionRecord, activeRunId: nil,
+                completion: entry.completion, failure: entry.failure, activeRunId: nil,
                 startedAt: nil, awaitingHead: false, cookies: [], bodyPath: entry.bodyPath), path: entry.bodyPath)
         mirror()
     }
     func mirror() {
         let state = rust.snapshot()
         if !isTouched, rust.wasTouched() { isTouched = true }
-        assign(\.responseHead, state.head.map(ResponseHead.init))
+        assign(\.responseHead, state.head)
         assign(\.preparedRun, state.prepared.map(PreparedRunSnapshot.init))
         assign(\.responseText, state.text)
         assign(\.responsePreviewData, state.data)
         assign(\.responseBytes, state.bytes)
         assign(\.responseWasTruncated, state.truncated)
-        assign(\.completion, state.completion.map(RunCompletion.init))
-        assign(\.failure, state.failure.map(RunFailure.init))
+        assign(\.completion, state.completion)
+        assign(\.failure, state.failure)
         assign(\.activeRunID, state.activeRunId.flatMap(UUID.init(uuidString:)).map { RunID(rawValue: $0) })
         assign(\.runStartedAt, state.startedAt.map { Date(timeIntervalSinceReferenceDate: $0) })
         assign(\.isAwaitingResponseHead, state.awaitingHead)

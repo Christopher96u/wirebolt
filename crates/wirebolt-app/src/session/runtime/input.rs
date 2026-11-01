@@ -72,13 +72,10 @@ pub fn transport_input(input: DomainRunInput) -> Result<transport::RunInput, Ses
         if let DomainProxy::Manual { routes } = proxy
             && routes.iter().any(|route| route.destination.is_none())
         {
+            // Like any other input the core rejects: a generic invalid-request failure.
             return Err(SessionFailure {
                 kind: crate::response::ResponseFailureKind::InvalidInput,
-                issues: vec![crate::response::FailureIssue {
-                    path: String::new(),
-                    kind: crate::response::ResponseIssueKind::InvalidProxyDestination,
-                    reference: None,
-                }],
+                issues: Vec::new(),
             });
         }
     }

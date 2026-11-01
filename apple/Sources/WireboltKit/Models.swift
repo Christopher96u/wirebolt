@@ -926,12 +926,3 @@ private extension RequestBody {
         }
     }
 }
-
-protocol NativeSessionValue {}
-extension NativeSessionValue {
-    var sessionRecord: Self { self }
-    init(_ record: Self) { self = record }
-}
-extension SessionHead: NativeSessionValue {}
-extension SessionCompletion: NativeSessionValue {}
-extension SessionFailure: NativeSessionValue {}

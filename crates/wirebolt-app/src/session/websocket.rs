@@ -193,6 +193,127 @@ impl SessionSocket {
         self.error = error;
     }
 }
+const BINARY_CONTENT_TYPE: &str = "application/octet-stream";
+const HEX_CONTENT_TYPE: &str = "application/octet-stream; encoding=hex";
+/// A file message whose path is typed rather than chosen.
+const FILE_PATH_CONTENT_TYPE: &str = "application/x-wirebolt-file";
+/// The payload a WebSocket message composer edits.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SessionMessageKind {
+    Text,
+    Json,
+    Binary,
+    File,
+}
+/// How the composer writes a binary message.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SessionBinaryEncoding {
+    Base64,
+    Hex,
+}
+impl SessionBinaryEncoding {
+    const fn content_type(self) -> &'static str {
+        match self {
+            Self::Base64 => BINARY_CONTENT_TYPE,
+            Self::Hex => HEX_CONTENT_TYPE,
+        }
+    }
+    fn encode(self, bytes: &[u8]) -> String {
+        match self {
+            Self::Base64 => base64::engine::general_purpose::STANDARD.encode(bytes),
+            Self::Hex => bytes
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect::<Vec<_>>()
+                .join(" "),
+        }
+    }
+}
+/// What the composer shows for a message body.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SessionMessageDraft {
+    pub kind: SessionMessageKind,
+    pub encoding: SessionBinaryEncoding,
+    pub text: String,
+}
+#[must_use]
+pub fn message_draft(body: &DomainBody) -> SessionMessageDraft {
+    let (kind, encoding) = match body {
+        DomainBody::Json { .. } => (SessionMessageKind::Json, SessionBinaryEncoding::Base64),
+        DomainBody::Text { content_type, .. } => match content_type.as_deref() {
+            Some(BINARY_CONTENT_TYPE) => {
+                (SessionMessageKind::Binary, SessionBinaryEncoding::Base64)
+            }
+            Some(HEX_CONTENT_TYPE) => (SessionMessageKind::Binary, SessionBinaryEncoding::Hex),
+            Some(FILE_PATH_CONTENT_TYPE) => {
+                (SessionMessageKind::File, SessionBinaryEncoding::Base64)
+            }
+            _ => (SessionMessageKind::Text, SessionBinaryEncoding::Base64),
+        },
+        DomainBody::File { .. } => (SessionMessageKind::File, SessionBinaryEncoding::Base64),
+        _ => (SessionMessageKind::Text, SessionBinaryEncoding::Base64),
+    };
+    let text = match body {
+        DomainBody::Json { value }
+        | DomainBody::Text { value, .. }
+        | DomainBody::Xml { value }
+        | DomainBody::Html { value }
+        | DomainBody::Raw { value, .. } => value.clone(),
+        _ => String::new(),
+    };
+    SessionMessageDraft {
+        kind,
+        encoding,
+        text,
+    }
+}
+/// The empty message a composer starts with after choosing `kind`.
+#[must_use]
+pub fn switching_message(kind: SessionMessageKind) -> DomainBody {
+    match kind {
+        SessionMessageKind::Text => DomainBody::Text {
+            content_type: Some("text/plain".into()),
+            value: String::new(),
+        },
+        SessionMessageKind::Json => DomainBody::Json {
+            value: "{\n  \n}".into(),
+        },
+        SessionMessageKind::Binary => DomainBody::Text {
+            content_type: Some(BINARY_CONTENT_TYPE.into()),
+            value: String::new(),
+        },
+        SessionMessageKind::File => DomainBody::File {
+            path: String::new(),
+            content_type: None,
+        },
+    }
+}
+/// Rewrites a binary message in `encoding`; text that does not decode is kept as typed.
+#[must_use]
+pub fn reencoding_message(body: &DomainBody, encoding: SessionBinaryEncoding) -> DomainBody {
+    let draft = message_draft(body);
+    let value = decode_binary(&draft.text, draft.encoding == SessionBinaryEncoding::Hex)
+        .map_or(draft.text, |bytes| encoding.encode(&bytes));
+    DomainBody::Text {
+        content_type: Some(encoding.content_type().into()),
+        value,
+    }
+}
+/// Replaces the typed message, keeping its kind and binary encoding.
+#[must_use]
+pub fn editing_message(body: &DomainBody, text: String) -> DomainBody {
+    let draft = message_draft(body);
+    let content_type = match draft.kind {
+        SessionMessageKind::Json => return DomainBody::Json { value: text },
+        SessionMessageKind::Binary => draft.encoding.content_type(),
+        SessionMessageKind::File => FILE_PATH_CONTENT_TYPE,
+        SessionMessageKind::Text => "text/plain",
+    };
+    DomainBody::Text {
+        content_type: Some(content_type.into()),
+        value: text,
+    }
+}
 /// # Errors
 /// Returns a message-editor validation error for invalid Base64 or hexadecimal input.
 pub fn decode_binary(text: &str, hex: bool) -> Result<Vec<u8>, String> {
@@ -237,13 +358,10 @@ pub fn message_body(body: &DomainBody) -> Result<(Vec<u8>, bool), String> {
             value,
         } if content_type
             .as_ref()
-            .is_some_and(|t| t.starts_with("application/octet-stream")) =>
+            .is_some_and(|t| t.starts_with(BINARY_CONTENT_TYPE)) =>
         {
             (
-                decode_binary(
-                    value,
-                    content_type.as_deref() == Some("application/octet-stream; encoding=hex"),
-                )?,
+                decode_binary(value, content_type.as_deref() == Some(HEX_CONTENT_TYPE))?,
                 true,
             )
         }

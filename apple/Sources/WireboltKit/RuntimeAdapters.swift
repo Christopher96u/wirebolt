@@ -11,13 +11,13 @@ final class RuntimeRunnerAdapter: SessionRuntimeTransport {
                     values: try await runner.resolveValues(
                         values, variables: variables), failure: nil)
             } catch {
-                reply.finish(values: [], failure: ((error as? RunFailure) ?? RunFailure(kind: .invalidRequest, issues: [])).sessionRecord)
+                reply.finish(values: [], failure: ((error as? RunFailure) ?? RunFailure(kind: .invalidRequest, issues: [])))
             }
         }
     }
     func execute(input: DomainRunInput, id: String, sink: SessionRunSink) {
         guard let uuid = UUID(uuidString: id) else {
-            sink.finish(failure: RunFailure(kind: .bridge, issues: []).sessionRecord)
+            sink.finish(failure: RunFailure(kind: .bridge, issues: []))
             return
         }
         Task {
@@ -25,16 +25,16 @@ final class RuntimeRunnerAdapter: SessionRuntimeTransport {
                 for try await event in runner.events(for: RunInput(domain: input), runID: RunID(rawValue: uuid)) {
                     switch event {
                     case .prepared(let value): sink.event(event: .prepared(snapshot: value.sessionRecord))
-                    case .head(let value): sink.event(event: .head(head: value.sessionRecord))
+                    case .head(let value): sink.event(event: .head(head: value))
                     case .chunk(let data): sink.bytes(data: data)
                     case .cookies(let value):
                         sink.cookies(url: value.url, headers: value.headers.map { ResponseHeaderValue(name: $0.name, value: $0.value) })
-                    case .complete(let value): sink.event(event: .complete(completion: value.sessionRecord))
+                    case .complete(let value): sink.event(event: .complete(completion: value))
                     }
                 }
                 sink.finish(failure: nil)
             } catch is CancellationError { sink.abandon() } catch {
-                sink.finish(failure: ((error as? RunFailure) ?? RunFailure(kind: .bridge, issues: [])).sessionRecord)
+                sink.finish(failure: ((error as? RunFailure) ?? RunFailure(kind: .bridge, issues: [])))
             }
         }
     }

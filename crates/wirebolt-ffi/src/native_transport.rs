@@ -261,7 +261,7 @@ mod tests {
             assert_eq!(
                 wirebolt_app::response::failure_message(&failure.kind, &failure.issues, None)
                     .message,
-                "Choose All, HTTP or HTTPS destinations.",
+                "Check the URL, headers and body, then try again.",
             );
             drop(run);
             assert!(receiver.try_recv().is_err());
@@ -289,6 +289,8 @@ mod tests {
                 );
                 thread::sleep(Duration::from_millis(5));
             };
+            // The accepted socket inherits the listener's non-blocking mode on macOS.
+            stream.set_nonblocking(false).unwrap();
             stream
                 .set_read_timeout(Some(Duration::from_secs(2)))
                 .unwrap();

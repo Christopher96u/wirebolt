@@ -65,12 +65,12 @@ struct WorkspaceChromeTests {
 
     @Test("Cells show variables as names between plain text, without braces")
     func displaySegments() {
-        #expect(VariableDisplaySegment.segments(of: "Bearer {{ token }}") == [.text("Bearer "), .variable("token")])
-        #expect(VariableDisplaySegment.segments(of: "{{a}}{{b}}") == [.variable("a"), .variable("b")])
-        #expect(VariableDisplaySegment.segments(of: "{{host}}:{{port}}/é") == [.variable("host"), .text(":"), .variable("port"), .text("/é")])
+        #expect(VariableDisplaySegment.segments(of: "Bearer {{ token }}") == [.text(value: "Bearer "), .variable(name: "token")])
+        #expect(VariableDisplaySegment.segments(of: "{{a}}{{b}}") == [.variable(name: "a"), .variable(name: "b")])
+        #expect(VariableDisplaySegment.segments(of: "{{host}}:{{port}}/é") == [.variable(name: "host"), .text(value: ":"), .variable(name: "port"), .text(value: "/é")])
         // An unclosed or empty reference stays plain text.
-        #expect(VariableDisplaySegment.segments(of: "{{open") == [.text("{{open")])
-        #expect(VariableDisplaySegment.segments(of: "x{{ }}y") == [.text("x{{ }}y")])
+        #expect(VariableDisplaySegment.segments(of: "{{open") == [.text(value: "{{open")])
+        #expect(VariableDisplaySegment.segments(of: "x{{ }}y") == [.text(value: "x{{ }}y")])
         #expect(VariableDisplaySegment.segments(of: "") == [])
     }
 

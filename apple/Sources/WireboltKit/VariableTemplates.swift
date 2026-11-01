@@ -53,17 +53,9 @@ public struct VariableCatalog: Equatable, Sendable {
         index.summary(text: text)
     }
 }
-public enum VariableDisplaySegment: Equatable, Sendable {
-    case text(String)
-    case variable(String)
-    public static func segments(of text: String) -> [Self] {
-        domainTemplateSegments(text: text).map { segment in
-            switch segment {
-            case .text(let value): .text(value)
-            case .variable(let name): .variable(name)
-            }
-        }
-    }
+public typealias VariableDisplaySegment = TemplateSegment
+extension TemplateSegment {
+    public static func segments(of text: String) -> [Self] { domainTemplateSegments(text: text) }
 }
 extension VariableReference {
     /// Native ranges used to hide chip delimiters while preserving editable source text.

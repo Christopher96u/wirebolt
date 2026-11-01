@@ -35,8 +35,10 @@ use wirebolt_app::{
             SessionTabSnapshot, SessionTabs,
         },
         websocket::{
-            SessionSocket, SessionSocketMessage, SessionSocketNotice, SessionSocketSnapshot,
-            SessionSocketStatus, decode_binary, message_body,
+            SessionBinaryEncoding, SessionMessageDraft, SessionMessageKind, SessionSocket,
+            SessionSocketMessage, SessionSocketNotice, SessionSocketSnapshot, SessionSocketStatus,
+            decode_binary, editing_message, message_body, message_draft, reencoding_message,
+            switching_message,
         },
         workspace::{
             SessionDeleteTarget, SessionDocumentEffect, SessionWorkspaceCommand,

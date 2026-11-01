@@ -287,9 +287,10 @@ fn hand_edited_proxy_destinations_remain_manual_and_fail_every_send() {
             });
             let failure = transport_input(input).unwrap_err();
             assert_eq!(failure.kind, ResponseFailureKind::InvalidInput);
+            assert!(failure.issues.is_empty());
             assert_eq!(
                 failure_message(&failure.kind, &failure.issues, None).message,
-                "Choose All, HTTP or HTTPS destinations."
+                "Check the URL, headers and body, then try again."
             );
         }
     }

@@ -4,8 +4,10 @@
     reason = "UniFFI lifts owned records at the boundary."
 )]
 use super::{
-    Arc, DomainBody, Mutex, ResponseHeaderValue, SessionSocket, SessionSocketMessage,
-    SessionSocketNotice, SessionSocketSnapshot, SessionSocketStatus, decode_binary, message_body,
+    Arc, DomainBody, Mutex, ResponseHeaderValue, SessionBinaryEncoding, SessionMessageDraft,
+    SessionMessageKind, SessionSocket, SessionSocketMessage, SessionSocketNotice,
+    SessionSocketSnapshot, SessionSocketStatus, decode_binary, editing_message, message_body,
+    message_draft, reencoding_message, switching_message,
 };
 use crate::lock;
 #[uniffi::remote(Enum)]
@@ -92,6 +94,51 @@ impl AppSessionSocket {
     pub fn set_error(&self, error: Option<String>) {
         lock(&self.inner).set_error(error);
     }
+}
+
+#[uniffi::remote(Enum)]
+pub enum SessionMessageKind {
+    Text,
+    Json,
+    Binary,
+    File,
+}
+
+#[uniffi::remote(Enum)]
+pub enum SessionBinaryEncoding {
+    Base64,
+    Hex,
+}
+
+#[uniffi::remote(Record)]
+pub struct SessionMessageDraft {
+    kind: SessionMessageKind,
+    encoding: SessionBinaryEncoding,
+    text: String,
+}
+
+#[uniffi::export]
+#[must_use]
+pub fn session_message_draft(body: DomainBody) -> SessionMessageDraft {
+    message_draft(&body)
+}
+
+#[uniffi::export]
+#[must_use]
+pub fn session_switch_message(kind: SessionMessageKind) -> DomainBody {
+    switching_message(kind)
+}
+
+#[uniffi::export]
+#[must_use]
+pub fn session_reencode_message(body: DomainBody, encoding: SessionBinaryEncoding) -> DomainBody {
+    reencoding_message(&body, encoding)
+}
+
+#[uniffi::export]
+#[must_use]
+pub fn session_edit_message(body: DomainBody, text: String) -> DomainBody {
+    editing_message(&body, text)
 }
 
 #[derive(Clone, Debug, uniffi::Record)]

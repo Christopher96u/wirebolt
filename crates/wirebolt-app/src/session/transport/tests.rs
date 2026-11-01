@@ -188,6 +188,8 @@ fn app_proxy_routes_and_request_direct_bypasses_it() {
                 );
                 thread::sleep(Duration::from_millis(5));
             };
+            // The accepted socket inherits the listener's non-blocking mode on macOS.
+            stream.set_nonblocking(false).unwrap();
             stream
                 .set_read_timeout(Some(Duration::from_secs(2)))
                 .unwrap();
