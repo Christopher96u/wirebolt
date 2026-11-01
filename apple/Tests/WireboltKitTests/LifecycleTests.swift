@@ -283,12 +283,16 @@ extension LifecycleTests {
     }
 
     @Test(arguments: [2, 20, 100])
-    @MainActor func cleanCloseScopesAvoidDraftTraffic(count: Int) {
+    @MainActor func cleanCloseScopesAvoidDraftTraffic(count: Int) async {
         let body = String(repeating: "x", count: 1_048_576)
         for scopeIndex in 0..<3 {
             let model = WireboltModel(runner: LifecycleRunner())
-            let tabs = (0..<count).map { i in
-                model.sessions.open(draft: RequestDraft(id: "\(i)", body: .json(value: body)))
+            var tabs: [DocumentSession] = []
+            for i in 0..<count {
+                tabs.append(model.sessions.open(draft: RequestDraft(id: "\(i)", body: .json(value: body))))
+                // Large fixture construction must let unrelated async adapter
+                // tests publish their state on the main actor.
+                if i.isMultiple(of: 5) { await Task.yield() }
             }
             let scope: TabCloseScope = switch scopeIndex {
             case 0: .one(tabs[0].id)
