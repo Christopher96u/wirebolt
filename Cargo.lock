@@ -2617,6 +2617,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "wirebolt-app"
+version = "1.0.0-rc.1"
+dependencies = [
+ "serde",
+ "serde_json",
+ "tempfile",
+ "wirebolt-core",
+]
+
+[[package]]
 name = "wirebolt-core"
 version = "1.0.0-rc.1"
 dependencies = [
@@ -2657,6 +2667,7 @@ dependencies = [
  "tokio",
  "tokio-util",
  "uniffi",
+ "wirebolt-app",
  "wirebolt-core",
 ]
 

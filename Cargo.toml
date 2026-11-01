@@ -1,5 +1,6 @@
 [workspace]
 members = [
+  "crates/wirebolt-app",
   "crates/wirebolt-core",
   "crates/wirebolt-ffi",
   "tools/uniffi-bindgen",
@@ -38,6 +39,7 @@ toml = "=1.1.4"
 uniffi = "=0.32.0"
 url = "=2.5.8"
 yaml-rust2 = { version = "=0.13.0", default-features = false }
+wirebolt-app = { path = "crates/wirebolt-app" }
 wirebolt-core = { path = "crates/wirebolt-core" }
 zstd = "=0.13.3"
 

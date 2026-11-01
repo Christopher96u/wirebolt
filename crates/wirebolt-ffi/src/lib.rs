@@ -1,4 +1,7 @@
 uniffi::setup_scaffolding!();
+mod app_domain;
+mod app_response;
+mod app_session;
 mod websocket;
 
 use std::{
