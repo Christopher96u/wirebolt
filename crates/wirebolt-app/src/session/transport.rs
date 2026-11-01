@@ -1,5 +1,6 @@
 //! HTTP preparation, pooled engines and streamed execution. The interface only
 //! supplies platform secret resolution and observes coarse events.
+use crate::response::FailureIssue;
 use serde::{Deserialize, Serialize};
 use std::{
     collections::BTreeMap,
@@ -8,9 +9,9 @@ use std::{
 };
 use wirebolt_core::{
     DocumentId, Environment, HttpEngine, HttpEngineConfig, HttpVersion, ProxyMode, ProxyPolicy,
-    Request, RequestAuthentication, RequestBody, RequestHeader, RequestIssue, RequestIssueKind,
-    RequestPipeline, RequestValueField, ResolvedProxy, RunCancellation, RunError, RunErrorKind,
-    RunOptions, SecretName, SecretResolver, StreamControl, TransportSettings, ValueSource,
+    Request, RequestAuthentication, RequestBody, RequestHeader, RequestPipeline, RequestValueField,
+    ResolvedProxy, RunCancellation, RunError, RunErrorKind, RunOptions, SecretName, SecretResolver,
+    StreamControl, TransportSettings, ValueSource,
 };
 static SHARED_HTTP_ENGINES: LazyLock<HttpEngineCache> = LazyLock::new(HttpEngineCache::default);
 pub fn reset_http_engines() {
@@ -93,7 +94,7 @@ pub struct PreparedRunSnapshotDocument {
     pub headers: Vec<PreparedHeaderDocument>,
     pub body: PreparedBodyDocument,
     pub transport: TransportSettings,
-    pub proxy: serde_json::Value,
+    pub proxy: crate::domain::proxy::ResolvedDomainProxy,
 }
 
 #[derive(Debug, Serialize)]
@@ -114,26 +115,9 @@ pub struct PreparedBodyDocument {
 #[derive(Debug, Serialize)]
 pub struct RunFailureDocument {
     pub kind: crate::response::ResponseFailureKind,
-    pub issues: Vec<RequestIssueDocument>,
+    pub issues: Vec<FailureIssue>,
 }
 
-#[derive(Debug, Serialize)]
-pub struct RequestIssueDocument {
-    pub path: String,
-    pub kind: &'static str,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub reference: Option<String>,
-}
-
-impl From<RequestIssue> for RequestIssueDocument {
-    fn from(issue: RequestIssue) -> Self {
-        Self {
-            path: issue.path,
-            kind: request_issue_kind(issue.kind),
-            reference: issue.reference,
-        }
-    }
-}
 pub type PreparedRun = (
     wirebolt_core::PreparedRequest,
     Arc<HttpEngine>,
@@ -281,21 +265,43 @@ fn prepared_run_snapshot(
             redacted,
         },
         transport,
-        proxy: serde_json::json!({
-            "configuration": match proxy.mode() {
-                ProxyMode::Direct => serde_json::json!({"mode": "direct"}),
-                ProxyMode::System => serde_json::json!({"mode": "system"}),
-                ProxyMode::Manual(_) => serde_json::json!({"mode": "manual", "routes": proxy.diagnostic().routes().iter().map(|route| serde_json::json!({
-                    "destination": route.destination(), "endpoint": route.endpoint()
-                })).collect::<Vec<_>>() }),
+        proxy: crate::domain::proxy::ResolvedDomainProxy {
+            configuration: match proxy.mode() {
+                ProxyMode::Direct => crate::domain::DomainProxy::Direct,
+                ProxyMode::System => crate::domain::DomainProxy::System,
+                ProxyMode::Manual(_) => crate::domain::DomainProxy::Manual {
+                    routes: proxy
+                        .diagnostic()
+                        .routes()
+                        .iter()
+                        .map(|route| crate::domain::DomainProxyRoute {
+                            destination: match route.destination() {
+                                wirebolt_core::ProxyDestination::All => "all",
+                                wirebolt_core::ProxyDestination::Http => "http",
+                                wirebolt_core::ProxyDestination::Https => "https",
+                            }
+                            .into(),
+                            endpoint: route.endpoint().into(),
+                            credentials: None,
+                        })
+                        .collect(),
+                },
             },
-            "source": match proxy.source() {
-                wirebolt_core::ProxySource::Request => "request",
-                wirebolt_core::ProxySource::Workspace => "workspace",
-                wirebolt_core::ProxySource::AppDefault => "app_default",
-                wirebolt_core::ProxySource::SystemDefault => "system_default",
-            }
-        }),
+            source: match proxy.source() {
+                wirebolt_core::ProxySource::Request => {
+                    crate::domain::proxy::DomainProxySource::Request
+                }
+                wirebolt_core::ProxySource::Workspace => {
+                    crate::domain::proxy::DomainProxySource::Workspace
+                }
+                wirebolt_core::ProxySource::AppDefault => {
+                    crate::domain::proxy::DomainProxySource::AppDefault
+                }
+                wirebolt_core::ProxySource::SystemDefault => {
+                    crate::domain::proxy::DomainProxySource::SystemDefault
+                }
+            },
+        },
     }
 }
 
@@ -454,26 +460,6 @@ const fn run_error_kind(kind: RunErrorKind) -> crate::response::ResponseFailureK
 }
 
 #[must_use]
-pub const fn request_issue_kind(kind: RequestIssueKind) -> &'static str {
-    match kind {
-        RequestIssueKind::InvalidMethod => "invalid_method",
-        RequestIssueKind::InvalidUrl => "invalid_url",
-        RequestIssueKind::InvalidHeaderName => "invalid_header_name",
-        RequestIssueKind::InvalidHeaderValue => "invalid_header_value",
-        RequestIssueKind::ConflictingHeader => "conflicting_header",
-        RequestIssueKind::InvalidJson => "invalid_json",
-        RequestIssueKind::InvalidBody => "invalid_body",
-        RequestIssueKind::FileUnavailable => "file_unavailable",
-        RequestIssueKind::InvalidTemplate => "invalid_template",
-        RequestIssueKind::TemplateTooDeep => "template_too_deep",
-        RequestIssueKind::ResolvedValueTooLarge => "resolved_value_too_large",
-        RequestIssueKind::MissingVariable => "missing_variable",
-        RequestIssueKind::CyclicVariable => "cyclic_variable",
-        RequestIssueKind::MissingSecret => "missing_secret",
-    }
-}
-
-#[must_use]
 pub const fn http_version(version: HttpVersion) -> &'static str {
     match version {
         HttpVersion::Http09 => "HTTP/0.9",
@@ -492,7 +478,7 @@ pub fn duration_ns(duration: Duration) -> u64 {
 
 pub trait TransportObserver: Send + Sync {
     fn prepared(&self, snapshot: &PreparedRunSnapshotDocument);
-    fn head(&self, head: &wirebolt_core::RunHead, warnings: &[RequestIssueDocument]);
+    fn head(&self, head: &wirebolt_core::RunHead, warnings: &[FailureIssue]);
     fn chunk(&self, bytes: &[u8]) -> bool;
     fn cookies(&self, url: &str, headers: Vec<(String, String)>);
     fn complete(&self, bytes_received: u64, bytes_decoded: u64, total_time: Duration);
@@ -527,7 +513,7 @@ pub async fn execute<R>(
         }
     };
     observer.prepared(&snapshot);
-    let warnings: Vec<RequestIssueDocument> = prepared
+    let warnings: Vec<FailureIssue> = prepared
         .warnings()
         .iter()
         .cloned()
@@ -590,7 +576,7 @@ impl std::fmt::Debug for StreamBatch {
 }
 impl StreamBatch {
     fn append(self: &Arc<Self>, bytes: &[u8]) -> bool {
-        let mut state = super::run::lock(&self.state);
+        let mut state = crate::lock(&self.state);
         if state.terminated || state.stopped {
             return false;
         }
@@ -610,7 +596,7 @@ impl StreamBatch {
         !state.stopped
     }
     fn flush(&self, terminal: bool) {
-        let mut state = super::run::lock(&self.state);
+        let mut state = crate::lock(&self.state);
         state.scheduled = false;
         if state.terminated {
             return;

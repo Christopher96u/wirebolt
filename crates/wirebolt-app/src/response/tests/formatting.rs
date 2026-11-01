@@ -121,7 +121,7 @@ fn hosts_require_concrete_absolute_urls() {
 fn issues_and_unknown_kinds_are_sentences() {
     let issue = FailureIssue {
         path: "url".into(),
-        kind: "missing_variable".into(),
+        kind: crate::response::ResponseIssueKind::MissingVariable,
         reference: Some("base".into()),
     };
     assert_eq!(
@@ -145,7 +145,7 @@ fn issues_and_unknown_kinds_are_sentences() {
     assert_eq!(
         describe_issue(&FailureIssue {
             path: String::new(),
-            kind: "invalid_template".into(),
+            kind: crate::response::ResponseIssueKind::InvalidTemplate,
             reference: None
         }),
         "A {{variable}} template isn’t valid."
@@ -190,5 +190,35 @@ fn failure_hosts_preserve_display_spelling_and_explicit_default_ports() {
         ("//EXAMPLE.COM/a", "EXAMPLE.COM"),
     ] {
         assert_eq!(failure_host(Some(url)).as_deref(), Some(host));
+    }
+}
+
+#[test]
+fn persisted_issue_codes_round_trip_including_unknown_codes() {
+    for code in [
+        "invalid_method",
+        "invalid_url",
+        "invalid_header_name",
+        "invalid_header_value",
+        "conflicting_header",
+        "invalid_json",
+        "invalid_body",
+        "file_unavailable",
+        "invalid_template",
+        "template_too_deep",
+        "resolved_value_too_large",
+        "missing_variable",
+        "unresolved_value",
+        "cyclic_variable",
+        "missing_secret",
+        "future_issue",
+    ] {
+        let source = serde_json::json!({"path":"body", "kind":code, "reference":"token"});
+        let issue: FailureIssue = serde_json::from_value(source.clone()).unwrap();
+        assert_eq!(issue.kind.code(), code);
+        assert_eq!(serde_json::to_value(&issue).unwrap(), source);
+        if code == "future_issue" {
+            assert_eq!(describe_issue(&issue), "Future issue. (body)");
+        }
     }
 }

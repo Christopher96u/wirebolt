@@ -8,15 +8,13 @@ use super::io::{
 use super::{
     SessionWorkspaceCommand, SessionWorkspaceEdit, SessionWorkspacePlan, WorkspaceSession,
 };
+use crate::lock;
 use crate::{
     domain::{
         DomainLocation, DomainRequestDraft, DomainWorkspace,
         request::{own_auth, request_references},
     },
-    session::{
-        run::lock,
-        secrets::{SessionSecretPlatform, SessionSecrets},
-    },
+    session::secrets::{SessionSecretPlatform, SessionSecrets},
 };
 use std::{
     collections::{HashMap, HashSet},

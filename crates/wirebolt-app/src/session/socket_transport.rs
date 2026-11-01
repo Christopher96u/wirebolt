@@ -105,3 +105,161 @@ where
         }
     }
 }
+
+/// Updates the retained socket in Rust and publishes at most one delta per frame.
+///
+/// # Errors
+/// Returns the connection, preparation or receive error after publishing its final state.
+pub async fn run_websocket_session<R>(
+    input: DomainRunInput,
+    messages: Receiver<WebSocketFrame>,
+    cancellation: CancellationToken,
+    state: std::sync::Arc<std::sync::Mutex<super::websocket::SessionSocket>>,
+    generation: String,
+    emit: impl Fn(super::websocket::SessionSocketSnapshot) -> bool + Send + Sync,
+    secrets: R,
+) -> Result<(), String>
+where
+    R: wirebolt_core::SecretResolver + Send + 'static,
+{
+    let dirty = std::sync::atomic::AtomicBool::new(false);
+    let url = input.url.clone();
+    let connection = run_websocket(
+        input,
+        messages,
+        cancellation,
+        |event| {
+            let mut state = crate::lock(&state);
+            if !state.accepts(&generation) {
+                return false;
+            }
+            match event {
+                SocketEvent::Connected { headers } => state.connected(&generation, headers, &url),
+                SocketEvent::Message {
+                    data,
+                    binary,
+                    outgoing,
+                    control,
+                } => state.append(&generation, data, binary, outgoing, control),
+            }
+            dirty.store(true, std::sync::atomic::Ordering::Release);
+            true
+        },
+        secrets,
+    );
+    publish_connection(connection, &state, &generation, &dirty, emit).await
+}
+async fn publish_connection(
+    connection: impl std::future::Future<Output = Result<(), String>>,
+    state: &std::sync::Mutex<super::websocket::SessionSocket>,
+    generation: &str,
+    dirty: &std::sync::atomic::AtomicBool,
+    emit: impl Fn(super::websocket::SessionSocketSnapshot) -> bool,
+) -> Result<(), String> {
+    tokio::pin!(connection);
+    let mut sequence = crate::lock(state).snapshot_since(u64::MAX).next_sequence;
+    loop {
+        tokio::select! {
+            result = &mut connection => {
+                let snapshot = {
+                    let mut state = crate::lock(state);
+                    if !state.accepts(generation) { return result; }
+                    state.finish(generation, result.as_ref().err().cloned());
+                    state.snapshot_since(sequence)
+                };
+                emit(snapshot);
+                return result;
+            }
+            () = tokio::time::sleep(super::run::PUBLICATION_INTERVAL) => {
+                if dirty.swap(false, std::sync::atomic::Ordering::AcqRel) {
+                    let snapshot = crate::lock(state).snapshot_since(sequence);
+                    if snapshot.generation != generation { return Ok(()); }
+                    sequence = snapshot.next_sequence;
+                    if !emit(snapshot) { return Ok(()); }
+                }
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod publication_tests {
+    use super::*;
+    use crate::{
+        lock,
+        session::websocket::{SessionSocket, SessionSocketNotice, SessionSocketStatus},
+    };
+    use std::{
+        sync::{
+            Mutex,
+            atomic::{AtomicBool, Ordering},
+        },
+        time::Duration,
+    };
+    #[tokio::test]
+    async fn bursts_update_retained_state_before_batched_publication_and_flush_on_finish() {
+        let state = Mutex::new(SessionSocket::default());
+        let generation = lock(&state).begin().unwrap();
+        let dirty = AtomicBool::new(false);
+        let updates = Mutex::new(Vec::new());
+        let (published, publication) = tokio::sync::oneshot::channel();
+        let published = Mutex::new(Some(published));
+        let connection = async {
+            lock(&state).connected(&generation, vec![], "ws://fixture");
+            for i in 0_u32..1500 {
+                lock(&state).append(
+                    &generation,
+                    i.to_le_bytes().to_vec(),
+                    true,
+                    i % 2 == 0,
+                    None,
+                );
+                dirty.store(true, Ordering::Release);
+            }
+            assert_eq!(lock(&state).snapshot().messages.len(), 1000);
+            tokio::time::timeout(Duration::from_secs(5), publication)
+                .await
+                .unwrap()
+                .unwrap();
+            Err("Connection reset".into())
+        };
+        assert!(
+            publish_connection(connection, &state, &generation, &dirty, |snapshot| {
+                lock(&updates).push(snapshot);
+                if let Some(published) = lock(&published).take() {
+                    let _ = published.send(());
+                }
+                true
+            })
+            .await
+            .is_err()
+        );
+        let updates = lock(&updates);
+        assert_eq!(updates.len(), 2);
+        assert_eq!(updates[0].status, SessionSocketStatus::Connected);
+        assert_eq!(updates[0].messages.len(), 1000);
+        assert_eq!(updates[0].messages[0].data, 500_u32.to_le_bytes());
+        assert_eq!(updates[1].messages.len(), 1);
+        assert_eq!(
+            updates[1].messages[0].notice,
+            Some(SessionSocketNotice::Failed)
+        );
+        assert_eq!(updates[1].status, SessionSocketStatus::Disconnected);
+        assert_eq!(updates[1].error.as_deref(), Some("Connection reset"));
+    }
+    #[tokio::test]
+    async fn disconnected_generations_cannot_publish_late_completion() {
+        let state = Mutex::new(SessionSocket::default());
+        let generation = lock(&state).begin().unwrap();
+        lock(&state).disconnect();
+        publish_connection(
+            async { Ok(()) },
+            &state,
+            &generation,
+            &AtomicBool::new(true),
+            |_| panic!("stale publication"),
+        )
+        .await
+        .unwrap();
+    }
+}

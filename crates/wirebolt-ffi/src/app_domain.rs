@@ -3,7 +3,8 @@
     clippy::needless_pass_by_value,
     reason = "UniFFI functions lift owned records and strings across the bridge."
 )]
-use crate::{WorkspaceBridge, app_response::lock};
+use crate::WorkspaceBridge;
+use crate::lock;
 use std::{collections::HashMap, sync::Arc};
 pub(crate) use wirebolt_app::domain::request::DomainGitChangeKind;
 use wirebolt_app::domain::theme::{DensityTokens, GeometryTokens};
@@ -20,12 +21,12 @@ use wirebolt_app::domain::{
         DomainValueSource, DomainVariable, DomainWorkspace,
     },
     oauth::{
-        DomainNetworkFailure, DomainOAuthError, DomainOAuthPlatform, DomainOAuthProxy,
-        DomainTokenReceipt,
+        DomainNetworkFailure, DomainOAuthError, DomainOAuthHeaders, DomainOAuthPlatform,
+        DomainOAuthProxy, DomainTokenReceipt,
     },
     proxy::{
         ConnectionProbe, DomainProxySource, ProbeState, ProxyFormInput, ProxyFormMode,
-        ProxyRouteInput,
+        ProxyRouteInput, ResolvedDomainProxy,
     },
     sidebar::{
         DomainSidebarCollection, DomainSidebarRequest, SidebarIndex, SidebarOutcome, SidebarRow,
@@ -407,9 +408,14 @@ pub enum DomainOAuthError {
     StateMismatch,
     MissingAuthorizationCode,
     ClientSecretUnavailable,
-    TokenEndpointRejected { status: u16 },
+    TokenEndpointRejected {
+        status: u16,
+    },
     InvalidTokenResponse,
-    TransportFailure { kind: DomainNetworkFailure },
+    TransportFailure {
+        kind: DomainNetworkFailure,
+        host: Option<String>,
+    },
 }
 
 #[uniffi::remote(Record)]
@@ -419,12 +425,12 @@ pub struct DomainTokenReceipt {
     pub scope: Option<String>,
 }
 
-/// Native services start a browser hop and complete its Rust-owned result once.
+/// Native browser presentation, system proxy decisions and HTTP request defaults.
 #[uniffi::export(with_foreign)]
 pub trait OAuthPlatform: Send + Sync {
     fn system_proxies(&self, url: String) -> Vec<DomainOAuthProxy>;
     fn authorize(&self, url: String, callback_scheme: String, completion: Arc<OAuthAuthorization>);
-    fn read_secret(&self, name: String) -> Option<String>;
+    fn request_headers(&self, completion: Arc<OAuthHeadersReply>);
 }
 #[derive(Debug, uniffi::Object)]
 pub struct OAuthAuthorization {
@@ -444,6 +450,20 @@ impl OAuthAuthorization {
         }
     }
 }
+#[derive(Debug, uniffi::Object)]
+pub struct OAuthHeadersReply {
+    sender: std::sync::Mutex<Option<tokio::sync::oneshot::Sender<DomainOAuthHeaders>>>,
+}
+#[uniffi::export]
+impl OAuthHeadersReply {
+    pub fn complete(&self, headers: DomainOAuthHeaders) {
+        if let Some(sender) = lock(&self.sender).take() {
+            let _ = sender.send(headers);
+        }
+    }
+}
+#[cfg(target_vendor = "apple")]
+mod oauth_tls;
 struct PlatformAdapter(Arc<dyn OAuthPlatform>);
 #[async_trait::async_trait]
 impl DomainOAuthPlatform for PlatformAdapter {
@@ -467,8 +487,30 @@ impl DomainOAuthPlatform for PlatformAdapter {
             .await
             .unwrap_or(Err(DomainOAuthError::AuthorizationFailed))
     }
+    async fn request_headers(&self) -> DomainOAuthHeaders {
+        let (sender, receiver) = tokio::sync::oneshot::channel();
+        self.0.request_headers(Arc::new(OAuthHeadersReply {
+            sender: std::sync::Mutex::new(Some(sender)),
+        }));
+        receiver.await.unwrap_or_default()
+    }
+    fn tls_verifier(&self) -> Option<Arc<dyn rustls::client::danger::ServerCertVerifier>> {
+        #[cfg(target_vendor = "apple")]
+        {
+            oauth_tls::verifier()
+        }
+        #[cfg(not(target_vendor = "apple"))]
+        {
+            None
+        }
+    }
     async fn read_secret(&self, name: String) -> Option<String> {
-        self.0.read_secret(name)
+        wirebolt_app::session::persistence::WorkspaceSecrets::read(
+            &crate::PlatformWorkspaceSecrets,
+            &name,
+        )
+        .ok()
+        .flatten()
     }
 }
 #[uniffi::export(async_runtime = "tokio")]
@@ -534,7 +576,7 @@ pub struct OwnedAuthentication {
     pub authentication: DomainAuthentication,
     pub renames: HashMap<String, String>,
 }
-#[derive(Clone, Debug, uniffi::Record)]
+#[uniffi::remote(Record)]
 pub struct ResolvedDomainProxy {
     pub configuration: DomainProxy,
     pub source: DomainProxySource,
@@ -764,13 +806,7 @@ pub fn domain_resolve_proxy(
     workspace: Option<DomainProxy>,
     app: DomainProxy,
 ) -> ResolvedDomainProxy {
-    {
-        let (configuration, source) = domain::proxy::resolve(request, workspace, app);
-        ResolvedDomainProxy {
-            configuration,
-            source,
-        }
-    }
+    domain::proxy::resolve(request, workspace, app)
 }
 
 #[uniffi::export]
@@ -1335,8 +1371,12 @@ mod tests {
             );
             completion.complete(None, true);
         }
-        fn read_secret(&self, _name: String) -> Option<String> {
-            Some("fixture".into())
+        fn request_headers(&self, completion: Arc<OAuthHeadersReply>) {
+            completion.complete(DomainOAuthHeaders {
+                user_agent: "fixture".into(),
+                accept_language: "en-AU,en;q=0.9".into(),
+            });
+            completion.complete(DomainOAuthHeaders::default());
         }
     }
     #[tokio::test]
@@ -1349,10 +1389,8 @@ mod tests {
                 .unwrap(),
             "wirebolt://oauth/callback?state=s&code=first"
         );
-        assert_eq!(
-            adapter.read_secret("reference".into()).await.as_deref(),
-            Some("fixture")
-        );
+        assert_eq!(adapter.read_secret(String::new()).await, None);
+        assert_eq!(adapter.request_headers().await.user_agent, "fixture");
     }
 }
 use domain::variables::{CatalogIndex, NameMatch, VariableComparison};
@@ -1430,6 +1468,19 @@ pub enum DomainNetworkFailure {
     Certificate,
     Tls,
     Decode,
+    Cancelled,
+    TooManyRedirects,
+    UnsupportedUrl,
+    NoPermissionsToReadFile,
+    CannotParseResponse,
+    CertificateExpired,
+    CertificateNotYetValid,
+    Unknown,
+}
+#[uniffi::remote(Record)]
+pub struct DomainOAuthHeaders {
+    pub user_agent: String,
+    pub accept_language: String,
 }
 
 use domain::request::UrlQueryEdit;

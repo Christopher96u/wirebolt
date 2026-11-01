@@ -14,6 +14,9 @@ pub(super) async fn exchange(
     form: &str,
     platform: &dyn DomainOAuthPlatform,
 ) -> Result<Response, DomainOAuthError> {
+    if let Some(error) = non_http_error(&url) {
+        return Err(error);
+    }
     let cookies = Arc::new(Jar::default());
     let deadline = Instant::now() + Duration::from_hours(168);
     let mut method = Method::POST;
@@ -47,10 +50,14 @@ pub(super) async fn exchange(
         else {
             return Ok(response);
         };
-        if redirects == 20 || !matches!(next.scheme(), "http" | "https") {
+        if redirects == 20 {
             return Err(DomainOAuthError::TransportFailure {
-                kind: DomainNetworkFailure::ConnectionLost,
+                kind: DomainNetworkFailure::TooManyRedirects,
+                host: url.host_str().map(str::to_owned),
             });
+        }
+        if let Some(error) = non_http_error(&next) {
+            return Err(error);
         }
         if matches!(
             response.status(),
@@ -70,7 +77,22 @@ pub(super) async fn exchange(
         url = next;
     }
     Err(DomainOAuthError::TransportFailure {
-        kind: DomainNetworkFailure::ConnectionLost,
+        kind: DomainNetworkFailure::TooManyRedirects,
+        host: url.host_str().map(str::to_owned),
+    })
+}
+
+fn non_http_error(url: &Url) -> Option<DomainOAuthError> {
+    let kind = match url.scheme() {
+        "http" | "https" => return None,
+        "data" => return Some(DomainOAuthError::InvalidTokenResponse),
+        "file" => DomainNetworkFailure::NoPermissionsToReadFile,
+        "ftp" => DomainNetworkFailure::Unknown,
+        _ => DomainNetworkFailure::UnsupportedUrl,
+    };
+    Some(DomainOAuthError::TransportFailure {
+        kind,
+        host: url.host_str().map(str::to_owned),
     })
 }
 
@@ -84,11 +106,18 @@ async fn send(
     deadline: Instant,
 ) -> Result<Response, DomainOAuthError> {
     let routes = platform.system_proxies(url.as_str());
+    let headers = platform.request_headers().await;
     for (index, route) in routes.iter().enumerate() {
-        let client = client(route, cookies.clone())?;
+        let client = client(route, cookies.clone(), platform)?;
         let mut request = client
             .request(method.clone(), url.clone())
             .timeout(deadline.saturating_duration_since(Instant::now()));
+        if !headers.user_agent.is_empty() {
+            request = request.header(header::USER_AGENT, &headers.user_agent);
+        }
+        if !headers.accept_language.is_empty() {
+            request = request.header(header::ACCEPT_LANGUAGE, &headers.accept_language);
+        }
         if *method == Method::POST {
             request = request
                 .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
@@ -104,19 +133,33 @@ async fn send(
             Err(error)
                 if error.is_connect()
                     && index + 1 < routes.len()
-                    && !matches!(
-                        super::network_failure(&error),
-                        DomainNetworkFailure::Certificate | DomainNetworkFailure::Tls
-                    ) => {}
+                    && !super::network_failure(&error).is_tls() => {}
             Err(error) => return Err(network_error(&error)),
         }
     }
     Err(DomainOAuthError::InvalidTokenResponse)
 }
 
-fn client(route: &DomainOAuthProxy, cookies: Arc<Jar>) -> Result<Client, DomainOAuthError> {
+fn client(
+    route: &DomainOAuthProxy,
+    cookies: Arc<Jar>,
+    platform: &dyn DomainOAuthPlatform,
+) -> Result<Client, DomainOAuthError> {
     // Automatic discovery considers environment variables before system settings.
-    let mut builder = Client::builder().no_proxy();
+    let mut builder = Client::builder()
+        .no_proxy()
+        .dns_resolver(Arc::new(super::network::SystemResolver));
+    if let Some(verifier) = platform.tls_verifier() {
+        let provider = Arc::new(rustls::crypto::aws_lc_rs::default_provider());
+        let mut tls = rustls::ClientConfig::builder_with_provider(provider)
+            .with_safe_default_protocol_versions()
+            .map_err(|_| DomainOAuthError::InvalidTokenResponse)?
+            .dangerous()
+            .with_custom_certificate_verifier(verifier)
+            .with_no_client_auth();
+        tls.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
+        builder = builder.tls_backend_preconfigured(tls);
+    }
     if let DomainOAuthProxy::Proxy { endpoint } = route {
         builder = builder.proxy(
             reqwest::Proxy::all(endpoint).map_err(|_| DomainOAuthError::InvalidTokenResponse)?,

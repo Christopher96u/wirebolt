@@ -212,6 +212,13 @@ struct Platform {
 }
 #[async_trait::async_trait]
 impl DomainOAuthPlatform for Platform {
+    async fn request_headers(&self) -> DomainOAuthHeaders {
+        DomainOAuthHeaders {
+            user_agent: "Wirebolt/1 CFNetwork/fixture Darwin/fixture".into(),
+            accept_language: "en-AU,en;q=0.9".into(),
+        }
+    }
+
     fn system_proxies(&self, url: &str) -> Vec<DomainOAuthProxy> {
         self.proxy_urls.lock().unwrap().push(url.into());
         if let Some(candidates) = &self.candidates {
@@ -276,7 +283,10 @@ async fn client_credentials_exchange_preserves_form_and_receipt() {
     assert_eq!(receipt.token, "fixture-token");
     assert_eq!(receipt.scope.as_deref(), Some("read"));
     assert!(receipt.expires_at.is_some());
-    let form = captured_form(&server.join().unwrap());
+    let request = server.join().unwrap();
+    assert!(request.contains("user-agent: Wirebolt/1 CFNetwork/fixture Darwin/fixture\r\n"));
+    assert!(request.contains("accept-language: en-AU,en;q=0.9\r\n"));
+    let form = captured_form(&request);
     assert_eq!(form["grant_type"], "client_credentials");
     assert_eq!(form["client_secret"], "a+b&c=d");
     assert_eq!(form["scope"], "read write");
@@ -554,4 +564,86 @@ async fn oauth_redirects_preserve_methods_cookies_and_full_destination_urls() {
             ]
         );
     }
+}
+
+#[tokio::test]
+async fn oauth_redirect_failures_preserve_native_error_classes() {
+    use std::io::Write as _;
+    for (location, expected) in [
+        (
+            "wirebolt://oauth/callback",
+            Some(DomainNetworkFailure::UnsupportedUrl),
+        ),
+        (
+            "file:///tmp/token",
+            Some(DomainNetworkFailure::NoPermissionsToReadFile),
+        ),
+        ("ftp://localhost/token", Some(DomainNetworkFailure::Unknown)),
+        ("data:application/json,{}", None),
+        ("/token", Some(DomainNetworkFailure::TooManyRedirects)),
+    ] {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = std::thread::spawn(move || {
+            for _ in 0..if location == "/token" { 21 } else { 1 } {
+                let (mut stream, _) = listener.accept().unwrap();
+                read_request(&mut stream);
+                write!(stream, "HTTP/1.1 302 Found\r\nLocation: {location}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").unwrap();
+            }
+        });
+        let mut c = configuration();
+        c.grant = DomainOAuthGrant::ClientCredentials;
+        c.client_id = "client".into();
+        c.token_url = format!("http://{address}/token");
+        let error = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            acquire(c, Arc::new(Platform::default())),
+        )
+        .await
+        .unwrap()
+        .unwrap_err();
+        assert_eq!(
+            error,
+            expected.map_or(DomainOAuthError::InvalidTokenResponse, |kind| {
+                DomainOAuthError::TransportFailure {
+                    kind,
+                    host: match location {
+                        "wirebolt://oauth/callback" => Some("oauth".into()),
+                        "ftp://localhost/token" => Some("localhost".into()),
+                        "/token" => Some("127.0.0.1".into()),
+                        _ => None,
+                    },
+                }
+            })
+        );
+        server.join().unwrap();
+    }
+}
+#[tokio::test]
+async fn oauth_dns_refusal_and_connection_loss_have_distinct_typed_causes() {
+    let client = reqwest::Client::builder().no_proxy().build().unwrap();
+    let unused = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let url = format!("http://{}/token", unused.local_addr().unwrap());
+    drop(unused);
+    assert_eq!(
+        network_failure(&client.get(url).send().await.unwrap_err()),
+        DomainNetworkFailure::CannotConnect
+    );
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = std::thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        read_request(&mut stream);
+    });
+    assert_eq!(
+        network_failure(
+            &client
+                .post(format!("http://{address}/token"))
+                .send()
+                .await
+                .unwrap_err()
+        ),
+        DomainNetworkFailure::ConnectionLost
+    );
+    server.join().unwrap();
 }

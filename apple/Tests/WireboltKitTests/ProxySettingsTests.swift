@@ -232,7 +232,7 @@ private actor ProxyRunner: RequestRunner {
 
 private final class ProxySocketConnector: WebSocketConnecting {
     let input = Mutex<RunInput?>(nil)
-    func connection(for input: RunInput) -> any WebSocketTransport {
+    func connection(for input: RunInput, state: AppSessionSocket, generation: String) -> any WebSocketTransport {
         self.input.withLock { $0 = input }
         return ProxySocketTransport()
     }

@@ -1,5 +1,6 @@
 use super::{actions::WorkspaceAction as Action, io::*, operations::*, *};
-use crate::session::run::lock;
+use crate::lock;
+
 use crate::{
     domain::*,
     session::{

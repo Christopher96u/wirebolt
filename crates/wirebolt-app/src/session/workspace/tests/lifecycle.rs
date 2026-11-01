@@ -1,4 +1,5 @@
 use super::*;
+use crate::lock;
 use crate::session::workspace::lifecycle as policy;
 use std::collections::HashMap;
 #[test]

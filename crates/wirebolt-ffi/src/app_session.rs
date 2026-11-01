@@ -10,16 +10,16 @@ use wirebolt_app::{
     domain::{
         DomainAuthentication, DomainBody, DomainCollection, DomainEnvironment, DomainGroup,
         DomainLocation, DomainOAuthConfiguration, DomainProxy, DomainRequestDraft, DomainRunInput,
-        DomainTransport, DomainValueSource, DomainWorkspace, request::PushAvailability,
+        DomainTransport, DomainValueSource, DomainWorkspace, proxy::ResolvedDomainProxy,
+        request::PushAvailability,
     },
     response::{ResponseHeaderValue, StoredCookie},
     session::{
         history::SessionHistoryEntry,
         persistence::{SessionCommandBatchResult, SessionWorkspaceDelta, SessionWorkspaceNodeKind},
         run::{
-            DocumentRun, SessionCompletion, SessionFailure, SessionHead, SessionIssue,
-            SessionPrepared, SessionPreparedBody, SessionPreparedHeader, SessionProxy,
-            SessionProxySource, SessionRunEvent, SessionRunSnapshot, lock,
+            DocumentRun, SessionCompletion, SessionFailure, SessionHead, SessionPrepared,
+            SessionPreparedBody, SessionPreparedHeader, SessionRunEvent, SessionRunSnapshot,
         },
         runtime as app_runtime,
         runtime::{
@@ -66,6 +66,7 @@ mod tabs;
 pub use tabs::*;
 mod secrets;
 mod websocket;
+pub use websocket::AppSessionSocket;
 mod workspace;
 pub use secrets::*;
 mod history;

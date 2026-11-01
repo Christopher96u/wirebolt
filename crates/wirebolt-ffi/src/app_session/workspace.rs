@@ -14,8 +14,9 @@ use super::{
     WorkspaceExport, WorkspaceFailure, WorkspaceGitAction, WorkspaceGitOperation,
     WorkspaceGitStatus, WorkspaceImport, WorkspaceImportFile, WorkspaceImportSummary,
     WorkspaceLoad, WorkspaceMutation, WorkspacePresentation, WorkspaceRepositoryProblem,
-    WorkspaceRestore, WorkspaceSave, WorkspaceSelectionProblem, WorkspaceUndoToken, lock,
+    WorkspaceRestore, WorkspaceSave, WorkspaceSelectionProblem, WorkspaceUndoToken,
 };
+use crate::lock;
 #[uniffi::remote(Enum)]
 pub enum SessionWorkspaceEdit {
     RestoreEnvironment {

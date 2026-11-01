@@ -6,8 +6,9 @@
 use super::{
     Arc, DomainRequestDraft, DomainRunInput, DomainValueSource, DomainWorkspace, HashMap, Mutex,
     RuntimeContext, RuntimeObserverAdapter, SessionDocument, SessionRuntimeObserver,
-    WorkspaceBridge, app_runtime, lock,
+    WorkspaceBridge, app_runtime,
 };
+use crate::lock;
 #[derive(Clone, Copy, Debug, uniffi::Enum)]
 pub enum SessionSecretOperation {
     Read,

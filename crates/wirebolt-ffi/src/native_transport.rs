@@ -9,11 +9,7 @@ use wirebolt_app::{
     response::ResponseHeaderValue,
     session::{
         runtime,
-        socket_transport::SocketEvent,
-        transport::{
-            self, PreparedRunSnapshotDocument, RequestIssueDocument, RunFailureDocument,
-            TransportObserver,
-        },
+        transport::{self, PreparedRunSnapshotDocument, RunFailureDocument, TransportObserver},
     },
 };
 use wirebolt_core::RunCancellation;
@@ -28,14 +24,11 @@ pub trait SessionRequestObserver: Send + Sync {
 struct RequestObserver(Arc<dyn SessionRequestObserver>);
 impl TransportObserver for RequestObserver {
     fn prepared(&self, snapshot: &PreparedRunSnapshotDocument) {
-        match SessionPrepared::try_from(snapshot) {
-            Ok(snapshot) => self.0.event(SessionRunEvent::Prepared { snapshot }),
-            Err(_) => self.0.finish(Some(SessionFailure::new(
-                wirebolt_app::response::ResponseFailureKind::Bridge,
-            ))),
-        }
+        self.0.event(SessionRunEvent::Prepared {
+            snapshot: SessionPrepared::from(snapshot),
+        });
     }
-    fn head(&self, head: &wirebolt_core::RunHead, _: &[RequestIssueDocument]) {
+    fn head(&self, head: &wirebolt_core::RunHead, _: &[wirebolt_app::response::FailureIssue]) {
         self.0.event(SessionRunEvent::Head {
             head: SessionHead::from(head),
         });
@@ -112,21 +105,9 @@ impl Drop for AppRequestRun {
     }
 }
 
-#[uniffi::remote(Enum)]
-pub enum SocketEvent {
-    Connected {
-        headers: Vec<ResponseHeaderValue>,
-    },
-    Message {
-        data: Vec<u8>,
-        binary: bool,
-        outgoing: bool,
-        control: Option<String>,
-    },
-}
 #[uniffi::export(with_foreign)]
 pub trait SessionSocketObserver: Send + Sync {
-    fn event(&self, event: SocketEvent) -> bool;
+    fn update(&self, snapshot: wirebolt_app::session::websocket::SessionSocketSnapshot) -> bool;
     fn finish(&self, reason: Option<String>);
 }
 #[derive(Debug, uniffi::Object)]
@@ -137,28 +118,44 @@ pub struct AppSocketConnection {
 #[uniffi::export]
 impl AppSocketConnection {
     #[uniffi::constructor]
-    pub fn start(input: DomainRunInput, observer: Arc<dyn SessionSocketObserver>) -> Arc<Self> {
+    pub fn start(
+        input: DomainRunInput,
+        state: Arc<crate::app_session::AppSessionSocket>,
+        generation: String,
+        observer: Arc<dyn SessionSocketObserver>,
+    ) -> Arc<Self> {
         let cancellation = tokio_util::sync::CancellationToken::new();
         let worker = cancellation.clone();
         let (sender, receiver) = tokio::sync::mpsc::channel(4);
         if let Some(runtime) = crate::SHARED_RUNTIME.as_ref() {
             runtime.spawn(async move {
                 let terminal = observer.clone();
-                let task = tokio::spawn(wirebolt_app::session::socket_transport::run_websocket(
-                    input,
-                    receiver,
-                    worker,
-                    move |event| observer.event(event),
-                    runtime_secrets(),
-                ));
-                let reason = match task.await {
-                    Ok(result) => result.err(),
-                    Err(_) => Some("The WebSocket connection failed.".into()),
+                let task = tokio::spawn(
+                    wirebolt_app::session::socket_transport::run_websocket_session(
+                        input,
+                        receiver,
+                        worker,
+                        state.inner.clone(),
+                        generation.clone(),
+                        move |snapshot| observer.update(snapshot),
+                        runtime_secrets(),
+                    ),
+                );
+                let reason = if let Ok(result) = task.await {
+                    result.err()
+                } else {
+                    let reason = "The WebSocket connection failed.".to_owned();
+                    state.finish(generation, Some(reason.clone()));
+                    terminal.update(state.snapshot(0));
+                    Some(reason)
                 };
                 terminal.finish(reason);
             });
         } else {
-            observer.finish(Some("The connection could not be started.".into()));
+            let reason = "The connection could not be started.".to_owned();
+            state.finish(generation, Some(reason.clone()));
+            observer.update(state.snapshot(0));
+            observer.finish(Some(reason));
         }
         Arc::new(Self {
             sender,
@@ -200,12 +197,20 @@ mod tests {
     use std::sync::mpsc;
     struct Collector(mpsc::Sender<Option<String>>);
     impl SessionSocketObserver for Collector {
-        fn event(&self, _: SocketEvent) -> bool {
+        fn update(&self, _: wirebolt_app::session::websocket::SessionSocketSnapshot) -> bool {
             true
         }
         fn finish(&self, reason: Option<String>) {
             let _ = self.0.send(reason);
         }
+    }
+    fn start_socket(
+        input: DomainRunInput,
+        observer: Arc<dyn SessionSocketObserver>,
+    ) -> Arc<AppSocketConnection> {
+        let state = crate::app_session::AppSessionSocket::new();
+        let generation = state.begin().unwrap();
+        AppSocketConnection::start(input, state, generation, observer)
     }
     fn input(url: String) -> DomainRunInput {
         wirebolt_app::domain::request::run_input(
@@ -258,7 +263,7 @@ mod tests {
             }],
         });
         let (sender, receiver) = mpsc::channel();
-        let session = AppSocketConnection::start(input, Arc::new(Collector(sender)));
+        let session = start_socket(input, Arc::new(Collector(sender)));
         assert!(
             receiver
                 .recv_timeout(Duration::from_secs(5))
@@ -274,8 +279,7 @@ mod tests {
     #[test]
     fn invalid_connection_has_one_terminal_callback() {
         let (sender, receiver) = mpsc::channel();
-        let session =
-            AppSocketConnection::start(input("not a URL".into()), Arc::new(Collector(sender)));
+        let session = start_socket(input("not a URL".into()), Arc::new(Collector(sender)));
         assert!(
             receiver
                 .recv_timeout(Duration::from_secs(5))
@@ -305,7 +309,7 @@ mod tests {
         let mut input = input(format!("ws://{address}/echo"));
         input.total_timeout_ms = 0;
         let (sender, receiver) = mpsc::channel();
-        let session = AppSocketConnection::start(input, Arc::new(Collector(sender)));
+        let session = start_socket(input, Arc::new(Collector(sender)));
         waiting.recv_timeout(Duration::from_secs(5)).unwrap();
         session.cancel();
         assert!(

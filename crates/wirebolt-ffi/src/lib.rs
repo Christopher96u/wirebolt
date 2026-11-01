@@ -8,30 +8,25 @@ mod native_transport;
 
 #[cfg(test)]
 use wirebolt_app::session::transport::{HttpEngineCache, timeout_from_millis};
-use wirebolt_app::session::transport::{
-    RunFailureDocument, clear_manual_http_engines, shared_http_engine,
-};
+use wirebolt_app::session::transport::{clear_manual_http_engines, shared_http_engine};
 
 use std::{
-    collections::BTreeMap,
     error::Error,
     fmt,
     sync::{Arc, LazyLock},
 };
 
 #[cfg(test)]
-use serde::Serialize;
+use std::collections::BTreeMap;
+use wirebolt_app::lock;
 #[cfg(not(target_vendor = "apple"))]
 use wirebolt_core::NoSecrets;
 #[cfg(test)]
 use wirebolt_core::{
-    Collection, HttpEngine, Request, RequestHeader, ResolvedProxy, Workspace, WorkspaceDocument,
-    WorkspaceStore,
+    Collection, DocumentId, Environment, HttpEngine, Request, RequestHeader, ResolvedProxy,
+    ValueSource, Workspace, WorkspaceDocument, WorkspaceStore,
 };
-use wirebolt_core::{
-    DocumentId, Environment, HttpEngineConfig, ProxyMode, ProxyPolicy, RequestPipeline, SecretName,
-    ValueSource,
-};
+use wirebolt_core::{HttpEngineConfig, ProxyMode, ProxyPolicy, SecretName};
 
 #[derive(Debug, Eq, PartialEq, uniffi::Record)]
 pub struct CoreHandshake {
@@ -219,46 +214,6 @@ pub fn prepare_request(
     })
 }
 
-#[uniffi::export]
-/// Resolves values with the transport's template rules, without sending a request.
-/// This is only for runtime routing and explicit exports, never persisted snapshots.
-///
-/// # Errors
-/// Returns a redacted preparation failure for invalid input, templates or missing secrets.
-#[allow(clippy::needless_pass_by_value)] // UniFFI exports require owned strings.
-pub fn resolve_request_values(
-    values_json: String,
-    variables_json: String,
-) -> Result<Vec<String>, RequestPreparationError> {
-    let invalid = || RequestPreparationError::InvalidRequest {
-        reason: "invalid resolution input".to_owned(),
-    };
-    let values: Vec<ValueSource> = serde_json::from_str(&values_json).map_err(|_| invalid())?;
-    let variables: BTreeMap<String, ValueSource> =
-        serde_json::from_str(&variables_json).map_err(|_| invalid())?;
-    let environment = Environment::new(
-        DocumentId::new("active").map_err(|_| invalid())?,
-        "Active".to_owned(),
-        variables,
-    );
-    #[cfg(target_vendor = "apple")]
-    let secrets = wirebolt_core::KeychainSecretResolver::default();
-    #[cfg(not(target_vendor = "apple"))]
-    let secrets = NoSecrets;
-    RequestPipeline::new(Some(&environment), &secrets)
-        .resolve_values(&values)
-        .map_err(|error| {
-            let failure = RunFailureDocument {
-                kind: wirebolt_app::response::ResponseFailureKind::InvalidRequest,
-                issues: error.issues.into_iter().map(Into::into).collect(),
-            };
-            RequestPreparationError::InvalidRequest {
-                reason: serde_json::to_string(&failure)
-                    .unwrap_or_else(|_| "invalid resolution input".to_owned()),
-            }
-        })
-}
-
 #[unsafe(no_mangle)]
 pub extern "C" fn wirebolt_stream_abi_version() -> u32 {
     wirebolt_core::STREAM_ABI_VERSION
@@ -369,149 +324,24 @@ impl WorkspaceBridge {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::ffi::c_void;
-    use wirebolt_app::session::transport::{
-        PreparedRunSnapshotDocument, RequestIssueDocument, RunInput, duration_ns, http_version,
-    };
-    use wirebolt_core::{RunCancellation, RunHead};
-    #[repr(C)]
-    #[derive(Clone, Copy, Debug)]
-    pub struct TransportCallbacks {
-        pub prepared: Option<extern "C" fn(*mut c_void, *const u8, usize)>,
-        pub head: Option<extern "C" fn(*mut c_void, *const u8, usize)>,
-        pub chunk: Option<extern "C" fn(*mut c_void, *const u8, usize) -> u8>,
-        pub complete: Option<extern "C" fn(*mut c_void, *const u8, usize)>,
-        pub error: Option<extern "C" fn(*mut c_void, *const u8, usize)>,
-        pub cookies: Option<extern "C" fn(*mut c_void, *const u8, usize)>,
-    }
-
-    #[derive(Debug, Serialize)]
-    struct ResponseHeadDocument<'a> {
-        status: u16,
-        version: &'static str,
-        headers: Vec<ResponseHeaderDocument<'a>>,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        remote_addr: Option<String>,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        content_encoding: Option<&'static str>,
-        warnings: &'a [RequestIssueDocument],
-        time_to_headers_ns: u64,
-    }
-
-    #[derive(Debug, Serialize)]
-    struct ResponseHeaderDocument<'a> {
-        name: &'a str,
-        value: std::borrow::Cow<'a, str>,
-    }
-
-    #[derive(Debug, Serialize)]
-    struct RunCompleteDocument {
-        bytes_received: u64,
-        bytes_decoded: u64,
-        total_time_ns: u64,
-    }
-
-    #[derive(Debug)]
-    struct NativeTransportObserver {
-        callbacks: TransportCallbacks,
-        context: usize,
-    }
-    impl wirebolt_app::session::transport::TransportObserver for NativeTransportObserver {
-        fn prepared(&self, snapshot: &PreparedRunSnapshotDocument) {
-            emit_json(self.callbacks.prepared, self.context, snapshot);
-        }
-        fn head(&self, head: &RunHead, warnings: &[RequestIssueDocument]) {
-            emit_head(&self.callbacks, self.context, head, warnings);
-        }
-        fn chunk(&self, bytes: &[u8]) -> bool {
-            self.callbacks.chunk.is_some_and(|callback| {
-                callback(self.context as *mut c_void, bytes.as_ptr(), bytes.len()) != 0
-            })
-        }
-        fn cookies(&self, url: &str, headers: Vec<(String, String)>) {
-            let values: Vec<_> = headers
-                .iter()
-                .map(|(name, value)| ResponseHeaderDocument {
-                    name,
-                    value: std::borrow::Cow::Borrowed(value),
-                })
-                .collect();
-            emit_json(
-                self.callbacks.cookies,
-                self.context,
-                &serde_json::json!({"url":url,"headers":values}),
-            );
-        }
-        fn complete(&self, bytes_received: u64, bytes_decoded: u64, total_time: Duration) {
-            emit_json(
-                self.callbacks.complete,
-                self.context,
-                &RunCompleteDocument {
-                    bytes_received,
-                    bytes_decoded,
-                    total_time_ns: duration_ns(total_time),
-                },
-            );
-        }
-        fn failure(&self, failure: &RunFailureDocument) {
-            emit_failure(&self.callbacks, self.context, failure);
-        }
-    }
-
-    fn emit_head(
-        callbacks: &TransportCallbacks,
-        context: usize,
-        head: &RunHead,
-        warnings: &[RequestIssueDocument],
-    ) {
-        emit_json(
-            callbacks.head,
-            context,
-            &ResponseHeadDocument {
-                status: head.status,
-                version: http_version(head.version),
-                headers: head
-                    .headers
-                    .iter()
-                    .map(|(name, value)| ResponseHeaderDocument {
-                        name: name.as_str(),
-                        value: String::from_utf8_lossy(value.as_bytes()),
-                    })
-                    .collect(),
-                remote_addr: head.remote_addr.map(|address| address.to_string()),
-                content_encoding: head
-                    .content_encoding
-                    .map(wirebolt_core::ContentEncoding::token),
-                warnings,
-                time_to_headers_ns: duration_ns(head.time_to_headers),
-            },
-        );
-    }
-
-    fn emit_failure(callbacks: &TransportCallbacks, context: usize, failure: &RunFailureDocument) {
-        emit_json(callbacks.error, context, failure);
-    }
-
-    fn emit_json<T: Serialize>(
-        callback: Option<extern "C" fn(*mut c_void, *const u8, usize)>,
-        context: usize,
-        value: &T,
-    ) {
-        let Some(callback) = callback else { return };
-        let Ok(json) = serde_json::to_vec(value) else {
-            return;
-        };
-        callback(context as *mut c_void, json.as_ptr(), json.len());
-    }
-
     use std::{
         io::{Read, Write},
         net::TcpListener,
         process::Command,
-        sync::{Condvar, Mutex},
+        sync::Mutex,
         thread,
         time::Duration,
     };
+    use wirebolt_app::{
+        response::FailureIssue,
+        session::{
+            run::{SessionFailure, SessionPrepared},
+            transport::{
+                PreparedRunSnapshotDocument, RunFailureDocument, RunInput, TransportObserver,
+            },
+        },
+    };
+    use wirebolt_core::{RunCancellation, RunHead};
 
     use wirebolt_app::{
         domain::{DomainCollection, DomainGroup, DomainLocation, DomainRequestDraft},
@@ -782,13 +612,11 @@ mod tests {
         drop(unused);
         let input = serde_json::json!({"method":"GET", "url":format!("http://{}/must-not-arrive", destination.local_addr().unwrap()),
             "app_proxy":{"mode":"manual", "routes":[{"destination":"all", "endpoint":format!("http://{proxy_address}")}]}});
-        let (events, pointer) = run_to_completion(&input.to_string());
-        // SAFETY: The worker has joined and this is the sole free of its context.
-        let state = unsafe { Box::from_raw(pointer) };
+        let (events, state) = run_to_completion(&input.to_string());
         assert_eq!(events, ["prepared", "error"]);
         assert_eq!(
-            state.failure.lock().unwrap().as_ref().unwrap()["kind"],
-            "connection"
+            state.failure.lock().unwrap().as_ref().unwrap().kind,
+            wirebolt_app::response::ResponseFailureKind::Connection
         );
         assert!(
             matches!(destination.accept(), Err(error) if error.kind() == std::io::ErrorKind::WouldBlock)
@@ -839,18 +667,23 @@ mod tests {
             if direct {
                 input["request_proxy"] = serde_json::json!({"mode":"direct"});
             }
-            let (events, pointer) = run_to_completion(&input.to_string());
-            // SAFETY: run_to_completion joined the worker and this is the sole free.
-            let state = unsafe { Box::from_raw(pointer) };
+            let (events, state) = run_to_completion(&input.to_string());
             assert_eq!(events, ["prepared", "head", "chunk:pong", "complete"]);
             let snapshot = state.prepared.lock().unwrap().clone().unwrap();
             assert_eq!(
-                snapshot["proxy"]["source"],
-                if direct { "request" } else { "app_default" }
+                snapshot.proxy.as_ref().unwrap().source,
+                if direct {
+                    wirebolt_app::domain::proxy::DomainProxySource::Request
+                } else {
+                    wirebolt_app::domain::proxy::DomainProxySource::AppDefault
+                }
             );
             assert_eq!(
-                snapshot["proxy"]["configuration"]["mode"],
-                if direct { "direct" } else { "manual" }
+                matches!(
+                    snapshot.proxy.unwrap().configuration,
+                    wirebolt_app::domain::DomainProxy::Direct
+                ),
+                direct
             );
             let request = server.join().unwrap();
             assert!(request.starts_with(if direct {
@@ -1071,7 +904,7 @@ mod tests {
     }
 
     #[test]
-    fn stream_abi_delivers_head_chunks_and_completion_in_order() {
+    fn transport_observer_delivers_head_chunks_and_completion_in_order() {
         let listener = TcpListener::bind("127.0.0.1:0").expect("bind loopback server");
         let address = listener.local_addr().expect("loopback address");
         let server = thread::spawn(move || {
@@ -1090,24 +923,20 @@ mod tests {
             "workspace_proxy": { "mode": "direct" }
         })
         .to_string();
-        let (events, state_pointer) = run_to_completion(&input);
+        let (events, _state) = run_to_completion(&input);
         server.join().expect("HTTP server");
         assert_eq!(events, ["prepared", "head", "chunk:pong", "complete"]);
-        // SAFETY: The callback context is no longer used after session join.
-        drop(unsafe { Box::from_raw(state_pointer) });
     }
 
     #[test]
-    fn failure_documents_always_carry_an_issues_array() {
+    fn transport_failures_retain_kind_and_empty_issues() {
         let input = serde_json::json!({
             "method": "GET",
             "url": "http://127.0.0.1:1/refused",
             "workspace_proxy": { "mode": "direct" }
         })
         .to_string();
-        let (events, state_pointer) = run_to_completion(&input);
-        // SAFETY: The callback context is no longer used after session join.
-        let state = unsafe { Box::from_raw(state_pointer) };
+        let (events, state) = run_to_completion(&input);
 
         assert_eq!(events, ["prepared", "error"]);
         let failure = state
@@ -1116,8 +945,11 @@ mod tests {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clone()
             .expect("failure document");
-        assert!(failure["issues"].is_array(), "{failure}");
-        assert_eq!(failure["kind"], "connection");
+        assert!(failure.issues.is_empty());
+        assert_eq!(
+            failure.kind,
+            wirebolt_app::response::ResponseFailureKind::Connection
+        );
     }
 
     #[test]
@@ -1494,20 +1326,8 @@ mod tests {
         assert_eq!(timeout_from_millis(250), Some(Duration::from_millis(250)));
     }
 
-    fn run_to_completion(input: &str) -> (Vec<String>, *mut CallbackState) {
-        let state_pointer = Box::into_raw(Box::new(CallbackState::default()));
-        let callbacks = TransportCallbacks {
-            cookies: None,
-            prepared: Some(record_prepared),
-            head: Some(record_head),
-            chunk: Some(record_chunk),
-            complete: Some(record_complete),
-            error: Some(record_error),
-        };
-        let observer = Arc::new(NativeTransportObserver {
-            callbacks,
-            context: state_pointer as usize,
-        });
+    fn run_to_completion(input: &str) -> (Vec<String>, Arc<TestTransportObserver>) {
+        let observer = Arc::new(TestTransportObserver::default());
         let input: RunInput = serde_json::from_str(input).unwrap();
         SHARED_RUNTIME
             .as_ref()
@@ -1515,115 +1335,46 @@ mod tests {
             .block_on(wirebolt_app::session::transport::execute(
                 input,
                 RunCancellation::new(),
-                observer,
+                observer.clone(),
                 wirebolt_core::NoSecrets,
             ));
-        // SAFETY: This test owns the allocation until the caller releases it.
-        let events = unsafe { &*state_pointer }.wait_for_terminal();
-        (events, state_pointer)
+        let events = lock(&observer.events).clone();
+        assert!(
+            events
+                .last()
+                .is_some_and(|event| matches!(event.as_str(), "complete" | "error"))
+        );
+        (events, observer)
     }
     #[derive(Debug, Default)]
-    struct CallbackState {
+    struct TestTransportObserver {
         events: Mutex<Vec<String>>,
-        failure: Mutex<Option<serde_json::Value>>,
-        prepared: Mutex<Option<serde_json::Value>>,
-        terminal: Condvar,
+        failure: Mutex<Option<SessionFailure>>,
+        prepared: Mutex<Option<SessionPrepared>>,
     }
-
-    impl CallbackState {
-        fn wait_for_terminal(&self) -> Vec<String> {
-            let events = self
-                .events
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            let (events, timeout) = self
-                .terminal
-                .wait_timeout_while(events, Duration::from_secs(5), |events| {
-                    !events
-                        .last()
-                        .is_some_and(|event| matches!(event.as_str(), "complete" | "error"))
-                })
-                .expect("wait for terminal callback");
-            assert!(!timeout.timed_out(), "run callback timed out");
-            events.clone()
+    impl TransportObserver for TestTransportObserver {
+        fn prepared(&self, snapshot: &PreparedRunSnapshotDocument) {
+            assert_eq!(snapshot.method, "GET");
+            *lock(&self.prepared) = Some(SessionPrepared::from(snapshot));
+            lock(&self.events).push("prepared".into());
         }
-    }
-
-    extern "C" fn record_prepared(context: *mut c_void, json: *const u8, length: usize) {
-        let state = callback_state(context);
-        let document: serde_json::Value =
-            serde_json::from_slice(callback_bytes(json, length)).expect("prepared snapshot JSON");
-        assert_eq!(document["method"], "GET");
-        assert!(document["headers"].is_array());
-        *state.prepared.lock().unwrap() = Some(document);
-        state
-            .events
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .push("prepared".to_owned());
-    }
-
-    extern "C" fn record_head(context: *mut c_void, json: *const u8, length: usize) {
-        let state = callback_state(context);
-        let document = callback_bytes(json, length);
-        let head: serde_json::Value = serde_json::from_slice(document).expect("head JSON");
-        assert_eq!(head["status"], 200);
-        assert!(head["warnings"].is_array());
-        state
-            .events
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .push("head".to_owned());
-    }
-
-    extern "C" fn record_chunk(context: *mut c_void, bytes: *const u8, length: usize) -> u8 {
-        let state = callback_state(context);
-        let body = String::from_utf8_lossy(callback_bytes(bytes, length));
-        state
-            .events
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .push(format!("chunk:{body}"));
-        1
-    }
-
-    extern "C" fn record_complete(context: *mut c_void, json: *const u8, length: usize) {
-        let state = callback_state(context);
-        let document: serde_json::Value =
-            serde_json::from_slice(callback_bytes(json, length)).expect("completion JSON");
-        assert_eq!(document["bytes_received"], 4);
-        assert_eq!(document["bytes_decoded"], 4);
-        state
-            .events
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .push("complete".to_owned());
-        state.terminal.notify_all();
-    }
-
-    extern "C" fn record_error(context: *mut c_void, json: *const u8, length: usize) {
-        let state = callback_state(context);
-        let document: serde_json::Value =
-            serde_json::from_slice(callback_bytes(json, length)).expect("failure JSON");
-        *state
-            .failure
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(document);
-        state
-            .events
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .push("error".to_owned());
-        state.terminal.notify_all();
-    }
-
-    fn callback_state(context: *mut c_void) -> &'static CallbackState {
-        // SAFETY: Tests pass a live `CallbackState` for every callback.
-        unsafe { &*context.cast::<CallbackState>() }
-    }
-
-    fn callback_bytes(pointer: *const u8, length: usize) -> &'static [u8] {
-        // SAFETY: The ABI guarantees readable bytes for the callback duration.
-        unsafe { std::slice::from_raw_parts(pointer, length) }
+        fn head(&self, head: &RunHead, _: &[FailureIssue]) {
+            assert_eq!(head.status, 200);
+            lock(&self.events).push("head".into());
+        }
+        fn chunk(&self, bytes: &[u8]) -> bool {
+            lock(&self.events).push(format!("chunk:{}", String::from_utf8_lossy(bytes)));
+            true
+        }
+        fn cookies(&self, _: &str, _: Vec<(String, String)>) {}
+        fn complete(&self, received: u64, decoded: u64, _: Duration) {
+            assert_eq!(received, 4);
+            assert_eq!(decoded, 4);
+            lock(&self.events).push("complete".into());
+        }
+        fn failure(&self, failure: &RunFailureDocument) {
+            *lock(&self.failure) = Some(SessionFailure::from(failure));
+            lock(&self.events).push("error".into());
+        }
     }
 }

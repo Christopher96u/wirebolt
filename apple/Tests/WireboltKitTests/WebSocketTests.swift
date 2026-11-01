@@ -1,4 +1,5 @@
 import Foundation
+import Observation
 import Synchronization
 import Testing
 @testable import WireboltKit
@@ -134,6 +135,38 @@ struct WebSocketTests {
         #expect(state.messages.last?.text == "Connection reset")
     }
 
+    @Test("Batched socket projections ignore duplicate and cleared messages")
+    @MainActor
+    func batchedProjection() async throws {
+        let state = WebSocketDocumentState()
+        let socket = SocketFixture()
+        let connector = RetainedSocketConnector(socket: socket)
+        state.connect(input: input, connector: connector)
+        let retained = try #require(connector.retained)
+        let generation = retained.snapshot(since: 0).generation
+        retained.connected(generation: generation, headers: [], url: input.url)
+        retained.append(generation: generation, data: Data("first".utf8), binary: false, outgoing: false, control: nil)
+        let first = retained.snapshot(since: 0)
+        socket.yield(.state(first))
+        socket.yield(.state(first))
+        await eventually { state.messages.count == 2 }
+        #expect(state.messages.map(\.text) == ["Connected to \(input.url)", "first"])
+        let statusChanged = Mutex(false)
+        withObservationTracking { _ = state.status } onChange: { statusChanged.withLock { $0 = true } }
+        state.clearMessages()
+        socket.yield(.state(first))
+        retained.append(generation: generation, data: Data("second".utf8), binary: false, outgoing: false, control: nil)
+        socket.yield(.state(retained.snapshot(since: 0)))
+        await eventually { state.messages.last?.text == "second" }
+        #expect(state.messages.map(\.text) == ["second"])
+        #expect(!statusChanged.withLock { $0 })
+        retained.finish(generation: generation, error: nil)
+        socket.yield(.state(retained.snapshot(since: first.nextSequence)))
+        socket.finish()
+        await eventually { state.status == .disconnected }
+        #expect(state.messages.map(\.notice) == [nil, .disconnected])
+    }
+
     private var input: RunInput { RunInput(draft: RequestDraft(url: "ws://127.0.0.1/echo"), variables: [:]) }
 
     @MainActor
@@ -148,7 +181,7 @@ struct WebSocketTests {
 
 private struct SocketConnector: WebSocketConnecting {
     let socket: SocketFixture
-    func connection(for input: RunInput) -> any WebSocketTransport { socket }
+    func connection(for input: RunInput, state: AppSessionSocket, generation: String) -> any WebSocketTransport { socket }
 }
 
 private final class SocketFixture: WebSocketTransport {
@@ -174,4 +207,15 @@ private final class SocketFixture: WebSocketTransport {
         }
     }
     func disconnect() { state.withLock { $0.disconnections += 1 } }
+}
+
+private final class RetainedSocketConnector: WebSocketConnecting, Sendable {
+    let socket: SocketFixture
+    private let holder = Mutex<AppSessionSocket?>(nil)
+    var retained: AppSessionSocket? { holder.withLock { $0 } }
+    init(socket: SocketFixture) { self.socket = socket }
+    func connection(for input: RunInput, state: AppSessionSocket, generation: String) -> any WebSocketTransport {
+        holder.withLock { $0 = state }
+        return socket
+    }
 }

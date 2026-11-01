@@ -248,63 +248,56 @@ impl RunHistory {
             maximum_bytes: 2 * 1024 * 1024 * 1024,
         }
     }
-    fn entries(&mut self) -> ResponseResult<&mut Vec<HistoryEntry>> {
+    fn entries(&mut self) -> &mut Vec<HistoryEntry> {
         if self.entries.is_none() {
-            let entries = match fs::read(self.root.join("index.json")) {
-                Ok(data) => serde_json::from_slice(&data).map_err(|error| json_io(&error))?,
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => vec![],
-                Err(error) => return Err(error.into()),
-            };
+            let entries = fs::read(self.root.join("index.json"))
+                .ok()
+                .and_then(|data| serde_json::from_slice(&data).ok())
+                .unwrap_or_default();
             self.entries = Some(entries);
         }
-        Ok(self.entries.as_mut().expect("history was loaded"))
+        self.entries.as_mut().expect("history was loaded")
     }
     /// # Errors
     /// Returns an I/O error if the body or index cannot be stored.
     pub fn record(&mut self, mut entry: HistoryEntry, body: &BodyStore) -> ResponseResult<()> {
-        self.entries()?;
         fs::create_dir_all(&self.root)?;
         let destination = self.root.join(format!("{}.body", entry.id));
         body.export(&destination)?;
         entry.body_path = destination.to_string_lossy().into_owned();
         let request_id = entry.request_id.clone();
-        self.entries()?.push(entry);
+        self.entries().push(entry);
         let mut matching: Vec<_> = self
-            .entries()?
+            .entries()
             .iter()
             .filter(|e| e.request_id == request_id)
             .cloned()
             .collect();
         matching.sort_by(|a, b| b.created_at.total_cmp(&a.created_at));
         for entry in matching.into_iter().skip(self.maximum_entries) {
-            self.evict(&entry)?;
+            self.evict(&entry);
         }
-        let mut total: u64 = self
-            .entries()?
-            .iter()
-            .map(|e| file_size(&e.body_path))
-            .sum();
-        let mut oldest = self.entries()?.clone();
+        let mut total: u64 = self.entries().iter().map(|e| file_size(&e.body_path)).sum();
+        let mut oldest = self.entries().clone();
         oldest.sort_by(|a, b| a.created_at.total_cmp(&b.created_at));
         for entry in oldest {
             if total <= self.maximum_bytes {
                 break;
             }
             total = total.saturating_sub(file_size(&entry.body_path));
-            self.evict(&entry)?;
+            self.evict(&entry);
         }
         self.persist()
     }
-    fn evict(&mut self, entry: &HistoryEntry) -> ResponseResult<()> {
-        self.entries()?.retain(|e| e.id != entry.id);
+    fn evict(&mut self, entry: &HistoryEntry) {
+        self.entries().retain(|e| e.id != entry.id);
         let _ = fs::remove_file(&entry.body_path);
-        Ok(())
     }
     /// # Errors
-    /// Returns an error if the saved history index cannot be read.
+    /// Unavailable or invalid indexes are treated as empty history.
     pub fn list(&mut self, request_id: &str) -> ResponseResult<Vec<HistoryEntry>> {
         let mut entries: Vec<_> = self
-            .entries()?
+            .entries()
             .iter()
             .filter(|e| e.request_id == request_id)
             .cloned()
@@ -313,10 +306,10 @@ impl RunHistory {
         Ok(entries)
     }
     /// # Errors
-    /// Returns an error if the saved history index cannot be read.
+    /// Unavailable or invalid indexes are treated as empty history.
     pub fn count(&mut self, request_id: &str) -> ResponseResult<u64> {
         Ok(count(
-            self.entries()?
+            self.entries()
                 .iter()
                 .filter(|e| e.request_id == request_id)
                 .count(),
@@ -326,12 +319,12 @@ impl RunHistory {
     /// Returns an I/O error if writing the index fails.
     pub fn clear(&mut self, request_id: &str) -> ResponseResult<()> {
         for entry in self.list(request_id)? {
-            self.evict(&entry)?;
+            self.evict(&entry);
         }
         self.persist()
     }
     fn persist(&mut self) -> ResponseResult<()> {
-        let data = serde_json::to_vec(self.entries()?).map_err(|e| json_io(&e))?;
+        let data = serde_json::to_vec(self.entries()).map_err(|e| json_io(&e))?;
         atomic_write(&self.root.join("index.json"), &data)
     }
 }

@@ -1,4 +1,5 @@
 use super::*;
+use crate::lock;
 #[derive(Debug, Default)]
 struct Settings {
     writes: Mutex<Vec<(RuntimeProxyScope, Option<DomainProxy>)>>,
@@ -226,7 +227,10 @@ async fn curl_missing_secret_preserves_validation_failure() {
         error.kind,
         crate::response::ResponseFailureKind::InvalidRequest
     );
-    assert_eq!(error.issues[0].kind, "missing_secret");
+    assert_eq!(
+        error.issues[0].kind,
+        crate::response::ResponseIssueKind::MissingSecret
+    );
 }
 #[tokio::test]
 async fn socket_captures_policy_and_inherits_transport_until_reconnect() {

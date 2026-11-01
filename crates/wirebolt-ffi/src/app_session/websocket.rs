@@ -5,9 +5,9 @@
 )]
 use super::{
     Arc, DomainBody, Mutex, ResponseHeaderValue, SessionSocket, SessionSocketMessage,
-    SessionSocketNotice, SessionSocketSnapshot, SessionSocketStatus, decode_binary, lock,
-    message_body,
+    SessionSocketNotice, SessionSocketSnapshot, SessionSocketStatus, decode_binary, message_body,
 };
+use crate::lock;
 #[uniffi::remote(Enum)]
 pub enum SessionSocketStatus {
     Disconnected,
@@ -47,7 +47,7 @@ pub struct SessionSocketSnapshot {
 
 #[derive(Debug, uniffi::Object)]
 pub struct AppSessionSocket {
-    pub(super) inner: Mutex<SessionSocket>,
+    pub(crate) inner: Arc<Mutex<SessionSocket>>,
 }
 
 #[uniffi::export]
@@ -55,7 +55,7 @@ impl AppSessionSocket {
     #[uniffi::constructor]
     pub fn new() -> Arc<Self> {
         Arc::new(Self {
-            inner: Mutex::new(SessionSocket::default()),
+            inner: Arc::new(Mutex::new(SessionSocket::default())),
         })
     }
     pub fn snapshot(&self, since: u64) -> SessionSocketSnapshot {

@@ -1,7 +1,10 @@
-//! OAuth 2 protocol computation; only browser presentation and Keychain cross a foreign trait.
+//! OAuth 2 protocol computation over browser, credential, trust and native HTTP adapters.
+mod network;
 mod transport;
 use super::models::{DomainOAuthConfiguration, DomainOAuthGrant};
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
+use network::network_error;
+pub use network::network_failure;
 use sha2::{Digest, Sha256};
 use std::{
     collections::BTreeMap,
@@ -17,9 +20,14 @@ pub enum DomainOAuthError {
     StateMismatch,
     MissingAuthorizationCode,
     ClientSecretUnavailable,
-    TokenEndpointRejected { status: u16 },
+    TokenEndpointRejected {
+        status: u16,
+    },
     InvalidTokenResponse,
-    TransportFailure { kind: DomainNetworkFailure },
+    TransportFailure {
+        kind: DomainNetworkFailure,
+        host: Option<String>,
+    },
 }
 impl std::fmt::Display for DomainOAuthError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -58,6 +66,14 @@ pub trait DomainOAuthPlatform: Send + Sync {
     /// Environment proxy variables are deliberately outside OAuth's transport policy.
     fn system_proxies(&self, _url: &str) -> Vec<DomainOAuthProxy> {
         vec![DomainOAuthProxy::Direct]
+    }
+
+    async fn request_headers(&self) -> DomainOAuthHeaders {
+        DomainOAuthHeaders::default()
+    }
+
+    fn tls_verifier(&self) -> Option<Arc<dyn rustls::client::danger::ServerCertVerifier>> {
+        None
     }
 
     async fn authorize(
@@ -299,47 +315,25 @@ pub enum DomainNetworkFailure {
     Certificate,
     Tls,
     Decode,
+    Cancelled,
+    TooManyRedirects,
+    UnsupportedUrl,
+    NoPermissionsToReadFile,
+    CannotParseResponse,
+    CertificateExpired,
+    CertificateNotYetValid,
+    Unknown,
 }
-fn network_error(error: &reqwest::Error) -> DomainOAuthError {
-    DomainOAuthError::TransportFailure {
-        kind: network_failure(error),
+impl DomainNetworkFailure {
+    pub(super) fn is_tls(&self) -> bool {
+        matches!(
+            self,
+            Self::Certificate | Self::CertificateExpired | Self::CertificateNotYetValid | Self::Tls
+        )
     }
 }
-#[must_use]
-pub fn network_failure(error: &reqwest::Error) -> DomainNetworkFailure {
-    use std::error::Error as _;
-    if error.is_timeout() {
-        return DomainNetworkFailure::Timeout;
-    }
-    if error.is_decode() {
-        return DomainNetworkFailure::Decode;
-    }
-    let mut cause = error.source();
-    let mut descriptions = String::new();
-    while let Some(source) = cause {
-        if let Some(io) = source.downcast_ref::<std::io::Error>() {
-            match io.kind() {
-                std::io::ErrorKind::NetworkUnreachable | std::io::ErrorKind::HostUnreachable => {
-                    return DomainNetworkFailure::Offline;
-                }
-                std::io::ErrorKind::ConnectionRefused => {
-                    return DomainNetworkFailure::CannotConnect;
-                }
-                _ => {}
-            }
-        }
-        descriptions.push_str(&source.to_string().to_lowercase());
-        cause = source.source();
-    }
-    if descriptions.contains("certificate") {
-        DomainNetworkFailure::Certificate
-    } else if descriptions.contains("tls") || descriptions.contains("ssl") {
-        DomainNetworkFailure::Tls
-    } else if descriptions.contains("dns") || descriptions.contains("lookup") {
-        DomainNetworkFailure::HostNotFound
-    } else if error.is_connect() {
-        DomainNetworkFailure::CannotConnect
-    } else {
-        DomainNetworkFailure::ConnectionLost
-    }
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct DomainOAuthHeaders {
+    pub user_agent: String,
+    pub accept_language: String,
 }

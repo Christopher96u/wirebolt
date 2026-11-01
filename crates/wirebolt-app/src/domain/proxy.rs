@@ -83,16 +83,33 @@ pub fn validate(proxy: &DomainProxy) -> Result<(), String> {
     }
     Ok(())
 }
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct ResolvedDomainProxy {
+    pub configuration: DomainProxy,
+    pub source: DomainProxySource,
+}
 #[must_use]
 pub fn resolve(
     request: Option<DomainProxy>,
     workspace: Option<DomainProxy>,
     app: DomainProxy,
-) -> (DomainProxy, DomainProxySource) {
-    request
-        .map(|p| (p, DomainProxySource::Request))
-        .or_else(|| workspace.map(|p| (p, DomainProxySource::Workspace)))
-        .unwrap_or((app, DomainProxySource::AppDefault))
+) -> ResolvedDomainProxy {
+    if let Some(configuration) = request {
+        ResolvedDomainProxy {
+            configuration,
+            source: DomainProxySource::Request,
+        }
+    } else if let Some(configuration) = workspace {
+        ResolvedDomainProxy {
+            configuration,
+            source: DomainProxySource::Workspace,
+        }
+    } else {
+        ResolvedDomainProxy {
+            configuration: app,
+            source: DomainProxySource::AppDefault,
+        }
+    }
 }
 #[must_use]
 pub fn summary(proxy: &DomainProxy, url: Option<&str>) -> String {

@@ -1,8 +1,11 @@
 //! Document run state. Transport ingress and presentation publication are separate so
 //! a burst never requires a foreign call for each chunk.
+use crate::lock;
 use crate::{
-    domain::{DomainProxy, DomainTransport},
-    response::{BodyProgress, BodyStore, ResponseHeaderValue, StoredCookie, reference_time},
+    domain::{DomainTransport, proxy::ResolvedDomainProxy},
+    response::{
+        BodyProgress, BodyStore, FailureIssue, ResponseHeaderValue, StoredCookie, reference_time,
+    },
 };
 use serde::{Deserialize, Serialize};
 use std::{
@@ -27,15 +30,9 @@ pub struct SessionCompletion {
     pub total_time_ns: u64,
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct SessionIssue {
-    pub path: String,
-    pub kind: String,
-    pub reference: Option<String>,
-}
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SessionFailure {
     pub kind: crate::response::ResponseFailureKind,
-    pub issues: Vec<SessionIssue>,
+    pub issues: Vec<FailureIssue>,
 }
 impl SessionFailure {
     #[must_use]
@@ -59,15 +56,9 @@ pub struct SessionPreparedBody {
     pub text_preview: Option<String>,
     pub redacted: bool,
 }
-pub use crate::domain::proxy::DomainProxySource as SessionProxySource;
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct SessionProxy {
-    pub configuration: DomainProxy,
-    pub source: SessionProxySource,
-}
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SessionPrepared {
-    pub proxy: Option<SessionProxy>,
+    pub proxy: Option<ResolvedDomainProxy>,
     pub method: String,
     pub url: String,
     pub headers: Vec<SessionPreparedHeader>,
@@ -290,15 +281,11 @@ impl DocumentRun {
         self.publication = None;
     }
 }
-pub use crate::lock;
 
-impl TryFrom<&super::transport::PreparedRunSnapshotDocument> for SessionPrepared {
-    type Error = serde_json::Error;
-    fn try_from(
-        snapshot: &super::transport::PreparedRunSnapshotDocument,
-    ) -> Result<Self, Self::Error> {
-        Ok(Self {
-            proxy: serde_json::from_value(snapshot.proxy.clone())?,
+impl From<&super::transport::PreparedRunSnapshotDocument> for SessionPrepared {
+    fn from(snapshot: &super::transport::PreparedRunSnapshotDocument) -> Self {
+        Self {
+            proxy: Some(snapshot.proxy.clone()),
             method: snapshot.method.clone(),
             url: snapshot.url.clone(),
             headers: snapshot
@@ -317,7 +304,7 @@ impl TryFrom<&super::transport::PreparedRunSnapshotDocument> for SessionPrepared
                 redacted: snapshot.body.redacted,
             },
             transport: super::conversions::transport_from_core(snapshot.transport.clone()),
-        })
+        }
     }
 }
 impl From<&wirebolt_core::RunHead> for SessionHead {
@@ -341,15 +328,7 @@ impl From<&super::transport::RunFailureDocument> for SessionFailure {
     fn from(failure: &super::transport::RunFailureDocument) -> Self {
         Self {
             kind: failure.kind.clone(),
-            issues: failure
-                .issues
-                .iter()
-                .map(|i| SessionIssue {
-                    path: i.path.clone(),
-                    kind: i.kind.into(),
-                    reference: i.reference.clone(),
-                })
-                .collect(),
+            issues: failure.issues.clone(),
         }
     }
 }

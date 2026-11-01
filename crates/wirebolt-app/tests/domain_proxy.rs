@@ -7,17 +7,26 @@ fn precedence_replaces_the_whole_policy() {
     for app in [manual(), DomainProxy::System, DomainProxy::Direct] {
         assert_eq!(
             resolve(None, None, app.clone()),
-            (app.clone(), DomainProxySource::AppDefault)
+            ResolvedDomainProxy {
+                configuration: app.clone(),
+                source: DomainProxySource::AppDefault
+            }
         );
         for workspace in [manual(), DomainProxy::System, DomainProxy::Direct] {
             assert_eq!(
                 resolve(None, Some(workspace.clone()), app.clone()),
-                (workspace.clone(), DomainProxySource::Workspace)
+                ResolvedDomainProxy {
+                    configuration: workspace.clone(),
+                    source: DomainProxySource::Workspace
+                }
             );
             for request in [manual(), DomainProxy::System, DomainProxy::Direct] {
                 assert_eq!(
                     resolve(Some(request.clone()), Some(workspace.clone()), app.clone()),
-                    (request, DomainProxySource::Request)
+                    ResolvedDomainProxy {
+                        configuration: request,
+                        source: DomainProxySource::Request
+                    }
                 );
             }
         }

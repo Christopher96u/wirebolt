@@ -201,18 +201,62 @@ fn cookie_dates_preserve_pre_epoch_expiry_two_digit_years_and_named_timezones() 
 }
 
 #[test]
-fn corrupt_history_reports_errors_and_never_overwrites_the_index() {
+fn corrupt_history_loads_empty_and_next_write_repairs_the_index() {
     let root = tempfile::tempdir().unwrap();
     let index = root.path().join("index.json");
     let original = br#"[{"id":"broken","requestID":"health","prepared":false}]"#;
     std::fs::write(&index, original).unwrap();
     let mut history = RunHistory::new(root.path().into());
-    assert!(history.list("health").is_err());
-    assert!(history.count("health").is_err());
-    assert!(history.clear("health").is_err());
-    assert_eq!(std::fs::read(&index).unwrap(), original);
-    std::fs::write(&index, b"[]").unwrap();
     assert!(history.list("health").unwrap().is_empty());
+    assert_eq!(history.count("health").unwrap(), 0);
+    assert_eq!(std::fs::read(&index).unwrap(), original);
+    history.clear("health").unwrap();
+    assert_eq!(std::fs::read(&index).unwrap(), b"[]");
+
+    std::fs::write(&index, original).unwrap();
+    let mut history = RunHistory::new(root.path().into());
+    let source = r#"{"id":"new-run","requestID":"health","createdAt":42,"prepared":{"proxy":null,"method":"GET","url":"https://example.com","headers":[],"body":{"byte_count":0,"content_type":null,"text_preview":null,"redacted":false},"transport":{"validate_tls":true,"follow_redirects":true,"maximum_redirects":10,"total_timeout_ms":0,"read_timeout_ms":0,"client_certificate_reference":null,"custom_ca_path":null}},"bodyPath":""}"#;
+    let mut body = BodyStore::new("source", root.path()).unwrap();
+    body.append(b"saved response").unwrap();
+    body.finish().unwrap();
+    history
+        .record(serde_json::from_str(source).unwrap(), &body)
+        .unwrap();
+    let entries = RunHistory::new(root.path().into()).list("health").unwrap();
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0].id, "new-run");
+    assert_eq!(
+        std::fs::read(&entries[0].body_path).unwrap(),
+        b"saved response"
+    );
+}
+
+#[test]
+fn failed_body_export_does_not_load_or_cache_an_unreadable_index() {
+    let root = tempfile::tempdir().unwrap();
+    let index = root.path().join("index.json");
+    std::fs::write(&index, b"corrupt index").unwrap();
+    let source = r#"{"id":"saved","requestID":"health","createdAt":42,"prepared":{"proxy":null,"method":"GET","url":"https://example.com","headers":[],"body":{"byte_count":0,"content_type":null,"text_preview":null,"redacted":false},"transport":{"validate_tls":true,"follow_redirects":true,"maximum_redirects":10,"total_timeout_ms":0,"read_timeout_ms":0,"client_certificate_reference":null,"custom_ca_path":null}},"bodyPath":""}"#;
+    let saved: HistoryEntry = serde_json::from_str(source).unwrap();
+    let mut history = RunHistory::new(root.path().into());
+    let mut body = BodyStore::new("source", root.path()).unwrap();
+    body.finish().unwrap();
+    std::fs::remove_file(body.path()).unwrap();
+    assert!(history.record(saved.clone(), &body).is_err());
+    std::fs::write(&index, serde_json::to_vec(&vec![saved.clone()]).unwrap()).unwrap();
+    assert_eq!(history.list("health").unwrap(), vec![saved]);
+}
+
+#[test]
+fn unreadable_history_index_is_cached_as_empty() {
+    let root = tempfile::tempdir().unwrap();
+    let index = root.path().join("index.json");
+    std::fs::create_dir(&index).unwrap();
+    let mut history = RunHistory::new(root.path().into());
+    assert_eq!(history.count("health").unwrap(), 0);
+    std::fs::remove_dir(&index).unwrap();
+    history.clear("health").unwrap();
+    assert_eq!(std::fs::read(&index).unwrap(), b"[]");
 }
 
 #[test]

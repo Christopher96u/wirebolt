@@ -1,6 +1,7 @@
 //! Secret editing and release policy. Material is never part of a workspace snapshot.
-use super::run::lock;
+
 use crate::domain::{DomainValueSource, request::owned_reference};
+use crate::lock;
 use async_trait::async_trait;
 use std::{
     collections::{HashMap, HashSet},

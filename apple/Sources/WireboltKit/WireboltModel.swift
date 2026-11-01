@@ -15,7 +15,7 @@ extension RequestRunner {
     public func resolveValues(_ values: [ValueSource], variables: [String: ValueSource]) async throws -> [String] {
         try values.map { value in
             guard case .literal(let text) = value, !text.contains("{{") else {
-                throw RunFailure(kind: .invalidRequest, issues: [RequestIssue(path: "values", kind: "unresolved_value", reference: nil)])
+                throw RunFailure(kind: .invalidRequest, issues: [RequestIssue(path: "values", kind: .unresolvedValue, reference: nil)])
             }
             return text
         }

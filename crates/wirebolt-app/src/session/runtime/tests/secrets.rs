@@ -1,4 +1,5 @@
 use super::*;
+use crate::lock;
 #[tokio::test]
 async fn staged_request_credentials_flush_before_transport_and_never_enter_draft() {
     let root = tempfile::tempdir().unwrap();

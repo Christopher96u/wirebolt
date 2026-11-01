@@ -2,8 +2,8 @@
 use super::{
     RuntimeAuthorizer, RuntimeObserver, RuntimeOperationError, RuntimeTokenReceipt, acquire_token,
 };
+use crate::lock;
 use crate::session::{
-    run::lock,
     secrets::{SessionSecretPlatform, SessionSecrets},
     tabs::SessionDocument,
 };

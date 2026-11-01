@@ -1,6 +1,7 @@
 //! Interface workflow policy; native focus and editor object identity remain adapters.
 use crate::domain::sidebar::{self, SidebarOutcome, SidebarRow};
-use crate::session::{run::lock, tabs::SessionCloseScope};
+use crate::lock;
+use crate::session::tabs::SessionCloseScope;
 use std::{collections::HashSet, sync::Mutex};
 #[derive(Clone, Debug, PartialEq, Eq, Default)]
 pub struct WorkspaceSidebarState {

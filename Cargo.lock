@@ -2680,10 +2680,12 @@ dependencies = [
  "async-trait",
  "base64",
  "getrandom 0.4.3",
+ "hyper",
  "idna",
  "percent-encoding",
  "regex",
  "reqwest",
+ "rustls",
  "serde",
  "serde_json",
  "sha2",
@@ -2733,6 +2735,9 @@ name = "wirebolt-ffi"
 version = "1.0.0-rc.1"
 dependencies = [
  "async-trait",
+ "rustls",
+ "rustls-platform-verifier",
+ "security-framework",
  "serde",
  "serde_json",
  "tempfile",
