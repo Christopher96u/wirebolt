@@ -1,7 +1,7 @@
 import Foundation
 
 extension BridgeSmoke {
-    /// Exercise the real C callback buffer with chunks below its 32 KiB threshold.
+    /// Exercise typed Rust transport callbacks with small streamed chunks.
     /// The server deliberately keeps the connection open after sending its body.
     static func verifySlowStreaming(_ runner: RustRequestRunner) async throws {
         let server = Process()

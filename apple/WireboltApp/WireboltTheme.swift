@@ -40,12 +40,16 @@ struct ThemeScope: ViewModifier {
             .onChange(of: density, resolve)
             .onChange(of: colorScheme, resolve)
             .onChange(of: contrast, resolve)
-            .onReceive(NSWorkspace.shared.notificationCenter.publisher(for: NSWorkspace.accessibilityDisplayOptionsDidChangeNotification)) { _ in resolve() }
+            .onReceive(NSWorkspace.shared.notificationCenter.publisher(for: NSWorkspace.accessibilityDisplayOptionsDidChangeNotification)) {
+                _ in resolve()
+            }
     }
 
     private func resolve() {
-        store.update(selection: selection, systemIsDark: colorScheme == .dark,
-            increasedContrast: contrast == .increased || NSWorkspace.shared.accessibilityDisplayShouldIncreaseContrast, density: InterfaceDensity(rawValue: density) ?? .comfortable)
+        store.update(
+            selection: selection, systemIsDark: colorScheme == .dark,
+            increasedContrast: contrast == .increased || NSWorkspace.shared.accessibilityDisplayShouldIncreaseContrast,
+            density: InterfaceDensity(rawValue: density) ?? .comfortable)
     }
 }
 
@@ -177,7 +181,9 @@ struct WireboltSwitchStyle: ToggleStyle {
         let small = controlSize == .small || controlSize == .mini
         HStack(spacing: WireboltTheme.Spacing.medium) {
             if labelsVisibility != .hidden { configuration.label }
-            Button { configuration.isOn.toggle() } label: {
+            Button {
+                configuration.isOn.toggle()
+            } label: {
                 Capsule()
                     .fill(configuration.isOn ? theme.primary.color : theme.definition.dim.color)
                     .overlay(alignment: configuration.isOn ? .trailing : .leading) {

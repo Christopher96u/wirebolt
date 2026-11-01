@@ -13,3 +13,7 @@ pub mod workspace;
 
 pub mod history;
 pub mod socket_transport;
+
+pub mod serialization;
+
+pub(crate) mod conversions;

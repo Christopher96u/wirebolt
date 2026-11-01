@@ -1,10 +1,10 @@
 import Foundation
 
 public typealias PaletteColor = RgbColor
-public extension RgbColor {
-    init(hex: UInt32) { self.init(red: UInt8((hex >> 16) & 255), green: UInt8((hex >> 8) & 255), blue: UInt8(hex & 255)) }
-    var relativeLuminance: Double { domainLuminance(color: self) }
-    func contrast(with other: PaletteColor) -> Double { domainContrast(color: self, other: other) }
+extension RgbColor {
+    public init(hex: UInt32) { self.init(red: UInt8((hex >> 16) & 255), green: UInt8((hex >> 8) & 255), blue: UInt8(hex & 255)) }
+    public var relativeLuminance: Double { domainLuminance(color: self) }
+    public func contrast(with other: PaletteColor) -> Double { domainContrast(color: self, other: other) }
 }
 public typealias AdaptivePaletteColor = AdaptiveColor
 public enum HTTPStatusClass: String, Equatable, Sendable {
@@ -25,7 +25,8 @@ public enum SemanticPalette {
     public static let yellow = domainSemantic(name: "yellow")
     public static let neutral = domainSemantic(name: "neutral")
 
-    private static let methods = Dictionary(uniqueKeysWithValues: HTTPMethod.allCases.map { ($0.rawValue, domainMethodColor(method: $0.rawValue, webSocket: false)) })
+    private static let methods = Dictionary(
+        uniqueKeysWithValues: HTTPMethod.allCases.map { ($0.rawValue, domainMethodColor(method: $0.rawValue, webSocket: false)) })
     public static func method(_ method: HTTPMethod, webSocket: Bool = false) -> AdaptivePaletteColor {
         webSocket ? indigo : methods[method.rawValue] ?? neutral
     }

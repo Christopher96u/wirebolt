@@ -10,8 +10,10 @@ public final class JSONResponseDocument: Sendable {
     init(_ rust: AppJsonDocument) {
         self.rust = rust
         let metadata = rust.metadata()
-        url = URL(fileURLWithPath: metadata.path); byteCount = metadata.byteCount
-        preview = metadata.preview; containsUnicodeEscapes = metadata.containsUnicodeEscapes
+        url = URL(fileURLWithPath: metadata.path)
+        byteCount = metadata.byteCount
+        preview = metadata.preview
+        containsUnicodeEscapes = metadata.containsUnicodeEscapes
     }
     public convenience init(sourceURL: URL, decodesUnicodeEscapes: Bool = false) throws {
         let document = try responseCall { try AppJsonDocument(path: sourceURL.path, decode: decodesUnicodeEscapes, cancellation: $0) }

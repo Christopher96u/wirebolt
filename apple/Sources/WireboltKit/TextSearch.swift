@@ -25,8 +25,10 @@ public struct TextSearchQuery: Equatable, Sendable {
     public static let maximumMatches = 20_000
 
     public init(text: String = "", matchCase: Bool = false, wholeWord: Bool = false, regularExpression: Bool = false) {
-        self.text = text; self.matchCase = matchCase
-        self.wholeWord = wholeWord; self.regularExpression = regularExpression
+        self.text = text
+        self.matchCase = matchCase
+        self.wholeWord = wholeWord
+        self.regularExpression = regularExpression
     }
     var rust: SearchQuery { SearchQuery(text: text, matchCase: matchCase, wholeWord: wholeWord, regularExpression: regularExpression) }
     public func matches(in source: String, range: NSRange? = nil) throws -> [NSRange] {
@@ -44,7 +46,9 @@ func responseAsync<T: Sendable>(_ operation: @Sendable () throws -> T) async thr
     let cancellation = AppResponseCancellation()
     return try await withTaskCancellationHandler {
         try ResponseTaskContext.$cancellation.withValue(cancellation) { try operation() }
-    } onCancel: { cancellation.cancel() }
+    } onCancel: {
+        cancellation.cancel()
+    }
 }
 func responseTask<T: Sendable>(priority: TaskPriority, operation: @escaping @Sendable () throws -> T) -> Task<T, any Error> {
     Task.detached(priority: priority) { try await responseAsync(operation) }
@@ -54,6 +58,8 @@ func responseTask<T: Sendable>(priority: TaskPriority, operation: @escaping @Sen
     return Task.detached(priority: priority) {
         await withTaskCancellationHandler {
             ResponseTaskContext.$cancellation.withValue(cancellation) { operation() }
-        } onCancel: { cancellation.cancel() }
+        } onCancel: {
+            cancellation.cancel()
+        }
     }
 }

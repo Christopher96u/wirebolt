@@ -15,10 +15,15 @@ public struct SidebarSnapshot: Sendable {
         private final class Storage: Sendable {
             let metadata: SidebarRow
             let content: Content
-            init(metadata: SidebarRow, content: Content) { self.metadata = metadata; self.content = content }
+            init(metadata: SidebarRow, content: Content) {
+                self.metadata = metadata
+                self.content = content
+            }
         }
         init(metadata: SidebarRow, content: Content) {
-            id = metadata.id; depth = Int(metadata.depth); parentID = metadata.parentId
+            id = metadata.id
+            depth = Int(metadata.depth)
+            parentID = metadata.parentId
             storage = Storage(metadata: metadata, content: content)
         }
         var metadata: SidebarRow { storage.metadata }
@@ -42,18 +47,27 @@ public struct SidebarSnapshot: Sendable {
     private let index: DomainSidebar
     public init(collections: [CollectionDraft]) {
         let content = collections.map { ($0, $0.groups, $0.requests) }
-        index = DomainSidebar(collections: content.map { collection, groups, requests in
-            DomainSidebarCollection(id: collection.id, name: collection.name, order: Int64(collection.order), groups: groups.map(\.domain), requests: requests.map { location in
-                let source = location.domain
-                return DomainSidebarRequest(id: source.request.id, collectionId: source.collectionId, groupId: source.groupId, order: source.order, name: source.request.name, method: source.request.method, url: source.request.url)
+        index = DomainSidebar(
+            collections: content.map { collection, groups, requests in
+                DomainSidebarCollection(
+                    id: collection.id, name: collection.name, order: Int64(collection.order), groups: groups.map(\.domain),
+                    requests: requests.map { location in
+                        let source = location.domain
+                        return DomainSidebarRequest(
+                            id: source.request.id, collectionId: source.collectionId, groupId: source.groupId, order: source.order,
+                            name: source.request.name, method: source.request.method, url: source.request.url)
+                    })
             })
-        })
         rows = index.rows().map { metadata in
             let (collection, groups, requests) = content[Int(metadata.collectionIndex)]
             let rowContent: Row.Content
-            if let request = metadata.requestIndex { rowContent = .request(requests[Int(request)]) }
-            else if let group = metadata.groupIndex { rowContent = .group(collection, groups[Int(group)]) }
-            else { rowContent = .collection(collection) }
+            if let request = metadata.requestIndex {
+                rowContent = .request(requests[Int(request)])
+            } else if let group = metadata.groupIndex {
+                rowContent = .group(collection, groups[Int(group)])
+            } else {
+                rowContent = .collection(collection)
+            }
             return Row(metadata: metadata, content: rowContent)
         }
     }
@@ -75,12 +89,13 @@ public enum SidebarNavigation {
     public enum Outcome: Equatable, Sendable {
         case select(String), expand(String), collapse(String), none
         init(domain: SidebarOutcome) {
-            self = switch domain {
-            case let .select(id): .select(id)
-            case let .expand(id): .expand(id)
-            case let .collapse(id): .collapse(id)
-            case .none: .none
-            }
+            self =
+                switch domain {
+                case .select(let id): .select(id)
+                case .expand(let id): .expand(id)
+                case .collapse(let id): .collapse(id)
+                case .none: .none
+                }
         }
     }
     public static func step(from current: String?, by delta: Int, in rows: [SidebarSnapshot.Row]) -> String? {
@@ -98,13 +113,13 @@ public enum SidebarNavigation {
         domainSidebarTypeSelect(rows: rows.map(\.metadata), current: current, prefix: prefix)
     }
 }
-public extension CollectionDraft {
-    func orderedChildren(parentID: String?) -> [String] { domainOrderedChildren(collection: domain, parent: parentID) }
-    func subtreeGroups(of rootID: String?) -> [GroupDraft] {
+extension CollectionDraft {
+    public func orderedChildren(parentID: String?) -> [String] { domainOrderedChildren(collection: domain, parent: parentID) }
+    public func subtreeGroups(of rootID: String?) -> [GroupDraft] {
         let groups = groups
         return domainSubtree(collection: domain, root: rootID).map { groups[Int($0)] }
     }
-    func folderOutline() -> [(group: GroupDraft, depth: Int)] {
+    public func folderOutline() -> [(group: GroupDraft, depth: Int)] {
         let groups = groups
         return domainFolderOutline(collection: domain).map { (groups[Int($0[0])], Int($0[1])) }
     }

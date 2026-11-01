@@ -8,14 +8,16 @@ public struct TextLineIndex: Sendable {
     public init(_ text: String = "") {
         rust = AppLineIndex(text: text)
         let snapshot = rust.snapshot()
-        starts = snapshot.starts.map { Int(clamping: $0) }; length = Int(clamping: snapshot.length)
+        starts = snapshot.starts.map { Int(clamping: $0) }
+        length = Int(clamping: snapshot.length)
     }
     public mutating func replace(_ range: NSRange, with text: String) {
         precondition(range.location >= 0 && NSMaxRange(range) <= length)
         let update = try! rust.replacing(range: range.responseRange, text: text)
         rust = update.index
         let change = update.change
-        let first = Int(clamping: change.first), removed = Int(clamping: change.removed)
+        let first = Int(clamping: change.first)
+        let removed = Int(clamping: change.removed)
         let inserted = change.inserted.map { Int(clamping: $0) }
         starts.replaceSubrange(first..<(first + removed), with: inserted)
         let delta = Int(clamping: change.delta)

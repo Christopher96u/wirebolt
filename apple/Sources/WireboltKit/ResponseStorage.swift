@@ -17,23 +17,34 @@ public actor ResponseBodyStore {
         rust = try AppResponseBody(runId: runID.description, directory: directory.path)
         url = URL(fileURLWithPath: rust.path())
     }
-    init(rust: AppResponseBody) { self.rust = rust; url = URL(fileURLWithPath: rust.path()); writable = false }
+    init(rust: AppResponseBody) {
+        self.rust = rust
+        url = URL(fileURLWithPath: rust.path())
+        writable = false
+    }
     public init(existingURL: URL) throws {
-        rust = try AppResponseBody.existing(path: existingURL.path); url = existingURL; writable = false
+        rust = try AppResponseBody.existing(path: existingURL.path)
+        url = existingURL
+        writable = false
     }
     public func append(_ data: Data) throws {
         if let writeError { throw writeError }
         guard writable else { throw CocoaError(.fileWriteUnknown) }
         guard !data.isEmpty else { return }
-        presentations = [:]; pending.append(data); pendingBytes += data.count
+        presentations = [:]
+        pending.append(data)
+        pendingBytes += data.count
         if pendingBytes >= Self.searchChunkByteCount || pending.count >= 64 { try flushIngress() }
     }
     func flushIngress() throws {
         if let writeError { throw writeError }
         guard !pending.isEmpty else { return }
-        do { try rust.appendBatch(chunks: pending) }
-        catch { writeError = error; throw error }
-        pending.removeAll(keepingCapacity: true); pendingBytes = 0
+        do { try rust.appendBatch(chunks: pending) } catch {
+            writeError = error
+            throw error
+        }
+        pending.removeAll(keepingCapacity: true)
+        pendingBytes = 0
     }
     public struct Progress: Sendable {
         public let bytes: UInt64
@@ -46,26 +57,44 @@ public actor ResponseBodyStore {
         let result = rust.progress()
         return Progress(bytes: result.bytes, data: result.data, text: result.text, truncated: result.truncated)
     }
-    public func finish() throws { try flushIngress(); try rust.finish(); writable = false }
+    public func finish() throws {
+        try flushIngress()
+        try rust.finish()
+        writable = false
+    }
     public func size() -> UInt64 { rust.size() + UInt64(pendingBytes) }
     public func formattedJSON(decodingUnicodeEscapes decodes: Bool = false) async throws -> JSONResponseDocument? {
         guard !writable else { return nil }
         let rust = rust
-        guard let document = try await responseAsync({ try responseCall { try rust.formattedJson(decode: decodes, cancellation: $0) } }) else { return nil }
+        guard let document = try await responseAsync({ try responseCall { try rust.formattedJson(decode: decodes, cancellation: $0) } })
+        else { return nil }
         let metadata = document.metadata()
         if let cached = presentations[metadata.path] { return cached }
-        let result = JSONResponseDocument(document); presentations[metadata.path] = result; return result
+        let result = JSONResponseDocument(document)
+        presentations[metadata.path] = result
+        return result
     }
     public func viewport(offset: UInt64 = 0, length: Int = viewportByteCount) throws -> Data {
         try flushIngress()
         return try rust.viewport(offset: offset, length: UInt64(max(0, length)))
     }
-    public func countOccurrences(of query: String) throws -> Int { try flushIngress(); return Int(clamping: try rust.countOccurrences(query: query)) }
-    public func export(to destination: URL) throws { try flushIngress(); try rust.export(destination: destination.path) }
-    public func remove() { pending = []; pendingBytes = 0; writable = false; rust.remove() }
+    public func countOccurrences(of query: String) throws -> Int {
+        try flushIngress()
+        return Int(clamping: try rust.countOccurrences(query: query))
+    }
+    public func export(to destination: URL) throws {
+        try flushIngress()
+        try rust.export(destination: destination.path)
+    }
+    public func remove() {
+        pending = []
+        pendingBytes = 0
+        writable = false
+        rust.remove()
+    }
 }
 
-public struct RunHistoryEntry: Codable, Equatable, Identifiable, Sendable {
+public struct RunHistoryEntry: Equatable, Identifiable, Sendable {
     public let id: String
     public let requestID: String
     public let createdAt: Date
@@ -81,13 +110,18 @@ public actor HistoryRepository {
     public static let maximumStoredBytes: UInt64 = 2 * 1024 * 1024 * 1024
     nonisolated let rust: AppRunHistory
     public init(root: URL? = nil) {
-        let directory = root ?? FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+        let directory =
+            root
+            ?? FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
             .appending(path: "Wirebolt/History", directoryHint: .isDirectory)
         rust = AppRunHistory(root: directory.path)
     }
-    public func record(runID: RunID, requestID: String, prepared: PreparedRunSnapshot, responseHead: ResponseHead?,
-                       completion: RunCompletion?, failure: RunFailure?, body: ResponseBodyStore) async throws {
-        let entry = RunHistoryEntry(id: runID.description, requestID: requestID, createdAt: Date(), prepared: prepared,
+    public func record(
+        runID: RunID, requestID: String, prepared: PreparedRunSnapshot, responseHead: ResponseHead?,
+        completion: RunCompletion?, failure: RunFailure?, body: ResponseBodyStore
+    ) async throws {
+        let entry = RunHistoryEntry(
+            id: runID.description, requestID: requestID, createdAt: Date(), prepared: prepared,
             responseHead: responseHead, completion: completion, failure: failure, bodyPath: "")
         try await body.flushIngress()
         try rust.recordTyped(entry: entry.sessionRecord, body: body.rust)
@@ -120,7 +154,8 @@ public actor CookieJar {
     }
     @discardableResult
     public func store(headers: [ResponseHeader], requestURL: URL) -> [CookieSnapshot] {
-        rust.store(headers: headers.map { ResponseHeaderValue(name: $0.name, value: $0.value) }, requestUrl: requestURL.absoluteString).map(CookieSnapshot.init)
+        rust.store(headers: headers.map { ResponseHeaderValue(name: $0.name, value: $0.value) }, requestUrl: requestURL.absoluteString).map(
+            CookieSnapshot.init)
     }
     public func header(for url: URL) -> String? { rust.header(url: url.absoluteString) }
     public func all() -> [CookieSnapshot] { rust.all().map(CookieSnapshot.init) }
@@ -128,19 +163,30 @@ public actor CookieJar {
     public func removeAll() { rust.removeAll() }
 }
 extension CookieSnapshot {
-    var sessionRecord: StoredCookie { StoredCookie(name: name, value: value, domain: domain, hostOnly: hostOnly, path: path, secure: secure, httpOnly: httpOnly, sameSite: sameSite, expiresAt: expiresAt?.timeIntervalSinceReferenceDate) }
+    var sessionRecord: StoredCookie {
+        StoredCookie(
+            name: name, value: value, domain: domain, hostOnly: hostOnly, path: path, secure: secure, httpOnly: httpOnly,
+            sameSite: sameSite, expiresAt: expiresAt?.timeIntervalSinceReferenceDate)
+    }
     init(_ cookie: StoredCookie) {
-        self.init(name: cookie.name, value: cookie.value, domain: cookie.domain, hostOnly: cookie.hostOnly,
+        self.init(
+            name: cookie.name, value: cookie.value, domain: cookie.domain, hostOnly: cookie.hostOnly,
             path: cookie.path, secure: cookie.secure, httpOnly: cookie.httpOnly, sameSite: cookie.sameSite,
             expiresAt: cookie.expiresAt.map { Date(timeIntervalSinceReferenceDate: $0) })
     }
 }
 
 extension RunHistoryEntry {
-    var sessionRecord: SessionHistoryEntry { SessionHistoryEntry(id: id, requestId: requestID, createdAt: createdAt.timeIntervalSinceReferenceDate,
-        prepared: prepared.sessionRecord, responseHead: responseHead?.sessionRecord, completion: completion?.sessionRecord,
-        failure: failure?.sessionRecord, bodyPath: bodyPath) }
-    init(_ record: SessionHistoryEntry) { self.init(id: record.id, requestID: record.requestId, createdAt: Date(timeIntervalSinceReferenceDate: record.createdAt),
-        prepared: PreparedRunSnapshot(record.prepared), responseHead: record.responseHead.map(ResponseHead.init),
-        completion: record.completion.map(RunCompletion.init), failure: record.failure.map(RunFailure.init), bodyPath: record.bodyPath) }
+    var sessionRecord: SessionHistoryEntry {
+        SessionHistoryEntry(
+            id: id, requestId: requestID, createdAt: createdAt.timeIntervalSinceReferenceDate,
+            prepared: prepared.sessionRecord, responseHead: responseHead?.sessionRecord, completion: completion?.sessionRecord,
+            failure: failure?.sessionRecord, bodyPath: bodyPath)
+    }
+    init(_ record: SessionHistoryEntry) {
+        self.init(
+            id: record.id, requestID: record.requestId, createdAt: Date(timeIntervalSinceReferenceDate: record.createdAt),
+            prepared: PreparedRunSnapshot(record.prepared), responseHead: record.responseHead.map(ResponseHead.init),
+            completion: record.completion.map(RunCompletion.init), failure: record.failure.map(RunFailure.init), bodyPath: record.bodyPath)
+    }
 }

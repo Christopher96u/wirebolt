@@ -155,6 +155,8 @@ fn dirty_close_retains_scope_group_and_document_order_until_confirm_or_cancel() 
         titles: vec!["A".into(), "B".into()],
     };
     ui.block_close(pending.clone());
+    assert_eq!(ui.close_request(), Some(pending.clone()));
+    assert_eq!(ui.close_request(), Some(pending.clone()));
     assert_eq!(ui.take_close(), Some(pending.clone()));
     assert!(ui.take_close().is_none());
     ui.block_close(pending);

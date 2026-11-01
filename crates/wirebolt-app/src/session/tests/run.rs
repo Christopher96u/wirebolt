@@ -195,3 +195,57 @@ fn copy_shares_completed_body_but_does_not_copy_active_run() {
     copy.copy_completed(&source);
     assert_eq!(copy.snapshot(), before);
 }
+
+#[test]
+fn shared_transport_projection_preserves_redaction_proxy_source_and_timing() {
+    use crate::session::run::{
+        SessionCompletion, SessionFailure, SessionPrepared, SessionProxySource,
+    };
+    use crate::session::transport::{
+        PreparedBodyDocument, PreparedHeaderDocument, PreparedRunSnapshotDocument,
+        RequestIssueDocument, RunFailureDocument,
+    };
+    let snapshot = PreparedRunSnapshotDocument {
+        method: "POST".into(),
+        url: "[REDACTED]".into(),
+        headers: vec![PreparedHeaderDocument {
+            name: "Authorization".into(),
+            value: "••••••••".into(),
+            redacted: true,
+        }],
+        body: PreparedBodyDocument {
+            byte_count: 42,
+            content_type: Some("application/json".into()),
+            text_preview: None,
+            redacted: true,
+        },
+        transport: wirebolt_core::TransportSettings::default(),
+        proxy: serde_json::json!({"configuration":{"mode":"direct"},"source":"app_default"}),
+    };
+    let projected = SessionPrepared::try_from(&snapshot).unwrap();
+    assert_eq!(
+        projected.proxy.unwrap().source,
+        SessionProxySource::AppDefault
+    );
+    assert_eq!(projected.url, "[REDACTED]");
+    assert!(projected.headers[0].redacted);
+    assert_eq!(projected.headers[0].value, "••••••••");
+    assert_eq!(projected.body.byte_count, 42);
+    assert!(projected.body.redacted && projected.body.text_preview.is_none());
+    assert_eq!(projected.transport.total_timeout_ms, 30_000);
+    let completion = SessionCompletion::from_transport(42, std::time::Duration::from_millis(3));
+    assert_eq!(
+        (completion.bytes_received, completion.total_time_ns),
+        (42, 3_000_000)
+    );
+    let failure = SessionFailure::from(&RunFailureDocument {
+        kind: "invalid_request",
+        issues: vec![RequestIssueDocument {
+            path: "url".into(),
+            kind: "missing_secret",
+            reference: Some("api.token".into()),
+        }],
+    });
+    assert_eq!(failure.kind, "invalid_request");
+    assert_eq!(failure.issues[0].reference.as_deref(), Some("api.token"));
+}

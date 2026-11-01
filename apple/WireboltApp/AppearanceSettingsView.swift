@@ -21,10 +21,14 @@ struct AppearanceSettingsView: View {
         SettingsPage(title: "Appearance", subtitle: "Choose a contrast-checked theme. Text ≥ 7:1, muted text ≥ 4.5:1.") {
             HStack {
                 Spacer()
-                Toggle("Follow System", isOn: Binding(get: { selection == "system" },
-                    set: { selection = $0 ? "system" : theme.definition.preset.rawValue }))
-                    .toggleStyle(.wireboltSwitch).controlSize(.small)
-                    .font(.system(size: theme.typography.settingsDetail))
+                Toggle(
+                    "Follow System",
+                    isOn: Binding(
+                        get: { selection == "system" },
+                        set: { selection = $0 ? "system" : theme.definition.preset.rawValue })
+                )
+                .toggleStyle(.wireboltSwitch).controlSize(.small)
+                .font(.system(size: theme.typography.settingsDetail))
             }
             LazyVGrid(columns: [GridItem(.adaptive(minimum: 172, maximum: 172), spacing: 14)], alignment: .leading, spacing: 20) {
                 ForEach(ThemePreset.allCases, id: \.self) { preset in
@@ -33,7 +37,9 @@ struct AppearanceSettingsView: View {
                 customThemeCard
             }
             SettingsCard {
-                SettingsRow(title: "Canvas & variables", detail: "Preset colors; controls stay neutral. Custom themes are not available yet.") {
+                SettingsRow(
+                    title: "Canvas & variables", detail: "Preset colors; controls stay neutral. Custom themes are not available yet."
+                ) {
                     HStack(spacing: WireboltTheme.Spacing.xLarge) {
                         swatch(theme.definition.window)
                         swatch(theme.definition.variableForeground)
@@ -72,7 +78,8 @@ struct AppearanceSettingsView: View {
     }
 
     private var customThemeCard: some View {
-        Button {} label: {
+        Button {
+        } label: {
             VStack(spacing: WireboltTheme.Spacing.large) {
                 Label("From 2 colors", systemImage: "plus")
                     .font(.system(size: theme.typography.settingsDetail))
@@ -119,8 +126,10 @@ private struct ThemePreviewCard: View {
             VStack(spacing: WireboltTheme.Spacing.large) {
                 Canvas { context, _ in
                     func rect(_ x: Double, _ y: Double, _ width: Double, _ height: Double, _ color: PaletteColor, radius: Double = 0) {
-                        context.fill(Path(roundedRect: CGRect(x: x, y: y, width: width, height: height),
-                            cornerRadius: radius), with: .color(color.color))
+                        context.fill(
+                            Path(
+                                roundedRect: CGRect(x: x, y: y, width: width, height: height),
+                                cornerRadius: radius), with: .color(color.color))
                     }
                     let p = preview.definition
                     rect(0, 0, 172, 112, p.window)
@@ -135,8 +144,10 @@ private struct ThemePreviewCard: View {
                     rect(67, 18, 54, 4, p.secondary, radius: 2)
                     rect(67, 32, 16, 6, p.methodBackgrounds[1], radius: 2)
                     context.fill(Path(ellipseIn: CGRect(x: 148, y: 30, width: 10, height: 10)), with: .color(p.sendBackground.color))
-                    for (y, width, color) in [(56.0, 70.0, p.syntaxKey), (66, 88, p.syntaxString),
-                        (76, 46, p.syntaxNumber), (86, 60, p.syntaxKey)] {
+                    for (y, width, color) in [
+                        (56.0, 70.0, p.syntaxKey), (66, 88, p.syntaxString),
+                        (76, 46, p.syntaxNumber), (86, 60, p.syntaxKey),
+                    ] {
                         rect(64, y, width, 4, color, radius: 2)
                     }
                 }

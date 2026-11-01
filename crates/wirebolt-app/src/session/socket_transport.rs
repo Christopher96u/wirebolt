@@ -1,5 +1,30 @@
 //! WebSocket execution and cancellation, independent of native callbacks.
-use super::transport::{RunInput, prepare_protocol_run};
+use super::transport::prepare_protocol_run;
+use crate::{domain::DomainRunInput, response::ResponseHeaderValue};
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum SocketEvent {
+    Connected {
+        headers: Vec<ResponseHeaderValue>,
+    },
+    Message {
+        data: Vec<u8>,
+        binary: bool,
+        outgoing: bool,
+        control: Option<String>,
+    },
+}
+fn socket_message(kind: u8, data: &[u8]) -> SocketEvent {
+    SocketEvent::Message {
+        data: data.to_vec(),
+        binary: matches!(kind, 2 | 6..=9),
+        outgoing: matches!(kind, 5 | 6 | 9),
+        control: match kind {
+            7 => Some("Ping".into()),
+            8 | 9 => Some("Pong".into()),
+            _ => None,
+        },
+    }
+}
 use std::time::Duration;
 use tokio::sync::mpsc::Receiver;
 use tokio_util::sync::CancellationToken;
@@ -7,17 +32,17 @@ use wirebolt_core::{RequestBody, WebSocketConnection, WebSocketFrame};
 /// # Errors
 /// Returns the existing connection, preparation or receive error.
 pub async fn run_websocket<R>(
-    input: Vec<u8>,
+    input: DomainRunInput,
     mut messages: Receiver<WebSocketFrame>,
     cancellation: CancellationToken,
-    emit: impl Fn(u8, &[u8]) -> bool + Send + Sync,
+    emit: impl Fn(SocketEvent) -> bool + Send + Sync,
     secrets: R,
 ) -> Result<(), String>
 where
     R: wirebolt_core::SecretResolver + Send + 'static,
 {
-    let mut input: RunInput =
-        serde_json::from_slice(&input).map_err(|_| "The connection settings are invalid.")?;
+    let mut input = super::runtime::transport_input(input)
+        .map_err(|_| "The connection settings are invalid.")?;
     "GET".clone_into(&mut input.method);
     input.body = RequestBody::Empty;
     let timeout = input.total_timeout_ms;
@@ -41,11 +66,12 @@ where
     let headers = socket
         .handshake_headers
         .iter()
-        .map(|header| serde_json::json!({"name": header.name, "value": header.value}))
-        .collect::<Vec<_>>();
-    let headers =
-        serde_json::to_vec(&headers).map_err(|_| "The handshake headers could not be read.")?;
-    if !emit(0, &headers) {
+        .map(|header| ResponseHeaderValue {
+            name: header.name.clone(),
+            value: header.value.clone(),
+        })
+        .collect();
+    if !emit(SocketEvent::Connected { headers }) {
         return Ok(());
     }
     loop {
@@ -65,15 +91,15 @@ where
                     () = cancellation.cancelled() => return Ok(()),
                     result = socket.send(message) => result.map_err(|error| error.to_string())?,
                 }
-                if !emit( kind, &payload) { return Err("Messages arrived faster than they could be displayed.".into()); }
+                if !emit(socket_message(kind, &payload)) { return Err("Messages arrived faster than they could be displayed.".into()); }
             }
             result = socket.next() => match result.map_err(|error| error.to_string())? {
-                Some(WebSocketFrame::Text(value)) => { if !emit( 1, value.as_bytes()) { return Err("Messages arrived faster than they could be displayed.".into()); } }
-                Some(WebSocketFrame::Binary(value)) => { if !emit( 2, &value) { return Err("Messages arrived faster than they could be displayed.".into()); } }
+                Some(WebSocketFrame::Text(value)) => { if !emit(socket_message(1, value.as_bytes())) { return Err("Messages arrived faster than they could be displayed.".into()); } }
+                Some(WebSocketFrame::Binary(value)) => { if !emit(socket_message(2, &value)) { return Err("Messages arrived faster than they could be displayed.".into()); } }
                 Some(WebSocketFrame::Ping(value)) => {
-                    if !emit( 7, &value) || !emit( 9, &value) { return Ok(()); }
+                    if !emit(socket_message(7, &value)) || !emit(socket_message(9, &value)) { return Ok(()); }
                 }
-                Some(WebSocketFrame::Pong(value)) => { if !emit( 8, &value) { return Ok(()); } }
+                Some(WebSocketFrame::Pong(value)) => { if !emit(socket_message(8, &value)) { return Ok(()); } }
                 Some(WebSocketFrame::Closed { .. }) | None => return Ok(()),
             }
         }

@@ -64,7 +64,11 @@ private struct EditorFindBar: View {
             .padding(.leading, 5).padding(.trailing, 2)
             .frame(height: 24)
             .background(Color(nsColor: .textBackgroundColor))
-            .overlay { Rectangle().stroke(state.error == nil ? (focused ? WireboltTheme.current.focusBorder.color : Color(nsColor: .separatorColor)) : .red, lineWidth: 1) }
+            .overlay {
+                Rectangle().stroke(
+                    state.error == nil ? (focused ? WireboltTheme.current.focusBorder.color : Color(nsColor: .separatorColor)) : .red,
+                    lineWidth: 1)
+            }
             .help(state.error ?? "Find")
             Text(state.countLabel).font(.system(size: 12)).lineLimit(1).frame(width: 69, alignment: .leading)
             Button("Previous Match", systemImage: "arrow.up") { state.move(-1) }.disabled(state.matchCount == 0)
@@ -89,11 +93,16 @@ private struct EditorFindBar: View {
         .overlay { RoundedRectangle(cornerRadius: 3).stroke(Color(nsColor: .separatorColor), lineWidth: 0.5) }
         .shadow(color: .black.opacity(0.4), radius: 5, y: 2)
         .onExitCommand { state.isVisible = false }
-        .task { await Task.yield(); focused = true }
+        .task {
+            await Task.yield()
+            focused = true
+        }
     }
 
     private func option(_ label: String, text: String, value: Binding<Bool>, underline: Bool = false) -> some View {
-        Button { value.wrappedValue.toggle() } label: {
+        Button {
+            value.wrappedValue.toggle()
+        } label: {
             Text(text).font(.system(size: 11)).underline(underline)
                 .frame(width: 20, height: 20)
                 .background(value.wrappedValue ? WireboltTheme.selectedBackground : .clear, in: .rect(cornerRadius: 2))

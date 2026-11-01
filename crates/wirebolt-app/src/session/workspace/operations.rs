@@ -621,7 +621,8 @@ impl WorkspaceOperations {
                 false
             }
             WorkspaceReply::GitOperation { operation } => {
-                let reload = (action == WorkspaceGitAction::Pull && operation.outcome == "updated")
+                let reload = (action == WorkspaceGitAction::Pull
+                    && operation.outcome == super::io::WorkspaceGitOutcome::Updated)
                     || action == WorkspaceGitAction::Abort;
                 let mut s = lock(&self.state);
                 s.presentation.git_status = Some(operation.status.clone());

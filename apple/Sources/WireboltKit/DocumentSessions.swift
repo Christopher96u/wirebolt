@@ -32,7 +32,10 @@ public final class DocumentSession: Identifiable {
         didSet { if !isTouched, draft != savedDraft { isTouched = true } }
     }
     public private(set) var isTouched = false
-    public var note: String { get { draft.note } set { draft.note = newValue } }
+    public var note: String {
+        get { draft.note }
+        set { draft.note = newValue }
+    }
     public private(set) var savedDraft: RequestDraft?
     public private(set) var responseHead: ResponseHead?
     public private(set) var preparedRun: PreparedRunSnapshot?
@@ -52,31 +55,49 @@ public final class DocumentSession: Identifiable {
     @ObservationIgnored private var ingress: [Data] = []
     @ObservationIgnored private var ingressBytes = 0
 
-    public init(id: String = UUID().uuidString.lowercased(), kind: DocumentKind = .http,
-                collectionID: String? = nil, requestID: String? = nil, draft: RequestDraft,
-                note: String = "", savedDraft: RequestDraft? = nil) {
-        let rust = AppDocumentSession(id: id, kind: kind.rust, collectionId: collectionID,
+    public init(
+        id: String = UUID().uuidString.lowercased(), kind: DocumentKind = .http,
+        collectionID: String? = nil, requestID: String? = nil, draft: RequestDraft,
+        note: String = "", savedDraft: RequestDraft? = nil
+    ) {
+        let rust = AppDocumentSession(
+            id: id, kind: kind.rust, collectionId: collectionID,
             requestId: requestID, draft: draft.domain, savedDraft: savedDraft?.domain, note: note)
         let document = rust.document()
-        self.rust = rust; self.id = document.id; self.kind = DocumentKind(document.kind)
-        self.collectionID = document.collectionId; self.requestID = document.requestId
+        self.rust = rust
+        self.id = document.id
+        self.kind = DocumentKind(document.kind)
+        self.collectionID = document.collectionId
+        self.requestID = document.requestId
         self.draft = RequestDraft(domain: document.draft)
         self.savedDraft = document.savedDraft.map(RequestDraft.init(domain:))
     }
     public var title: String { draft.name }
     public var isDirty: Bool { savedDraft != draft }
     public var isRunning: Bool { activeRunID != nil }
-    var tabProjection: SessionTabDocument { SessionTabDocument(id: id, kind: kind.rust,
-        collectionId: collectionID, requestId: requestID, dirty: isDirty, touched: isTouched) }
+    var tabProjection: SessionTabDocument {
+        SessionTabDocument(
+            id: id, kind: kind.rust,
+            collectionId: collectionID, requestId: requestID, dirty: isDirty, touched: isTouched)
+    }
     func synchronizeDraft() { rust.edit(draft: draft.domain) }
-    public func relocate(to collectionID: String) { rust.relocate(collectionId: collectionID); self.collectionID = collectionID }
+    public func relocate(to collectionID: String) {
+        rust.relocate(collectionId: collectionID)
+        self.collectionID = collectionID
+    }
     public func renameSavedRequest(_ name: String) {
-        synchronizeDraft(); rust.rename(name: name)
-        draft.name = name; savedDraft?.name = name
+        synchronizeDraft()
+        rust.rename(name: name)
+        draft.name = name
+        savedDraft?.name = name
     }
     public func beginRun(_ runID: RunID) {
-        synchronizeDraft(); progressTask?.cancel(); progressTask = nil
-        ingress = []; ingressBytes = 0; isTouched = true
+        synchronizeDraft()
+        progressTask?.cancel()
+        progressTask = nil
+        ingress = []
+        ingressBytes = 0
+        isTouched = true
         rust.begin(runId: runID.description, directory: FileManager.default.temporaryDirectory.path)
         mirror()
     }
@@ -84,8 +105,9 @@ public final class DocumentSession: Identifiable {
         guard activeRunID == runID else { return }
         switch event {
         case .cookies: return
-        case let .chunk(data):
-            ingress.append(data); ingressBytes += data.count
+        case .chunk(let data):
+            ingress.append(data)
+            ingressBytes += data.count
             if ingressBytes >= ResponseBodyStore.searchChunkByteCount || ingress.count >= 64 { await flush(runID) }
             guard activeRunID == runID else { return }
             if progressTask == nil {
@@ -95,30 +117,39 @@ public final class DocumentSession: Identifiable {
                     await self.flush(runID)
                     guard !Task.isCancelled, self.activeRunID == runID else { return }
                     self.rust.publish(runId: runID.description)
-                    self.mirror(); self.progressTask = nil
+                    self.mirror()
+                    self.progressTask = nil
                 }
             }
             return
-        case let .prepared(snapshot): rust.consume(runId: runID.description, event: .prepared(snapshot: snapshot.sessionRecord))
-        case let .head(head): rust.consume(runId: runID.description, event: .head(head: head.sessionRecord))
-        case let .complete(value):
-            await flush(runID); progressTask?.cancel(); progressTask = nil
+        case .prepared(let snapshot): rust.consume(runId: runID.description, event: .prepared(snapshot: snapshot.sessionRecord))
+        case .head(let head): rust.consume(runId: runID.description, event: .head(head: head.sessionRecord))
+        case .complete(let value):
+            await flush(runID)
+            progressTask?.cancel()
+            progressTask = nil
             let rust = rust
-            await Task.detached(priority: .userInitiated) { rust.consume(runId: runID.description, event: .complete(completion: value.sessionRecord)) }.value
+            await Task.detached(priority: .userInitiated) {
+                rust.consume(runId: runID.description, event: .complete(completion: value.sessionRecord))
+            }.value
         }
         guard activeRunID == runID else { return }
         mirror()
     }
     private func flush(_ runID: RunID) async {
         guard !ingress.isEmpty else { return }
-        let chunks = ingress, rust = rust
-        ingress.removeAll(keepingCapacity: true); ingressBytes = 0
+        let chunks = ingress
+        let rust = rust
+        ingress.removeAll(keepingCapacity: true)
+        ingressBytes = 0
         let accepted = await Task.detached(priority: .userInitiated) { rust.appendBatch(runId: runID.description, chunks: chunks) }.value
         if !accepted, activeRunID == runID { mirror() }
     }
     public func finish(runID: RunID, failure: RunFailure?) async {
         guard activeRunID == runID else { return }
-        await flush(runID); progressTask?.cancel(); progressTask = nil
+        await flush(runID)
+        progressTask?.cancel()
+        progressTask = nil
         let rust = rust
         await Task.detached(priority: .userInitiated) { rust.finish(runId: runID.description, failure: failure?.sessionRecord) }.value
         guard activeRunID == runID else { return }
@@ -126,37 +157,68 @@ public final class DocumentSession: Identifiable {
     }
     public func cancel(runID: RunID) {
         guard activeRunID == runID else { return }
-        if !ingress.isEmpty { _ = rust.appendBatch(runId: runID.description, chunks: ingress); ingress.removeAll(keepingCapacity: true); ingressBytes = 0 }
-        progressTask?.cancel(); progressTask = nil
-        rust.cancel(runId: runID.description); mirror()
+        if !ingress.isEmpty {
+            _ = rust.appendBatch(runId: runID.description, chunks: ingress)
+            ingress.removeAll(keepingCapacity: true)
+            ingressBytes = 0
+        }
+        progressTask?.cancel()
+        progressTask = nil
+        rust.cancel(runId: runID.description)
+        mirror()
     }
     public func markSaved(_ draft: RequestDraft) {
-        rust.save(draft: draft.domain, replace: true); self.draft = draft; savedDraft = draft
+        rust.save(draft: draft.domain, replace: true)
+        self.draft = draft
+        savedDraft = draft
     }
-    public func recordSavedDraft(_ draft: RequestDraft) { synchronizeDraft(); rust.save(draft: draft.domain, replace: false); savedDraft = draft }
-    public func resetResponse() { rust.reset(); mirror() }
+    public func recordSavedDraft(_ draft: RequestDraft) {
+        synchronizeDraft()
+        rust.save(draft: draft.domain, replace: false)
+        savedDraft = draft
+    }
+    public func resetResponse() {
+        rust.reset()
+        mirror()
+    }
     public func copyCompletedResponse(from source: DocumentSession) {
-        rust.copyCompleted(source: source.rust); savedDraft = source.savedDraft; mirror()
+        rust.copyCompleted(source: source.rust)
+        savedDraft = source.savedDraft
+        mirror()
         if !source.isRunning { bodyStore = source.bodyStore }
     }
-    public func setResponseCookies(_ cookies: [CookieSnapshot]) { rust.cookies(cookies: cookies.map(\.sessionRecord), append: false); mirror() }
-    public func appendResponseCookies(_ cookies: [CookieSnapshot]) { rust.cookies(cookies: cookies.map(\.sessionRecord), append: true); mirror() }
+    public func setResponseCookies(_ cookies: [CookieSnapshot]) {
+        rust.cookies(cookies: cookies.map(\.sessionRecord), append: false)
+        mirror()
+    }
+    public func appendResponseCookies(_ cookies: [CookieSnapshot]) {
+        rust.cookies(cookies: cookies.map(\.sessionRecord), append: true)
+        mirror()
+    }
     public func restore(_ entry: RunHistoryEntry, viewport: Data) {
         let bytes = entry.completion?.bytesReceived ?? UInt64(viewport.count)
-        rust.restore(snapshot: SessionRunSnapshot(head: entry.responseHead?.sessionRecord, prepared: entry.prepared.sessionRecord,
-            text: String(decoding: viewport, as: UTF8.self), data: viewport, bytes: bytes, truncated: bytes > UInt64(viewport.count),
-            completion: entry.completion?.sessionRecord, failure: entry.failure?.sessionRecord, activeRunId: nil,
-            startedAt: nil, awaitingHead: false, cookies: [], bodyPath: entry.bodyPath), path: entry.bodyPath)
+        rust.restore(
+            snapshot: SessionRunSnapshot(
+                head: entry.responseHead?.sessionRecord, prepared: entry.prepared.sessionRecord,
+                text: String(decoding: viewport, as: UTF8.self), data: viewport, bytes: bytes, truncated: bytes > UInt64(viewport.count),
+                completion: entry.completion?.sessionRecord, failure: entry.failure?.sessionRecord, activeRunId: nil,
+                startedAt: nil, awaitingHead: false, cookies: [], bodyPath: entry.bodyPath), path: entry.bodyPath)
         mirror()
     }
     func mirror() {
         let state = rust.snapshot()
         if !isTouched, rust.wasTouched() { isTouched = true }
-        assign(\.responseHead, state.head.map(ResponseHead.init)); assign(\.preparedRun, state.prepared.map(PreparedRunSnapshot.init))
-        assign(\.responseText, state.text); assign(\.responsePreviewData, state.data); assign(\.responseBytes, state.bytes)
-        assign(\.responseWasTruncated, state.truncated); assign(\.completion, state.completion.map(RunCompletion.init))
-        assign(\.failure, state.failure.map(RunFailure.init)); assign(\.activeRunID, state.activeRunId.flatMap(UUID.init(uuidString:)).map { RunID(rawValue: $0) })
-        assign(\.runStartedAt, state.startedAt.map { Date(timeIntervalSinceReferenceDate: $0) }); assign(\.isAwaitingResponseHead, state.awaitingHead)
+        assign(\.responseHead, state.head.map(ResponseHead.init))
+        assign(\.preparedRun, state.prepared.map(PreparedRunSnapshot.init))
+        assign(\.responseText, state.text)
+        assign(\.responsePreviewData, state.data)
+        assign(\.responseBytes, state.bytes)
+        assign(\.responseWasTruncated, state.truncated)
+        assign(\.completion, state.completion.map(RunCompletion.init))
+        assign(\.failure, state.failure.map(RunFailure.init))
+        assign(\.activeRunID, state.activeRunId.flatMap(UUID.init(uuidString:)).map { RunID(rawValue: $0) })
+        assign(\.runStartedAt, state.startedAt.map { Date(timeIntervalSinceReferenceDate: $0) })
+        assign(\.isAwaitingResponseHead, state.awaitingHead)
         assign(\.responseCookies, state.cookies.map(CookieSnapshot.init))
         if bodyStore?.url.path != state.bodyPath { bodyStore = rust.body().map { ResponseBodyStore(rust: $0) } }
     }
@@ -170,24 +232,51 @@ extension DocumentKind {
     init(_ record: SessionKind) { self = record == .http ? .http : .webSocket }
 }
 extension ResponseHead {
-    var sessionRecord: SessionHead { SessionHead(status: status, version: version, headers: headers.map { ResponseHeaderValue(name: $0.name, value: $0.value) }, timeToHeadersNs: timeToHeadersNS) }
-    init(_ record: SessionHead) { self.init(status: record.status, version: record.version, headers: record.headers.map { ResponseHeader(name: $0.name, value: $0.value) }, timeToHeadersNS: record.timeToHeadersNs) }
+    var sessionRecord: SessionHead {
+        SessionHead(
+            status: status, version: version, headers: headers.map { ResponseHeaderValue(name: $0.name, value: $0.value) },
+            timeToHeadersNs: timeToHeadersNS)
+    }
+    init(_ record: SessionHead) {
+        self.init(
+            status: record.status, version: record.version, headers: record.headers.map { ResponseHeader(name: $0.name, value: $0.value) },
+            timeToHeadersNS: record.timeToHeadersNs)
+    }
 }
 extension RunCompletion {
     var sessionRecord: SessionCompletion { SessionCompletion(bytesReceived: bytesReceived, totalTimeNs: totalTimeNS) }
     init(_ record: SessionCompletion) { self.init(bytesReceived: record.bytesReceived, totalTimeNS: record.totalTimeNs) }
 }
 extension RunFailure {
-    var sessionRecord: SessionFailure { SessionFailure(kind: kind, issues: issues.map { SessionIssue(path: $0.path, kind: $0.kind, reference: $0.reference) }) }
-    init(_ record: SessionFailure) { self.init(kind: record.kind, issues: record.issues.map { RequestIssue(path: $0.path, kind: $0.kind, reference: $0.reference) }) }
+    var sessionRecord: SessionFailure {
+        SessionFailure(kind: kind, issues: issues.map { SessionIssue(path: $0.path, kind: $0.kind, reference: $0.reference) })
+    }
+    init(_ record: SessionFailure) {
+        self.init(kind: record.kind, issues: record.issues.map { RequestIssue(path: $0.path, kind: $0.kind, reference: $0.reference) })
+    }
 }
 extension PreparedRunSnapshot {
-    var sessionRecord: SessionPrepared { SessionPrepared(proxy: proxy.map { SessionProxy(configuration: $0.configuration.domain, source: $0.source.rawValue) },
-        method: method, url: url, headers: headers.map { SessionPreparedHeader(name: $0.name, value: $0.value, redacted: $0.redacted) },
-        body: SessionPreparedBody(byteCount: body.byteCount, contentType: body.contentType, textPreview: body.textPreview, redacted: body.redacted), transport: transport.domain) }
-    init(_ record: SessionPrepared) { self.init(proxy: record.proxy.map { EffectiveProxy(configuration: ProxyDocument(domain: $0.configuration), source: EffectiveProxy.Source(rawValue: $0.source) ?? .appDefault) },
-        method: record.method, url: record.url, headers: record.headers.map { PreparedHeaderSnapshot(name: $0.name, value: $0.value, redacted: $0.redacted) },
-        body: PreparedBodySnapshot(byteCount: record.body.byteCount, contentType: record.body.contentType, textPreview: record.body.textPreview, redacted: record.body.redacted), transport: TransportSettings(domain: record.transport)) }
+    var sessionRecord: SessionPrepared {
+        SessionPrepared(
+            proxy: proxy.map { SessionProxy(configuration: $0.configuration.domain, source: $0.source.sessionRecord) },
+            method: method, url: url, headers: headers.map { SessionPreparedHeader(name: $0.name, value: $0.value, redacted: $0.redacted) },
+            body: SessionPreparedBody(
+                byteCount: body.byteCount, contentType: body.contentType, textPreview: body.textPreview, redacted: body.redacted),
+            transport: transport.domain)
+    }
+    init(_ record: SessionPrepared) {
+        self.init(
+            proxy: record.proxy.map {
+                EffectiveProxy(
+                    configuration: ProxyDocument(domain: $0.configuration),
+                    source: EffectiveProxy.Source($0.source))
+            },
+            method: record.method, url: record.url,
+            headers: record.headers.map { PreparedHeaderSnapshot(name: $0.name, value: $0.value, redacted: $0.redacted) },
+            body: PreparedBodySnapshot(
+                byteCount: record.body.byteCount, contentType: record.body.contentType, textPreview: record.body.textPreview,
+                redacted: record.body.redacted), transport: TransportSettings(domain: record.transport))
+    }
 }
 
 public struct EditorGroup: Identifiable, Codable, Equatable, Sendable {
@@ -299,7 +388,10 @@ public final class DocumentSessionStore {
     /// number of editor groups does not re-render on every tab selection.
     public private(set) var groupCount = 1
     public var activeGroupID: String {
-        didSet { rust.activateGroup(id: activeGroupID); refreshActiveRequest() }
+        didSet {
+            rust.activateGroup(id: activeGroupID)
+            refreshActiveRequest()
+        }
     }
     @ObservationIgnored private let rust = AppSessionTabs()
 
@@ -320,11 +412,13 @@ public final class DocumentSessionStore {
     /// Whether the saved request is the active document's; observes only that request.
     public func isActiveRequest(collectionID: String, requestID: String) -> Bool {
         let key = RequestKey(collectionId: collectionID, requestId: requestID)
-        let flag = activeRequestFlags[key] ?? {
-            let flag = ActiveRequestFlag(isActive: key == activeRequestKey)
-            activeRequestFlags[key] = flag
-            return flag
-        }()
+        let flag =
+            activeRequestFlags[key]
+            ?? {
+                let flag = ActiveRequestFlag(isActive: key == activeRequestKey)
+                activeRequestFlags[key] = flag
+                return flag
+            }()
         return flag.isActive
     }
 
@@ -342,7 +436,8 @@ public final class DocumentSessionStore {
 
     public init() {
         let snapshot = rust.snapshot()
-        sessions = [:]; groups = snapshot.groups.map(EditorGroup.init)
+        sessions = [:]
+        groups = snapshot.groups.map(EditorGroup.init)
         activeGroupID = snapshot.activeGroupId
 
     }
@@ -363,8 +458,10 @@ public final class DocumentSessionStore {
         guard sessions.isEmpty else { return [] }
         let result = rust.restore(layout: layout.sessionRecord, resolved: layout.groups.flatMap { $0.tabs }.map { resolve($0)?.domain })
         let restored = result.documents.map { document in
-            DocumentSession(id: document.id, kind: DocumentKind(document.kind), collectionID: document.collectionId,
-                requestID: document.requestId, draft: RequestDraft(domain: document.draft), savedDraft: document.savedDraft.map(RequestDraft.init(domain:)))
+            DocumentSession(
+                id: document.id, kind: DocumentKind(document.kind), collectionID: document.collectionId,
+                requestID: document.requestId, draft: RequestDraft(domain: document.draft),
+                savedDraft: document.savedDraft.map(RequestDraft.init(domain:)))
         }
         sessions = Dictionary(uniqueKeysWithValues: restored.map { ($0.id, $0) })
         mirrorTabs(result.snapshot)
@@ -376,8 +473,10 @@ public final class DocumentSessionStore {
         synchronizeTabs()
         let restored = application.restoreTabs(tabs: rust, layout: layout?.sessionRecord)
         let projected = restored.result.documents.map { document in
-            DocumentSession(id: document.id, kind: DocumentKind(document.kind), collectionID: document.collectionId,
-                requestID: document.requestId, draft: RequestDraft(domain: document.draft), savedDraft: document.savedDraft.map(RequestDraft.init(domain:)))
+            DocumentSession(
+                id: document.id, kind: DocumentKind(document.kind), collectionID: document.collectionId,
+                requestID: document.requestId, draft: RequestDraft(domain: document.draft),
+                savedDraft: document.savedDraft.map(RequestDraft.init(domain:)))
         }
         for session in projected { sessions[session.id] = session }
         mirrorTabs(restored.result.snapshot)
@@ -399,7 +498,8 @@ public final class DocumentSessionStore {
 
     public func reopen(_ session: DocumentSession) {
         sessions[session.id] = session
-        rust.reopen(document: session.tabProjection); mirrorTabs()
+        rust.reopen(document: session.tabProjection)
+        mirrorTabs()
     }
 
     @discardableResult
@@ -412,7 +512,8 @@ public final class DocumentSessionStore {
         isSaved: Bool = true
     ) -> DocumentSession {
         synchronizeTabs()
-        let candidate = DocumentSession(kind: kind, collectionID: collectionID, requestID: draft.id,
+        let candidate = DocumentSession(
+            kind: kind, collectionID: collectionID, requestID: draft.id,
             draft: draft, savedDraft: isSaved ? draft : nil)
         let id = rust.open(document: candidate.tabProjection, group: groupID, force: forceNewSession, preview: false)
         if id == candidate.id { sessions[id] = candidate }
@@ -445,7 +546,8 @@ public final class DocumentSessionStore {
 
     /// Keeps a preview tab open, so the next single click opens another tab.
     public func pin(tabID: String) {
-        rust.pin(id: tabID); mirrorTabs()
+        rust.pin(id: tabID)
+        mirrorTabs()
     }
 
     @discardableResult
@@ -469,21 +571,25 @@ public final class DocumentSessionStore {
     }
 
     public func select(tabID: String, in groupID: String? = nil) {
-        rust.select(id: tabID, group: groupID); mirrorTabs()
+        rust.select(id: tabID, group: groupID)
+        mirrorTabs()
     }
 
     public func goBack() {
-        rust.navigate(forward: false); mirrorTabs()
+        rust.navigate(forward: false)
+        mirrorTabs()
     }
 
     public func goForward() {
-        rust.navigate(forward: true); mirrorTabs()
+        rust.navigate(forward: true)
+        mirrorTabs()
     }
 
     @discardableResult
     public func split(tabID: String) -> String? {
         guard let source = sessions[tabID] else { return nil }
-        let id = rust.split(); mirrorTabs()
+        let id = rust.split()
+        mirrorTabs()
         let copy = open(draft: source.draft, collectionID: source.collectionID, kind: source.kind, in: id, forceNewSession: true)
         copy.copyCompletedResponse(from: source)
         return id
@@ -498,11 +604,17 @@ public final class DocumentSessionStore {
         synchronizeTabs()
         let blocked = rust.close(scope: scope.sessionRecord, group: groupID, allowDirty: allowDirty)
         guard blocked.isEmpty else { return blocked.compactMap { sessions[$0] } }
-        mirrorTabs(); return []
+        mirrorTabs()
+        return []
     }
 
-    func closeWorkspace(_ scope: TabCloseScope, in groupID: String?, allowDirty: Bool) -> (blocked: [DocumentSession], closed: [DocumentSession]) {
-        let documents = sessions.values.map { session in session.synchronizeDraft(); return session.rust.document() }
+    func closeWorkspace(_ scope: TabCloseScope, in groupID: String?, allowDirty: Bool) -> (
+        blocked: [DocumentSession], closed: [DocumentSession]
+    ) {
+        let documents = sessions.values.map { session in
+            session.synchronizeDraft()
+            return session.rust.document()
+        }
         let result = rust.closeWorkspace(documents: documents, scope: scope.sessionRecord, group: groupID, allowDirty: allowDirty)
         let closed = result.removed.compactMap { effect -> DocumentSession? in
             guard let session = sessions[effect.id] else { return nil }
@@ -516,14 +628,19 @@ public final class DocumentSessionStore {
 
     public func removeAll() {
         for session in sessions.values { session.socket.disconnect() }
-        rust.removeAll(); sessions.removeAll(keepingCapacity: true); mirrorTabs()
+        rust.removeAll()
+        sessions.removeAll(keepingCapacity: true)
+        mirrorTabs()
     }
 
     private func synchronizeTabs() { rust.synchronize(documents: sessions.values.map(\.tabProjection)) }
     private func mirrorTabs(_ snapshot: SessionTabSnapshot? = nil) {
         let snapshot = snapshot ?? rust.snapshot()
         let retained = Set(snapshot.sessionIds)
-        for id in sessions.keys where !retained.contains(id) { sessions[id]?.socket.disconnect(); sessions[id] = nil }
+        for id in sessions.keys where !retained.contains(id) {
+            sessions[id]?.socket.disconnect()
+            sessions[id] = nil
+        }
         let next = snapshot.groups.map(EditorGroup.init)
         if groups != next { groups = next }
         if activeGroupID != snapshot.activeGroupId { activeGroupID = snapshot.activeGroupId }
@@ -531,31 +648,76 @@ public final class DocumentSessionStore {
 }
 
 extension EditorGroup {
-    init(_ record: SessionEditorGroup) { self.init(id: record.id, tabIDs: record.tabIds, selectedTabID: record.selectedTabId,
-        backwardTabIDs: record.backwardTabIds, forwardTabIDs: record.forwardTabIds, previewTabID: record.previewTabId) }
+    init(_ record: SessionEditorGroup) {
+        self.init(
+            id: record.id, tabIDs: record.tabIds, selectedTabID: record.selectedTabId,
+            backwardTabIDs: record.backwardTabIds, forwardTabIDs: record.forwardTabIds, previewTabID: record.previewTabId)
+    }
 }
 extension SessionLayout {
-    var sessionRecord: AppSessionLayout { AppSessionLayout(groups: groups.map { AppSessionLayoutGroup(tabs: $0.tabs.map {
-        SessionLayoutTab(collectionId: $0.collectionID, requestId: $0.requestID) }, selectedIndex: $0.selectedIndex.map(Int64.init), previewIndex: $0.previewIndex.map(Int64.init)) }, activeGroupIndex: Int64(activeGroupIndex)) }
-    init(_ record: AppSessionLayout) { self.init(groups: record.groups.map { Group(tabs: $0.tabs.map { Tab(collectionID: $0.collectionId, requestID: $0.requestId) },
-        selectedIndex: $0.selectedIndex.map(Int.init), previewIndex: $0.previewIndex.map(Int.init)) }, activeGroupIndex: Int(record.activeGroupIndex)) }
+    var sessionRecord: AppSessionLayout {
+        AppSessionLayout(
+            groups: groups.map {
+                AppSessionLayoutGroup(
+                    tabs: $0.tabs.map {
+                        SessionLayoutTab(collectionId: $0.collectionID, requestId: $0.requestID)
+                    }, selectedIndex: $0.selectedIndex.map(Int64.init), previewIndex: $0.previewIndex.map(Int64.init))
+            }, activeGroupIndex: Int64(activeGroupIndex))
+    }
+    init(_ record: AppSessionLayout) {
+        self.init(
+            groups: record.groups.map {
+                Group(
+                    tabs: $0.tabs.map { Tab(collectionID: $0.collectionId, requestID: $0.requestId) },
+                    selectedIndex: $0.selectedIndex.map(Int.init), previewIndex: $0.previewIndex.map(Int.init))
+            }, activeGroupIndex: Int(record.activeGroupIndex))
+    }
 }
 extension TabCloseScope {
-    var sessionRecord: SessionCloseScope { switch self { case let .one(id): .one(id: id); case let .others(id): .others(id: id); case let .rightOf(id): .rightOf(id: id); case .all: .all } }
+    var sessionRecord: SessionCloseScope {
+        switch self {
+        case .one(let id): .one(id: id)
+        case .others(let id): .others(id: id)
+        case .rightOf(let id): .rightOf(id: id)
+        case .all: .all
+        }
+    }
 }
 
 extension EditorGroup {
-    var workspaceRecord: SessionEditorGroup { SessionEditorGroup(id: id, tabIds: tabIDs, selectedTabId: selectedTabID,
-        backwardTabIds: backwardTabIDs, forwardTabIds: forwardTabIDs, previewTabId: previewTabID) }
+    var workspaceRecord: SessionEditorGroup {
+        SessionEditorGroup(
+            id: id, tabIds: tabIDs, selectedTabId: selectedTabID,
+            backwardTabIds: backwardTabIDs, forwardTabIds: forwardTabIDs, previewTabId: previewTabID)
+    }
 }
 
 extension TabCloseScope {
     init(_ record: SessionCloseScope) {
         switch record {
-        case let .one(id): self = .one(id)
-        case let .others(id): self = .others(id)
-        case let .rightOf(id): self = .rightOf(id)
+        case .one(let id): self = .one(id)
+        case .others(let id): self = .others(id)
+        case .rightOf(let id): self = .rightOf(id)
         case .all: self = .all
+        }
+    }
+}
+
+extension EffectiveProxy.Source {
+    var sessionRecord: SessionProxySource {
+        switch self {
+        case .request: .request
+        case .workspace: .workspace
+        case .appDefault: .appDefault
+        case .systemDefault: .systemDefault
+        }
+    }
+    init(_ source: SessionProxySource) {
+        self = switch source {
+        case .request: .request
+        case .workspace: .workspace
+        case .appDefault: .appDefault
+        case .systemDefault: .systemDefault
         }
     }
 }

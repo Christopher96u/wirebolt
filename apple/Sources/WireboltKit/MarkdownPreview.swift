@@ -3,7 +3,10 @@ import AppKit
 public final class RenderedMarkdown: @unchecked Sendable {
     public let text: NSAttributedString
     public let cost: Int
-    init(_ text: NSAttributedString, cost: Int) { self.text = text; self.cost = cost }
+    init(_ text: NSAttributedString, cost: Int) {
+        self.text = text
+        self.cost = cost
+    }
 }
 
 /// Rust parses and chooses cache retention. Swift only builds native attributes.
@@ -32,18 +35,25 @@ public actor MarkdownPreviewCache {
     }
     private static func attributes(_ style: MarkdownStyle) -> [NSAttributedString.Key: Any] {
         let paragraph = NSMutableParagraphStyle()
-        paragraph.lineSpacing = 3; paragraph.paragraphSpacing = 6
+        paragraph.lineSpacing = 3
+        paragraph.paragraphSpacing = 6
         if style.depth > 0 {
             paragraph.firstLineHeadIndent = CGFloat(style.depth - 1) * 20
             paragraph.headIndent = CGFloat(style.depth) * 20
         }
-        if style.quote { paragraph.firstLineHeadIndent += 16; paragraph.headIndent += 16 }
+        if style.quote {
+            paragraph.firstLineHeadIndent += 16
+            paragraph.headIndent += 16
+        }
         var font = style.code ? NSFont.monospacedSystemFont(ofSize: 12, weight: .regular) : NSFont.systemFont(ofSize: 13)
         if style.heading > 0 { font = NSFont.systemFont(ofSize: CGFloat(max(14, 26 - Int(style.heading) * 2)), weight: .bold) }
         var traits = font.fontDescriptor.symbolicTraits
-        if style.bold { traits.insert(.bold) }; if style.italic { traits.insert(.italic) }
+        if style.bold { traits.insert(.bold) }
+        if style.italic { traits.insert(.italic) }
         font = NSFont(descriptor: font.fontDescriptor.withSymbolicTraits(traits), size: font.pointSize) ?? font
-        var attributes: [NSAttributedString.Key: Any] = [.font: font, .foregroundColor: style.quote ? NSColor.secondaryLabelColor : NSColor.labelColor, .paragraphStyle: paragraph]
+        var attributes: [NSAttributedString.Key: Any] = [
+            .font: font, .foregroundColor: style.quote ? NSColor.secondaryLabelColor : NSColor.labelColor, .paragraphStyle: paragraph,
+        ]
         if style.code { attributes[.backgroundColor] = NSColor.quaternaryLabelColor }
         if style.strikethrough { attributes[.strikethroughStyle] = NSUnderlineStyle.single.rawValue }
         if let link = style.link, let url = URL(string: link) { attributes[.link] = url }

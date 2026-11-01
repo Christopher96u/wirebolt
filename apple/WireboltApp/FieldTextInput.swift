@@ -85,10 +85,12 @@ struct FieldTextInput: View {
                 return .handled
             }
             .onChange(of: text) { completionIndex = 0 }
-            .popover(isPresented: Binding(
-                get: { !completions.isEmpty },
-                set: { if !$0 { dismissedText = text } }
-            ), arrowEdge: .bottom) {
+            .popover(
+                isPresented: Binding(
+                    get: { !completions.isEmpty },
+                    set: { if !$0 { dismissedText = text } }
+                ), arrowEdge: .bottom
+            ) {
                 VariableCompletionList(entries: completions, selectedIndex: completionIndex) { insert($0) }
             }
             .frame(height: max(14, height - 4), alignment: .top)
@@ -99,9 +101,9 @@ struct FieldTextInput: View {
 
     private var openReference: OpenVariableReference? {
         guard variables != nil, isFocused, dismissedText != text, text.contains("{{"),
-              case let .selection(range)? = selection?.indices, range.isEmpty,
-              // The selection can briefly refer to the previous text while typing.
-              range.lowerBound <= text.endIndex, let caret = range.lowerBound.samePosition(in: text.utf16)
+            case .selection(let range)? = selection?.indices, range.isEmpty,
+            // The selection can briefly refer to the previous text while typing.
+            range.lowerBound <= text.endIndex, let caret = range.lowerBound.samePosition(in: text.utf16)
         else { return nil }
         return VariableTemplate.openReference(in: text, caret: text.utf16.distance(from: text.utf16.startIndex, to: caret))
     }
@@ -128,9 +130,9 @@ enum VariableHighlighting {
         var result = Text(verbatim: "")
         for segment in VariableDisplaySegment.segments(of: text) {
             switch segment {
-            case let .text(plain):
+            case .text(let plain):
                 result = Text("\(result)\(Text(verbatim: plain))")
-            case let .variable(name):
+            case .variable(let name):
                 let color = catalog.entry(named: name) == nil ? theme.definition.error.color : theme.definition.variableForeground.color
                 // The spaces pad the chip; the renderer trims part of them back.
                 let chip = Text(verbatim: " \(name) ").foregroundStyle(color).customAttribute(VariableChipRun())
@@ -148,7 +150,11 @@ enum VariableHighlighting {
         storage.addAttribute(.foregroundColor, value: baseColor, range: full)
         storage.removeAttribute(.backgroundColor, range: full)
         for reference in VariableTemplate.references(in: text) where NSMaxRange(reference.range) <= storage.length {
-            storage.addAttributes([.foregroundColor: color(for: reference, catalog: catalog, theme: theme), .backgroundColor: theme.definition.variableBackground.nsColor], range: reference.range)
+            storage.addAttributes(
+                [
+                    .foregroundColor: color(for: reference, catalog: catalog, theme: theme),
+                    .backgroundColor: theme.definition.variableBackground.nsColor,
+                ], range: reference.range)
         }
         storage.endEditing()
     }
@@ -156,7 +162,11 @@ enum VariableHighlighting {
     static func attributedString(_ text: String, font: NSFont, catalog: VariableCatalog, theme: ResolvedTheme) -> NSAttributedString {
         let result = NSMutableAttributedString(string: text, attributes: [.font: font, .foregroundColor: theme.primary.nsColor])
         for reference in VariableTemplate.references(in: text) {
-            result.addAttributes([.foregroundColor: color(for: reference, catalog: catalog, theme: theme), .backgroundColor: theme.definition.variableBackground.nsColor], range: reference.range)
+            result.addAttributes(
+                [
+                    .foregroundColor: color(for: reference, catalog: catalog, theme: theme),
+                    .backgroundColor: theme.definition.variableBackground.nsColor,
+                ], range: reference.range)
         }
         return result
     }
@@ -205,7 +215,9 @@ struct VariableCompletionList: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             ForEach(Array(entries.enumerated()), id: \.element.name) { index, entry in
-                Button { onSelect(entry) } label: {
+                Button {
+                    onSelect(entry)
+                } label: {
                     HStack(spacing: WireboltTheme.Spacing.medium) {
                         Text(entry.name).font(.system(size: 12, design: .monospaced))
                         Spacer(minLength: WireboltTheme.Spacing.large)
@@ -219,7 +231,9 @@ struct VariableCompletionList: View {
                     .foregroundStyle(index == selectedIndex ? Color.white : Color.primary)
                     .padding(.horizontal, WireboltTheme.Spacing.medium)
                     .frame(maxWidth: .infinity, minHeight: 22, alignment: .leading)
-                    .background(index == selectedIndex ? WireboltTheme.controlAccent : .clear, in: .rect(cornerRadius: WireboltTheme.Radius.small))
+                    .background(
+                        index == selectedIndex ? WireboltTheme.controlAccent : .clear, in: .rect(cornerRadius: WireboltTheme.Radius.small)
+                    )
                     .contentShape(.rect)
                 }
                 .buttonStyle(.plain)

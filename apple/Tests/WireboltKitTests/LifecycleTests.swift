@@ -203,9 +203,9 @@ private actor SaveRecorder: WorkspacePersistence {
     func save(environment _: EnvironmentDraft) async throws {}
     func saveSecret(name _: String, value _: String) async throws {}
 
-    func apply(_ command: WorkspaceCommand) async throws -> WorkspaceDelta {
+    func apply(_ command: SessionWorkspaceCommand) async throws -> WorkspaceDelta {
         if fails { throw RunFailure(kind: "workspace", issues: []) }
-        if case let .saveRequest(collectionID, location) = command { saved.append((collectionID, location)) }
+        if case let .saveRequest(location) = command { saved.append((location.collectionId, RequestLocation(domain: location))) }
         return WorkspaceDelta(version: UInt64(saved.count), kind: .request, affectedIDs: [])
     }
 }

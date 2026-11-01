@@ -44,14 +44,14 @@ enum BridgeSmoke {
                 path: temporaryWorkspace.path,
                 name: "Existing"
             )
-            try bridge.saveCollection(id: "custom", name: "Custom")
+            _ = try bridge.applySessionCommand(command: .createCollection(collection: CollectionDraft(id: "custom", name: "Custom").domain))
             let persistence = try RustWorkspacePersistence(path: temporaryWorkspace, mode: .open)
             let workspace = try await persistence.load()
             guard workspace.collections.map(\.id) == ["custom"] else {
                 fatalError("opening a workspace mutated its collections")
             }
             let proxy = ProxyDocument.manual(routes: [ProxyRouteDocument(destination: "all", endpoint: "http://localhost:8080")])
-            _ = try await persistence.apply(.saveWorkspaceProxy(proxy))
+            _ = try await persistence.apply(.saveWorkspaceProxy(proxy: proxy.domain))
             let withProxy = try await persistence.load()
             let normalizedProxy = try ProxyFormDraft(configuration: withProxy.proxy).document()
             precondition(normalizedProxy == proxy, "workspace proxy must cross the Swift/Rust persistence bridge")
@@ -60,15 +60,15 @@ enum BridgeSmoke {
             let savedRequest = try await persistence.load().collections[0].requests[0].request
             precondition(savedRequest.note == request.note, "Markdown source must survive TOML round-trip unchanged")
             precondition(savedRequest.proxy == .direct, "request override must survive disk round-trip")
-            _ = try await persistence.apply(.createGroup(collectionID: "custom", group: GroupDraft(id: "folder", name: "Folder")))
+            _ = try await persistence.apply(.createGroup(collectionId: "custom", group: GroupDraft(id: "folder", name: "Folder").domain))
             let second = RequestLocation(collectionID: "custom", order: 0, request: RequestDraft(id: "second", name: "Second"))
-            _ = try await persistence.apply(.saveRequest(collectionID: "custom", location: second))
-            _ = try await persistence.apply(.reorderChildren(collectionID: "custom", parentID: nil,
+            _ = try await persistence.apply(.saveRequest(location: second.domain))
+            _ = try await persistence.apply(.reorderChildren(collectionId: "custom", parentId: nil,
                 items: ["request:second", "group:folder", "request:proxy-request"]))
             let reopened = try RustWorkspacePersistence(path: temporaryWorkspace, mode: .open)
             let reordered = try await reopened.load()
             precondition(reordered.collections[0].orderedChildren(parentID: nil) == ["request:second", "group:folder", "request:proxy-request"], "mixed sibling order must survive reopening through Swift/Rust")
-            _ = try await persistence.apply(.saveWorkspaceProxy(nil))
+            _ = try await persistence.apply(.saveWorkspaceProxy(proxy: nil))
             let inherited = try await persistence.load()
             precondition(inherited.proxy == nil, "resetting workspace proxy must restore inheritance")
             await verifyWorkspaceOperations(persistence)
@@ -77,10 +77,24 @@ enum BridgeSmoke {
             fatalError("workspace open smoke failed: \(error)")
         }
 
+        await verifyTypedSocket()
         await verifySessionBridge()
 
         print("bridge_smoke=passed core=\(handshake.coreVersion) stream_abi=\(streamABIVersion)")
     }
+    private static func verifyTypedSocket() async {
+        let (events, continuation) = AsyncStream<String?>.makeStream()
+        let input = RunInput(draft: RequestDraft(url: "not a URL"), variables: [:])
+        let socket = AppSocketConnection.start(input: input.domain, observer: SocketSmokeObserver(continuation: continuation))
+        var terminals = 0
+        for await reason in events {
+            precondition(reason != nil, "Invalid typed WebSocket input must report preparation failure")
+            terminals += 1
+        }
+        precondition(terminals == 1)
+        socket.cancel()
+    }
+
     @MainActor
     private static func verifyWorkspaceOperations(_ persistence: RustWorkspacePersistence) async {
         let model = WireboltModel(runner: RustRequestRunner(), persistence: persistence, gitCollaboration: persistence)
@@ -127,4 +141,14 @@ enum BridgeSmoke {
         precondition(restored.activeSession?.requestID == draft.id, "typed session layout must cross the bridge")
     }
 
+}
+
+private final class SocketSmokeObserver: SessionSocketObserver {
+    let continuation: AsyncStream<String?>.Continuation
+    init(continuation: AsyncStream<String?>.Continuation) { self.continuation = continuation }
+    func event(event: SocketEvent) -> Bool { true }
+    func finish(reason: String?) {
+        continuation.yield(reason)
+        continuation.finish()
+    }
 }

@@ -69,7 +69,7 @@ struct ProxySettingsTests {
         form.routes[0].username = "sensitive-user"
         form.routes[0].password = "sensitive-password"
         let document = try #require(try form.document())
-        let encoded = String(decoding: try JSONEncoder().encode(document), as: UTF8.self)
+        let encoded = String(decoding: try encodeDomain(document), as: UTF8.self)
         #expect(!encoded.contains("sensitive-user"))
         #expect(!encoded.contains("sensitive-password"))
         #expect(form.secrets.count == 2)
@@ -107,7 +107,7 @@ struct ProxySettingsTests {
         #expect(await runner.input?.requestProxy == .system)
         try await model.applyProxy(nil, scope: .workspace)
         #expect(model.workspace.proxy == nil)
-        #expect(await persistence.commands == [.saveWorkspaceProxy(.direct), .saveWorkspaceProxy(nil)])
+        #expect(await persistence.commands == [.saveWorkspaceProxy(proxy: .direct), .saveWorkspaceProxy(proxy: nil)])
         try await model.applyProxy(nil, scope: .request, session: session)
         #expect(model.effectiveProxy(for: session.draft).source == .appDefault)
         let curl = await model.curlCommand(for: session.draft)
@@ -125,7 +125,7 @@ struct ProxySettingsTests {
         let model = WireboltModel(runner: ProxyRunner(), persistence: persistence)
         try await model.applyProxy(document, scope: .workspace, secrets: form.secrets)
         #expect(await persistence.savedSecrets == form.secrets)
-        #expect(await persistence.commands == [.saveWorkspaceProxy(document)])
+        #expect(await persistence.commands == [.saveWorkspaceProxy(proxy: document?.domain)])
         let failing = ProxyPersistence(rejectSecrets: true)
         let other = WireboltModel(runner: ProxyRunner(), persistence: failing)
         do { try await other.applyProxy(document, scope: .workspace, secrets: form.secrets); Issue.record("Keychain failure should stop the save") }
@@ -203,7 +203,7 @@ struct ProxySettingsTests {
 }
 
 private actor ProxyPersistence: WorkspacePersistence {
-    var commands: [WorkspaceCommand] = []
+    var commands: [SessionWorkspaceCommand] = []
     var savedSecrets: [String: String] = [:]
     let rejectSecrets: Bool
     init(rejectSecrets: Bool = false) { self.rejectSecrets = rejectSecrets }
@@ -214,7 +214,7 @@ private actor ProxyPersistence: WorkspacePersistence {
         if rejectSecrets { throw WorkspaceMutationError.unsupported }
         savedSecrets[name] = value
     }
-    func apply(_ command: WorkspaceCommand) async throws -> WorkspaceDelta {
+    func apply(_ command: SessionWorkspaceCommand) async throws -> WorkspaceDelta {
         commands.append(command)
         return WorkspaceDelta(version: 1, kind: .workspace, affectedIDs: [])
     }

@@ -63,13 +63,13 @@ private actor SuspendedWorkspaceSave: WorkspacePersistence {
         await withCheckedContinuation { waiting = $0 }
     }
     func resume() { resumed = true; writing?.resume(); writing = nil }
-    func apply(_ command: WorkspaceCommand) async throws -> WorkspaceDelta {
+    func apply(_ command: SessionWorkspaceCommand) async throws -> WorkspaceDelta {
         if !resumed {
             started = true; waiting?.resume(); waiting = nil
             await withCheckedContinuation { writing = $0 }
         }
         if fails { throw WorkspaceMutationError.unsupported }
-        if case let .saveRequest(_, location) = command { saved.append(location) }
+        if case let .saveRequest(location) = command { saved.append(RequestLocation(domain: location)) }
         return WorkspaceDelta(version: UInt64(saved.count), kind: .request, affectedIDs: [])
     }
 }

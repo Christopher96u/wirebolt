@@ -39,12 +39,36 @@ pub struct WorkspaceImportSummary {
     #[serde(default)]
     pub warnings: Vec<String>,
 }
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkspaceGitDelta {
+    None,
+    Added,
+    Modified,
+    Deleted,
+    Renamed,
+    Copied,
+    TypeChanged,
+    Untracked,
+    Unmerged,
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkspaceGitOutcome {
+    NothingToCommit,
+    Committed,
+    Updated,
+    UpToDate,
+    Pushed,
+    Conflicted,
+    MergeAborted,
+}
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WorkspaceGitChange {
     pub path: String,
     pub previous_path: Option<String>,
-    pub staged: String,
-    pub unstaged: String,
+    pub staged: WorkspaceGitDelta,
+    pub unstaged: WorkspaceGitDelta,
     pub conflicted: bool,
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -59,7 +83,7 @@ pub struct WorkspaceGitStatus {
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WorkspaceGitOperation {
-    pub outcome: String,
+    pub outcome: WorkspaceGitOutcome,
     pub revision: Option<String>,
     pub status: WorkspaceGitStatus,
 }
@@ -115,7 +139,7 @@ pub trait WorkspacePlatform: Send + Sync {
     async fn execute(&self, request: WorkspaceIO) -> WorkspaceReply;
 }
 fn workspace_result<T>(
-    result: Result<T, super::super::persistence::WorkspaceBridgeError>,
+    result: Result<T, super::super::persistence::WorkspaceError>,
     map: impl FnOnce(T) -> WorkspaceReply,
 ) -> WorkspaceReply {
     match result {
@@ -130,7 +154,7 @@ fn workspace_result<T>(
     }
 }
 fn decode_git<T: serde::de::DeserializeOwned>(
-    result: Result<String, super::super::persistence::GitBridgeError>,
+    result: Result<String, super::super::persistence::WorkspaceGitError>,
     map: impl FnOnce(T) -> WorkspaceReply,
 ) -> WorkspaceReply {
     match result {
@@ -144,7 +168,7 @@ fn decode_git<T: serde::de::DeserializeOwned>(
                 },
             },
         },
-        Err(super::super::persistence::GitBridgeError::OperationFailed { kind, reason }) => {
+        Err(super::super::persistence::WorkspaceGitError::OperationFailed { kind, reason }) => {
             WorkspaceReply::Failed {
                 failure: WorkspaceFailure {
                     kind,

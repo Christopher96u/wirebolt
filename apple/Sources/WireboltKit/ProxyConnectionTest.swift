@@ -33,7 +33,7 @@ public final class ProxyConnectionTest {
             do {
                 for try await event in runner.events(for: input, runID: id) {
                     guard !Task.isCancelled, state.active(id: token) else { return }
-                    if case let .head(head) = event { status = head.status }
+                    if case .head(let head) = event { status = head.status }
                 }
                 state.complete(id: token, status: status, failure: nil)
             } catch {
@@ -47,8 +47,14 @@ public final class ProxyConnectionTest {
     public func cancel() {
         state.cancel()
         if let runID { runner.cancel(runID: runID) }
-        runID = nil; task?.cancel(); task = nil
+        runID = nil
+        task?.cancel()
+        task = nil
         synchronize()
     }
-    public func reset() { cancel(); state.reset(); synchronize() }
+    public func reset() {
+        cancel()
+        state.reset()
+        synchronize()
+    }
 }

@@ -52,6 +52,10 @@ Run on an idle Apple Silicon Mac:
 
 The contract distinguishes the response engine's cold first viewport (50 ms budget) from a complete native window's first content (300 ms budget, including native view construction and JSON formatting when applicable). Budgets are test targets, not universal timings promised for every Mac or workload.
 
+The Rust session suite covers storage conversions, typed secret/Git operations,
+presentation migrations and cancellation. Bridge smoke checks exercise typed
+transport events and workspace commands; generated bindings are never committed.
+
 Native workloads cover request and tab selection, large responses, resizing, renderer changes, scrolling, notes and editor behavior. Large response viewers index files in the background and draw bounded viewports.
 
 ## Code map
@@ -62,9 +66,9 @@ Native workloads cover request and tab selection, large responses, resizing, ren
 | `crates/wirebolt-app/src/domain` | Typed editable records, draft/variable editing, cURL exports, proxy forms and probe state, sidebar indexes, theme tokens and OAuth 2 protocol logic |
 | `crates/wirebolt-app/src/response` | File-backed response bodies, sparse indexes, search, folding, wrapping policy, JSON/Markdown parsing, history and cookies |
 | `crates/wirebolt-app/src/session` | Document/run state, editor groups and previews, layout, WebSocket lifecycle, reversible workspace plans, credential lifecycle, typed history, workspace persistence/import/export/Git and transport execution; `session/workspace/` owns action construction, undo payloads, save/load transitions, sidebar/close workflows and typed persistence seams; `session/runtime` owns send/cancel, per-run cookie scoping, history/activity, environment resolution, secret commands, settings writes, OAuth acquisition and cURL coordination |
-| `crates/wirebolt-ffi` | Typed domain, response and session objects; foreign platform traits and narrow streaming callback adapters |
-| `apple/Sources/WireboltKit` | Native observation facades, editor projections and Apple platform adapters; remaining model orchestration is tracked in the Rust application-core spec |
-| `apple/WireboltApp` | Native interface and app adapters |
+| `crates/wirebolt-ffi` | Typed domain, response and session objects; foreign platform traits and typed HTTP probe/WebSocket callbacks; `app_session/` mirrors run, tabs, secrets, workspace and runtime responsibilities |
+| `apple/Sources/WireboltKit` | Native observation facades, cached editor projections and Apple platform adapters; Rust owns serialization and workspace/runtime orchestration |
+| `apple/WireboltApp` | Native interface, file panels, lifecycle and typed Rust connection/persistence wiring |
 | `apple/Tests` | Swift tests and bridge smoke validation |
 | `apple/Benchmarks` | Native performance workloads |
 | `scripts` | Reproducible build, checks and release tooling |

@@ -39,12 +39,12 @@ struct GitPresentationTests {
 struct GitMergeRecoveryTests {
     @Test("Status documents report an unfinished merge and older documents default to none")
     func decodesMergeState() throws {
-        let merging = try JSONDecoder().decode(GitStatusSnapshot.self, from: Data(#"{"branch":"main","upstream":"origin/main","ahead":1,"behind":1,"revision":"abc","merging":true,"changes":[{"path":"wirebolt.toml","previous_path":null,"staged":"unmerged","unstaged":"unmerged","conflicted":true},{"path":"environments/dev.toml","previous_path":null,"staged":"modified","unstaged":"none","conflicted":false}]}"#.utf8))
+        let merging = try decodeDomain(GitStatusSnapshot.self, from: Data(#"{"branch":"main","upstream":"origin/main","ahead":1,"behind":1,"revision":"abc","merging":true,"changes":[{"path":"wirebolt.toml","previous_path":null,"staged":"unmerged","unstaged":"unmerged","conflicted":true},{"path":"environments/dev.toml","previous_path":null,"staged":"modified","unstaged":"none","conflicted":false}]}"#.utf8))
         #expect(merging.merging)
         #expect(merging.conflictedChanges.map(\.path) == ["wirebolt.toml"])
-        let older = try JSONDecoder().decode(GitStatusSnapshot.self, from: Data(#"{"branch":"main","upstream":null,"ahead":0,"behind":0,"changes":[]}"#.utf8))
+        let older = try decodeDomain(GitStatusSnapshot.self, from: Data(#"{"branch":"main","upstream":null,"ahead":0,"behind":0,"changes":[]}"#.utf8))
         #expect(older.merging == false)
-        let aborted = try JSONDecoder().decode(GitOperationSnapshot.self, from: Data(#"{"outcome":"merge_aborted","revision":"abc","status":{"branch":"main","upstream":null,"ahead":0,"behind":0,"changes":[],"merging":false}}"#.utf8))
+        let aborted = try decodeDomain(GitOperationSnapshot.self, from: Data(#"{"outcome":"merge_aborted","revision":"abc","status":{"branch":"main","upstream":null,"ahead":0,"behind":0,"changes":[],"merging":false}}"#.utf8))
         #expect(aborted.outcome == .mergeAborted)
     }
 

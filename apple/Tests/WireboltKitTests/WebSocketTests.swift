@@ -69,7 +69,7 @@ struct WebSocketTests {
         await state.send(body: .text(contentType: "text/plain", value: "café 東京"))
         await state.send(body: .json(value: "{\"count\":1}"))
         let binaryBody = RequestBody.text(contentType: WebSocketBinaryEncoding.hex.contentType, value: "00 FF")
-        let restoredBody = try JSONDecoder().decode(RequestBody.self, from: JSONEncoder().encode(binaryBody))
+        let restoredBody = try decodeDomain(RequestBody.self, from: encodeDomain(binaryBody))
         await state.send(body: restoredBody)
         let file = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
         try Data([1, 2, 3]).write(to: file)

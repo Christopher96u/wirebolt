@@ -54,7 +54,7 @@ struct SecretLifecycleTests {
         #expect(await keychain.saved[tokenName] == "fixture-token")
         #expect(model.workspace.location(collectionID: "api", requestID: "orders")?.request.authentication == source.authentication)
         let persisted = await keychain.commands.compactMap { command -> RequestLocation? in
-            if case let .saveRequest(_, location) = command { location } else { nil }
+            if case let .saveRequest(location) = command { RequestLocation(domain: location) } else { nil }
         }
         #expect(persisted.last?.request.id == copy.request.id)
         #expect(persisted.last?.request.authentication == copy.request.authentication)

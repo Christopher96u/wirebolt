@@ -89,8 +89,14 @@ private struct SettingsModalWindowProbe: NSViewRepresentable {
     func updateNSView(_ view: Probe, context: Context) { focus.window = view.window }
     final class Probe: NSView {
         let focus: SettingsModalFocus
-        init(focus: SettingsModalFocus) { self.focus = focus; super.init(frame: .zero) }
+        init(focus: SettingsModalFocus) {
+            self.focus = focus
+            super.init(frame: .zero)
+        }
         required init?(coder: NSCoder) { return nil }
-        override func viewDidMoveToWindow() { super.viewDidMoveToWindow(); focus.window = window }
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            focus.window = window
+        }
     }
 }

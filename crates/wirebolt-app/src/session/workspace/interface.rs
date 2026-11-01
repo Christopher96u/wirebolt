@@ -208,6 +208,10 @@ impl WorkspaceInterface {
         lock(&self.state).dirty_close = Some(request);
     }
     #[must_use]
+    pub fn close_request(&self) -> Option<WorkspaceDirtyClose> {
+        lock(&self.state).dirty_close.clone()
+    }
+    #[must_use]
     pub fn take_close(&self) -> Option<WorkspaceDirtyClose> {
         lock(&self.state).dirty_close.take()
     }
