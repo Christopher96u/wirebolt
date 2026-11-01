@@ -295,6 +295,10 @@ pub fn plan_edit(
                     .min(environments.len()),
                 environment.clone(),
             );
+            if previous.is_none() && environment.id != wirebolt_core::GLOBAL_ENVIRONMENT_ID {
+                plan.selected_environment_id = Some(environment.id.clone());
+                plan.changes_environment_selection = true;
+            }
             plan.commands.push(C::SaveEnvironment { environment });
             plan.environments = Some(environments);
         }

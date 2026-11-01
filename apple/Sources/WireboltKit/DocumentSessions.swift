@@ -51,7 +51,6 @@ public final class DocumentSession: Identifiable {
     @ObservationIgnored private var progressTask: Task<Void, Never>?
     @ObservationIgnored private var ingress: [Data] = []
     @ObservationIgnored private var ingressBytes = 0
-    @ObservationIgnored private var cancelTransport: (@Sendable (RunID) -> Void)?
 
     public init(
         id: String = UUID().uuidString.lowercased(),
@@ -95,13 +94,12 @@ public final class DocumentSession: Identifiable {
         savedDraft?.name = name
     }
 
-    public func beginRun(_ runID: RunID, cancelTransport: (@Sendable (RunID) -> Void)? = nil) {
+    public func beginRun(_ runID: RunID) {
         synchronizeDraft()
         progressTask?.cancel()
         progressTask = nil
         ingress = []
         ingressBytes = 0
-        self.cancelTransport = cancelTransport
         isTouched = true
         rust.begin(runId: runID.description, directory: FileManager.default.temporaryDirectory.path)
         mirror()
@@ -131,7 +129,6 @@ public final class DocumentSession: Identifiable {
         case .head(let head): rust.consume(runId: runID.description, event: .head(head: head))
         case .complete(let value):
             await flush(runID)
-            guard activeRunID == runID else { return }
             progressTask?.cancel()
             progressTask = nil
             let rust = rust
@@ -150,12 +147,9 @@ public final class DocumentSession: Identifiable {
         ingressBytes = 0
         let accepted = await Task.detached(priority: .userInitiated) { rust.appendBatch(runId: runID.description, chunks: chunks) }.value
         if !accepted, activeRunID == runID {
-            let cancel = cancelTransport
-            cancelTransport = nil
             progressTask?.cancel()
             progressTask = nil
             mirror()
-            if failure?.kind == .storage { cancel?(runID) }
         }
     }
     public func finish(runID: RunID, failure: RunFailure?) async {
@@ -224,7 +218,6 @@ public final class DocumentSession: Identifiable {
     }
     func mirror() {
         let state = rust.snapshot()
-        if state.activeRunId == nil { cancelTransport = nil }
         if !isTouched, rust.wasTouched() { isTouched = true }
         assign(\.responseHead, state.head)
         assign(\.preparedRun, state.prepared.map(PreparedRunSnapshot.init))

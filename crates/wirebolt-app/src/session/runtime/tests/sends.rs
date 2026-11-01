@@ -1,6 +1,53 @@
 use super::*;
 use crate::lock;
 #[tokio::test]
+async fn user_cancel_during_in_flight_storage_failure_cancels_transport_once() {
+    let root = tempfile::tempdir().unwrap();
+    let runs = Arc::new(RuntimeRuns::default());
+    let run = Arc::new(Mutex::new(DocumentRun::default()));
+    let transport = Arc::new(Transport {
+        hold: true,
+        hold_after_bytes: true,
+        body: b"cannot store".to_vec(),
+        send_late_bytes: true,
+        ..Default::default()
+    });
+    let c = command(
+        state(root.path()),
+        document("a"),
+        run.clone(),
+        transport.clone(),
+        root.path(),
+    );
+    let id = c.id.clone();
+    let owner = runs.clone();
+    let task = tokio::spawn(async move { owner.send(c).await });
+    transport.started.notified().await;
+    {
+        let mut run = lock(&run);
+        run.append_batch(&id, &[b"partial".to_vec()], std::time::Instant::now());
+        lock(&run.body().unwrap()).finish().unwrap();
+    }
+    transport.release.notify_one();
+    transport.bytes_sent.notified().await;
+    assert!(
+        !task.is_finished(),
+        "the failed transport is still unwinding"
+    );
+    assert_eq!(transport.cancel_count.load(Ordering::Relaxed), 1);
+    runs.cancel("a", &run);
+    assert_eq!(transport.cancel_count.load(Ordering::Relaxed), 1);
+    transport.finish_release.notify_one();
+    task.await.unwrap();
+    let snapshot = lock(&run).snapshot();
+    assert_eq!(snapshot.failure.unwrap().kind, ResponseFailureKind::Storage);
+    assert_eq!(snapshot.text, "partial");
+    assert!(snapshot.active_run_id.is_none() && snapshot.completion.is_none());
+    assert_eq!(*lock(&transport.bytes_accepted), [false, false]);
+    assert_eq!(transport.cancel_count.load(Ordering::Relaxed), 1);
+}
+
+#[tokio::test]
 async fn storage_failure_cancels_transport_once_and_publishes_failure() {
     let root = tempfile::tempdir().unwrap();
     let runs = Arc::new(RuntimeRuns::default());

@@ -57,7 +57,7 @@ struct WorkspaceUndoTests {
         let other = EnvironmentDraft(id: "production", name: "Production")
         model.workspace.environments = [original, other]
         model.selectedEnvironmentID = other.id
-        #expect(await model.saveSecrets([reference: "old-token"]))
+        try await persistence.saveSecret(name: reference, value: "old-token")
         var changed = original
         changed.name = "Development"
         #expect(await model.saveEnvironment(changed, secrets: [reference: "new-token"]))

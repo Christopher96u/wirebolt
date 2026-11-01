@@ -13,6 +13,37 @@ import time
 from pathlib import Path
 
 
+def terminate_tree(process):
+    # SwiftPM's test helpers create their own process groups. Snapshot PPIDs before
+    # terminating parents so every descendant remains reachable for TERM and KILL.
+    children = collections.defaultdict(list)
+    for line in subprocess.check_output(["ps", "-axo", "pid=,ppid="], text=True).splitlines():
+        pid, parent = map(int, line.split())
+        children[parent].append(pid)
+    descendants = []
+
+    def visit(parent):
+        for child in children[parent]:
+            visit(child)
+            descendants.append(child)
+
+    visit(process.pid)
+    targets = descendants + [process.pid]
+    for sig in (signal.SIGTERM, signal.SIGKILL):
+        for pid in targets:
+            try:
+                os.kill(pid, sig)
+            except ProcessLookupError:
+                pass
+        if sig == signal.SIGTERM:
+            # Give the runners a bounded grace period; still kill every snapshotted
+            # descendant even if its parent exits during this interval.
+            try:
+                process.wait(timeout=1)
+            except subprocess.TimeoutExpired:
+                pass
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--log", default="build/swift-tests.log")
@@ -67,11 +98,7 @@ def main():
             return process.wait()
         finally:
             selector.close()
-            # Kill the whole group, including a test runner whose parent has exited.
-            try:
-                os.killpg(process.pid, signal.SIGKILL)
-            except ProcessLookupError:
-                pass
+            terminate_tree(process)
 
 
 if __name__ == "__main__":

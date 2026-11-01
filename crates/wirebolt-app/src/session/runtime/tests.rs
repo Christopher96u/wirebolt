@@ -124,6 +124,9 @@ struct Transport {
     cancel_count: AtomicUsize,
     send_late_bytes: bool,
     bytes_accepted: Mutex<Vec<bool>>,
+    hold_after_bytes: bool,
+    bytes_sent: tokio::sync::Notify,
+    finish_release: tokio::sync::Notify,
 }
 #[async_trait]
 impl RuntimeTransport for Transport {
@@ -174,6 +177,10 @@ impl RuntimeTransport for Transport {
             },
         });
         lock(&self.bytes_accepted).push(observer.bytes(&self.body));
+        if self.hold_after_bytes {
+            self.bytes_sent.notify_one();
+            self.finish_release.notified().await;
+        }
         if self.send_late_bytes {
             lock(&self.bytes_accepted).push(observer.bytes(b"late"));
         }

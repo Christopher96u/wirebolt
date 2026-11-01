@@ -4,8 +4,6 @@ set -euo pipefail
 repo_dir="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$repo_dir"
 
-export LIBDISPATCH_COOPERATIVE_POOL_STRICT=1
-
 scripts/cargo.sh test --workspace --all-features
 scripts/generate-bindings.sh
 swift build --package-path apple --build-tests

@@ -82,7 +82,6 @@ pub struct BodyStore {
     path: PathBuf,
     owns_file: bool,
     writer: Option<File>,
-    bytes: u64,
     preview: BodyPreview,
     json: [JsonCache; 2],
 }
@@ -96,7 +95,6 @@ impl BodyStore {
             path,
             owns_file: true,
             writer: Some(writer),
-            bytes: 0,
             preview: BodyPreview::default(),
             json: [JsonCache::Unparsed, JsonCache::Unparsed],
         })
@@ -109,7 +107,6 @@ impl BodyStore {
             path,
             owns_file: false,
             writer: None,
-            bytes,
             preview: BodyPreview {
                 bytes,
                 ..BodyPreview::default()
@@ -123,7 +120,7 @@ impl BodyStore {
     }
     #[must_use]
     pub fn size(&self) -> u64 {
-        self.bytes
+        self.preview.bytes
     }
     /// # Errors
     /// Returns an error for closed stores or failed disk writes.
@@ -135,7 +132,6 @@ impl BodyStore {
                 reason: "Response body is closed".into(),
             })?
             .write_all(data)?;
-        self.bytes += count(data.len());
         self.preview.append(data);
         Ok(())
     }
@@ -155,8 +151,8 @@ impl BodyStore {
     /// Returns an I/O error if reading the viewport fails.
     pub fn viewport(&self, offset: u64, length: u64) -> ResponseResult<Vec<u8>> {
         let mut reader = File::open(&self.path)?;
-        reader.seek(SeekFrom::Start(offset.min(self.bytes)))?;
-        let mut bytes = Vec::with_capacity(size(length.min(self.bytes)));
+        reader.seek(SeekFrom::Start(offset.min(self.preview.bytes)))?;
+        let mut bytes = Vec::with_capacity(size(length.min(self.preview.bytes)));
         reader.take(length).read_to_end(&mut bytes)?;
         Ok(bytes)
     }

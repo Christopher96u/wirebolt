@@ -770,13 +770,6 @@ pub fn workspace_selection_problem(
 
 #[uniffi::export]
 impl AppWorkspaceOperations {
-    pub fn environment_unchanged(&self, environment: DomainEnvironment) -> bool {
-        self.inner.environment_unchanged(&environment)
-    }
-}
-
-#[uniffi::export]
-impl AppWorkspaceOperations {
     pub fn request_matches(
         &self,
         request: wirebolt_app::domain::sidebar::DomainSidebarRequest,

@@ -96,7 +96,8 @@ pub struct DocumentRun {
     pending_prepared: Option<SessionPrepared>,
     pending_cookies: Vec<StoredCookie>,
     publication: Option<Instant>,
-    fallback: Option<BodyPreview>,
+    memory_preview: Option<BodyPreview>,
+    storage_failed: bool,
 }
 impl DocumentRun {
     #[must_use]
@@ -133,7 +134,8 @@ impl DocumentRun {
         self.snapshot.active_run_id = active;
         self.snapshot.started_at = started;
         self.body = self.pending_body.take();
-        self.fallback = self.body.is_none().then(BodyPreview::default);
+        self.storage_failed = self.body.is_none();
+        self.memory_preview = self.storage_failed.then(BodyPreview::default);
         self.snapshot.body_path = self
             .body
             .as_ref()
@@ -183,6 +185,7 @@ impl DocumentRun {
                     .is_err()
             };
             if failed {
+                self.storage_failed = true;
                 self.finish(
                     id,
                     Some(SessionFailure::new(
@@ -191,7 +194,7 @@ impl DocumentRun {
                 );
                 return None;
             }
-        } else if let Some(preview) = &mut self.fallback {
+        } else if let Some(preview) = &mut self.memory_preview {
             for chunk in chunks {
                 preview.append(chunk);
             }
@@ -207,7 +210,7 @@ impl DocumentRun {
     pub fn publish(&mut self) {
         self.publication = None;
         let progress = self.body.as_ref().map_or_else(
-            || self.fallback.as_mut().map(BodyPreview::progress),
+            || self.memory_preview.as_mut().map(BodyPreview::progress),
             |body| Some(lock(body).progress()),
         );
         if let Some(BodyProgress {
@@ -233,9 +236,8 @@ impl DocumentRun {
         }
         self.publish();
         self.snapshot.failure = failure.or_else(|| {
-            self.fallback
-                .as_ref()
-                .map(|_| SessionFailure::new(crate::response::ResponseFailureKind::Storage))
+            self.storage_failed
+                .then(|| SessionFailure::new(crate::response::ResponseFailureKind::Storage))
         });
         self.snapshot.active_run_id = None;
         self.snapshot.started_at = None;
@@ -259,7 +261,8 @@ impl DocumentRun {
             ..SessionRunSnapshot::default()
         };
         self.body = None;
-        self.fallback = None;
+        self.memory_preview = None;
+        self.storage_failed = false;
     }
     pub fn append_cookies(&mut self, cookies: Vec<StoredCookie>) {
         if self.snapshot.awaiting_head {
@@ -277,7 +280,8 @@ impl DocumentRun {
         }
         self.snapshot = source.snapshot.clone();
         self.body.clone_from(&source.body);
-        self.fallback.clone_from(&source.fallback);
+        self.memory_preview.clone_from(&source.memory_preview);
+        self.storage_failed = source.storage_failed;
     }
     pub fn restore(&mut self, mut snapshot: SessionRunSnapshot, path: PathBuf) {
         snapshot.active_run_id = None;
@@ -292,7 +296,8 @@ impl DocumentRun {
             .map(|b| lock(b).path().to_string_lossy().into_owned());
         self.snapshot = snapshot;
         self.pending_body = None;
-        self.fallback = None;
+        self.memory_preview = None;
+        self.storage_failed = false;
         self.pending_prepared = None;
         self.pending_cookies.clear();
         self.publication = None;

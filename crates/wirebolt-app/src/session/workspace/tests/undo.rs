@@ -1,5 +1,65 @@
 use super::*;
 use crate::lock;
+#[tokio::test]
+async fn redo_environment_creation_selects_the_created_environment() {
+    let h = Harness::new(DomainWorkspace::default());
+    let environment = DomainEnvironment {
+        id: "local".into(),
+        ..Default::default()
+    };
+    let created = h
+        .apply(Action::SaveEnvironment {
+            environment: environment.clone(),
+        })
+        .await;
+    let plan = created.plan.unwrap();
+    assert!(plan.changes_environment_selection);
+    assert_eq!(plan.selected_environment_id.as_deref(), Some("local"));
+    let (removed, redo) = h.undo(created.undo.unwrap()).await;
+    assert!(removed.succeeded && h.workspace.snapshot().environments.is_empty());
+    let (restored, _) = h.undo(redo).await;
+    assert!(restored.succeeded);
+    assert_eq!(h.workspace.snapshot().environments, [environment]);
+    let plan = restored.plan.unwrap();
+    assert!(plan.changes_environment_selection);
+    assert_eq!(plan.selected_environment_id.as_deref(), Some("local"));
+}
+
+#[tokio::test]
+async fn undo_active_environment_deletion_selects_the_restored_environment() {
+    let environment = DomainEnvironment {
+        id: "local".into(),
+        ..Default::default()
+    };
+    let h = Harness::new(DomainWorkspace {
+        environments: vec![environment.clone()],
+        ..Default::default()
+    });
+    let deleted = h
+        .ops
+        .mutate(
+            Action::DeleteEnvironment {
+                id: environment.id.clone(),
+            },
+            Some(environment.id.clone()),
+            &h.store,
+            &h.secrets,
+            &Secrets,
+        )
+        .await;
+    assert!(deleted.succeeded);
+    let plan = deleted.plan.unwrap();
+    assert!(plan.changes_environment_selection && plan.selected_environment_id.is_none());
+    let (restored, redo) = h.undo(deleted.undo.unwrap()).await;
+    assert!(restored.succeeded);
+    assert_eq!(h.workspace.snapshot().environments, [environment]);
+    let plan = restored.plan.unwrap();
+    assert!(plan.changes_environment_selection);
+    assert_eq!(plan.selected_environment_id.as_deref(), Some("local"));
+    let (deleted, _) = h.undo(redo).await;
+    assert!(deleted.succeeded && h.workspace.snapshot().environments.is_empty());
+}
+
 #[derive(Default)]
 struct EnvironmentSecrets(
     Mutex<std::collections::HashMap<String, String>>,

@@ -244,7 +244,7 @@ fn copy_shares_completed_body_but_does_not_copy_active_run() {
     assert_eq!(copy.snapshot(), before);
 }
 #[test]
-fn copying_memory_preview_replaces_the_previous_fallback() {
+fn copying_memory_preview_replaces_the_previous_preview() {
     let directory = tempfile::tempdir().unwrap();
     let blocked = directory.path().join("not-a-directory");
     std::fs::write(&blocked, b"fixture").unwrap();

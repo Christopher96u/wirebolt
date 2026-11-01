@@ -339,7 +339,7 @@ struct EnvironmentEditor: View {
         }
         for index in environments.indices {
             let environment = environments[index]
-            let references = Set(environment.variables.compactMap { $0.value.secretName })
+            let references = environment.secretReferences
             let values = stagedSecrets.filter { references.contains($0.key) }
             guard !original.contains(environment) || !values.isEmpty else { continue }
             guard model.workspaceLocation == workspaceLocation else { return false }

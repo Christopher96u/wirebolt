@@ -28,14 +28,16 @@ struct EnvironmentSecretTests {
         var environment = EnvironmentDraft(id: "staging", name: "Staging", variables: [row])
         environment.variables[0].value = .secret(reference)
 
-        #expect(await model.saveSecrets([reference: "fixture-environment-token"]))
-        #expect(await model.saveEnvironment(environment))
+        #expect(await model.saveEnvironment(environment, secrets: [reference: "fixture-environment-token"]))
+        let saved = try #require(model.workspace.environments.first)
+        let savedReference = try #require(saved.variables.first?.value.secretName)
+        #expect(savedReference != reference)
 
-        #expect(await keychain.saved[reference] == "fixture-environment-token")
-        #expect(model.secretMaterial(for: .secret(reference)) == "fixture-environment-token")
+        #expect(await keychain.saved[savedReference] == "fixture-environment-token")
+        #expect(model.secretMaterial(for: .secret(savedReference)) == "fixture-environment-token")
         let stored = try #require(await keychain.environments.last)
-        #expect(stored.domain.variables.first?.value == .secret(reference))
-        #expect(model.activeVariables["token"] == .secret(reference))
+        #expect(stored.domain.variables.first?.value == .secret(savedReference))
+        #expect(model.activeVariables["token"] == .secret(savedReference))
     }
 
     @Test("A Keychain failure is reported and nothing is marked saved")
@@ -45,7 +47,10 @@ struct EnvironmentSecretTests {
         await keychain.failSecrets()
         let model = WireboltModel(runner: SilentRunner(), persistence: keychain)
 
-        #expect(await model.saveSecrets(["env.staging.row": "fixture"]) == false)
+        let environment = EnvironmentDraft(id: "staging", name: "Staging", variables: [
+            EnvironmentVariableDraft(id: "row", key: "token", value: .secret("env.staging.row")),
+        ])
+        #expect(await model.saveEnvironment(environment, secrets: ["env.staging.row": "fixture"]) == false)
         #expect(model.operationFailure?.kind == .keychain)
         #expect(model.secretMaterial(for: .secret("env.staging.row")).isEmpty)
     }

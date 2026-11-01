@@ -759,23 +759,6 @@ public final class WireboltModel {
         mirrorSecretEdits()
     }
 
-    /// Writes secret values straight to Keychain, for editors with their own Save button.
-    /// The in-memory copy is updated so other editors show the new value.
-    @discardableResult
-    public func saveSecrets(_ values: [String: String]) async -> Bool {
-        guard !values.isEmpty else { return true }
-        guard let persistence else { return false }
-        do {
-            try await rustSecrets.save(values: values, platform: persistence.sessionSecretPlatform)
-            mirrorSecretEdits()
-            return true
-        } catch {
-            mirrorSecretEdits()
-            operationFailure = RunFailure(kind: .keychain, issues: [])
-            return false
-        }
-    }
-
     public func saveSecret(name: String, value: String) async {
         guard let persistence else { return }
         do {

@@ -1,5 +1,4 @@
 import Foundation
-import Synchronization
 import Testing
 @testable import WireboltKit
 
@@ -83,11 +82,10 @@ struct StreamingPreviewTests {
         #expect(session.responseText == "done" && session.responseBytes == 4)
     }
 
-    @Test func storageFailureCancelsTheLegacyTransportOnce() async throws {
+    @Test func storageFailureKeepsPartialPreviewAndRejectsLateCompletion() async throws {
         let session = DocumentSession(draft: RequestDraft())
         let run = RunID()
-        let cancellations = Mutex<[RunID]>([])
-        session.beginRun(run, cancelTransport: { id in cancellations.withLock { $0.append(id) } })
+        session.beginRun(run)
         await session.consume(.head(ResponseHead(status: 200, version: "HTTP/1.1", headers: [], timeToHeadersNS: 1)), runID: run)
         #expect(session.rust.appendBatch(runId: run.description, chunks: [Data("partial".utf8)]))
         let body = try #require(session.bodyStore)
@@ -98,19 +96,16 @@ struct StreamingPreviewTests {
         await session.consume(.chunk(Data("late".utf8)), runID: run)
         await session.consume(.complete(RunCompletion(bytesReceived: 999, totalTimeNS: 1)), runID: run)
         #expect(session.completion == nil)
-        #expect(cancellations.withLock { $0 } == [run])
     }
 
-    @Test func completedLegacyRunDoesNotCancelTransportForARejectedLateBatch() async {
+    @Test func completedRunKeepsCompletionForARejectedLateBatch() async {
         let session = DocumentSession(draft: RequestDraft())
         let run = RunID()
-        let cancellations = Mutex<[RunID]>([])
-        session.beginRun(run, cancelTransport: { id in cancellations.withLock { $0.append(id) } })
+        session.beginRun(run)
         await session.consume(.chunk(Data("late batch".utf8)), runID: run)
         // Model a completion arriving in Rust before the native publication task resumes.
         session.rust.consume(runId: run.description, event: .complete(completion: RunCompletion(bytesReceived: 0, totalTimeNS: 1)))
         await session.consume(.complete(RunCompletion(bytesReceived: 0, totalTimeNS: 1)), runID: run)
-        #expect(cancellations.withLock { $0.isEmpty })
         #expect(session.completion != nil && session.failure == nil)
     }
 }
