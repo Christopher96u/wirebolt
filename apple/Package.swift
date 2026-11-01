@@ -1,14 +1,15 @@
 // swift-tools-version: 6.2
+
 import Foundation
 import PackageDescription
-import Foundation
-
 
 let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().path
 let package = Package(
     name: "WireboltApple",
     platforms: [.macOS(.v15)],
-    products: [.library(name: "WireboltKit", targets: ["WireboltKit"])],
+    products: [
+        .library(name: "WireboltKit", targets: ["WireboltKit"]),
+    ],
     targets: [
         .target(
             name: "WireboltKit", path: ".",

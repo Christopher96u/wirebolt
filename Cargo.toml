@@ -20,11 +20,11 @@ brotli-decompressor = "=5.0.3"
 bytes = "=1.12.1"
 criterion = { version = "=0.8.2", default-features = false, features = ["async_tokio", "cargo_bench_support"] }
 flate2 = "=1.1.10"
-futures-util = { version = "=0.3.34", features = ["sink"] }
-getrandom = "=0.4.3"
 http = "=1.5.0"
 http-body = "=1.1.0"
 http-body-util = "=0.1.5"
+futures-util = { version = "=0.3.34", features = ["sink"] }
+getrandom = "=0.4.3"
 hyper = { version = "=1.11.1", features = ["http1", "http2", "server"] }
 hyper-util = { version = "=0.1.20", features = ["tokio"] }
 idna = "=1.1.0"
@@ -47,9 +47,9 @@ unicode-normalization = "=0.1.24"
 unicode-segmentation = "=1.13.3"
 uniffi = "=0.32.0"
 url = "=2.5.8"
+yaml-rust2 = { version = "=0.13.0", default-features = false }
 wirebolt-app = { path = "crates/wirebolt-app" }
 wirebolt-core = { path = "crates/wirebolt-core" }
-yaml-rust2 = { version = "=0.13.0", default-features = false }
 zstd = "=0.13.3"
 
 [workspace.lints.rust]
