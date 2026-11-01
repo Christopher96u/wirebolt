@@ -62,10 +62,16 @@ private actor SuspendedWorkspaceSave: WorkspacePersistence {
         if started { return }
         await withCheckedContinuation { waiting = $0 }
     }
-    func resume() { resumed = true; writing?.resume(); writing = nil }
+    func resume() {
+        resumed = true
+        writing?.resume()
+        writing = nil
+    }
     func apply(_ command: SessionWorkspaceCommand) async throws -> WorkspaceDelta {
         if !resumed {
-            started = true; waiting?.resume(); waiting = nil
+            started = true
+            waiting?.resume()
+            waiting = nil
             await withCheckedContinuation { writing = $0 }
         }
         if fails { throw WorkspaceMutationError.unsupported }

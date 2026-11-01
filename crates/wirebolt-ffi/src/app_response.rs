@@ -9,13 +9,14 @@ use wirebolt_app::response::{
     BodyProgress, BodyStore, CodeDocument, CodeSyntax, FailureCategory,
     FailureIssue as CoreFailureIssue, FailureMessage, Fold, IndexOptions, IndexedMatch,
     JsonDocument, JsonNodeKind, JsonTreeNode, LineIndex, LineIndexChange, MarkdownCache,
-    MarkdownCacheStats, MarkdownDocument, MarkdownRun, MarkdownStyle, ResponseCancellation,
-    ResponseCookieJar, ResponseError, ResponseFailureKind, ResponseHeaderValue, ResponseTextRange,
-    RunHistory, SearchPosition, SearchQuery, ShapingGroup, ShapingMetrics, ShapingRequest,
-    StoredCookie, TextIndex, TextIndexCache, TextRow, TextShaper, WrapBreakIndex,
-    WrapBreakSnapshot, WrapLayout, completion_summary, cookie_storage_path, describe_issue,
-    failure_host, failure_message, format_duration, format_elapsed, json_tree, json_tree_file,
-    reason_phrase, sentence, space_runs, status_line, unix_time, uses_text_index,
+    MarkdownCacheStats, MarkdownDocument, MarkdownInputRun, MarkdownListItem, MarkdownParser,
+    MarkdownRun, MarkdownStyle, ResponseCancellation, ResponseCookieJar, ResponseError,
+    ResponseFailureKind, ResponseHeaderValue, ResponseTextRange, RunHistory, SearchPosition,
+    SearchQuery, ShapingGroup, ShapingMetrics, ShapingRequest, StoredCookie, TextIndex,
+    TextIndexCache, TextRow, TextShaper, WrapBreakIndex, WrapBreakSnapshot, WrapLayout,
+    completion_summary, cookie_storage_path, describe_issue, failure_host, failure_message,
+    format_duration, format_elapsed, json_tree, json_tree_file, reason_phrase, sentence,
+    space_runs, status_line, unix_time, uses_text_index,
 };
 
 #[uniffi::remote(Error)]
@@ -182,12 +183,45 @@ pub struct MarkdownStyle {
     pub italic: bool,
     pub strikethrough: bool,
     pub link: Option<String>,
+    pub block_separator: bool,
 }
 
 #[uniffi::remote(Record)]
 pub struct MarkdownRun {
     pub text: String,
     pub style: MarkdownStyle,
+}
+
+#[uniffi::remote(Record)]
+pub struct MarkdownInputRun {
+    pub text: String,
+    pub style: MarkdownStyle,
+    pub block: Option<u64>,
+    pub item: Option<MarkdownListItem>,
+}
+#[uniffi::remote(Record)]
+pub struct MarkdownListItem {
+    pub id: u64,
+    pub number: u64,
+    pub ordered: bool,
+}
+#[uniffi::export(with_foreign)]
+pub trait AppMarkdownParser: Send + Sync {
+    fn parse(
+        &self,
+        source: String,
+        cancellation: Arc<AppResponseCancellation>,
+    ) -> Result<Vec<MarkdownInputRun>, ResponseError>;
+}
+struct MarkdownParserAdapter(Arc<dyn AppMarkdownParser>, Arc<AppResponseCancellation>);
+impl MarkdownParser for MarkdownParserAdapter {
+    fn parse(
+        &self,
+        source: &str,
+        _cancellation: &ResponseCancellation,
+    ) -> Result<Vec<MarkdownInputRun>, ResponseError> {
+        self.0.parse(source.into(), Arc::clone(&self.1))
+    }
 }
 
 #[uniffi::remote(Record)]
@@ -219,6 +253,9 @@ impl AppResponseCancellation {
     }
     pub fn cancel(&self) {
         self.inner.cancel();
+    }
+    pub fn check(&self) -> Result<(), ResponseError> {
+        self.inner.check()
     }
 }
 #[derive(Debug, uniffi::Object)]
@@ -697,15 +734,17 @@ impl AppMarkdownDocument {
         self.inner.cost
     }
 }
-#[derive(Debug, uniffi::Object)]
+#[derive(uniffi::Object)]
 pub struct AppMarkdownCache {
     inner: Mutex<MarkdownCache>,
+    parser: Arc<dyn AppMarkdownParser>,
 }
 #[uniffi::export]
 impl AppMarkdownCache {
     #[uniffi::constructor]
-    pub fn new(byte_limit: u64) -> Arc<Self> {
+    pub fn new(byte_limit: u64, parser: Arc<dyn AppMarkdownParser>) -> Arc<Self> {
         Arc::new(Self {
+            parser,
             inner: Mutex::new(MarkdownCache::new(byte_limit)),
         })
     }
@@ -718,7 +757,11 @@ impl AppMarkdownCache {
         cancellation: Arc<AppResponseCancellation>,
     ) -> Result<Arc<AppMarkdownDocument>, ResponseError> {
         Ok(Arc::new(AppMarkdownDocument {
-            inner: lock(&self.inner).render(&source, &cancellation.inner)?,
+            inner: lock(&self.inner).render(
+                &source,
+                &cancellation.inner,
+                &MarkdownParserAdapter(Arc::clone(&self.parser), Arc::clone(&cancellation)),
+            )?,
         }))
     }
 }

@@ -51,10 +51,12 @@ its workspace. Runtime storage remains outside Git-visible workspace files.
 
 - Rust owns workspace persistence, import parsing, the editable request/workspace/
   environment records, variable editing and resolution, cURL exports, proxy policy, forms
-  and probe state, sidebar indexes, chrome labels, theme/contrast computation,
+  and probe state, editor tokenization/indent columns, bounded PEM file input, sidebar indexes, chrome labels, theme/contrast computation,
   OAuth 2 protocol logic, immutable request preparation, HTTP transport, and TLS input.
 - Rust also owns response body storage, indexing, search, folding, wrapping policy,
-  JSON and Markdown parsing, run history, and cookie policy in `wirebolt-app::response`.
+  JSON parsing, Markdown run assembly/cache policy, run history, and cookie policy in `wirebolt-app::response`.
+  Foundation supplies full Markdown semantic intents through a platform trait to preserve
+  the established Notes rendering; Rust has no dependency on Apple frameworks.
 - Rust owns document runs, editor groups, preview replacement, navigation and layout,
   WebSocket lifecycle, reversible workspace edit plans, credential release policy,
   typed history orchestration, workspace load/switch/save/import/Git transitions, named undo

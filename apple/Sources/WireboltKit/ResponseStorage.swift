@@ -133,7 +133,7 @@ public actor HistoryRepository {
     public func clear(requestID: String) throws { try rust.clear(requestId: requestID) }
 }
 
-public struct CookieSnapshot: Codable, Equatable, Identifiable, Sendable {
+public struct CookieSnapshot: Equatable, Identifiable, Sendable {
     public var id: String { "\(domain)\u{0}\(path)\u{0}\(name)" }
     public let name: String
     public let value: String

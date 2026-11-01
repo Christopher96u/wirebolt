@@ -24,10 +24,8 @@ final class IndexedTextLine: @unchecked Sendable {
         attributed.enumerateAttribute(.foregroundColor, in: NSRange(location: 0, length: attributed.length)) { color, range, _ in
             if let color = color as? NSColor { colored.addAttribute(.foregroundColor, value: color.cgColor, range: range) }
         }
-        return Source(
-            text: NSAttributedString(attributedString: colored),
-            baseline: NSLayoutManager().defaultBaselineOffset(for: NSFont.monospacedSystemFont(ofSize: fontSize, weight: .regular)),
-            fontSize: fontSize)
+        return Source(text: NSAttributedString(attributedString: colored),
+            baseline: NSLayoutManager().defaultBaselineOffset(for: NSFont.monospacedSystemFont(ofSize: fontSize, weight: .regular)), fontSize: fontSize)
     }
 
     @MainActor convenience init(_ attributed: NSAttributedString, fontSize: Double) {
@@ -42,11 +40,7 @@ final class IndexedTextLine: @unchecked Sendable {
             try Task.checkCancellation()
             return line
         }
-        return try await withTaskCancellationHandler {
-            try await worker.value
-        } onCancel: {
-            worker.cancel()
-        }
+        return try await withTaskCancellationHandler { try await worker.value } onCancel: { worker.cancel() }
     }
 
     private init(_ source: Source) {
@@ -78,11 +72,11 @@ final class IndexedTextLine: @unchecked Sendable {
             if let positions = CTRunGetPositionsPtr(run.value), !CTRunGetStatus(run.value).contains(.nonMonotonic) {
                 let ascending = positions[0].x <= positions[count - 1].x
                 func bound(_ x: Double) -> Int {
-                    var lower = 0
-                    var upper = count
+                    var lower = 0, upper = count
                     while lower < upper {
                         let middle = (lower + upper) / 2
-                        if ascending ? positions[middle].x < x : positions[middle].x > x { lower = middle + 1 } else { upper = middle }
+                        if ascending ? positions[middle].x < x : positions[middle].x > x { lower = middle + 1 }
+                        else { upper = middle }
                     }
                     return lower
                 }
@@ -90,9 +84,7 @@ final class IndexedTextLine: @unchecked Sendable {
                 let end = min(count, bound(ascending ? right : left) + 1)
                 guard end > start else { continue }
                 glyphRange = CFRange(location: start, length: end - start)
-            } else {
-                glyphRange = CFRange(location: 0, length: count)
-            }
+            } else { glyphRange = CFRange(location: 0, length: count) }
             context.saveGState()
             context.textMatrix = CTRunGetTextMatrix(run.value).concatenating(CGAffineTransform(scaleX: 1, y: -1))
             context.textPosition = CGPoint(x: point.x, y: point.y + baseline)

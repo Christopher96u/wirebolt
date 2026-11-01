@@ -125,17 +125,11 @@ final class WorkspaceUIState {
     }
     var requestSection: RequestPanelSection {
         get { activePresentation.requestSection }
-        set {
-            activePresentation.requestSection = newValue
-            persistActivePresentation()
-        }
+        set { activePresentation.requestSection = newValue; persistActivePresentation() }
     }
     var responseSection: ResponsePanelSection {
         get { activePresentation.responseSection }
-        set {
-            activePresentation.responseSection = newValue
-            persistActivePresentation()
-        }
+        set { activePresentation.responseSection = newValue; persistActivePresentation() }
     }
     var responseRenderer: ResponseRenderer {
         get { activePresentation.responseRenderer }
@@ -194,7 +188,7 @@ final class WorkspaceUIState {
     private var sidebarIsFiltering = false
     var isShowingImporter = false
     var isShowingCurlImporter = false
-    var importFormat: ImportFormat = .postmanV2
+        var importFormat: ImportFormat = .postmanV2
     var focusURLTrigger = 0
     var pendingURLFocusID: String?
     var focusSearchTrigger = 0
@@ -207,7 +201,8 @@ final class WorkspaceUIState {
     var environmentCloseTrigger = 0
 
     func toggleEnvironmentInspector() {
-        if isShowingEnvironmentInspector { environmentCloseTrigger += 1 } else { isShowingEnvironmentInspector = true }
+        if isShowingEnvironmentInspector { environmentCloseTrigger += 1 }
+        else { isShowingEnvironmentInspector = true }
     }
 
     private var closeRevision = 0
@@ -237,19 +232,16 @@ final class WorkspaceUIState {
 
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
-        requestSection =
-            defaults.string(forKey: Self.requestSectionKey)
+        requestSection = defaults.string(forKey: Self.requestSectionKey)
             .flatMap(RequestPanelSection.init(rawValue:)) ?? .params
-        responseSection =
-            defaults.string(forKey: Self.responseSectionKey)
+        responseSection = defaults.string(forKey: Self.responseSectionKey)
             .map(workspaceResponseSection(value:))
             .flatMap(ResponsePanelSection.init(rawValue:)) ?? .body
         responseRenderer =
             defaults.string(forKey: Self.responseRendererKey)
             .map(workspaceResponseRenderer(value:))
             .flatMap(ResponseRenderer.init(rawValue:)) ?? .json
-        responseOrientation =
-            defaults.string(forKey: Self.responseOrientationKey)
+        responseOrientation = defaults.string(forKey: Self.responseOrientationKey)
             .flatMap(ResponseOrientation.init(rawValue:)) ?? .bottom
     }
 
@@ -265,9 +257,7 @@ final class WorkspaceUIState {
     /// tab; ⌘-click (or `preview: false`) opens a regular tab that stays open.
     func activateSavedRequest(_ location: RequestLocation, model: WireboltModel, preview: Bool? = nil) {
         persistActivePresentation()
-        let commandClick =
-            NSApp.currentEvent.map { $0.type == .leftMouseUp || $0.type == .leftMouseDown ? $0.modifierFlags.contains(.command) : false }
-            ?? false
+        let commandClick = NSApp.currentEvent.map { $0.type == .leftMouseUp || $0.type == .leftMouseDown ? $0.modifierFlags.contains(.command) : false } ?? false
         model.select(location, preview: preview ?? !commandClick)
         synchronizeSelection(model: model)
         PerformanceProbe.tabSwitched()
@@ -289,12 +279,7 @@ final class WorkspaceUIState {
             requestSection = kind == .http ? .params : .body
             responseSection = .body
             renamingRequestID = rename ? model.selectedRequestID : nil
-            if rename {
-                focusSidebarTrigger += 1
-            } else {
-                pendingURLFocusID = session.id
-                focusURLTrigger += 1
-            }
+            if rename { focusSidebarTrigger += 1 } else { pendingURLFocusID = session.id; focusURLTrigger += 1 }
         }
     }
 
@@ -306,13 +291,11 @@ final class WorkspaceUIState {
     ) {
         persistActivePresentation()
         Task {
-            guard
-                let session = await model.createRequest(
-                    kind: kind,
-                    collectionID: collectionID,
-                    groupID: groupID
-                )
-            else { return }
+            guard let session = await model.createRequest(
+                kind: kind,
+                collectionID: collectionID,
+                groupID: groupID
+            ) else { return }
             activeTabID = session.id
             presentationByTabID[session.id] = DocumentPresentationState()
             requestSection = kind == .http ? .params : .body
@@ -387,11 +370,8 @@ final class WorkspaceUIState {
 
     func makeNewFolder(model: WireboltModel, collectionID: String? = nil, parentID: String? = nil) {
         Task {
-            if let collectionID {
-                renamingGroupID = await model.createGroup(collectionID: collectionID, parentID: parentID, name: "Untitled Folder")
-            } else {
-                renamingGroupID = await model.createRootFolder()
-            }
+            if let collectionID { renamingGroupID = await model.createGroup(collectionID: collectionID, parentID: parentID, name: "Untitled Folder") }
+            else { renamingGroupID = await model.createRootFolder() }
         }
     }
 
@@ -418,22 +398,20 @@ final class WorkspaceUIState {
     /// Delete in the focused sidebar deletes the selected row.
     func requestDeleteOfSelection(model: WireboltModel) {
         if let cursor = sidebarCursor,
-            let row = model.sidebarRows(query: sidebarFilter, collapsed: collapsedSidebarCollections, expanded: expandedSidebarGroups)
-                .first(where: { $0.id == cursor })
-        {
+           let row = model.sidebarRows(query: sidebarFilter, collapsed: collapsedSidebarCollections, expanded: expandedSidebarGroups)
+            .first(where: { $0.id == cursor }) {
             switch row.content {
             case .collection(let collection):
                 requestDelete(.collection(id: collection.id), title: collection.name, model: model)
             case .group(let collection, let group):
                 requestDelete(.group(collectionID: collection.id, id: group.id), title: group.name, model: model)
             case .request(let location):
-                requestDelete(
-                    .request(collectionID: location.collectionID, id: location.request.id), title: location.request.name, model: model)
+                requestDelete(.request(collectionID: location.collectionID, id: location.request.id), title: location.request.name, model: model)
             }
             return
         }
         guard let session = model.sessions.activeSession, let collectionID = session.collectionID,
-            let location = model.workspace.location(collectionID: collectionID, requestID: session.requestID)
+              let location = model.workspace.location(collectionID: collectionID, requestID: session.requestID)
         else { return }
         requestDelete(.request(collectionID: collectionID, id: location.request.id), title: location.request.name, model: model)
     }
@@ -549,16 +527,14 @@ final class WorkspaceUIState {
 
     func presentation(for session: DocumentSession) -> DocumentPresentationState {
         if let existing = presentationByTabID[session.id] { return existing }
-        let state = DocumentPresentationState(
-            requestSection: RequestPanelSection(rawValue: workspaceRequestSection(body: session.draft.body.domain)) ?? .params)
+        let state = DocumentPresentationState(requestSection: RequestPanelSection(rawValue: workspaceRequestSection(body: session.draft.body.domain)) ?? .params)
         presentationByTabID[session.id] = state
         return state
     }
 
     private func activatePresentation(for tabID: String, defaultBody: RequestBody) {
         if presentationByTabID[tabID] == nil {
-            let state = DocumentPresentationState(
-                requestSection: RequestPanelSection(rawValue: workspaceRequestSection(body: defaultBody.domain)) ?? .params)
+            let state = DocumentPresentationState(requestSection: RequestPanelSection(rawValue: workspaceRequestSection(body: defaultBody.domain)) ?? .params)
             presentationByTabID[tabID] = state
         }
         activeTabID = tabID
@@ -711,10 +687,9 @@ extension WorkspaceUIState {
 
     func sidebarMoveCommands(model: WireboltModel) -> SidebarMoveCommands? {
         guard let identifier = sidebarMoveIdentifier(model: model) else { return nil }
-        return SidebarMoveCommands(
-            identifier: identifier,
-            canMoveUp: model.canMoveSidebarItem(identifier, by: -1),
-            canMoveDown: model.canMoveSidebarItem(identifier, by: 1))
+        return SidebarMoveCommands(identifier: identifier,
+                                   canMoveUp: model.canMoveSidebarItem(identifier, by: -1),
+                                   canMoveDown: model.canMoveSidebarItem(identifier, by: 1))
     }
 
     func moveSidebarItem(_ identifier: String, by delta: Int, model: WireboltModel) {

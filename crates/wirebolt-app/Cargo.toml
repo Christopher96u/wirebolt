@@ -11,7 +11,6 @@ base64.workspace = true
 getrandom.workspace = true
 idna.workspace = true
 percent-encoding.workspace = true
-pulldown-cmark.workspace = true
 regex.workspace = true
 reqwest.workspace = true
 serde.workspace = true

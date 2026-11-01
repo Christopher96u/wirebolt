@@ -42,6 +42,9 @@ struct SettingsModal: View {
                 DispatchQueue.main.async {
                     guard !model.isShowingAppSettings else { return }
                     if window.attachedSheet == nil {
+                        // Commit the workspace's enabled controls before AppKit
+                        // asks the captured field to become first responder.
+                        window.contentView?.layoutSubtreeIfNeeded()
                         window.makeFirstResponder(previous)
                         if let selection, let editor = window.firstResponder as? NSTextView {
                             let length = (editor.string as NSString).length
@@ -89,14 +92,8 @@ private struct SettingsModalWindowProbe: NSViewRepresentable {
     func updateNSView(_ view: Probe, context: Context) { focus.window = view.window }
     final class Probe: NSView {
         let focus: SettingsModalFocus
-        init(focus: SettingsModalFocus) {
-            self.focus = focus
-            super.init(frame: .zero)
-        }
+        init(focus: SettingsModalFocus) { self.focus = focus; super.init(frame: .zero) }
         required init?(coder: NSCoder) { return nil }
-        override func viewDidMoveToWindow() {
-            super.viewDidMoveToWindow()
-            focus.window = window
-        }
+        override func viewDidMoveToWindow() { super.viewDidMoveToWindow(); focus.window = window }
     }
 }

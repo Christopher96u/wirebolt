@@ -8,10 +8,11 @@ public enum ProxyScope: String, CaseIterable, Sendable {
     }
 }
 
-public struct EffectiveProxy: Equatable, Sendable {
+public typealias EffectiveProxy = ResolvedDomainProxy
+
+extension EffectiveProxy {
     public typealias Source = DomainProxySource
-    public let configuration: ProxyDocument
-    public let source: Source
+
 
     public static func resolve(request: ProxyDocument?, workspace: ProxyDocument?, app: ProxyDocument) -> Self {
         let result = domainResolveProxy(request: request?.domain, workspace: workspace?.domain, app: app.domain)
@@ -194,7 +195,7 @@ private extension ClientIdentityPEM.Failure {
     }
 }
 
-extension EffectiveProxy.Source {
+extension DomainProxySource: NativeDomainValue {
     public var title: String { domainProxyScopeTitle(scope: self) }
 }
 

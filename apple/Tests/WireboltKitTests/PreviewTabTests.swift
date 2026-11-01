@@ -109,8 +109,8 @@ struct PreviewTabTests {
         store.select(tabID: pinned.id)
         let layout = store.layout
         #expect(layout.groups.first?.previewIndex == 1)
-        let data = try JSONEncoder().encode(layout)
-        let decoded = try JSONDecoder().decode(SessionLayout.self, from: data)
+        let data = sessionEncodeLayout(layout: layout.sessionRecord)
+        let decoded = SessionLayout(try #require(sessionDecodeLayout(data: data)))
 
         let restored = DocumentSessionStore()
         let locations = ["a": Self.location("a"), "b": Self.location("b")]
@@ -125,7 +125,7 @@ struct PreviewTabTests {
     @Test("Layouts saved before preview tabs decode with every tab kept open")
     @MainActor func legacyLayoutDecodes() throws {
         let legacy = #"{"groups":[{"tabs":[{"collectionID":"api","requestID":"a"}],"selectedIndex":0}],"activeGroupIndex":0}"#
-        let layout = try JSONDecoder().decode(SessionLayout.self, from: Data(legacy.utf8))
+        let layout = SessionLayout(try #require(sessionDecodeLayout(data: Data(legacy.utf8))))
         #expect(layout.groups.first?.previewIndex == nil)
     }
 }

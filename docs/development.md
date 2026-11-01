@@ -40,6 +40,21 @@ For a focused change:
 
 Generated bindings live under `apple/Generated` and are produced by the scripts. Do not hand-edit them. The Swift package compiles the generated bindings into `WireboltKit` and links the Rust bridge: run `./scripts/generate-bindings.sh` before invoking `swift test --package-path apple` directly. `./scripts/test.sh` does this automatically. Response search accepts a Rust regex-engine trait: `wirebolt-app` provides a portable default, and the Apple-only `wirebolt-ffi` adapter injects system ICU (`-licucore`) to preserve the native dialect; cookie dates parse in pure Rust to Unix seconds, with native `Date` conversion in Swift.
 
+The Rust session suite covers storage conversions, typed secret/Git operations,
+presentation migrations and cancellation. Bridge smoke checks exercise typed
+transport events and workspace commands. Swift adapter tests compare the Notes
+preview with the Foundation renderer from `081c6d0`, including complete attributed
+text and cache costs, across headings, inline styles, code, nested/ordered/task
+lists, quotes, links/autolinks, images, tables, HTML, breaks, rules, footnotes,
+escapes and Unicode. Foundation's full Markdown interpretation is supplied through
+a platform trait; Rust assembles visible runs and owns cache retention. Editor
+syntax tests compare batched Rust token ranges, precedence, line boundaries and
+indent columns with the previous native patterns, including CR/CRLF, VT/FF, NEL and
+Unicode line/paragraph separators. The previous portable Markdown parser omitted
+the trailing newline Foundation supplies for an unfinished fenced code block and
+styled inserted block separators as paragraphs. Both now match the native oracle;
+the corpus compares every attributed run as well as the visible text.
+
 ## Performance
 
 Run on an idle Apple Silicon Mac:
@@ -52,10 +67,6 @@ Run on an idle Apple Silicon Mac:
 
 The contract distinguishes the response engine's cold first viewport (50 ms budget) from a complete native window's first content (300 ms budget, including native view construction and JSON formatting when applicable). Budgets are test targets, not universal timings promised for every Mac or workload.
 
-The Rust session suite covers storage conversions, typed secret/Git operations,
-presentation migrations and cancellation. Bridge smoke checks exercise typed
-transport events and workspace commands; generated bindings are never committed.
-
 Native workloads cover request and tab selection, large responses, resizing, renderer changes, scrolling, notes and editor behavior. Large response viewers index files in the background and draw bounded viewports.
 
 ## Code map
@@ -63,8 +74,8 @@ Native workloads cover request and tab selection, large responses, resizing, ren
 | Location | Responsibility |
 | --- | --- |
 | `crates/wirebolt-core` | Workspace persistence, import/export, request preparation and transport |
-| `crates/wirebolt-app/src/domain` | Typed editable records, draft/variable editing, cURL exports, proxy forms and probe state, sidebar indexes, theme tokens and OAuth 2 protocol logic |
-| `crates/wirebolt-app/src/response` | File-backed response bodies, sparse indexes, search, folding, wrapping policy, JSON/Markdown parsing, history and cookies |
+| `crates/wirebolt-app/src/domain` | Typed editable records, draft/variable editing, cURL exports, proxy forms and probe state, sidebar indexes, theme tokens, batched editor syntax/indentation, bounded PEM file input and OAuth 2 protocol logic |
+| `crates/wirebolt-app/src/response` | File-backed response bodies, sparse indexes, search, folding, wrapping policy, JSON parsing, Markdown run assembly/cache policy over platform parsing, history and cookies |
 | `crates/wirebolt-app/src/session` | Document/run state, editor groups and previews, layout, WebSocket lifecycle, reversible workspace plans, credential lifecycle, typed history, workspace persistence/import/export/Git and transport execution; `session/workspace/` owns action construction, undo payloads, save/load transitions, sidebar/close workflows and typed persistence seams; `session/runtime` owns send/cancel, per-run cookie scoping, history/activity, environment resolution, secret commands, settings writes, OAuth acquisition and cURL coordination |
 | `crates/wirebolt-ffi` | Typed domain, response and session objects; foreign platform traits and typed HTTP probe/WebSocket callbacks; `app_session/` mirrors run, tabs, secrets, workspace and runtime responsibilities |
 | `apple/Sources/WireboltKit` | Native observation facades, cached editor projections and Apple platform adapters; Rust owns serialization and workspace/runtime orchestration |

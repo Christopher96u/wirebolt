@@ -49,8 +49,7 @@ private final class HexGridView: NSView {
     var fontSize = 12.0 {
         didSet {
             if oldValue != fontSize {
-                advance =
-                    ("0" as NSString).size(withAttributes: [.font: NSFont.monospacedSystemFont(ofSize: fontSize, weight: .regular)]).width
+                advance = ("0" as NSString).size(withAttributes: [.font: NSFont.monospacedSystemFont(ofSize: fontSize, weight: .regular)]).width
             }
         }
     }
@@ -81,10 +80,7 @@ private final class HexGridView: NSView {
     func resizeViewport(_ size: NSSize) {
         guard size.width > 0 else { return }
         let updated = max(1, Int((size.width - 30) / (advance * 3.5)))
-        if columns != updated {
-            columns = updated
-            invalidate()
-        }
+        if columns != updated { columns = updated; invalidate() }
         let rows = (Double(byteCount) / Double(columns)).rounded(.up)
         let proposed = NSSize(width: size.width, height: max(size.height, rows * lineHeight))
         if frame.size != proposed { setFrameSize(proposed) }
@@ -127,8 +123,7 @@ private final class HexGridView: NSView {
                 }
                 (String(format: "%02X", byte) as NSString).draw(at: NSPoint(x: x, y: y + 1), withAttributes: attributes)
                 let character = (32...126).contains(byte) ? String(UnicodeScalar(byte)) : "."
-                (character as NSString).draw(
-                    at: NSPoint(x: 4 + Double(columns) * hexAdvance + 22 + Double(column) * advance, y: y + 1), withAttributes: attributes)
+                (character as NSString).draw(at: NSPoint(x: 4 + Double(columns) * hexAdvance + 22 + Double(column) * advance, y: y + 1), withAttributes: attributes)
             }
         }
     }
@@ -141,11 +136,8 @@ private final class HexGridView: NSView {
         let preview = preview
         task = Task { [weak self] in
             let bytes: Data
-            if let store {
-                bytes = (try? await store.viewport(offset: range.lowerBound, length: Int(range.count))) ?? Data()
-            } else {
-                bytes = Data(preview.dropFirst(Int(range.lowerBound)).prefix(Int(range.count)))
-            }
+            if let store { bytes = (try? await store.viewport(offset: range.lowerBound, length: Int(range.count))) ?? Data() }
+            else { bytes = Data(preview.dropFirst(Int(range.lowerBound)).prefix(Int(range.count))) }
             guard !Task.isCancelled, let self else { return }
             self.firstByte = range.lowerBound
             self.bytes = bytes
@@ -159,8 +151,7 @@ private final class HexGridView: NSView {
         let point = convert(event.locationInWindow, from: nil)
         let ascii = 4 + Double(columns) * hexAdvance + 22
         let column = point.x >= ascii ? Int((point.x - ascii) / advance) : Int((point.x - 2) / hexAdvance)
-        return min(
-            byteCount == 0 ? 0 : byteCount - 1, UInt64(max(0, Int(point.y / lineHeight)) * columns + min(columns - 1, max(0, column))))
+        return min(byteCount == 0 ? 0 : byteCount - 1, UInt64(max(0, Int(point.y / lineHeight)) * columns + min(columns - 1, max(0, column))))
     }
 
     override func mouseDown(with event: NSEvent) {
@@ -178,41 +169,27 @@ private final class HexGridView: NSView {
         needsDisplay = true
     }
     override func mouseUp(with event: NSEvent) { selectionChanged() }
-    override func selectAll(_ sender: Any?) {
-        anchor = 0
-        selection = 0..<byteCount
-        selectionChanged()
-    }
+    override func selectAll(_ sender: Any?) { anchor = 0; selection = 0..<byteCount; selectionChanged() }
     @objc func copy(_ sender: Any?) {
         guard let selection else { return }
         let store = store
         let preview = preview
         Task {
             let data: Data
-            if let store {
-                data = (try? await store.viewport(offset: selection.lowerBound, length: Int(selection.count))) ?? Data()
-            } else {
-                data = Data(preview.dropFirst(Int(selection.lowerBound)).prefix(Int(selection.count)))
-            }
-            let formatted = await Task.detached(priority: .userInitiated) { data.map { String(format: "%02X", $0) }.joined(separator: " ") }
-                .value
+            if let store { data = (try? await store.viewport(offset: selection.lowerBound, length: Int(selection.count))) ?? Data() }
+            else { data = Data(preview.dropFirst(Int(selection.lowerBound)).prefix(Int(selection.count))) }
+            let formatted = await Task.detached(priority: .userInitiated) { data.map { String(format: "%02X", $0) }.joined(separator: " ") }.value
             NSPasteboard.general.clearContents()
             NSPasteboard.general.setString(formatted, forType: .string)
         }
     }
     override func keyDown(with event: NSEvent) {
-        if event.modifierFlags.contains(.command), event.charactersIgnoringModifiers == "a" {
-            selectAll(nil)
-        } else if event.modifierFlags.contains(.command), event.charactersIgnoringModifiers == "c" {
-            copy(nil)
-        } else if moveCursor(for: event) {
-        } else if event.keyCode == 119 {
-            scroll(NSPoint(x: 0, y: max(0, frame.height - visibleRect.height)))
-        } else if event.keyCode == 115 {
-            scroll(.zero)
-        } else {
-            super.keyDown(with: event)
-        }
+        if event.modifierFlags.contains(.command), event.charactersIgnoringModifiers == "a" { selectAll(nil) }
+        else if event.modifierFlags.contains(.command), event.charactersIgnoringModifiers == "c" { copy(nil) }
+        else if moveCursor(for: event) {}
+        else if event.keyCode == 119 { scroll(NSPoint(x: 0, y: max(0, frame.height - visibleRect.height))) }
+        else if event.keyCode == 115 { scroll(.zero) }
+        else { super.keyDown(with: event) }
     }
 
     /// Arrow and Page keys move a byte cursor; with Shift they extend the selection
@@ -223,8 +200,7 @@ private final class HexGridView: NSView {
         let last = Int64(byteCount - 1)
         let row = Int64(columns)
         let page = row * Int64(max(1, Int(visibleRect.height / lineHeight) - 1))
-        let origin =
-            selection.map { anchor == $0.lowerBound ? $0.upperBound - 1 : $0.lowerBound }
+        let origin = selection.map { anchor == $0.lowerBound ? $0.upperBound - 1 : $0.lowerBound }
             ?? min(byteCount - 1, UInt64(max(0, Int(visibleRect.minY / lineHeight)) * columns))
         var cursor = Int64(origin)
         switch event.keyCode {
@@ -272,8 +248,7 @@ private final class HexGridView: NSView {
         NotificationCenter.default.removeObserver(self, name: NSView.boundsDidChangeNotification, object: nil)
         guard let clip = superview as? NSClipView else { return }
         clip.postsBoundsChangedNotifications = true
-        NotificationCenter.default.addObserver(
-            self, selector: #selector(visibleAreaChanged), name: NSView.boundsDidChangeNotification, object: clip)
+        NotificationCenter.default.addObserver(self, selector: #selector(visibleAreaChanged), name: NSView.boundsDidChangeNotification, object: clip)
     }
     @objc private func visibleAreaChanged() {
         if window?.firstResponder === self { noteFocusRingMaskChanged() }

@@ -16,7 +16,10 @@ let package = Package(
             exclude: ["Tests", "Benchmarks", "WireboltApp", "Generated/wirebolt_ffiFFI.h", "Generated/wirebolt_ffiFFI.modulemap"],
             sources: ["Sources/WireboltKit", "Generated/wirebolt_ffi.swift"],
             swiftSettings: [.unsafeFlags(["-Xcc", "-fmodule-map-file=\(root)/apple/Generated/wirebolt_ffiFFI.modulemap"])],
-            linkerSettings: [.linkedLibrary("icucore"), .linkedFramework("Security"), .linkedFramework("SystemConfiguration"), .unsafeFlags(["\(root)/target/release/libwirebolt_ffi.a"])]
+            linkerSettings: [
+                .linkedLibrary("icucore"), .linkedFramework("Security"), .linkedFramework("SystemConfiguration"),
+                .unsafeFlags(["\(root)/target/release/libwirebolt_ffi.a"]),
+            ]
         ),
         .testTarget(name: "WireboltKitTests", dependencies: ["WireboltKit"],
                     swiftSettings: [.unsafeFlags(["-Xcc", "-fmodule-map-file=\(root)/apple/Generated/wirebolt_ffiFFI.modulemap"])]),
