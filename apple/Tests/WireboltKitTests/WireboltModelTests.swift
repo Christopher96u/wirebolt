@@ -844,6 +844,53 @@ struct WireboltModelTests {
         #expect(String(decoding: encoded, as: UTF8.self).contains("access-material") == false)
         #expect(model.oauthReceipts[session.id] != nil)
     }
+    @Test("Send reads the current editor projection after credential storage finishes")
+    @MainActor func latestDraftAfterSecretFlush() async {
+        let persistence = PausedSecretPersistence()
+        let runner = InputCapturingRunner()
+        let model = WireboltModel(runner: runner, persistence: persistence)
+        let session = model.sessions.open(draft: RequestDraft(url: "https://example.com/before"))
+        model.editSecret(name: "token", value: "fixture")
+        let send = Task { await model.send(session) }
+        await persistence.waitForWrite()
+        session.draft.url = "https://example.com/after"
+        await persistence.releaseWrite()
+        await send.value
+        #expect(await runner.lastInput?.url == "https://example.com/after")
+    }
+
+    @Test("Closing a document during credential storage prevents its pending transport")
+    @MainActor func closeDuringSecretFlush() async {
+        let persistence = PausedSecretPersistence()
+        let runner = InputCapturingRunner()
+        let model = WireboltModel(runner: runner, persistence: persistence)
+        let session = model.sessions.open(draft: RequestDraft(url: "https://example.com/pending"))
+        model.editSecret(name: "token", value: "fixture")
+        let send = Task { await model.send(session) }
+        await persistence.waitForWrite()
+        _ = model.closeDocuments(.all, allowDirty: true)
+        await persistence.releaseWrite()
+        await send.value
+        #expect(await runner.lastInput == nil)
+        #expect(!session.isRunning)
+    }
+
+    @Test("OAuth acquisition preserves edits made while the authorization adapter waits")
+    @MainActor func editsDuringOAuthAcquisition() async {
+        let authorizer = PausedOAuthAuthorizer()
+        let model = WireboltModel(runner: StubRunner(), persistence: SecretPersistenceRecorder(), oauth2: authorizer)
+        let session = model.sessions.open(draft: RequestDraft(url: "https://example.com/before", authentication: .oauth2(configuration: OAuth2Configuration())))
+        let acquire = Task { await model.acquireOAuthToken(for: session) }
+        while authorizer.pending == nil { await Task.yield() }
+        session.draft.url = "https://example.com/after"
+        session.draft.note = "Keep this edit"
+        authorizer.release()
+        await acquire.value
+        #expect(session.draft.url == "https://example.com/after")
+        #expect(session.draft.note == "Keep this edit")
+        #expect(model.oauthReceipts[session.id] != nil)
+    }
+
 }
 
 private struct StubRunner: RequestRunner {
@@ -1117,4 +1164,24 @@ private struct UnreadableWorkspace: WorkspacePersistence {
     func save(request: RequestDraft, in collectionID: String) async throws {}
     func save(environment: EnvironmentDraft) async throws {}
     func saveSecret(name: String, value: String) async throws {}
+}
+
+private actor PausedSecretPersistence: WorkspacePersistence {
+    private var pending: CheckedContinuation<Void, Never>?
+    func load() async throws -> WorkspaceDraft { WorkspaceDraft(name: "Fixture") }
+    func save(request: RequestDraft, in collectionID: String) async throws {}
+    func save(environment: EnvironmentDraft) async throws {}
+    func saveSecret(name: String, value: String) async throws {
+        await withCheckedContinuation { pending = $0 }
+    }
+    func waitForWrite() async { while pending == nil { await Task.yield() } }
+    func releaseWrite() { pending?.resume(); pending = nil }
+}
+@MainActor private final class PausedOAuthAuthorizer: OAuth2Authorizing {
+    var pending: CheckedContinuation<Void, Never>?
+    func acquireToken(configuration: OAuth2Configuration) async throws -> (String, OAuth2TokenReceipt) {
+        await withCheckedContinuation { pending = $0 }
+        return ("fixture", OAuth2TokenReceipt(expiresAt: nil, scope: nil))
+    }
+    func release() { pending?.resume(); pending = nil }
 }

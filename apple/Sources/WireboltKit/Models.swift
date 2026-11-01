@@ -1525,6 +1525,8 @@ public struct RunInput: Encodable, Sendable {
         case customCAPath = "custom_ca_path"
     }
 
+    init(domain: DomainRunInput) { self.domain = domain }
+
     public init(draft: RequestDraft, variables: [String: ValueSource], workspaceProxy: ProxyDocument? = nil, appProxy: ProxyDocument? = nil) {
         domain = domainRunInput(draft: draft.domain, variables: variables.mapValues(\.domain), workspaceProxy: workspaceProxy?.domain, appProxy: appProxy?.domain)
     }

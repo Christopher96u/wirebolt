@@ -3,6 +3,8 @@ import SystemConfiguration
 import WireboltStreamFFI
 
 final class RustRequestRunner: @unchecked Sendable, RequestRunner {
+    var sessionTransport: AppRuntimeTransport { AppRuntimeTransport.native() }
+
     private static let proxyMonitor = SystemProxyMonitor()
 
     init() {
@@ -17,19 +19,8 @@ final class RustRequestRunner: @unchecked Sendable, RequestRunner {
     private var terminalBeforeInstall: Set<RunID> = []
 
     func resolveValues(_ values: [ValueSource], variables: [String: ValueSource]) async throws -> [String] {
-        // The common literal URL needs no bridge work or credential lookup.
-        if values.allSatisfy({ if case let .literal(text) = $0 { return !text.contains("{{") }; return false }) {
-            return values.map(\.editableValue)
-        }
-        return try await Task.detached(priority: .userInitiated) {
-            do {
-                let encoder = JSONEncoder()
-                return try resolveRequestValues(valuesJson: String(decoding: encoder.encode(values), as: UTF8.self),
-                    variablesJson: String(decoding: encoder.encode(variables), as: UTF8.self))
-            } catch let RequestPreparationError.InvalidRequest(reason) {
-                throw (try? JSONDecoder().decode(RunFailure.self, from: Data(reason.utf8))) ?? RunFailure(kind: "invalid_request", issues: [])
-            }
-        }.value
+        do { return try await sessionTransport.resolveValues(values: values.map(\.domain), variables: variables.mapValues(\.domain)) }
+        catch let RuntimeRequestError.Failure(failure) { throw RunFailure(failure) }
     }
 
     func events(

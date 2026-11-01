@@ -5,6 +5,7 @@ struct RustWorkspacePersistence: WorkspacePersistence, GitCollaboration {
     let location: URL?
     var sessionWorkspacePlatform: AppWorkspacePlatform { .workspace(bridge: bridge) }
     var sessionGitPlatform: AppWorkspacePlatform { .workspace(bridge: bridge) }
+    var runtimeWorkspaceBridge: WorkspaceBridge? { bridge }
     var sessionSecretPlatform: AppSecretPlatform { AppSecretPlatform.workspace(bridge: bridge) }
 
     init(

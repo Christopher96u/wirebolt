@@ -56,15 +56,18 @@ its workspace. Runtime storage remains outside Git-visible workspace files.
   JSON and Markdown parsing, run history, and cookie policy in `wirebolt-app::response`.
 - Rust owns document runs, editor groups, preview replacement, navigation and layout,
   WebSocket lifecycle, reversible workspace edit plans, credential release policy,
-  typed history orchestration, workspace load/switch/save/import/Git transitions, named undo payloads, sidebar/dirty-close workflows and direct workspace/transport execution in
-  `wirebolt-app::session`.
+  typed history orchestration, workspace load/switch/save/import/Git transitions, named undo
+  payloads, sidebar/dirty-close workflows and direct workspace/transport execution in
+  `wirebolt-app::session`. Its runtime commands own send/cancel orchestration,
+  per-run cookie scoping, history/activity revisions, environment selection, secret
+  editing/release, proxy/transport writes, OAuth acquisition and cURL coordination.
 - Swift projects typed Rust records and owns macOS interaction,
   window composition, native response rendering and font measurement, Keychain
   platform adapters, and observation facades. Remaining model orchestration is
   tracked in `docs/specs/rust-app-core.md`.
-- `WireboltModel` publishes small presentation state and coordinates these deep
-  modules; views do not parse imports, resolve secrets, or assemble transport
-  requests themselves.
+- `WireboltModel` publishes small presentation state and relays runtime commands;
+  Rust requests the latest native editor projection after credential flushing.
+  Views do not parse imports, resolve secrets, or assemble transport requests themselves.
 
 ## Invariants
 
