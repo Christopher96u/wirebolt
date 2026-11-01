@@ -2,7 +2,9 @@
 use super::{DomainBody, DomainMultipartPart, DomainValueSource, identity::unique_id};
 use crate::response::{JsonNodeKind, JsonTreeNode, ResponseCancellation, json_tree};
 use std::collections::HashMap;
+mod json;
 mod number;
+pub(crate) use json::parse as parse_json;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DomainBodyKind {
@@ -216,8 +218,8 @@ fn write_json(
     Some(())
 }
 
-// Foundation permits a trailing comma in objects and arrays. Keep that legacy
-// input tolerance local to request formatting; response JSON stays strict.
+// Foundation permits a trailing comma in objects and arrays in request JSON.
+// Response JSON stays strict.
 fn without_trailing_commas(source: &str) -> Vec<u8> {
     let bytes = source.as_bytes();
     let mut output = Vec::with_capacity(bytes.len());

@@ -119,6 +119,33 @@ fn token_parsing_preserves_optional_expiry_scope_and_rejection_rules() {
     assert!(receipt.expires_at.is_none());
     assert!(receipt.scope.is_none());
 }
+
+#[test]
+fn token_json_preserves_foundation_tolerance() {
+    for body in [
+        "\u{feff}{\"access_token\":\"fixture\",\"expires_in\":true,\"scope\":\"read\",}".to_owned(),
+        format!(
+            r#"{{"access_token":"fixture","expires_in":1,"ignored":{}0{},"scope":"read",}}"#,
+            "[".repeat(511),
+            "]".repeat(511)
+        ),
+    ] {
+        let receipt = parse_token(200, &body, 1000.0).unwrap();
+        assert_eq!(receipt.token, "fixture");
+        assert_eq!(receipt.expires_at, Some(1001.0));
+        assert_eq!(receipt.scope.as_deref(), Some("read"));
+    }
+    for body in [
+        r#"{"access_token":"fixture",,}"#,
+        r#"{"access_token":"fixture","a":[,]}"#,
+        " \u{feff}{\"access_token\":\"fixture\"}",
+    ] {
+        assert_eq!(
+            parse_token(200, body, 0.0).unwrap_err(),
+            DomainOAuthError::InvalidTokenResponse
+        );
+    }
+}
 struct NoPlatform;
 #[async_trait::async_trait]
 impl DomainOAuthPlatform for NoPlatform {

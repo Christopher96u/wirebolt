@@ -182,6 +182,100 @@ fn cookie_paths_decode_urls_and_ignore_empty_attributes() {
 }
 
 #[test]
+fn cookie_paths_strip_trailing_slashes_like_foundation() {
+    for url in [
+        "https://h/v1/users/",
+        "https://h/v1/users//",
+        "https://h/v1/users%2F",
+    ] {
+        let mut jar = ResponseCookieJar::new(None);
+        let received = jar.store(&[header("default=value")], url, 0.0);
+        assert_eq!(received[0].path, "/v1", "{url}");
+        assert_eq!(
+            jar.header("https://h/v1/other", 0.0).as_deref(),
+            Some("default=value")
+        );
+    }
+    let mut jar = ResponseCookieJar::new(None);
+    let _ = jar.store(&[header("scoped=value; Path=/account/")], "https://h/", 0.0);
+    for url in [
+        "https://h/account/",
+        "https://h/account//",
+        "https://h/account%2F",
+    ] {
+        assert_eq!(jar.header(url, 0.0), None, "{url}");
+    }
+    assert_eq!(
+        jar.header("https://h/account/me", 0.0).as_deref(),
+        Some("scoped=value")
+    );
+}
+
+#[test]
+fn ipv6_cookies_keep_unbracketed_hosts_and_read_saved_files() {
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("cookies.json");
+    std::fs::write(&path, r#"[{"name":"saved","value":"old","domain":"::1","hostOnly":true,"path":"/","secure":false,"httpOnly":false,"sameSite":"","expiresAt":1000}]"#).unwrap();
+    let mut jar = ResponseCookieJar::new(Some(path.clone()));
+    assert_eq!(
+        jar.header("http://[::1]/", 0.0).as_deref(),
+        Some("saved=old")
+    );
+    let received = jar.store(
+        &[header("new=value; Domain=::1; Max-Age=60")],
+        "http://[::1]/",
+        0.0,
+    );
+    assert_eq!(received.len(), 1);
+    assert_eq!(received[0].domain, "::1");
+    let mut restored = ResponseCookieJar::new(Some(path));
+    assert_eq!(
+        restored.header("http://[::1]/", 0.0).as_deref(),
+        Some("saved=old; new=value")
+    );
+    assert_eq!(restored.header("http://[::2]/", 0.0), None);
+    for (url, host) in [
+        ("http://[0:0:0:0:0:0:0:1]/", "0:0:0:0:0:0:0:1"),
+        ("http://user:password@[::0001]:8080/", "::0001"),
+        ("http://[::FFFF:192.0.2.1]/", "::ffff:192.0.2.1"),
+    ] {
+        let mut jar = ResponseCookieJar::new(None);
+        let received = jar.store(&[header("ipv6=value")], url, 0.0);
+        assert_eq!(received[0].domain, host);
+        assert_eq!(jar.header(url, 0.0).as_deref(), Some("ipv6=value"));
+        assert_eq!(jar.header("http://[::1]/", 0.0), None);
+    }
+}
+
+#[test]
+fn cookie_file_keys_resolve_symlinks_and_private_aliases() {
+    use std::path::Path;
+    let root = tempfile::tempdir().unwrap();
+    let workspace = root.path().join("workspace");
+    std::fs::create_dir(&workspace).unwrap();
+    let alias = root.path().join("alias");
+    std::os::unix::fs::symlink(&workspace, &alias).unwrap();
+    assert_eq!(
+        cookie_storage_path(&workspace, root.path()),
+        cookie_storage_path(&alias, root.path())
+    );
+    assert_eq!(
+        cookie_storage_path(Path::new("/tmp"), root.path())
+            .file_name()
+            .unwrap(),
+        "e9671acd244849c57167c658fa2f9697.json"
+    );
+    assert_eq!(
+        cookie_storage_path(Path::new("/private/tmp"), root.path()),
+        cookie_storage_path(Path::new("/tmp"), root.path())
+    );
+    assert_ne!(
+        cookie_storage_path(&alias.join("missing"), root.path()),
+        cookie_storage_path(&workspace.join("missing"), root.path())
+    );
+}
+
+#[test]
 fn cookie_dates_preserve_pre_epoch_expiry_two_digit_years_and_named_timezones() {
     for (source, unix) in [
         ("Wed, 31 Dec 1969 23:59:59 GMT", -1.0),

@@ -47,7 +47,9 @@ public struct WebSocketMessage: Identifiable, Sendable {
     }
 
     init(_ record: SessionSocketMessage) {
-        id = UUID(uuidString: record.id)!
+        // A malformed bridge identity receives a fresh UUID on projection;
+        // the document retains that projection across repeated snapshots.
+        id = UUID(uuidString: record.id) ?? UUID()
         timestamp = Date(timeIntervalSinceReferenceDate: record.timestamp)
         data = record.data
         binary = record.binary
@@ -183,7 +185,7 @@ public final class WebSocketDocumentState {
         nextSequence = state.nextSequence
     }
     // Foundation owns localized Cocoa diagnostics. Successful parsing and file I/O
-    // stay in Rust; this only recovers the existing native error wording on failure.
+    // stay in Rust; failures use the native localized error wording.
     private static func localizedFailure(_ reason: String, body: RequestBody) -> String {
         do {
             switch body {

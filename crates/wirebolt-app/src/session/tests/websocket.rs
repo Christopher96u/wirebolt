@@ -1,4 +1,5 @@
 use super::super::websocket::*;
+use crate::domain::DomainBody;
 #[test]
 fn generation_rejects_late_events_after_disconnect() {
     let mut socket = SessionSocket::default();
@@ -52,4 +53,40 @@ fn binary_formats_accept_whitespace_and_reject_invalid_input() {
         decode_binary("???", false).unwrap_err(),
         "Enter a valid Base64 binary message."
     );
+}
+
+#[test]
+fn binary_base64_accepts_nonzero_trailing_bits() {
+    assert_eq!(decode_binary(" Z h = =\n", false).unwrap(), b"f");
+    assert_eq!(decode_binary("Zm9=", false).unwrap(), b"fo");
+}
+
+#[test]
+fn json_messages_preserve_foundation_tolerance_and_original_bytes() {
+    for value in [
+        r#"{"a":1,}"#.to_owned(),
+        "\u{feff}[1,]".into(),
+        r#"{"s":"comma,} and escaped \" quote","a":[true,],}"#.into(),
+        format!("{}0{}", "[".repeat(512), "]".repeat(512)),
+        "null".into(),
+    ] {
+        let (data, binary) = message_body(&DomainBody::Json {
+            value: value.clone(),
+        })
+        .unwrap();
+        assert_eq!(data, value.as_bytes());
+        assert!(!binary);
+    }
+    for value in [
+        "[,]".to_owned(),
+        "{,}".into(),
+        "[1,,]".into(),
+        " \u{feff}{}".into(),
+        format!("{}0{}", "[".repeat(513), "]".repeat(513)),
+    ] {
+        assert_eq!(
+            message_body(&DomainBody::Json { value }).unwrap_err(),
+            "The data couldn’t be read because it isn’t in the correct format."
+        );
+    }
 }
