@@ -76,7 +76,7 @@ struct CurlExportTests {
         request.headers = [RequestField(name: "X-Secret", value: .secret("header.secret")),
                            RequestField(name: "X-Unicode", value: .secret("unicode.secret"))]
         request.authentication = .bearer(token: .secret("auth.bearer"))
-        request.body = .formUrlEncoded(fields: [RequestField(name: "f", value: .secret("form.secret")),
+        request.body = .formURLEncoded(fields: [RequestField(name: "f", value: .secret("form.secret")),
                                                 RequestField(name: "t", value: .literal("{{token}}"))])
         let command = command(request, variables: variables, keychain: keychain)
         for value in keychain.values { #expect(!command.contains(value)) }
@@ -120,7 +120,7 @@ struct CurlExportTests {
     @Test("Forms retain enabled repeated fields and binary multipart keeps its bytes")
     func forms() {
         var request = RequestDraft(url: "http://localhost/echo")
-        request.body = .formUrlEncoded(fields: [RequestField(name: "name", value: .literal("café")),
+        request.body = .formURLEncoded(fields: [RequestField(name: "name", value: .literal("café")),
             RequestField(name: "name", value: .literal("東京")), RequestField(name: "off", value: .literal("hidden"), enabled: false)])
         let form = command(request)
         #expect(form.contains("--data-urlencode 'name=café' --data-urlencode 'name=東京'"))

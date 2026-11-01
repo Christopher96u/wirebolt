@@ -4,17 +4,18 @@
     reason = "UniFFI lifts owned records at the boundary."
 )]
 use super::{
-    AppSecretPlatform, AppSessionLayout, AppSessionSecrets, AppSessionTabs, AppWorkspaceDocuments,
+    AppSecretPlatform, AppSessionSecrets, AppSessionTabs, AppWorkspaceDocuments,
     AppWorkspacePlatform, Arc, DomainAuthentication, DomainCollection, DomainEnvironment,
     DomainGroup, DomainLocation, DomainProxy, DomainRequestDraft, DomainTransport, DomainWorkspace,
     Path, SessionCommandBatchResult, SessionDeleteTarget, SessionDocument, SessionDocumentEffect,
-    SessionEditorGroup, SessionRestoreResult, SessionTabDocument, SessionTabSnapshot,
-    SessionWorkspaceCommand, SessionWorkspaceDelta, SessionWorkspaceEdit, SessionWorkspaceNodeKind,
-    SessionWorkspacePlan, WorkspaceAction, WorkspaceBridge, WorkspaceClose, WorkspaceDiscard,
-    WorkspaceExport, WorkspaceFailure, WorkspaceGitAction, WorkspaceGitOperation,
-    WorkspaceGitStatus, WorkspaceImport, WorkspaceImportFile, WorkspaceImportSummary,
-    WorkspaceLoad, WorkspaceMutation, WorkspacePresentation, WorkspaceRepositoryProblem,
-    WorkspaceRestore, WorkspaceSave, WorkspaceSelectionProblem, WorkspaceUndoToken,
+    SessionEditorGroup, SessionLayout, SessionRestoreResult, SessionTabDocument,
+    SessionTabSnapshot, SessionWorkspaceCommand, SessionWorkspaceDelta, SessionWorkspaceEdit,
+    SessionWorkspaceNodeKind, SessionWorkspacePlan, WorkspaceAction, WorkspaceBridge,
+    WorkspaceClose, WorkspaceDiscard, WorkspaceExport, WorkspaceFailure, WorkspaceGitAction,
+    WorkspaceGitOperation, WorkspaceGitStatus, WorkspaceImport, WorkspaceImportFile,
+    WorkspaceImportSummary, WorkspaceLoad, WorkspaceMutation, WorkspacePresentation,
+    WorkspaceRepositoryProblem, WorkspaceRestore, WorkspaceSave, WorkspaceSelectionProblem,
+    WorkspaceUndoToken,
 };
 use crate::lock;
 #[uniffi::remote(Enum)]
@@ -640,7 +641,7 @@ impl AppWorkspaceOperations {
     pub fn restore_tabs(
         &self,
         tabs: Arc<AppSessionTabs>,
-        layout: Option<AppSessionLayout>,
+        layout: Option<SessionLayout>,
     ) -> WorkspaceRestore {
         let mut state = lock(&tabs.tabs);
         let (tabs, documents) = &mut *state;

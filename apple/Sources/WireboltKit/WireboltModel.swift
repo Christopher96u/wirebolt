@@ -399,7 +399,7 @@ public final class WireboltModel {
 
     public func send(_ target: DocumentSession? = nil) async {
         let session = target ?? sessions.activeSession ?? sessions.openTemporary()
-        switch sessionSendAction(kind: session.kind.rust, socket: session.socket.status.rust, running: session.isRunning) {
+        switch sessionSendAction(kind: session.kind.rust, socket: session.socket.status, running: session.isRunning) {
         case .socketSend:
             await session.socket.send(body: session.draft.body)
             return
@@ -636,7 +636,7 @@ public final class WireboltModel {
     ) async throws {
         do {
             try await runtime.applyProxy(
-                configuration: configuration?.domain, scope: scope.rust,
+                configuration: configuration?.domain, scope: scope,
                 hasSession: session != nil, secrets: secrets, secretPlatform: persistence?.sessionSecretPlatform,
                 platform: runtimeSettings())
             switch scope {

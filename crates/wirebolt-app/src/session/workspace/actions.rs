@@ -2,7 +2,7 @@
 use super::{SessionWorkspaceEdit as Edit, collection, descendants, location};
 use crate::domain::{
     DomainCollection, DomainEnvironment, DomainGroup, DomainLocation, DomainRequestDraft,
-    DomainWorkspace, request::unique_id, sidebar::ordered_children,
+    DomainWorkspace, identity::unique_id, sidebar::ordered_children,
 };
 
 pub const ROOT_COLLECTION: &str = "workspace-root";

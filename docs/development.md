@@ -43,17 +43,16 @@ Generated bindings live under `apple/Generated` and are produced by the scripts.
 The Rust session suite covers storage conversions, typed secret/Git operations,
 presentation migrations and cancellation. Bridge smoke checks exercise typed
 transport events and workspace commands. Swift adapter tests compare the Notes
-preview with the Foundation renderer from `081c6d0`, including complete attributed
+preview with Foundation's full Markdown renderer, including complete attributed
 text and cache costs, across headings, inline styles, code, nested/ordered/task
 lists, quotes, links/autolinks, images, tables, HTML, breaks, rules, footnotes,
 escapes and Unicode. Foundation's full Markdown interpretation is supplied through
 a platform trait; Rust assembles visible runs and owns cache retention. Editor
 syntax tests compare batched Rust token ranges, precedence, line boundaries and
-indent columns with the previous native patterns, including CR/CRLF, VT/FF, NEL and
-Unicode line/paragraph separators. The previous portable Markdown parser omitted
-the trailing newline Foundation supplies for an unfinished fenced code block and
-styled inserted block separators as paragraphs. Both now match the native oracle;
-the corpus compares every attributed run as well as the visible text.
+indent columns with native syntax patterns, including CR/CRLF, VT/FF, NEL and
+Unicode line/paragraph separators. The Markdown corpus compares every attributed
+run and visible text, including unfinished fenced-code-block newlines and inserted
+block separators.
 
 ## Performance
 
@@ -74,7 +73,7 @@ Native workloads cover request and tab selection, large responses, resizing, ren
 | Location | Responsibility |
 | --- | --- |
 | `crates/wirebolt-core` | Workspace persistence, import/export, request preparation and transport |
-| `crates/wirebolt-app/src/domain` | Typed editable records, draft/variable editing, cURL exports, proxy forms and probe state, sidebar indexes, theme tokens, batched editor syntax/indentation, bounded PEM file input and OAuth 2 protocol logic |
+| `crates/wirebolt-app/src/domain` | Typed editable records and request/credential editing (`request`), stable IDs (`identity`), URL/query editing (`url`), window/tab/timeout labels (`chrome`), import recognition and summaries (`imports`), Git presentation (`git`), variables, cURL exports, proxy forms and probes, sidebar/drop/menu ordering, typed theme tokens, editor syntax/indentation, bounded PEM input and OAuth 2 protocol logic |
 | `crates/wirebolt-app/src/response` | File-backed response bodies, sparse indexes, search, folding, wrapping policy, JSON parsing, Markdown run assembly/cache policy over platform parsing, history and cookies |
 | `crates/wirebolt-app/src/session` | Document/run state, editor groups and previews, layout, WebSocket lifecycle, reversible workspace plans, credential lifecycle, typed history, workspace persistence/import/export/Git and transport execution; `session/workspace/` owns action construction, undo payloads, save/load transitions, sidebar/close workflows and typed persistence seams; `session/runtime` owns send/cancel, per-run cookie scoping, history/activity, environment resolution, secret commands, settings writes, OAuth acquisition and cURL coordination |
 | `crates/wirebolt-ffi` | Typed domain, response and session objects; foreign platform traits and typed HTTP probe/WebSocket callbacks; `app_session/` mirrors run, tabs, secrets, workspace and runtime responsibilities |
@@ -83,6 +82,17 @@ Native workloads cover request and tab selection, large responses, resizing, ren
 | `apple/Tests` | Swift tests and bridge smoke validation |
 | `apple/Benchmarks` | Native performance workloads |
 | `scripts` | Reproducible build, checks and release tooling |
+
+Bridge names follow their application responsibility: `domain_*` free functions
+expose editable values and presentation policy, `app_*` functions expose response
+operations and bounded platform-file input, `session_*` functions expose session
+policy/codecs, and `workspace_*` functions expose workspace interface actions.
+`App` prefixes identify bridge objects; session layout records use `SessionLayout`,
+`SessionLayoutGroup` and `SessionLayoutTab` in Rust. The generated Swift layout
+record is named `RustSessionLayout` to distinguish it from the native persistence
+facade. Git delta values use the core `GitDelta` type throughout Rust and the bridge.
+Swift aliases generated enums and keeps only native spelling conveniences and
+small `RawRepresentable` extensions for persisted preference strings.
 
 Read [CONTEXT.md](../CONTEXT.md) for workspace vocabulary, ownership and invariants.
 

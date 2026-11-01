@@ -309,7 +309,7 @@ public struct SessionLayoutStore {
 
     public func layout(forWorkspace path: String) -> SessionLayout? {
         guard let data = (defaults.dictionary(forKey: Self.defaultsKey) as? [String: Data])?[path] else { return nil }
-        return sessionDecodeLayout(data: data).map(SessionLayout.init)
+        return (try? sessionDecodeLayout(data: data)).map(SessionLayout.init)
     }
 
     /// Entries for workspace folders that no longer exist are dropped on each save.
@@ -317,7 +317,7 @@ public struct SessionLayoutStore {
         let prior = defaults.dictionary(forKey: Self.defaultsKey) as? [String: Data] ?? [:]
         let retained = Set(sessionExistingWorkspacePaths(paths: Array(prior.keys)))
         var stored = prior.filter { retained.contains($0.key) }
-        stored[path] = sessionEncodeLayout(layout: layout.sessionRecord)
+        stored[path] = (try? sessionEncodeLayout(layout: layout.sessionRecord)) ?? Data()
         defaults.set(stored, forKey: Self.defaultsKey)
     }
 }
@@ -473,9 +473,7 @@ public final class DocumentSessionStore {
             kind: kind, collectionID: collectionID, requestID: draft.id,
             draft: draft, savedDraft: isSaved ? draft : nil)
         let id = rust.open(document: candidate.tabProjection, group: groupID, force: forceNewSession, preview: false)
-        if id == candidate.id { sessions[id] = candidate }
-        mirrorTabs()
-        return sessions[id]!
+        return retainOpenedSession(id, candidate: candidate, groupID: groupID, preview: false)
     }
 
     /// Opens a saved request in the group's preview tab: an untouched preview tab is
@@ -490,9 +488,22 @@ public final class DocumentSessionStore {
         synchronizeTabs()
         let candidate = DocumentSession(collectionID: collectionID, requestID: draft.id, draft: draft, savedDraft: draft)
         let id = rust.open(document: candidate.tabProjection, group: groupID, force: false, preview: true)
+        return retainOpenedSession(id, candidate: candidate, groupID: groupID, preview: true)
+    }
+
+    /// A missing native projection is replaced with a fresh tab so the returned session
+    /// is retained and selected even if the bridge supplied an unknown ID.
+    func retainOpenedSession(_ id: String, candidate: DocumentSession, groupID: String?, preview: Bool) -> DocumentSession {
         if id == candidate.id { sessions[id] = candidate }
+        if let session = sessions[id] {
+            mirrorTabs()
+            return session
+        }
+        _ = rust.close(scope: .one(id: id), group: groupID, allowDirty: true)
+        _ = rust.open(document: candidate.tabProjection, group: groupID, force: true, preview: preview)
+        sessions[candidate.id] = candidate
         mirrorTabs()
-        return sessions[id]!
+        return candidate
     }
 
     /// True while the tab is its group's preview tab and has not been edited or sent.
@@ -612,16 +623,16 @@ extension EditorGroup {
     }
 }
 extension SessionLayout {
-    var sessionRecord: AppSessionLayout {
-        AppSessionLayout(
+    var sessionRecord: RustSessionLayout {
+        RustSessionLayout(
             groups: groups.map {
-                AppSessionLayoutGroup(
+                SessionLayoutGroup(
                     tabs: $0.tabs.map {
                         SessionLayoutTab(collectionId: $0.collectionID, requestId: $0.requestID)
                     }, selectedIndex: $0.selectedIndex.map(Int64.init), previewIndex: $0.previewIndex.map(Int64.init))
             }, activeGroupIndex: Int64(activeGroupIndex))
     }
-    init(_ record: AppSessionLayout) {
+    init(_ record: RustSessionLayout) {
         self.init(
             groups: record.groups.map {
                 Group(

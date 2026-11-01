@@ -151,9 +151,9 @@ final class WireboltAppDelegate: NSObject, NSApplicationDelegate {
     }
 }
 
-extension UserDefaults {
+private extension UserDefaults {
     /// KVO-observable mirror of the `interfaceAppearance` preference.
-    @objc fileprivate dynamic var interfaceAppearance: String? { string(forKey: "interfaceAppearance") }
+    @objc dynamic var interfaceAppearance: String? { string(forKey: "interfaceAppearance") }
 }
 
 struct WireboltCommands: Commands {

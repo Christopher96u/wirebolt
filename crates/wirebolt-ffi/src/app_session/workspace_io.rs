@@ -4,11 +4,11 @@
     reason = "UniFFI lifts owned records at the boundary."
 )]
 use super::{
-    Arc, DomainWorkspace, Mutex, PushAvailability, SessionCommandBatchResult,
+    Arc, DomainWorkspace, GitDelta, Mutex, PushAvailability, SessionCommandBatchResult,
     SessionWorkspaceCommand, WorkspaceBridge, WorkspaceExport, WorkspaceFailure,
-    WorkspaceGitAction, WorkspaceGitChange, WorkspaceGitDelta, WorkspaceGitOperation,
-    WorkspaceGitOutcome, WorkspaceGitStatus, WorkspaceIO, WorkspaceImportSummary,
-    WorkspaceImportedEnvironment, WorkspaceReply,
+    WorkspaceGitAction, WorkspaceGitChange, WorkspaceGitOperation, WorkspaceGitOutcome,
+    WorkspaceGitStatus, WorkspaceIO, WorkspaceImportSummary, WorkspaceImportedEnvironment,
+    WorkspaceReply,
 };
 use crate::lock;
 #[uniffi::remote(Record)]
@@ -37,8 +37,8 @@ pub struct WorkspaceImportSummary {
 pub struct WorkspaceGitChange {
     pub path: String,
     pub previous_path: Option<String>,
-    pub staged: WorkspaceGitDelta,
-    pub unstaged: WorkspaceGitDelta,
+    pub staged: GitDelta,
+    pub unstaged: GitDelta,
     pub conflicted: bool,
 }
 
@@ -190,17 +190,13 @@ impl AppWorkspacePlatform {
 }
 
 #[uniffi::export]
-pub fn session_git_porcelain(
-    staged: WorkspaceGitDelta,
-    unstaged: WorkspaceGitDelta,
-    conflicted: bool,
-) -> String {
+pub fn session_git_porcelain(staged: GitDelta, unstaged: GitDelta, conflicted: bool) -> String {
     wirebolt_app::session::workspace::presentation::git_porcelain(staged, unstaged, conflicted)
 }
 #[uniffi::export]
 pub fn session_git_change_kind(
-    staged: WorkspaceGitDelta,
-    unstaged: WorkspaceGitDelta,
+    staged: GitDelta,
+    unstaged: GitDelta,
     conflicted: bool,
 ) -> crate::app_domain::DomainGitChangeKind {
     wirebolt_app::session::workspace::presentation::git_change_kind(staged, unstaged, conflicted)
@@ -215,7 +211,7 @@ pub fn session_git_push_help(availability: PushAvailability) -> String {
 }
 
 #[uniffi::remote(Enum)]
-pub enum WorkspaceGitDelta {
+pub enum GitDelta {
     None,
     Added,
     Modified,

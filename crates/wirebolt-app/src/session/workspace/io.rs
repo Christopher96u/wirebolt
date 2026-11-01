@@ -128,14 +128,14 @@ pub struct WorkspaceImportSummary {
     #[serde(default)]
     pub warnings: Vec<String>,
 }
-pub use wirebolt_core::GitDelta as WorkspaceGitDelta;
+pub use wirebolt_core::GitDelta;
 pub use wirebolt_core::GitOperationOutcome as WorkspaceGitOutcome;
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct WorkspaceGitChange {
     pub path: String,
     pub previous_path: Option<String>,
-    pub staged: WorkspaceGitDelta,
-    pub unstaged: WorkspaceGitDelta,
+    pub staged: GitDelta,
+    pub unstaged: GitDelta,
     pub conflicted: bool,
 }
 #[derive(Clone, Debug, PartialEq, Eq)]

@@ -1,5 +1,5 @@
 //! Request-body transitions and formatting; native collation is a platform service.
-use super::{DomainBody, DomainMultipartPart, DomainValueSource, request::unique_id};
+use super::{DomainBody, DomainMultipartPart, DomainValueSource, identity::unique_id};
 use crate::response::{JsonNodeKind, JsonTreeNode, ResponseCancellation, json_tree};
 use std::collections::HashMap;
 mod number;

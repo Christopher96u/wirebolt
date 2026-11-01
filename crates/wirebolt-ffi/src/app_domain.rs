@@ -6,7 +6,7 @@
 use crate::WorkspaceBridge;
 use crate::lock;
 use std::{collections::HashMap, sync::Arc};
-pub(crate) use wirebolt_app::domain::request::DomainGitChangeKind;
+pub(crate) use wirebolt_app::domain::git::DomainGitChangeKind;
 use wirebolt_app::domain::theme::{DensityTokens, GeometryTokens};
 use wirebolt_app::domain::{
     self,
@@ -33,13 +33,13 @@ use wirebolt_app::domain::{
     },
     theme::{
         AdaptiveColor, DomainMethodChip, DomainSemanticColor, DomainStatusClass, DomainThemePreset,
-        ResolvedTokens, RgbColor, ThemeTokens, TypographyTokens,
+        MethodChipKind, ResolvedTokens, RgbColor, ThemeTokens, TypographyTokens,
     },
     variables::{CatalogEntry, OpenTemplateReference, TemplateReference, TemplateSegment},
 };
 use wirebolt_app::response::FailureCategory;
 #[cfg(test)]
-use wirebolt_core::GitDelta as WorkspaceGitDelta;
+use wirebolt_core::GitDelta;
 pub(crate) use wirebolt_core::ImportFormat as DomainImportFormat;
 
 #[uniffi::remote(Record)]
@@ -287,6 +287,7 @@ pub enum DomainBody {
         content_type: Option<String>,
         value: String,
     },
+    #[uniffi(name = "Form_U_R_L_Encoded")]
     FormUrlEncoded {
         fields: Vec<DomainField>,
     },
@@ -381,7 +382,7 @@ pub struct ResolvedTokens {
     pub hairline: RgbColor,
     pub card_border: RgbColor,
     pub focus_border: RgbColor,
-    pub chips: std::collections::HashMap<String, DomainMethodChip>,
+    pub chips: std::collections::HashMap<MethodChipKind, DomainMethodChip>,
 }
 
 #[uniffi::remote(Record)]
@@ -607,6 +608,12 @@ pub fn domain_credential_reference(role: String, scope: String) -> String {
 
 #[uniffi::export]
 #[must_use]
+pub fn domain_editable_credential_reference(source: DomainValueSource, role: String) -> String {
+    domain::request::editable_credential_reference(&source, &role)
+}
+
+#[uniffi::export]
+#[must_use]
 pub fn domain_owned_reference(name: String) -> bool {
     domain::request::owned_reference(&name)
 }
@@ -662,13 +669,13 @@ pub fn domain_new_auth(kind: DomainAuthenticationKind) -> DomainAuthentication {
 #[uniffi::export]
 #[must_use]
 pub fn domain_display_url(url: String, query: Vec<DomainField>) -> String {
-    domain::request::display_url_query(url, query)
+    domain::url::display_url_query(url, query)
 }
 
 #[uniffi::export]
 #[must_use]
 pub fn domain_edit_url(url: String, query: Vec<DomainField>, text: String) -> UrlQueryEdit {
-    domain::request::edit_url_query(url, query, &text)
+    domain::url::edit_url_query(url, query, &text)
 }
 
 #[uniffi::export]
@@ -694,13 +701,13 @@ pub fn domain_workspace_references(workspace: DomainWorkspace) -> Vec<String> {
 #[uniffi::export]
 #[must_use]
 pub fn domain_workspace_name(name: String) -> String {
-    domain::request::workspace_name(&name)
+    domain::chrome::workspace_name(&name)
 }
 
 #[uniffi::export]
 #[must_use]
 pub fn domain_window_title(workspace: String, request: Option<String>) -> String {
-    domain::request::window_title(&workspace, request.as_deref())
+    domain::chrome::window_title(&workspace, request.as_deref())
 }
 
 #[uniffi::export]
@@ -711,7 +718,7 @@ pub fn domain_tab_description(
     dirty: bool,
     preview: bool,
 ) -> String {
-    domain::request::tab_description(&method, web_socket, dirty, preview)
+    domain::chrome::tab_description(&method, web_socket, dirty, preview)
 }
 
 #[uniffi::export]
@@ -1152,7 +1159,7 @@ pub fn domain_proxy_form_document(
 pub fn domain_proxy_form_secrets(input: ProxyFormInput) -> HashMap<String, String> {
     domain::proxy::form_secrets(&input)
 }
-use domain::request::TimeoutPresentation;
+use domain::chrome::TimeoutPresentation;
 #[uniffi::remote(Record)]
 pub struct TimeoutPresentation {
     pub text: Option<String>,
@@ -1162,7 +1169,7 @@ pub struct TimeoutPresentation {
 #[uniffi::export]
 #[must_use]
 pub fn domain_timeout_presentation(milliseconds: u64) -> TimeoutPresentation {
-    domain::request::timeout_presentation(milliseconds)
+    domain::chrome::timeout_presentation(milliseconds)
 }
 #[uniffi::export]
 #[must_use]
@@ -1184,7 +1191,7 @@ pub fn domain_proxy_needs_indicator(configuration: DomainProxy, source: DomainPr
 pub fn domain_sanitized(text: String) -> String {
     domain::request::sanitized(&text)
 }
-use domain::request::PushAvailability;
+use domain::git::PushAvailability;
 #[uniffi::remote(Enum)]
 pub enum PushAvailability {
     Push,
@@ -1194,7 +1201,7 @@ pub enum PushAvailability {
 #[uniffi::export]
 #[must_use]
 pub fn domain_import_headline(names: Vec<String>, requests: i64, groups: i64) -> String {
-    domain::request::import_headline(&names, requests, groups)
+    domain::imports::import_headline(&names, requests, groups)
 }
 #[uniffi::export]
 #[must_use]
@@ -1202,7 +1209,7 @@ pub fn domain_import_environment_line(
     names: Vec<String>,
     localized_list: String,
 ) -> Option<String> {
-    domain::request::import_environment_line(&names, &localized_list)
+    domain::imports::import_environment_line(&names, &localized_list)
 }
 #[uniffi::export]
 #[must_use]
@@ -1211,12 +1218,12 @@ pub fn domain_push_availability(
     upstream: Option<String>,
     ahead: u64,
 ) -> PushAvailability {
-    domain::request::push_availability(branch, upstream.as_deref(), ahead)
+    domain::git::push_availability(branch, upstream.as_deref(), ahead)
 }
 #[uniffi::export]
 #[must_use]
 pub fn domain_separate_url_query(url: String, query: Vec<DomainField>) -> UrlQueryEdit {
-    domain::request::separate_url_query_values(url, query)
+    domain::url::separate_url_query_values(url, query)
 }
 #[uniffi::export]
 #[must_use]
@@ -1238,7 +1245,7 @@ pub fn domain_switch_auth(
 #[uniffi::export]
 #[must_use]
 pub fn domain_unique_id() -> String {
-    domain::request::unique_id()
+    domain::identity::unique_id()
 }
 #[uniffi::export]
 #[must_use]
@@ -1483,7 +1490,7 @@ pub struct DomainOAuthHeaders {
     pub accept_language: String,
 }
 
-use domain::request::UrlQueryEdit;
+use domain::url::UrlQueryEdit;
 #[uniffi::remote(Record)]
 pub struct UrlQueryEdit {
     pub url: String,
@@ -1722,31 +1729,75 @@ mod choice_tests {
     #[test]
     fn git_choices_and_conflict_precedence_keep_their_labels() {
         for (delta, expected) in [
-            (WorkspaceGitDelta::None, DomainGitChangeKind::Modified),
-            (WorkspaceGitDelta::Modified, DomainGitChangeKind::Modified),
-            (WorkspaceGitDelta::Added, DomainGitChangeKind::New),
-            (WorkspaceGitDelta::Untracked, DomainGitChangeKind::New),
-            (WorkspaceGitDelta::Deleted, DomainGitChangeKind::Deleted),
-            (WorkspaceGitDelta::Renamed, DomainGitChangeKind::Renamed),
-            (WorkspaceGitDelta::Copied, DomainGitChangeKind::Copied),
-            (
-                WorkspaceGitDelta::TypeChanged,
-                DomainGitChangeKind::TypeChanged,
-            ),
-            (WorkspaceGitDelta::Unmerged, DomainGitChangeKind::Conflicted),
+            (GitDelta::None, DomainGitChangeKind::Modified),
+            (GitDelta::Modified, DomainGitChangeKind::Modified),
+            (GitDelta::Added, DomainGitChangeKind::New),
+            (GitDelta::Untracked, DomainGitChangeKind::New),
+            (GitDelta::Deleted, DomainGitChangeKind::Deleted),
+            (GitDelta::Renamed, DomainGitChangeKind::Renamed),
+            (GitDelta::Copied, DomainGitChangeKind::Copied),
+            (GitDelta::TypeChanged, DomainGitChangeKind::TypeChanged),
+            (GitDelta::Unmerged, DomainGitChangeKind::Conflicted),
         ] {
             assert_eq!(
-                crate::app_session::session_git_change_kind(delta, WorkspaceGitDelta::None, false),
+                crate::app_session::session_git_change_kind(delta, GitDelta::None, false),
                 expected
             );
             assert_eq!(
-                crate::app_session::session_git_change_kind(WorkspaceGitDelta::None, delta, false),
+                crate::app_session::session_git_change_kind(GitDelta::None, delta, false),
                 expected
             );
             assert_eq!(
-                crate::app_session::session_git_change_kind(delta, WorkspaceGitDelta::None, true),
+                crate::app_session::session_git_change_kind(delta, GitDelta::None, true),
                 DomainGitChangeKind::Conflicted
             );
         }
     }
+}
+
+#[uniffi::export]
+#[must_use]
+pub fn domain_can_drop_inside(
+    collection: DomainSidebarCollection,
+    folder: String,
+    identifier: String,
+) -> bool {
+    domain::sidebar::can_drop_inside(&collection, &folder, &identifier)
+}
+
+#[uniffi::export]
+#[must_use]
+pub fn domain_move_collections(
+    collections: Vec<DomainSidebarCollection>,
+    identifier: String,
+) -> Vec<u64> {
+    domain::sidebar::move_collections(&collections, &identifier)
+}
+
+#[uniffi::export]
+#[must_use]
+pub fn domain_selectable_environments(environments: Vec<DomainEnvironment>) -> Vec<u64> {
+    domain::sidebar::selectable_environments(&environments)
+}
+
+#[uniffi::remote(Enum)]
+pub enum MethodChipKind {
+    Get,
+    Post,
+    Put,
+    Patch,
+    Delete,
+    Head,
+    Options,
+    Query,
+    Custom,
+    WebSocket,
+}
+#[uniffi::export]
+#[must_use]
+pub fn domain_method_chip_kinds() -> HashMap<String, MethodChipKind> {
+    MethodChipKind::ALL
+        .into_iter()
+        .map(|kind| (kind.method().into(), kind))
+        .collect()
 }

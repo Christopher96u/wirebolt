@@ -386,3 +386,55 @@ fn canonical_equivalent_sibling_names_sort_by_identity() {
     );
     assert_eq!(ordered_children(&c, None), ["request:a", "request:z"]);
 }
+
+#[test]
+fn folder_drop_policy_preserves_request_and_descendant_rules() {
+    let c = DomainSidebarCollection::from(&collection());
+    assert!(can_drop_inside(&c, "nested", "request|other|request"));
+    assert!(!can_drop_inside(&c, "nested", "group|c|folder"));
+    assert!(!can_drop_inside(&c, "folder", "group|c|folder"));
+    assert!(can_drop_inside(&c, "folder", "group|c|nested"));
+    assert!(!can_drop_inside(&c, "folder", "group|other|nested"));
+    for malformed in ["", "group|c", "request|c|r|extra", "collection|c|folder"] {
+        assert!(!can_drop_inside(&c, "folder", malformed));
+    }
+}
+#[test]
+fn move_menu_orders_collections_and_limits_folders_to_their_tree() {
+    let mut first = DomainSidebarCollection::from(&collection());
+    first.id = "z".into();
+    first.name = "Cafe\u{301}".into();
+    first.order = 1;
+    let mut tied = first.clone();
+    tied.id = "a".into();
+    tied.name = "Café".into();
+    let mut root = first.clone();
+    root.id = "workspace-root".into();
+    root.order = 0;
+    let collections = [first, tied, root];
+    assert_eq!(
+        move_collections(&collections, "request|z|request"),
+        [2, 1, 0]
+    );
+    assert_eq!(move_collections(&collections, "group|z|folder"), [0]);
+    assert!(move_collections(&collections, "group|missing|folder").is_empty());
+}
+#[test]
+fn environment_picker_excludes_globals_and_stably_orders_canonical_names() {
+    let names = [
+        ("global", "Global"),
+        ("z", "Zulu"),
+        ("a", "Café"),
+        ("b", "Cafe\u{301}"),
+        ("c", "Alpha"),
+    ];
+    let environments: Vec<_> = names
+        .into_iter()
+        .map(|(id, name)| DomainEnvironment {
+            id: id.into(),
+            name: name.into(),
+            variables: vec![],
+        })
+        .collect();
+    assert_eq!(selectable_environments(&environments), [4, 2, 3, 1]);
+}

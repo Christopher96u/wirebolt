@@ -120,23 +120,3 @@ func runtimeError(_ error: any Error) -> any Error {
     default: error
     }
 }
-
-extension WebSocketStatus {
-    var rust: SessionSocketStatus {
-        switch self {
-        case .disconnected: .disconnected
-        case .connecting: .connecting
-        case .connected: .connected
-        }
-    }
-}
-
-extension ProxyScope {
-    var rust: RuntimeProxyScope {
-        switch self {
-        case .app: .app
-        case .workspace: .workspace
-        case .request: .request
-        }
-    }
-}

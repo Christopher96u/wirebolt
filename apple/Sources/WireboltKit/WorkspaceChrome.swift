@@ -25,14 +25,14 @@ public enum DocumentTabDescription {
 public extension AuthenticationKind {
     /// The request composer's short label for the authentication.
     var composerTitle: String {
-        domainAuthTitle(kind: domain)
+        domainAuthTitle(kind: self)
     }
 }
 
 public extension RequestAuthentication {
     /// Choosing the current kind again keeps its credentials; another kind starts empty.
     func switching(to kind: AuthenticationKind) -> RequestAuthentication {
-        RequestAuthentication(domain: domainSwitchAuth(authentication: domain, kind: kind.domain))
+        RequestAuthentication(domain: domainSwitchAuth(authentication: domain, kind: kind))
     }
 }
 

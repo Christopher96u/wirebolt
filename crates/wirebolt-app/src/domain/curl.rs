@@ -5,7 +5,7 @@ use super::{
         DomainApiKeyPlacement, DomainAuthentication, DomainBody, DomainField, DomainMultipartKind,
         DomainProxy, DomainProxyRoute, DomainRequestDraft, DomainValueSource,
     },
-    request::{display_url, encode_query},
+    url::{display_url, encode_query},
     variables,
 };
 use std::{
@@ -402,7 +402,7 @@ fn transport_arguments(e: &mut Export<'_>, args: &mut Vec<String>, t: &DomainTra
         args.push("--insecure".into());
     }
     if t.total_timeout_ms != 30_000 {
-        let time = super::request::milliseconds_as_seconds(t.total_timeout_ms);
+        let time = super::chrome::milliseconds_as_seconds(t.total_timeout_ms);
         let mut value = time.to_string();
         if !value.contains('.') {
             value.push_str(".0");

@@ -81,9 +81,11 @@ public enum CredentialReference {
 
     /// Names earlier versions gave every API Key and OAuth request. Other workspaces may still
     /// use them, so Wirebolt copies their values to per-request names and never deletes them.
-    public static let legacySharedNames: Set<String> = ["auth.api-key", "oauth.client-secret", "oauth.access-token"]
+    public static func isLegacyShared(_ name: String) -> Bool { domainLegacyReference(name: name) }
 
-    public static func isLegacyShared(_ name: String) -> Bool { legacySharedNames.contains(name) }
+    public static func editableName(for source: ValueSource, role: String) -> String {
+        domainEditableCredentialReference(source: source, role: role)
+    }
 
     /// Whether Wirebolt generated `name` for exactly one request or variable, so the Keychain
     /// item can be deleted once nothing references it. Names people chose (such as proxy
@@ -123,18 +125,20 @@ extension RequestAuthentication {
     }
 }
 
-public enum AuthenticationKind: CaseIterable, Sendable {
-    case none, basic, bearer, apiKey, oauth2
+public typealias AuthenticationKind = DomainAuthenticationKind
+
+extension DomainAuthenticationKind: CaseIterable {
+    public static var allCases: [Self] { [.none, .basic, .bearer, .apiKey, .oauth2] }
 }
 
 public extension RequestAuthentication {
     var kind: AuthenticationKind {
-        AuthenticationKind(domain: domainAuthKind(authentication: domain))
+        domainAuthKind(authentication: domain)
     }
 
     /// An empty authentication of `kind` whose secrets use fresh Keychain names.
     static func new(_ kind: AuthenticationKind) -> RequestAuthentication {
-        RequestAuthentication(domain: domainNewAuth(kind: kind.domain))
+        RequestAuthentication(domain: domainNewAuth(kind: kind))
     }
 }
 
@@ -713,7 +717,7 @@ extension CollectionDraft {
     }
 }
 
-public typealias GitDeltaSnapshot = WorkspaceGitDelta
+public typealias GitDeltaSnapshot = GitDelta
 public typealias GitOperationOutcome = WorkspaceGitOutcome
 
 public typealias GitChangeSnapshot = WorkspaceGitChange
@@ -902,27 +906,6 @@ public struct ResponseCookies: Equatable, Sendable {
     public let headers: [ResponseHeader]
 }
 
-extension AuthenticationKind {
-    var domain: DomainAuthenticationKind {
-        switch self {
-        case .none: .none
-        case .basic: .basic
-        case .bearer: .bearer
-        case .apiKey: .apiKey
-        case .oauth2: .oauth2
-        }
-    }
-    init(domain: DomainAuthenticationKind) {
-        self = switch domain {
-        case .none: .none
-        case .basic: .basic
-        case .bearer: .bearer
-        case .apiKey: .apiKey
-        case .oauth2: .oauth2
-        }
-    }
-}
-
 public extension RequestBody {
     var composerKind: DomainBodyKind { domainBodyKind(body: domainKind) }
     var canFormat: Bool { domainBodyCanFormat(kind: domainKind) }
@@ -952,7 +935,7 @@ private extension RequestBody {
         case .xml: .xml
         case .html: .html
         case .raw: .raw
-        case .formUrlEncoded: .form
+        case .formURLEncoded: .form
         case .multipart: .multipart
         case .file: .file
         }

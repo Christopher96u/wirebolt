@@ -62,3 +62,18 @@ struct ThemeTests {
         }
     }
 }
+
+extension ThemeTests {
+    @Test func generatedPresetsKeepUserDefaultsValuesAndCustomChips() throws {
+        #expect(ThemePreset.allCases.map(\.rawValue) == ["black", "paper", "ember"])
+        for preset in ThemePreset.allCases {
+            #expect(ThemePreset(rawValue: preset.rawValue) == preset)
+            let theme = ResolvedTheme(preset: preset)
+            let custom = try #require(HTTPMethod(rawValue: "PROPFIND"))
+            let another = try #require(HTTPMethod(rawValue: "CUSTOM"))
+            #expect(theme.method(custom).foreground == theme.method(another).foreground)
+            #expect(theme.method(custom).background == theme.method(another).background)
+        }
+        #expect(ThemePreset(rawValue: "system") == nil)
+    }
+}

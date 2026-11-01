@@ -124,3 +124,30 @@ extension CollectionDraft {
         return domainFolderOutline(collection: domain).map { (groups[Int($0[0])], Int($0[1])) }
     }
 }
+
+private extension CollectionDraft {
+    var sidebarDestination: DomainSidebarCollection {
+        DomainSidebarCollection(id: id, name: name, order: Int64(order), groups: groups.map(\.domain), requests: [])
+    }
+}
+
+public extension CollectionDraft {
+    func canDropInside(_ folderID: String, identifier: String) -> Bool {
+        domainCanDropInside(collection: sidebarDestination, folder: folderID, identifier: identifier)
+    }
+}
+
+public extension WorkspaceDraft {
+    func moveCollections(for identifier: String) -> [CollectionDraft] {
+        domainMoveCollections(collections: collections.map { $0.sidebarDestination }, identifier: identifier).compactMap {
+            let index = Int(clamping: $0)
+            return collections.indices.contains(index) ? collections[index] : nil
+        }
+    }
+    var selectableEnvironments: [EnvironmentDraft] {
+        domainSelectableEnvironments(environments: environments.map { DomainEnvironment(id: $0.id, name: $0.name, variables: []) }).compactMap {
+            let index = Int(clamping: $0)
+            return environments.indices.contains(index) ? environments[index] : nil
+        }
+    }
+}

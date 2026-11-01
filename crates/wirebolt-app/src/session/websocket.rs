@@ -1,5 +1,5 @@
 //! WebSocket document lifecycle and bounded message retention.
-use crate::domain::{DomainBody, request::unique_id};
+use crate::domain::{DomainBody, identity::unique_id};
 use crate::response::{ResponseHeaderValue, reference_time};
 use base64::{Engine, engine::general_purpose::STANDARD};
 use std::collections::VecDeque;

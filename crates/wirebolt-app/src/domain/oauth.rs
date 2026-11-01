@@ -95,8 +95,8 @@ pub fn encode_form(form: &BTreeMap<String, String>) -> String {
         .map(|(k, v)| {
             format!(
                 "{}={}",
-                super::request::encode_query(k).replace('+', "%2B"),
-                super::request::encode_query(v).replace('+', "%2B")
+                super::url::encode_query(k).replace('+', "%2B"),
+                super::url::encode_query(v).replace('+', "%2B")
             )
         })
         .collect::<Vec<_>>()
@@ -171,10 +171,10 @@ pub fn authorization_url(
     let query = items
         .iter()
         .map(|(k, v)| {
-            let name = super::request::encode_query(k);
+            let name = super::url::encode_query(k);
             v.as_ref().map_or_else(
                 || name.clone(),
-                |value| format!("{name}={}", super::request::encode_query(value)),
+                |value| format!("{name}={}", super::url::encode_query(value)),
             )
         })
         .collect::<Vec<_>>()

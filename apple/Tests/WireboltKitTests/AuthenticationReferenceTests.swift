@@ -118,3 +118,14 @@ struct SilentRunner: RequestRunner {
 
     func cancel(runID _: RunID) {}
 }
+
+extension AuthenticationReferenceTests {
+    @Test func credentialNamePolicyComesFromTheDomain() {
+        for name in ["auth.api-key", "oauth.client-secret", "oauth.access-token", ""] {
+            let replacement = CredentialReference.editableName(for: .secret(name), role: "token")
+            #expect(replacement != name)
+            #expect(CredentialReference.isOwned(replacement))
+        }
+        #expect(CredentialReference.editableName(for: .secret("personal.token"), role: "token") == "personal.token")
+    }
+}

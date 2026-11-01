@@ -1,6 +1,6 @@
 //! Persisted presentation migrations and Git diagnostics shared by interfaces.
-use super::io::{WorkspaceGitDelta, WorkspaceGitOutcome};
-use crate::domain::{DomainBody, request::PushAvailability};
+use super::io::{GitDelta, WorkspaceGitOutcome};
+use crate::domain::{DomainBody, git::PushAvailability};
 
 #[must_use]
 pub fn response_section(value: String) -> String {
@@ -24,21 +24,17 @@ pub fn request_section(body: &DomainBody) -> String {
     .into()
 }
 #[must_use]
-pub fn git_porcelain(
-    staged: WorkspaceGitDelta,
-    unstaged: WorkspaceGitDelta,
-    conflicted: bool,
-) -> String {
+pub fn git_porcelain(staged: GitDelta, unstaged: GitDelta, conflicted: bool) -> String {
     let code = |delta| match delta {
-        WorkspaceGitDelta::None => '·',
-        WorkspaceGitDelta::Added => 'A',
-        WorkspaceGitDelta::Modified => 'M',
-        WorkspaceGitDelta::Deleted => 'D',
-        WorkspaceGitDelta::Renamed => 'R',
-        WorkspaceGitDelta::Copied => 'C',
-        WorkspaceGitDelta::TypeChanged => 'T',
-        WorkspaceGitDelta::Untracked => '?',
-        WorkspaceGitDelta::Unmerged => 'U',
+        GitDelta::None => '·',
+        GitDelta::Added => 'A',
+        GitDelta::Modified => 'M',
+        GitDelta::Deleted => 'D',
+        GitDelta::Renamed => 'R',
+        GitDelta::Copied => 'C',
+        GitDelta::TypeChanged => 'T',
+        GitDelta::Untracked => '?',
+        GitDelta::Unmerged => 'U',
     };
     format!(
         "Git status: {}",
@@ -51,11 +47,11 @@ pub fn git_porcelain(
 }
 #[must_use]
 pub fn git_change_kind(
-    staged: WorkspaceGitDelta,
-    unstaged: WorkspaceGitDelta,
+    staged: GitDelta,
+    unstaged: GitDelta,
     conflicted: bool,
-) -> crate::domain::request::DomainGitChangeKind {
-    crate::domain::request::git_change_kind(staged, unstaged, conflicted)
+) -> crate::domain::git::DomainGitChangeKind {
+    crate::domain::git::git_change_kind(staged, unstaged, conflicted)
 }
 #[must_use]
 pub fn git_operation_label(outcome: WorkspaceGitOutcome) -> String {
@@ -96,7 +92,7 @@ mod tests {
     }
     #[test]
     fn git_labels_keep_porcelain_and_operation_text() {
-        use WorkspaceGitDelta as D;
+        use GitDelta as D;
         for (delta, code) in [
             (D::None, '·'),
             (D::Added, 'A'),

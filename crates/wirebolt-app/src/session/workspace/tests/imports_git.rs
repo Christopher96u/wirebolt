@@ -45,18 +45,18 @@ fn committed_import_summary_decodes_delta_document_without_losing_fields() {
     assert_eq!(result.summary.request_count, 9);
     assert_eq!(result.summary.environments[0].id, "import-1-env-0");
     assert_eq!(
-        crate::domain::request::import_headline(&result.summary.collection_names, 9, 3),
+        crate::domain::imports::import_headline(&result.summary.collection_names, 9, 3),
         "Imported 9 requests in 3 folders into “Shop API”."
     );
 }
 #[test]
 fn clean_import_summary_and_plural_collection_headlines() {
     assert_eq!(
-        crate::domain::request::import_headline(&["Imported cURL".into()], 1, 0),
+        crate::domain::imports::import_headline(&["Imported cURL".into()], 1, 0),
         "Imported 1 request into “Imported cURL”."
     );
     assert_eq!(
-        crate::domain::request::import_headline(&["A".into(), "B".into()], 2, 1),
+        crate::domain::imports::import_headline(&["A".into(), "B".into()], 2, 1),
         "Imported 2 requests in 1 folder into 2 collections."
     );
 }
@@ -280,7 +280,7 @@ fn git_file_status_words_preserve_all_cases() {
         ),
     ] {
         assert_eq!(
-            crate::domain::request::git_change_kind(staged, unstaged, conflict).title(),
+            crate::domain::git::git_change_kind(staged, unstaged, conflict).title(),
             expected
         );
     }
@@ -461,7 +461,7 @@ async fn workspace_rename_trims_persists_once_and_rejects_empty_names() {
 
 #[test]
 fn push_availability_and_repository_guidance_preserve_cases() {
-    use crate::domain::request::{PushAvailability, push_availability};
+    use crate::domain::git::{PushAvailability, push_availability};
     assert_eq!(
         push_availability(Some("main".into()), Some("origin/main"), 2),
         PushAvailability::Push
