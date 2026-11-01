@@ -80,3 +80,18 @@ extension GitOperationSnapshot {
     var workspaceRecord: WorkspaceGitOperation { WorkspaceGitOperation(outcome: outcome.rawValue, revision: revision, status: status.workspaceRecord) }
     init(_ record: WorkspaceGitOperation) { self.init(outcome: GitOperationOutcome(rawValue: record.outcome)!, revision: record.revision, status: GitStatusSnapshot(record.status)) }
 }
+
+/// Captures native editor projections at Rust-selected save boundaries.
+final class WorkspaceDocumentAdapter: WorkspaceDocumentPlatform {
+    private let readDraft: @MainActor @Sendable (String) -> SessionDocument?
+    private let didSave: @MainActor @Sendable (WorkspaceSave) -> Void
+    init(read: @escaping @MainActor @Sendable (String) -> SessionDocument?, saved: @escaping @MainActor @Sendable (WorkspaceSave) -> Void) {
+        readDraft = read; didSave = saved
+    }
+    func read(id: String, reply: WorkspaceDocumentReply) {
+        Task { @MainActor in reply.finish(document: readDraft(id)) }
+    }
+    func saved(result: WorkspaceSave, reply: WorkspaceDocumentReply) {
+        Task { @MainActor in didSave(result); reply.finish(document: nil) }
+    }
+}

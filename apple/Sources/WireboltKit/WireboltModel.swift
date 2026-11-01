@@ -311,27 +311,33 @@ public final class WireboltModel {
     /// the app or window open; documents saved before the failure stay saved.
     @discardableResult
     public func saveAllDirtySessions() async -> Bool {
-        await saveDocuments(dirtySessions.map(\.id), flushTransport: true)
+        await saveDocuments(dirtySessions.map(\.id), flushTransport: true, retainingDocuments: true)
     }
 
     @discardableResult
-    public func saveDocuments(_ ids: [String], flushTransport: Bool = false) async -> Bool {
+    public func saveDocuments(_ ids: [String], flushTransport: Bool = false, retainingDocuments: Bool = false) async -> Bool {
         guard let persistence else { return ids.isEmpty }
-        synchronizeWorkspace(); synchronizeSecretEdits()
-        let documents = ids.compactMap { sessions.session(id: $0) }.map { session in session.synchronizeDraft(); return session.rust.document() }
-        let results = await rustOperations.saveAll(documents: documents, fallback: workspace.collections.first?.id,
-            platform: persistence.sessionWorkspacePlatform, secrets: rustSecrets, secretPlatform: persistence.sessionSecretPlatform)
-        for result in results { applySave(result) }
-        mirrorSecretEdits(); mirrorWorkspacePresentation()
-        let succeeded = results.allSatisfy(\.succeeded)
+        let targets = Dictionary(uniqueKeysWithValues: ids.compactMap { id in sessions.session(id: id).map { (id, $0) } })
+        let documents = AppWorkspaceDocuments.foreign(platform: WorkspaceDocumentAdapter(read: { id in
+            let session = retainingDocuments ? targets[id] : self.sessions.session(id: id)
+            guard let session else { return nil }
+            self.synchronizeWorkspace(); self.synchronizeSecretEdits(); session.synchronizeDraft()
+            return session.rust.document()
+        }, saved: { result in
+            self.applySave(result, session: retainingDocuments ? targets[result.documentId] : nil)
+            self.mirrorSecretEdits(); self.mirrorWorkspacePresentation()
+        }))
+        let succeeded = await rustOperations.saveAllLive(ids: ids, platform: persistence.sessionWorkspacePlatform,
+            documents: documents, secrets: rustSecrets, secretPlatform: persistence.sessionSecretPlatform)
         if succeeded, flushTransport { await flushWorkspaceTransport() }
         return succeeded
     }
 
     private func applySave(_ result: WorkspaceSave, session target: DocumentSession? = nil) {
         guard let session = target ?? sessions.session(id: result.documentId) else { return }
-        let migrated = RequestDraft(domain: result.draft)
-        if migrated != session.draft { session.draft = migrated }
+        let authentication = RequestAuthentication(domain: workspaceSavedAuthentication(current: session.draft.authentication.domain,
+            original: result.originalAuthentication, saved: result.draft.authentication))
+        if authentication != session.draft.authentication { session.draft.authentication = authentication }
         if let location = result.location {
             session.recordSavedDraft(RequestDraft(domain: location.request))
             applySavedRequest(RequestLocation(domain: location))

@@ -19,7 +19,7 @@ use crate::{
     },
 };
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     sync::{Arc, Mutex},
 };
 
@@ -71,6 +71,7 @@ pub struct WorkspaceLoad {
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct WorkspaceSave {
+    pub original_authentication: crate::domain::DomainAuthentication,
     pub document_id: String,
     pub draft: DomainRequestDraft,
     pub location: Option<DomainLocation>,
@@ -82,6 +83,7 @@ struct State {
     sequence: u64,
     undo: HashMap<u64, (Option<SessionWorkspaceEdit>, String)>,
     search: HashMap<(String, String), (String, String)>,
+    redo_tokens: HashSet<u64>,
 }
 #[derive(Debug)]
 pub struct WorkspaceOperations {
@@ -109,7 +111,9 @@ impl WorkspaceOperations {
         lock(&self.state).presentation.clone()
     }
     pub fn clear_undo(&self) {
-        lock(&self.state).undo.clear();
+        let mut state = lock(&self.state);
+        state.undo.clear();
+        state.redo_tokens.clear();
     }
     fn fail(&self, kind: &str) {
         lock(&self.state).presentation.operation_failure = Some(kind.into());
@@ -210,7 +214,12 @@ impl WorkspaceOperations {
     #[must_use]
     pub fn reverse_token(&self, token: u64) -> Option<WorkspaceUndoToken> {
         let name = lock(&self.state).undo.get(&token)?.1.clone();
-        Some(self.register(None, name))
+        let reverse = self.register(None, name);
+        let mut state = lock(&self.state);
+        if !state.redo_tokens.contains(&token) {
+            state.redo_tokens.insert(reverse.token);
+        }
+        Some(reverse)
     }
     /// Serializes edits and undo, including root creation, across asynchronous stores.
     pub async fn mutate(
@@ -271,6 +280,11 @@ impl WorkspaceOperations {
             .apply_named(edit, selected, platform, secrets, secret_platform)
             .await;
         result.root = root;
+        if result.succeeded {
+            let mut state = lock(&self.state);
+            let redo = std::mem::take(&mut state.redo_tokens);
+            state.undo.retain(|token, _| !redo.contains(token));
+        }
         result
     }
     pub async fn undo(
@@ -283,7 +297,11 @@ impl WorkspaceOperations {
         secret_platform: &dyn SessionSecretPlatform,
     ) -> WorkspaceMutation {
         let _guard = self.edits.lock().await;
-        let entry = lock(&self.state).undo.remove(&token);
+        let entry = {
+            let mut state = lock(&self.state);
+            state.redo_tokens.remove(&token);
+            state.undo.remove(&token)
+        };
         let Some((Some(edit), name)) = entry else {
             self.clear_undo();
             return WorkspaceMutation::default();
@@ -486,6 +504,7 @@ impl WorkspaceOperations {
         secret_platform: &dyn SessionSecretPlatform,
     ) -> WorkspaceSave {
         let mut result = WorkspaceSave {
+            original_authentication: document.draft.authentication.clone(),
             document_id: document.id,
             draft: document.draft,
             location: None,
@@ -776,33 +795,6 @@ impl WorkspaceOperations {
     ) -> super::lifecycle::WorkspaceRestore {
         super::lifecycle::restore(&lock(&self.workspace.workspace), tabs, documents, layout)
     }
-    pub async fn save_all(
-        &self,
-        documents: Vec<crate::session::tabs::SessionDocument>,
-        fallback: Option<String>,
-        platform: &dyn WorkspacePlatform,
-        secrets: &SessionSecrets,
-        secret_platform: &dyn SessionSecretPlatform,
-    ) -> Vec<WorkspaceSave> {
-        let mut results = vec![];
-        for document in documents {
-            let result = self
-                .save(
-                    document,
-                    fallback.clone(),
-                    platform,
-                    secrets,
-                    secret_platform,
-                )
-                .await;
-            let failed = !result.succeeded;
-            results.push(result);
-            if failed {
-                break;
-            }
-        }
-        results
-    }
 }
 impl WorkspaceSession {
     #[must_use]
@@ -862,5 +854,15 @@ impl WorkspaceOperations {
             indexed.0 = source;
         }
         indexed.1.contains(normalized)
+    }
+}
+
+impl WorkspaceOperations {
+    #[must_use]
+    pub fn first_collection_id(&self) -> Option<String> {
+        lock(&self.workspace.workspace)
+            .collections
+            .first()
+            .map(|c| c.id.clone())
     }
 }

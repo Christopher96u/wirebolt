@@ -220,3 +220,68 @@ fn close_dirty_scope_blocks_atomically_then_discards_only_closed_documents() {
         ""
     );
 }
+#[test]
+fn saved_authentication_migrates_only_unchanged_live_authentication() {
+    use crate::session::workspace::documents::saved_authentication;
+    let original = DomainAuthentication::Bearer {
+        token: DomainValueSource::Secret {
+            secret: "legacy.token".into(),
+        },
+    };
+    let saved = DomainAuthentication::Bearer {
+        token: DomainValueSource::Secret {
+            secret: "wirebolt.auth.owned.token".into(),
+        },
+    };
+    assert_eq!(
+        saved_authentication(original.clone(), &original, &saved),
+        saved
+    );
+    let current = DomainAuthentication::Basic {
+        username: DomainValueSource::literal("changed"),
+        password: DomainValueSource::literal(""),
+    };
+    assert_eq!(
+        saved_authentication(current.clone(), &original, &saved),
+        current
+    );
+}
+#[tokio::test]
+async fn live_save_all_reads_later_drafts_after_acknowledging_earlier_saves() {
+    struct Live {
+        values: Mutex<Vec<SessionDocument>>,
+        results: Mutex<Vec<WorkspaceSave>>,
+    }
+    #[async_trait]
+    impl crate::session::workspace::documents::WorkspaceDocuments for Live {
+        async fn read(&self, id: String) -> Option<SessionDocument> {
+            lock(&self.values).iter().find(|d| d.id == id).cloned()
+        }
+        async fn saved(&self, result: WorkspaceSave) {
+            if result.document_id == "a" {
+                lock(&self.values)[1].draft.note = "Latest B".into();
+            }
+            lock(&self.results).push(result);
+        }
+    }
+    let h = Harness::new(nested());
+    let live = Live {
+        values: Mutex::new(vec![
+            document("a", Some("api"), false),
+            document("b", Some("api"), false),
+        ]),
+        results: Mutex::default(),
+    };
+    assert!(
+        h.ops
+            .save_all_live(
+                vec!["a".into(), "b".into()],
+                &h.store,
+                &live,
+                &h.secrets,
+                &Secrets
+            )
+            .await
+    );
+    assert_eq!(lock(&live.results)[1].draft.note, "Latest B");
+}

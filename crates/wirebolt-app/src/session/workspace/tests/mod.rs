@@ -191,3 +191,36 @@ fn document(id: &str, collection: Option<&str>, saved: bool) -> SessionDocument 
         "",
     )
 }
+#[derive(Debug)]
+struct NativeDocuments {
+    values: Vec<SessionDocument>,
+    saved: Mutex<Vec<WorkspaceSave>>,
+}
+#[async_trait]
+impl super::documents::WorkspaceDocuments for NativeDocuments {
+    async fn read(&self, id: String) -> Option<SessionDocument> {
+        self.values.iter().find(|d| d.id == id).cloned()
+    }
+    async fn saved(&self, result: WorkspaceSave) {
+        lock(&self.saved).push(result);
+    }
+}
+impl WorkspaceOperations {
+    async fn save_all(
+        &self,
+        values: Vec<SessionDocument>,
+        _fallback: Option<String>,
+        platform: &dyn WorkspacePlatform,
+        secrets: &SessionSecrets,
+        secret_platform: &dyn SessionSecretPlatform,
+    ) -> Vec<WorkspaceSave> {
+        let ids = values.iter().map(|d| d.id.clone()).collect();
+        let documents = NativeDocuments {
+            values,
+            saved: Mutex::default(),
+        };
+        self.save_all_live(ids, platform, &documents, secrets, secret_platform)
+            .await;
+        lock(&documents.saved).clone()
+    }
+}

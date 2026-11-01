@@ -1,6 +1,7 @@
 //! Reversible workspace edits. Plans preserve command order and return inverses only
 //! after persistence succeeds; native `UndoManager` only schedules these opaque steps.
 pub mod actions;
+pub mod documents;
 pub mod files;
 pub mod interface;
 pub mod io;

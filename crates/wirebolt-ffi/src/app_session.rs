@@ -999,7 +999,7 @@ pub fn session_publication_delay_ms() -> u64 {
     u64::try_from(wirebolt_app::session::run::PUBLICATION_INTERVAL.as_millis()).unwrap_or(16)
 }
 
-// MARK: C2 workspace application orchestration
+// BEGIN C2 workspace application orchestration
 use wirebolt_app::session::workspace::io::WorkspaceFailure;
 #[uniffi::remote(Record)]
 pub struct WorkspaceFailure {
@@ -1216,6 +1216,7 @@ pub struct WorkspaceLoad {
 use wirebolt_app::session::workspace::operations::WorkspaceSave;
 #[uniffi::remote(Record)]
 pub struct WorkspaceSave {
+    pub original_authentication: DomainAuthentication,
     pub document_id: String,
     pub draft: DomainRequestDraft,
     pub location: Option<DomainLocation>,
@@ -1470,7 +1471,6 @@ pub fn workspace_import_failure(reason: Option<String>, name: Option<String>) ->
         name.as_deref(),
     )
 }
-// END C2 workspace application orchestration
 
 // C2 document lifecycle policy
 use wirebolt_app::session::workspace::lifecycle::{WorkspaceDiscard, WorkspaceRestore};
@@ -1497,15 +1497,7 @@ pub fn workspace_discard(documents: Vec<SessionDocument>) -> Vec<WorkspaceDiscar
 }
 #[uniffi::export]
 pub fn workspace_move_row_id(identifier: String) -> Option<String> {
-    let parts: Vec<_> = identifier.split('|').collect();
-    if parts.len() != 3 {
-        return None;
-    }
-    Some(if parts[0] == "request" {
-        format!("request:{}/{}", parts[1], parts[2])
-    } else {
-        format!("group:{}:{}", parts[1], parts[2])
-    })
+    wirebolt_app::session::workspace::actions::move_row_id(&identifier)
 }
 #[uniffi::export]
 impl AppWorkspaceOperations {
@@ -1519,29 +1511,8 @@ impl AppWorkspaceOperations {
         self.inner.restore_tabs(tabs, documents, layout)
     }
 }
-#[uniffi::export(async_runtime = "tokio")]
-impl AppWorkspaceOperations {
-    pub async fn save_all(
-        &self,
-        documents: Vec<SessionDocument>,
-        fallback: Option<String>,
-        platform: Arc<AppWorkspacePlatform>,
-        secrets: Arc<AppSessionSecrets>,
-        secret_platform: Arc<AppSecretPlatform>,
-    ) -> Vec<WorkspaceSave> {
-        self.inner
-            .save_all(
-                documents,
-                fallback,
-                platform.as_ref(),
-                &secrets.inner,
-                secret_platform.as_ref(),
-            )
-            .await
-    }
-}
 
-// MARK: C2 workspace application orchestration
+// C2 workspace record projections
 use wirebolt_app::session::workspace::interface::WorkspaceSidebarState;
 #[uniffi::remote(Record)]
 pub struct WorkspaceSidebarState {
@@ -1649,7 +1620,7 @@ pub fn workspace_sidebar_move_identifier(
     )
 }
 
-// MARK: C2 workspace application orchestration
+// C2 workspace record projections
 use wirebolt_app::session::workspace::files::WorkspaceImportFile;
 #[uniffi::remote(Enum)]
 pub enum WorkspaceImportFile {
@@ -1797,3 +1768,94 @@ impl AppWorkspaceOperations {
         self.inner.request_matches(request, &normalized)
     }
 }
+// C2 live native-editor save boundaries
+#[derive(Debug, uniffi::Object)]
+pub struct WorkspaceDocumentReply {
+    sender: Mutex<Option<tokio::sync::oneshot::Sender<Option<SessionDocument>>>>,
+}
+#[uniffi::export]
+impl WorkspaceDocumentReply {
+    pub fn finish(&self, document: Option<SessionDocument>) {
+        if let Some(sender) = lock(&self.sender).take() {
+            let _ = sender.send(document);
+        }
+    }
+}
+#[uniffi::export(with_foreign)]
+pub trait WorkspaceDocumentPlatform: Send + Sync {
+    fn read(&self, id: String, reply: Arc<WorkspaceDocumentReply>);
+    fn saved(&self, result: WorkspaceSave, reply: Arc<WorkspaceDocumentReply>);
+}
+#[derive(uniffi::Object)]
+pub struct AppWorkspaceDocuments {
+    inner: Arc<dyn WorkspaceDocumentPlatform>,
+}
+impl std::fmt::Debug for AppWorkspaceDocuments {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AppWorkspaceDocuments")
+            .finish_non_exhaustive()
+    }
+}
+#[uniffi::export]
+impl AppWorkspaceDocuments {
+    #[uniffi::constructor]
+    pub fn foreign(platform: Arc<dyn WorkspaceDocumentPlatform>) -> Arc<Self> {
+        Arc::new(Self { inner: platform })
+    }
+}
+#[async_trait::async_trait]
+impl wirebolt_app::session::workspace::documents::WorkspaceDocuments for AppWorkspaceDocuments {
+    async fn read(&self, id: String) -> Option<SessionDocument> {
+        let (sender, receiver) = tokio::sync::oneshot::channel();
+        self.inner.read(
+            id,
+            Arc::new(WorkspaceDocumentReply {
+                sender: Mutex::new(Some(sender)),
+            }),
+        );
+        receiver.await.ok().flatten()
+    }
+    async fn saved(&self, result: WorkspaceSave) {
+        let (sender, receiver) = tokio::sync::oneshot::channel();
+        self.inner.saved(
+            result,
+            Arc::new(WorkspaceDocumentReply {
+                sender: Mutex::new(Some(sender)),
+            }),
+        );
+        let _ = receiver.await;
+    }
+}
+#[uniffi::export(async_runtime = "tokio")]
+impl AppWorkspaceOperations {
+    pub async fn save_all_live(
+        &self,
+        ids: Vec<String>,
+        platform: Arc<AppWorkspacePlatform>,
+        documents: Arc<AppWorkspaceDocuments>,
+        secrets: Arc<AppSessionSecrets>,
+        secret_platform: Arc<AppSecretPlatform>,
+    ) -> bool {
+        self.inner
+            .save_all_live(
+                ids,
+                platform.as_ref(),
+                documents.as_ref(),
+                &secrets.inner,
+                secret_platform.as_ref(),
+            )
+            .await
+    }
+}
+#[uniffi::export]
+pub fn workspace_saved_authentication(
+    current: DomainAuthentication,
+    original: DomainAuthentication,
+    saved: DomainAuthentication,
+) -> DomainAuthentication {
+    wirebolt_app::session::workspace::documents::saved_authentication(current, &original, &saved)
+}
+
+use wirebolt_app::domain::DomainAuthentication;
+
+// END C2 workspace application orchestration

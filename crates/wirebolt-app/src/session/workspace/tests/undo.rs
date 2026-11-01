@@ -285,3 +285,33 @@ async fn failed_mutation_has_no_undo_and_keeps_loaded_tree() {
     assert!(!result.succeeded && result.undo.is_none());
     assert_eq!(h.workspace.snapshot(), nested());
 }
+#[tokio::test]
+async fn a_new_successful_edit_discards_redo_payloads_but_failed_edits_keep_them() {
+    let h = Harness::new(nested());
+    let edit = h
+        .apply(Action::RenameCollection {
+            id: "api".into(),
+            name: "Renamed".into(),
+        })
+        .await;
+    let (_, redo) = h.undo(edit.undo.unwrap()).await;
+    *lock(&h.store.fail_at) = Some(lock(&h.store.commands).len());
+    let failed = h
+        .apply(Action::RenameCollection {
+            id: "api".into(),
+            name: "Failed".into(),
+        })
+        .await;
+    assert!(!failed.succeeded);
+    assert!(h.ops.reverse_token(redo.token).is_some());
+    *lock(&h.store.fail_at) = None;
+    assert!(
+        h.apply(Action::RenameCollection {
+            id: "api".into(),
+            name: "New branch".into()
+        })
+        .await
+        .succeeded
+    );
+    assert!(h.ops.reverse_token(redo.token).is_none());
+}

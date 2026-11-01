@@ -175,7 +175,13 @@ final class WorkspaceUIState {
     var activeTabID: String?
     /// The folder of the open workspace; editor layouts are remembered per folder.
     @ObservationIgnored var workspaceURL: URL?
-    var sidebarFilter = ""
+    var sidebarFilter = "" {
+        didSet {
+            let filtering = workspaceSidebarFiltering(query: sidebarFilter)
+            if sidebarIsFiltering != filtering { sidebarIsFiltering = filtering }
+        }
+    }
+    private var sidebarIsFiltering = false
     var isShowingImporter = false
     var isShowingCurlImporter = false
         var importFormat: ImportFormat = .postmanV2
@@ -555,7 +561,7 @@ extension WorkspaceUIState {
         renamingRequestID != nil || renamingGroupID != nil || renamingCollectionID != nil
     }
 
-    var isFilteringSidebar: Bool { workspaceSidebarFiltering(query: sidebarFilter) }
+    var isFilteringSidebar: Bool { sidebarIsFiltering }
 
     func visibleSidebarRows(model: WireboltModel) -> [SidebarSnapshot.Row] {
         guard collectionsExpanded || isFilteringSidebar else { return [] }
