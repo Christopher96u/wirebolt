@@ -165,14 +165,16 @@ public actor CookieJar {
 extension CookieSnapshot {
     var sessionRecord: StoredCookie {
         StoredCookie(
-            name: name, value: value, domain: domain, hostOnly: hostOnly, path: path, secure: secure, httpOnly: httpOnly,
-            sameSite: sameSite, expiresAt: expiresAt?.timeIntervalSinceReferenceDate)
+            name: name, value: value, domain: domain, hostOnly: hostOnly, path: path,
+            secure: secure, httpOnly: httpOnly, sameSite: sameSite,
+            expiresAt: expiresAt?.timeIntervalSince1970
+        )
     }
     init(_ cookie: StoredCookie) {
         self.init(
             name: cookie.name, value: cookie.value, domain: cookie.domain, hostOnly: cookie.hostOnly,
             path: cookie.path, secure: cookie.secure, httpOnly: cookie.httpOnly, sameSite: cookie.sameSite,
-            expiresAt: cookie.expiresAt.map { Date(timeIntervalSinceReferenceDate: $0) })
+            expiresAt: cookie.expiresAt.map { Date(timeIntervalSince1970: $0) })
     }
 }
 

@@ -3,29 +3,33 @@
     clippy::needless_pass_by_value,
     reason = "UniFFI functions lift owned records and strings across the bridge."
 )]
-use crate::WorkspaceBridge;
+use crate::{WorkspaceBridge, app_response::lock};
 use std::{collections::HashMap, sync::Arc};
 use wirebolt_app::domain::theme::{DensityTokens, GeometryTokens};
 use wirebolt_app::domain::{
     self,
+    body::{BodyKeyOrdering, DomainBodyKind},
     curl::CurlExport,
+    imports::{CollectionSourceError, PemError},
     models::{
-        DomainApiKeyPlacement, DomainAuthentication, DomainBody, DomainCollection,
-        DomainEnvironment, DomainField, DomainGroup, DomainLocation, DomainMultipartKind,
-        DomainMultipartPart, DomainOAuthConfiguration, DomainOAuthGrant, DomainProxy,
-        DomainProxyCredentials, DomainProxyRoute, DomainRequestDraft, DomainTransport,
+        DomainApiKeyPlacement, DomainAuthentication, DomainAuthenticationKind, DomainBody,
+        DomainCollection, DomainEnvironment, DomainField, DomainGroup, DomainLocation,
+        DomainMultipartKind, DomainMultipartPart, DomainOAuthConfiguration, DomainOAuthGrant,
+        DomainProxy, DomainProxyCredentials, DomainProxyRoute, DomainRequestDraft, DomainTransport,
         DomainValueSource, DomainVariable, DomainWorkspace,
     },
     oauth::{DomainNetworkFailure, DomainOAuthError, DomainOAuthPlatform, DomainTokenReceipt},
-    proxy::{ConnectionProbe, ProbeState, ProxyFormInput, ProxyRouteInput},
+    proxy::{ConnectionProbe, ProbeState, ProxyFormInput, ProxyFormMode, ProxyRouteInput},
     sidebar::{
         DomainSidebarCollection, DomainSidebarRequest, SidebarIndex, SidebarOutcome, SidebarRow,
     },
     theme::{
-        AdaptiveColor, DomainMethodChip, ResolvedTokens, RgbColor, ThemeTokens, TypographyTokens,
+        AdaptiveColor, DomainMethodChip, DomainSemanticColor, DomainStatusClass, DomainThemePreset,
+        ResolvedTokens, RgbColor, ThemeTokens, TypographyTokens,
     },
     variables::{CatalogEntry, OpenTemplateReference, TemplateReference, TemplateSegment},
 };
+use wirebolt_app::response::FailureCategory;
 
 #[uniffi::remote(Record)]
 pub struct ProxyRouteInput {
@@ -302,7 +306,7 @@ pub struct AdaptiveColor {
 
 #[uniffi::remote(Record)]
 pub struct ThemeTokens {
-    pub preset: String,
+    pub preset: DomainThemePreset,
     pub window: RgbColor,
     pub sidebar: RgbColor,
     pub card: RgbColor,
@@ -418,12 +422,7 @@ impl OAuthAuthorization {
         } else {
             DomainOAuthError::AuthorizationFailed
         });
-        if let Some(sender) = self
-            .sender
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .take()
-        {
+        if let Some(sender) = lock(&self.sender).take() {
             let _ = sender.send(result);
         }
     }
@@ -518,7 +517,7 @@ pub struct OwnedAuthentication {
 #[derive(Clone, Debug, uniffi::Record)]
 pub struct ResolvedDomainProxy {
     pub configuration: DomainProxy,
-    pub source: String,
+    pub source: DomainProxySource,
 }
 #[derive(Clone, Debug, uniffi::Record)]
 pub struct ProxyTestResult {
@@ -588,14 +587,14 @@ pub fn domain_own_auth(
 
 #[uniffi::export]
 #[must_use]
-pub fn domain_auth_kind(authentication: DomainAuthentication) -> String {
-    domain::request::auth_kind(&authentication).into()
+pub fn domain_auth_kind(authentication: DomainAuthentication) -> DomainAuthenticationKind {
+    domain::request::auth_kind(&authentication)
 }
 
 #[uniffi::export]
 #[must_use]
-pub fn domain_new_auth(kind: String) -> DomainAuthentication {
-    domain::request::new_auth(&kind)
+pub fn domain_new_auth(kind: DomainAuthenticationKind) -> DomainAuthentication {
+    domain::request::new_auth(kind)
 }
 
 #[uniffi::export]
@@ -749,7 +748,7 @@ pub fn domain_resolve_proxy(
         let (configuration, source) = domain::proxy::resolve(request, workspace, app);
         ResolvedDomainProxy {
             configuration,
-            source,
+            source: DomainProxySource::from_name(&source),
         }
     }
 }
@@ -795,9 +794,12 @@ pub fn domain_valid_proxy_target(url: String) -> bool {
 
 #[uniffi::export]
 #[must_use]
-pub fn domain_proxy_test_result(status: Option<u16>, failure: Option<String>) -> ProxyTestResult {
+pub fn domain_proxy_test_result(
+    status: Option<u16>,
+    failure: Option<FailureCategory>,
+) -> ProxyTestResult {
     {
-        let (succeeded, message) = domain::proxy::test_result(status, failure.as_deref());
+        let (succeeded, message) = domain::proxy::test_result(status, failure);
         ProxyTestResult { succeeded, message }
     }
 }
@@ -812,14 +814,14 @@ pub fn domain_proxy_test_draft(
 
 #[uniffi::export]
 #[must_use]
-pub fn domain_theme(preset: String) -> ThemeTokens {
-    domain::theme::theme(&preset)
+pub fn domain_theme(preset: DomainThemePreset) -> ThemeTokens {
+    domain::theme::theme(preset)
 }
 
 #[uniffi::export]
 #[must_use]
-pub fn domain_resolve_theme(preset: String, increased: bool) -> ResolvedTokens {
-    domain::theme::resolve(&preset, increased)
+pub fn domain_resolve_theme(preset: DomainThemePreset, increased: bool) -> ResolvedTokens {
+    domain::theme::resolve(preset, increased)
 }
 
 #[uniffi::export]
@@ -830,14 +832,14 @@ pub fn domain_typography(compact: bool) -> TypographyTokens {
 
 #[uniffi::export]
 #[must_use]
-pub fn domain_select_preset(selection: String, dark: bool) -> String {
+pub fn domain_select_preset(selection: String, dark: bool) -> DomainThemePreset {
     domain::theme::select_preset(&selection, dark)
 }
 
 #[uniffi::export]
 #[must_use]
-pub fn domain_semantic(name: String) -> AdaptiveColor {
-    domain::theme::semantic(&name)
+pub fn domain_semantic(name: DomainSemanticColor) -> AdaptiveColor {
+    domain::theme::semantic(name)
 }
 
 #[uniffi::export]
@@ -848,7 +850,7 @@ pub fn domain_method_color(method: String, web_socket: bool) -> AdaptiveColor {
 
 #[uniffi::export]
 #[must_use]
-pub fn domain_status_class(status: u16) -> String {
+pub fn domain_status_class(status: u16) -> DomainStatusClass {
     domain::theme::status_class(status)
 }
 
@@ -919,8 +921,8 @@ pub fn domain_curl_proxy_arguments(
 
 #[uniffi::export]
 #[must_use]
-pub fn domain_detect_import(extension: String, contents: String) -> Option<String> {
-    domain::imports::detect(&extension, &contents)
+pub fn domain_detect_import(extension: String, contents: String) -> Option<DomainImportFormat> {
+    domain::imports::detect(&extension, &contents).map(|name| DomainImportFormat::from_name(&name))
 }
 
 #[uniffi::export]
@@ -929,7 +931,7 @@ pub fn domain_detect_collection(
     extension: String,
     contents: String,
     root_json: Option<String>,
-) -> Option<String> {
+) -> Option<DomainImportFormat> {
     domain::imports::detect_collection(
         &extension,
         &contents,
@@ -938,6 +940,7 @@ pub fn domain_detect_collection(
             .and_then(|s| serde_json::from_str::<serde_json::Value>(s).ok())
             .as_ref(),
     )
+    .map(|name| DomainImportFormat::from_name(&name))
 }
 
 #[uniffi::export]
@@ -950,20 +953,17 @@ pub fn domain_is_bruno_collection(path: String) -> bool {
 pub fn domain_bruno_bundle(
     path: String,
     policy: Arc<dyn CollectionPackageServices>,
-) -> Result<String, DomainError> {
+) -> Result<String, CollectionSourceError> {
     domain::imports::bruno_bundle_with_policy(std::path::Path::new(&path), &PackageAdapter(policy))
-        .map_err(invalid)
 }
 
 #[uniffi::export]
-pub fn domain_parse_pem(sources: Vec<String>) -> Result<DomainPemIdentity, DomainError> {
-    domain::imports::parse_pem(&sources)
-        .map(|p| DomainPemIdentity {
-            combined: p.combined(),
-            certificates: p.certificates,
-            private_key: p.private_key,
-        })
-        .map_err(invalid)
+pub fn domain_parse_pem(sources: Vec<String>) -> Result<DomainPemIdentity, PemError> {
+    domain::imports::parse_pem(&sources).map(|p| DomainPemIdentity {
+        combined: p.combined(),
+        certificates: p.certificates,
+        private_key: p.private_key,
+    })
 }
 #[uniffi::export]
 #[must_use]
@@ -1044,7 +1044,7 @@ pub struct ProbeState {
 }
 #[uniffi::remote(Record)]
 pub struct ProxyFormInput {
-    pub mode: String,
+    pub mode: ProxyFormMode,
     pub routes: Vec<ProxyRouteInput>,
 }
 #[derive(Debug, uniffi::Object)]
@@ -1062,42 +1062,23 @@ impl DomainProxyProbe {
     }
     #[must_use]
     pub fn snapshot(&self) -> ProbeState {
-        self.probe
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .state
-            .clone()
+        lock(&self.probe).state.clone()
     }
     pub fn start(&self, configuration: DomainProxy, url: String) -> Option<DomainRequestDraft> {
-        self.probe
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .start(configuration, url)
+        lock(&self.probe).start(configuration, url)
     }
     #[must_use]
     pub fn active(&self, id: String) -> bool {
-        self.probe
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .active(&id)
+        lock(&self.probe).active(&id)
     }
     pub fn cancel(&self) {
-        self.probe
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .cancel();
+        lock(&self.probe).cancel();
     }
     pub fn reset(&self) {
-        self.probe
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .reset();
+        lock(&self.probe).reset();
     }
-    pub fn complete(&self, id: String, status: Option<u16>, failure: Option<String>) {
-        self.probe
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .complete(&id, status, failure.as_deref());
+    pub fn complete(&self, id: String, status: Option<u16>, failure: Option<FailureCategory>) {
+        lock(&self.probe).complete(&id, status, failure);
     }
 }
 #[uniffi::export]
@@ -1130,8 +1111,8 @@ pub fn domain_timeout_presentation(milliseconds: u64) -> TimeoutPresentation {
 }
 #[uniffi::export]
 #[must_use]
-pub fn domain_auth_title(kind: String) -> String {
-    domain::request::auth_title(&kind)
+pub fn domain_auth_title(kind: DomainAuthenticationKind) -> String {
+    domain::request::auth_title(kind)
 }
 #[uniffi::export]
 #[must_use]
@@ -1140,8 +1121,8 @@ pub fn domain_active_count(fields: Vec<DomainField>) -> u64 {
 }
 #[uniffi::export]
 #[must_use]
-pub fn domain_proxy_needs_indicator(configuration: DomainProxy, source: String) -> bool {
-    domain::proxy::needs_indicator(&configuration, &source)
+pub fn domain_proxy_needs_indicator(configuration: DomainProxy, source: DomainProxySource) -> bool {
+    domain::proxy::needs_indicator(&configuration, source.as_str())
 }
 #[uniffi::export]
 #[must_use]
@@ -1170,8 +1151,16 @@ pub fn domain_import_environment_line(
 }
 #[uniffi::export]
 #[must_use]
-pub fn domain_git_change_kind(staged: String, unstaged: String, conflicted: bool) -> String {
-    domain::request::git_change_kind(&staged, &unstaged, conflicted)
+pub fn domain_git_change_kind(
+    staged: DomainGitDelta,
+    unstaged: DomainGitDelta,
+    conflicted: bool,
+) -> DomainGitChangeKind {
+    DomainGitChangeKind::from_name(&domain::request::git_change_kind(
+        staged.as_str(),
+        unstaged.as_str(),
+        conflicted,
+    ))
 }
 #[uniffi::export]
 #[must_use]
@@ -1200,9 +1189,9 @@ pub fn domain_legacy_environment(
 #[must_use]
 pub fn domain_switch_auth(
     authentication: DomainAuthentication,
-    kind: String,
+    kind: DomainAuthenticationKind,
 ) -> DomainAuthentication {
-    domain::request::switch_auth(authentication, &kind)
+    domain::request::switch_auth(authentication, kind)
 }
 #[uniffi::export]
 #[must_use]
@@ -1425,13 +1414,13 @@ pub fn domain_effective_transport(
 }
 #[uniffi::export]
 #[must_use]
-pub fn domain_proxy_scope_title(scope: String) -> String {
-    domain::proxy::scope_title(&scope)
+pub fn domain_proxy_scope_title(scope: DomainProxySource) -> String {
+    domain::proxy::scope_title(scope.as_str())
 }
 #[uniffi::export]
 #[must_use]
-pub fn domain_pem_error_message(kind: String) -> String {
-    domain::imports::pem_error_message(&kind)
+pub fn domain_pem_error_message(kind: PemError) -> String {
+    domain::imports::pem_error_message(kind)
 }
 
 #[uniffi::remote(Record)]
@@ -1451,4 +1440,299 @@ pub struct DomainSidebarCollection {
     pub order: i64,
     pub groups: Vec<DomainGroup>,
     pub requests: Vec<DomainSidebarRequest>,
+}
+
+#[uniffi::remote(Enum)]
+pub enum DomainAuthenticationKind {
+    None,
+    Basic,
+    Bearer,
+    ApiKey,
+    Oauth2,
+}
+#[uniffi::remote(Error)]
+pub enum PemError {
+    NoCertificate,
+    NoPrivateKey,
+    MultiplePrivateKeys,
+    EncryptedPrivateKey,
+}
+
+#[uniffi::remote(Enum)]
+pub enum DomainBodyKind {
+    Empty,
+    Text,
+    Json,
+    Xml,
+    Html,
+    Raw,
+    Form,
+    Multipart,
+    File,
+}
+#[uniffi::export(with_foreign)]
+pub trait AppBodyKeyOrdering: Send + Sync {
+    fn sorted_keys(&self, keys: Vec<String>) -> Vec<String>;
+}
+struct BodyOrderingAdapter(Arc<dyn AppBodyKeyOrdering>);
+impl BodyKeyOrdering for BodyOrderingAdapter {
+    fn sorted_keys(&self, keys: Vec<String>) -> Vec<String> {
+        self.0.sorted_keys(keys)
+    }
+}
+#[uniffi::export]
+#[must_use]
+pub fn domain_body_kind(body: DomainBodyKind) -> DomainBodyKind {
+    domain::body::composer_kind(body)
+}
+#[uniffi::export]
+#[must_use]
+pub fn domain_switch_body(body: DomainBody, kind: DomainBodyKind) -> DomainBody {
+    domain::body::switching(body, kind)
+}
+#[uniffi::export]
+#[must_use]
+pub fn domain_format_body(body: DomainBody, ordering: Arc<dyn AppBodyKeyOrdering>) -> DomainBody {
+    domain::body::formatted(body, &BodyOrderingAdapter(ordering))
+}
+#[uniffi::export]
+#[must_use]
+pub fn domain_body_can_format(kind: DomainBodyKind) -> bool {
+    domain::body::kind_can_format(kind)
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, uniffi::Enum)]
+pub enum DomainImportFormat {
+    Curl,
+    Har,
+    LegacyWorkspaceV1,
+    PostmanV2,
+    Insomnia,
+    Bruno,
+    BrunoFolder,
+}
+impl DomainImportFormat {
+    fn from_name(value: &str) -> Self {
+        match value {
+            "curl" => Self::Curl,
+            "har" => Self::Har,
+            "legacy_workspace_v1" => Self::LegacyWorkspaceV1,
+            "postman_v2" => Self::PostmanV2,
+            "insomnia" => Self::Insomnia,
+            "bruno" => Self::Bruno,
+            "bruno_folder" => Self::BrunoFolder,
+            _ => unreachable!("application enum identifier"),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, uniffi::Enum)]
+pub enum DomainProxySource {
+    Request,
+    Workspace,
+    AppDefault,
+    SystemDefault,
+}
+impl DomainProxySource {
+    fn from_name(value: &str) -> Self {
+        match value {
+            "request" => Self::Request,
+            "workspace" => Self::Workspace,
+            "app_default" => Self::AppDefault,
+            "system_default" => Self::SystemDefault,
+            _ => unreachable!("application enum identifier"),
+        }
+    }
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Request => "request",
+            Self::Workspace => "workspace",
+            Self::AppDefault => "app_default",
+            Self::SystemDefault => "system_default",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, uniffi::Enum)]
+pub enum DomainGitDelta {
+    None,
+    Added,
+    Modified,
+    Deleted,
+    Renamed,
+    Copied,
+    TypeChanged,
+    Untracked,
+    Unmerged,
+}
+impl DomainGitDelta {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::Added => "added",
+            Self::Modified => "modified",
+            Self::Deleted => "deleted",
+            Self::Renamed => "renamed",
+            Self::Copied => "copied",
+            Self::TypeChanged => "type_changed",
+            Self::Untracked => "untracked",
+            Self::Unmerged => "unmerged",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, uniffi::Enum)]
+pub enum DomainGitChangeKind {
+    New,
+    Modified,
+    Deleted,
+    Renamed,
+    Copied,
+    TypeChanged,
+    Conflicted,
+}
+impl DomainGitChangeKind {
+    fn from_name(value: &str) -> Self {
+        match value {
+            "New" => Self::New,
+            "Modified" => Self::Modified,
+            "Deleted" => Self::Deleted,
+            "Renamed" => Self::Renamed,
+            "Copied" => Self::Copied,
+            "Type Changed" => Self::TypeChanged,
+            "Conflict" => Self::Conflicted,
+            _ => unreachable!("application enum identifier"),
+        }
+    }
+}
+
+#[uniffi::remote(Enum)]
+pub enum ProxyFormMode {
+    Inherit,
+    System,
+    Direct,
+    Manual,
+}
+
+#[uniffi::remote(Enum)]
+pub enum DomainThemePreset {
+    Black,
+    Paper,
+    Ember,
+}
+
+#[uniffi::remote(Enum)]
+pub enum DomainSemanticColor {
+    Green,
+    Blue,
+    Orange,
+    Purple,
+    Red,
+    Teal,
+    Pink,
+    Indigo,
+    Yellow,
+    Neutral,
+}
+
+#[uniffi::remote(Enum)]
+pub enum DomainStatusClass {
+    Informational,
+    Success,
+    Redirection,
+    ClientError,
+    ServerError,
+}
+
+#[uniffi::remote(Error)]
+pub enum CollectionSourceError {
+    NotACollection,
+    TooLarge,
+}
+
+#[cfg(test)]
+mod choice_tests {
+    use super::*;
+    #[test]
+    fn import_formats_and_proxy_sources_cross_as_typed_choices() {
+        for (extension, source, expected) in [
+            ("txt", "curl https://example.com", DomainImportFormat::Curl),
+            ("json", r#"{"log":{"entries":[]}}"#, DomainImportFormat::Har),
+            (
+                "json",
+                r#"{"info":{"schema":"v2"}}"#,
+                DomainImportFormat::PostmanV2,
+            ),
+            (
+                "json",
+                r#"{"version":1,"nodes":[]}"#,
+                DomainImportFormat::LegacyWorkspaceV1,
+            ),
+            (
+                "yaml",
+                "type: collection.insomnia.rest/5",
+                DomainImportFormat::Insomnia,
+            ),
+            (
+                "json",
+                r#"{"version":"1","name":"C","items":[]}"#,
+                DomainImportFormat::Bruno,
+            ),
+            ("bru", "meta {}", DomainImportFormat::BrunoFolder),
+        ] {
+            assert_eq!(
+                domain_detect_import(extension.into(), source.into()),
+                Some(expected)
+            );
+        }
+        assert_eq!(domain_detect_import("txt".into(), "unknown".into()), None);
+        for (request, workspace, expected) in [
+            (None, None, DomainProxySource::AppDefault),
+            (
+                None,
+                Some(DomainProxy::System),
+                DomainProxySource::Workspace,
+            ),
+            (
+                Some(DomainProxy::Direct),
+                Some(DomainProxy::System),
+                DomainProxySource::Request,
+            ),
+        ] {
+            assert_eq!(
+                domain_resolve_proxy(request, workspace, DomainProxy::Direct).source,
+                expected
+            );
+        }
+    }
+    #[test]
+    fn git_choices_and_conflict_precedence_keep_their_labels() {
+        for (delta, expected) in [
+            (DomainGitDelta::None, DomainGitChangeKind::Modified),
+            (DomainGitDelta::Modified, DomainGitChangeKind::Modified),
+            (DomainGitDelta::Added, DomainGitChangeKind::New),
+            (DomainGitDelta::Untracked, DomainGitChangeKind::New),
+            (DomainGitDelta::Deleted, DomainGitChangeKind::Deleted),
+            (DomainGitDelta::Renamed, DomainGitChangeKind::Renamed),
+            (DomainGitDelta::Copied, DomainGitChangeKind::Copied),
+            (
+                DomainGitDelta::TypeChanged,
+                DomainGitChangeKind::TypeChanged,
+            ),
+            (DomainGitDelta::Unmerged, DomainGitChangeKind::Conflicted),
+        ] {
+            assert_eq!(
+                domain_git_change_kind(delta, DomainGitDelta::None, false),
+                expected
+            );
+            assert_eq!(
+                domain_git_change_kind(DomainGitDelta::None, delta, false),
+                expected
+            );
+            assert_eq!(
+                domain_git_change_kind(delta, DomainGitDelta::None, true),
+                DomainGitChangeKind::Conflicted
+            );
+        }
+    }
 }

@@ -51,7 +51,7 @@ impl AdaptiveColor {
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ThemeTokens {
-    pub preset: String,
+    pub preset: DomainThemePreset,
     pub window: RgbColor,
     pub sidebar: RgbColor,
     pub card: RgbColor,
@@ -82,16 +82,15 @@ pub struct ThemeTokens {
     pub control: RgbColor,
 }
 #[must_use]
-pub fn theme(preset: &str) -> ThemeTokens {
+pub fn theme(preset: DomainThemePreset) -> ThemeTokens {
     let values: [u32; 36] = match preset {
-        "black" => BLACK,
-        "paper" => PAPER,
-        "ember" => EMBER,
-        _ => return theme("black"),
+        DomainThemePreset::Black => BLACK,
+        DomainThemePreset::Paper => PAPER,
+        DomainThemePreset::Ember => EMBER,
     };
     let c = values.map(RgbColor::hex);
     ThemeTokens {
-        preset: preset.into(),
+        preset,
         window: c[0],
         sidebar: c[1],
         card: c[2],
@@ -123,58 +122,76 @@ pub fn theme(preset: &str) -> ThemeTokens {
     }
 }
 #[must_use]
-pub fn semantic(name: &str) -> AdaptiveColor {
+pub fn semantic(name: DomainSemanticColor) -> AdaptiveColor {
     match name {
-        "green" => AdaptiveColor::new(0x0015_742C, 0x004A_DE80, 0x000F_5621, 0x0086_EFAC),
-        "blue" => AdaptiveColor::new(0x000A_62C4, 0x005A_B0FF, 0x0008_4892, 0x009C_CFFF),
-        "orange" => AdaptiveColor::new(0x00A0_4D04, 0x00FF_A24D, 0x0077_3903, 0x00FF_C58A),
-        "purple" => AdaptiveColor::new(0x007E_3FC6, 0x00C7_9BFF, 0x005F_2A9E, 0x00DD_C2FF),
-        "red" => AdaptiveColor::new(0x00C2_222A, 0x00FF_7B7B, 0x0091_1A20, 0x00FF_ABAB),
-        "teal" => AdaptiveColor::new(0x0009_6F73, 0x003D_D6D0, 0x0007_5355, 0x008A_EAE5),
-        "pink" => AdaptiveColor::new(0x00B0_277A, 0x00FF_7AC6, 0x008A_1B5F, 0x00FF_B0DD),
-        "indigo" => AdaptiveColor::new(0x004B_44D0, 0x00A5_A0FF, 0x003A_33A8, 0x00C9_C6FF),
-        "yellow" => AdaptiveColor::new(0x007E_6003, 0x00FF_D426, 0x005E_4702, 0x00FF_E270),
-        "neutral" => AdaptiveColor::new(0x005F_6368, 0x00A8_ABB0, 0x0044_474B, 0x00C9_CCD0),
-        _ => semantic("neutral"),
+        DomainSemanticColor::Green => {
+            AdaptiveColor::new(0x0015_742C, 0x004A_DE80, 0x000F_5621, 0x0086_EFAC)
+        }
+        DomainSemanticColor::Blue => {
+            AdaptiveColor::new(0x000A_62C4, 0x005A_B0FF, 0x0008_4892, 0x009C_CFFF)
+        }
+        DomainSemanticColor::Orange => {
+            AdaptiveColor::new(0x00A0_4D04, 0x00FF_A24D, 0x0077_3903, 0x00FF_C58A)
+        }
+        DomainSemanticColor::Purple => {
+            AdaptiveColor::new(0x007E_3FC6, 0x00C7_9BFF, 0x005F_2A9E, 0x00DD_C2FF)
+        }
+        DomainSemanticColor::Red => {
+            AdaptiveColor::new(0x00C2_222A, 0x00FF_7B7B, 0x0091_1A20, 0x00FF_ABAB)
+        }
+        DomainSemanticColor::Teal => {
+            AdaptiveColor::new(0x0009_6F73, 0x003D_D6D0, 0x0007_5355, 0x008A_EAE5)
+        }
+        DomainSemanticColor::Pink => {
+            AdaptiveColor::new(0x00B0_277A, 0x00FF_7AC6, 0x008A_1B5F, 0x00FF_B0DD)
+        }
+        DomainSemanticColor::Indigo => {
+            AdaptiveColor::new(0x004B_44D0, 0x00A5_A0FF, 0x003A_33A8, 0x00C9_C6FF)
+        }
+        DomainSemanticColor::Yellow => {
+            AdaptiveColor::new(0x007E_6003, 0x00FF_D426, 0x005E_4702, 0x00FF_E270)
+        }
+        DomainSemanticColor::Neutral => {
+            AdaptiveColor::new(0x005F_6368, 0x00A8_ABB0, 0x0044_474B, 0x00C9_CCD0)
+        }
     }
 }
 #[must_use]
 pub fn method_color(method: &str, ws: bool) -> AdaptiveColor {
     semantic(if ws {
-        "indigo"
+        DomainSemanticColor::Indigo
     } else {
         match method {
-            "GET" => "green",
-            "POST" => "blue",
-            "PUT" => "orange",
-            "PATCH" => "purple",
-            "DELETE" => "red",
-            "HEAD" => "teal",
-            "OPTIONS" => "pink",
-            "QUERY" => "yellow",
-            _ => "neutral",
+            "GET" => DomainSemanticColor::Green,
+            "POST" => DomainSemanticColor::Blue,
+            "PUT" => DomainSemanticColor::Orange,
+            "PATCH" => DomainSemanticColor::Purple,
+            "DELETE" => DomainSemanticColor::Red,
+            "HEAD" => DomainSemanticColor::Teal,
+            "OPTIONS" => DomainSemanticColor::Pink,
+            "QUERY" => DomainSemanticColor::Yellow,
+            _ => DomainSemanticColor::Neutral,
         }
     })
 }
 #[must_use]
-pub fn status_class(status: u16) -> String {
+pub fn status_class(status: u16) -> DomainStatusClass {
     match status {
-        100..=199 => "informational",
-        200..=299 => "success",
-        300..=399 => "redirection",
-        400..=499 => "clientError",
-        _ => "serverError",
+        100..=199 => DomainStatusClass::Informational,
+        200..=299 => DomainStatusClass::Success,
+        300..=399 => DomainStatusClass::Redirection,
+        400..=499 => DomainStatusClass::ClientError,
+        _ => DomainStatusClass::ServerError,
     }
-    .into()
 }
 #[must_use]
 pub fn status_color(status: u16) -> AdaptiveColor {
     semantic(match status {
-        100..=199 => "blue",
-        200..=299 => "green",
-        300..=399 => "orange",
-        400..=499 => "yellow",
-        _ => "red",
+        100..=199 => DomainSemanticColor::Blue,
+        200..=299 => DomainSemanticColor::Green,
+        300..=399 => DomainSemanticColor::Orange,
+        400..=499 => DomainSemanticColor::Yellow,
+        _ => DomainSemanticColor::Red,
     })
 }
 #[must_use]
@@ -249,7 +266,7 @@ pub struct ResolvedTokens {
     pub chips: std::collections::HashMap<String, DomainMethodChip>,
 }
 #[must_use]
-pub fn resolve(preset: &str, increased: bool) -> ResolvedTokens {
+pub fn resolve(preset: DomainThemePreset, increased: bool) -> ResolvedTokens {
     let d = theme(preset);
     let s = [d.window, d.sidebar, d.card];
     let mut chips = std::collections::HashMap::new();
@@ -265,7 +282,7 @@ pub fn resolve(preset: &str, increased: bool) -> ResolvedTokens {
             _ => None,
         };
         let adaptive = method_color(method, method == "WS");
-        let dark = preset != "paper";
+        let dark = preset != DomainThemePreset::Paper;
         let foreground = if increased {
             if dark {
                 adaptive.dark_high_contrast
@@ -306,20 +323,14 @@ pub fn resolve(preset: &str, increased: bool) -> ResolvedTokens {
     }
 }
 #[must_use]
-pub fn select_preset(selection: &str, dark: bool) -> String {
+pub fn select_preset(selection: &str, dark: bool) -> DomainThemePreset {
     match selection {
-        "black" | "paper" | "ember" => selection,
-        "light" => "paper",
-        "dark" => "black",
-        _ => {
-            if dark {
-                "black"
-            } else {
-                "paper"
-            }
-        }
+        "black" | "dark" => DomainThemePreset::Black,
+        "paper" | "light" => DomainThemePreset::Paper,
+        "ember" => DomainThemePreset::Ember,
+        _ if dark => DomainThemePreset::Black,
+        _ => DomainThemePreset::Paper,
     }
-    .into()
 }
 
 const BLACK: [u32; 36] = [
@@ -480,4 +491,34 @@ pub fn backgrounds(dark: bool) -> Vec<RgbColor> {
     .into_iter()
     .map(RgbColor::hex)
     .collect()
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DomainThemePreset {
+    Black,
+    Paper,
+    Ember,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DomainSemanticColor {
+    Green,
+    Blue,
+    Orange,
+    Purple,
+    Red,
+    Teal,
+    Pink,
+    Indigo,
+    Yellow,
+    Neutral,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DomainStatusClass {
+    Informational,
+    Success,
+    Redirection,
+    ClientError,
+    ServerError,
 }

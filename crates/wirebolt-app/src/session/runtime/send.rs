@@ -296,7 +296,7 @@ impl RunObserver {
         if !lock(&self.run).accepts(&self.id) {
             return;
         }
-        let received = lock(&self.cookies).store(headers, url, crate::response::reference_time());
+        let received = lock(&self.cookies).store(headers, url, crate::response::unix_time());
         self.state.received_cookies(&received);
         let mut run = lock(&self.run);
         if run.accepts(&self.id) {
@@ -417,7 +417,7 @@ async fn prepare_cookies(
         .any(|h| h.enabled && h.name.eq_ignore_ascii_case("cookie"))
         && let Some(url) = values.first()
         && let Some(header) =
-            lock(&observer.cookies).header(url.trim(), crate::response::reference_time())
+            lock(&observer.cookies).header(url.trim(), crate::response::unix_time())
     {
         draft.headers.push(crate::domain::DomainField {
             id: crate::domain::request::unique_id(),

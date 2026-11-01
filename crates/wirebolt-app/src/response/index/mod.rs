@@ -246,6 +246,17 @@ impl TextIndex {
         selection: Option<(SearchPosition, SearchPosition)>,
         cancellation: &ResponseCancellation,
     ) -> ResponseResult<Vec<IndexedMatch>> {
+        self.search_with_engine(query, selection, cancellation, &super::PortableRegexEngine)
+    }
+    /// # Errors
+    /// Returns I/O, pattern, execution-limit, or cancellation errors.
+    pub fn search_with_engine(
+        &self,
+        query: &SearchQuery,
+        selection: Option<(SearchPosition, SearchPosition)>,
+        cancellation: &ResponseCancellation,
+        engine: &dyn super::RegexEngine,
+    ) -> ResponseResult<Vec<IndexedMatch>> {
         if query.text.is_empty() {
             return Ok(vec![]);
         }
@@ -262,7 +273,7 @@ impl TextIndex {
         } else {
             None
         };
-        let ranges = query.matches(&source, scope, cancellation)?;
+        let ranges = query.matches_with_engine(&source, scope, cancellation, engine)?;
         if ranges.is_empty() {
             return Ok(vec![]);
         }

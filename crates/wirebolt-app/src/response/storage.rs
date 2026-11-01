@@ -357,13 +357,18 @@ fn atomic_write(path: &Path, bytes: &[u8]) -> ResponseResult<()> {
     Ok(())
 }
 #[must_use]
-pub fn reference_time() -> f64 {
+pub fn unix_time() -> f64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs_f64()
-        - 978_307_200.0
 }
+/// Legacy history/session timestamps retain their existing persisted representation.
+#[must_use]
+pub fn reference_time() -> f64 {
+    unix_time() - 978_307_200.0
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct StoredCookie {
@@ -375,6 +380,8 @@ pub struct StoredCookie {
     pub secure: bool,
     pub http_only: bool,
     pub same_site: String,
+    /// Unix seconds in memory; legacy cookie files use the original reference epoch.
+    #[serde(default, with = "legacy_cookie_expiry")]
     pub expires_at: Option<f64>,
 }
 impl StoredCookie {
@@ -570,4 +577,21 @@ fn decoded_url_path(url: &Url) -> String {
     percent_encoding::percent_decode_str(url.path())
         .decode_utf8_lossy()
         .into_owned()
+}
+
+mod legacy_cookie_expiry {
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+    const OFFSET: f64 = 978_307_200.0;
+    #[expect(
+        clippy::ref_option,
+        reason = "Serde field serializers receive a borrowed field."
+    )]
+    pub fn serialize<S: Serializer>(value: &Option<f64>, serializer: S) -> Result<S::Ok, S::Error> {
+        value.map(|v| v - OFFSET).serialize(serializer)
+    }
+    pub fn deserialize<'de, D: Deserializer<'de>>(
+        deserializer: D,
+    ) -> Result<Option<f64>, D::Error> {
+        Option::<f64>::deserialize(deserializer).map(|value| value.map(|v| v + OFFSET))
+    }
 }

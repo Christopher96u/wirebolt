@@ -1,3 +1,4 @@
+use wirebolt_app::response::FailureCategory;
 mod support;
 use support::*;
 use wirebolt_app::domain::{models::*, proxy::*};
@@ -171,22 +172,25 @@ fn validation_rejects_paths_overlaps_empty_policies_and_unsupported_protocols() 
 #[test]
 fn probe_failure_messages_keep_categories_and_timeouts() {
     for (category, expected) in [
-        ("timeout", "Connection timed out after 5 seconds."),
         (
-            "tls",
+            FailureCategory::Timeout,
+            "Connection timed out after 5 seconds.",
+        ),
+        (
+            FailureCategory::Tls,
             "TLS verification failed. Check the certificate and trust settings.",
         ),
         (
-            "proxy",
+            FailureCategory::Proxy,
             "Proxy configuration or credentials could not be loaded.",
         ),
         (
-            "secrets",
+            FailureCategory::Secrets,
             "Proxy configuration or credentials could not be loaded.",
         ),
-        ("cancelled", "Test cancelled."),
+        (FailureCategory::Cancelled, "Test cancelled."),
         (
-            "bridge",
+            FailureCategory::InternalError,
             "Connection failed. Check the proxy address, port and destination.",
         ),
     ] {

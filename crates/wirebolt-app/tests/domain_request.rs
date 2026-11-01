@@ -1,3 +1,4 @@
+use wirebolt_app::domain::DomainAuthenticationKind;
 mod support;
 use support::*;
 use wirebolt_app::domain::{models::*, request::*};
@@ -121,7 +122,12 @@ fn bulk_duplicate_reordering_keeps_protection() {
 }
 #[test]
 fn each_auth_type_has_unique_keychain_names() {
-    for kind in ["basic", "bearer", "apiKey", "oauth2"] {
+    for kind in [
+        DomainAuthenticationKind::Basic,
+        DomainAuthenticationKind::Bearer,
+        DomainAuthenticationKind::ApiKey,
+        DomainAuthenticationKind::Oauth2,
+    ] {
         let a = new_auth(kind);
         let b = new_auth(kind);
         assert_eq!(auth_kind(&a), kind);
@@ -134,12 +140,17 @@ fn each_auth_type_has_unique_keychain_names() {
 }
 #[test]
 fn authentication_defaults_never_use_shared_names() {
-    for kind in ["apiKey", "oauth2"] {
+    for kind in [
+        DomainAuthenticationKind::ApiKey,
+        DomainAuthenticationKind::Oauth2,
+    ] {
         for name in auth_references(&new_auth(kind)) {
             assert!(!legacy_reference(&name));
         }
     }
-    if let DomainAuthentication::Oauth2 { configuration: c } = new_auth("oauth2") {
+    if let DomainAuthentication::Oauth2 { configuration: c } =
+        new_auth(DomainAuthenticationKind::Oauth2)
+    {
         assert_ne!(c.client_secret_reference, c.access_token_reference);
     } else {
         panic!("OAuth configuration")
@@ -147,7 +158,13 @@ fn authentication_defaults_never_use_shared_names() {
 }
 #[test]
 fn credential_references_are_valid_secret_names() {
-    for kind in ["none", "basic", "bearer", "apiKey", "oauth2"] {
+    for kind in [
+        DomainAuthenticationKind::None,
+        DomainAuthenticationKind::Basic,
+        DomainAuthenticationKind::Bearer,
+        DomainAuthenticationKind::ApiKey,
+        DomainAuthenticationKind::Oauth2,
+    ] {
         for name in auth_references(&new_auth(kind)) {
             assert!((1..=128).contains(&name.len()));
             assert!(
@@ -160,7 +177,7 @@ fn credential_references_are_valid_secret_names() {
 }
 #[test]
 fn api_key_serializes_only_its_reference() {
-    let auth = new_auth("apiKey");
+    let auth = new_auth(DomainAuthenticationKind::ApiKey);
     let encoded = serde_json::to_string(&auth).unwrap();
     assert!(encoded.contains("\"kind\":\"api_key\""));
     assert!(encoded.contains(&auth_references(&auth)[0]));
@@ -259,7 +276,14 @@ fn active_fields_require_enabled_nonempty_name() {
 #[test]
 fn every_authentication_kind_has_its_composer_title() {
     assert_eq!(
-        ["none", "basic", "bearer", "apiKey", "oauth2"].map(auth_title),
+        [
+            DomainAuthenticationKind::None,
+            DomainAuthenticationKind::Basic,
+            DomainAuthenticationKind::Bearer,
+            DomainAuthenticationKind::ApiKey,
+            DomainAuthenticationKind::Oauth2
+        ]
+        .map(auth_title),
         ["No auth", "Basic", "Bearer", "API key", "OAuth 2"]
     );
 }
@@ -279,17 +303,26 @@ fn switching_authentication_keeps_existing_credentials_or_starts_empty() {
     let bearer = DomainAuthentication::Bearer {
         token: secret("request.token"),
     };
-    assert_eq!(switch_auth(bearer.clone(), "bearer"), bearer);
-    let basic = switch_auth(bearer.clone(), "basic");
-    assert_eq!(auth_kind(&basic), "basic");
+    assert_eq!(
+        switch_auth(bearer.clone(), DomainAuthenticationKind::Bearer),
+        bearer
+    );
+    let basic = switch_auth(bearer.clone(), DomainAuthenticationKind::Basic);
+    assert_eq!(auth_kind(&basic), DomainAuthenticationKind::Basic);
     let DomainAuthentication::Basic { username, .. } = basic else {
         panic!("Basic")
     };
     assert_eq!(username, DomainValueSource::literal(""));
-    assert_eq!(switch_auth(bearer, "none"), DomainAuthentication::None);
     assert_eq!(
-        auth_kind(&switch_auth(DomainAuthentication::None, "apiKey")),
-        "apiKey"
+        switch_auth(bearer, DomainAuthenticationKind::None),
+        DomainAuthentication::None
+    );
+    assert_eq!(
+        auth_kind(&switch_auth(
+            DomainAuthentication::None,
+            DomainAuthenticationKind::ApiKey
+        )),
+        DomainAuthenticationKind::ApiKey
     );
 }
 #[test]

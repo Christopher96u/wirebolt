@@ -10,7 +10,15 @@ struct JSONNode: Identifiable, Sendable {
     private init(_ node: JsonTreeNode) {
         id = node.id
         key = node.key
-        type = node.kind
+        type = switch node.kind {
+        case .object: "Object"
+        case .array: "Array"
+        case .string: "String"
+        case .number: "Number"
+        case .boolean: "Boolean"
+        case .null: "Null"
+        case .truncated: "Truncated"
+        }
         value = node.value
         children = node.children?.map(JSONNode.init)
     }

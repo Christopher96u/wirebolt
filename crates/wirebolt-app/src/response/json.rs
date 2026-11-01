@@ -10,7 +10,7 @@ use tempfile::NamedTempFile;
 pub struct JsonTreeNode {
     pub id: String,
     pub key: String,
-    pub kind: String,
+    pub kind: JsonNodeKind,
     pub value: String,
     pub children: Option<Vec<JsonTreeNode>>,
 }
@@ -252,12 +252,16 @@ impl<R: BufRead, W: Write> Parser<'_, R, W> {
                         self.expect(b',')?;
                     }
                 }
-                let kind = if object { "Object" } else { "Array" };
+                let kind = if object {
+                    JsonNodeKind::Object
+                } else {
+                    JsonNodeKind::Array
+                };
                 if materialize && omitted > 0 {
                     children.push(JsonTreeNode {
                         id: format!("{path}/…"),
                         key: "…".into(),
-                        kind: "Truncated".into(),
+                        kind: JsonNodeKind::Truncated,
                         value: format!("{omitted} more items not shown"),
                         children: None,
                     });
@@ -265,21 +269,21 @@ impl<R: BufRead, W: Write> Parser<'_, R, W> {
                 (
                     kind,
                     if materialize {
-                        format!("{kind}({total} items)")
+                        format!("{}({total} items)", kind.name())
                     } else {
                         String::new()
                     },
                     Some(children),
                 )
             }
-            b'"' => ("String", self.string(materialize)?, None),
+            b'"' => (JsonNodeKind::String, self.string(materialize)?, None),
             b't' | b'f' | b'n' => self.literal_value(byte, materialize)?,
-            _ => ("Number", self.number(materialize)?, None),
+            _ => (JsonNodeKind::Number, self.number(materialize)?, None),
         };
-        Ok(materialize.then(|| JsonTreeNode {
+        Ok(materialize.then_some(JsonTreeNode {
             id: path,
             key,
-            kind: kind.into(),
+            kind,
             value,
             children,
         }))
@@ -288,7 +292,7 @@ impl<R: BufRead, W: Write> Parser<'_, R, W> {
         &mut self,
         byte: u8,
         materialize: bool,
-    ) -> ResponseResult<(&'static str, String, Option<Vec<JsonTreeNode>>)> {
+    ) -> ResponseResult<(JsonNodeKind, String, Option<Vec<JsonTreeNode>>)> {
         Ok({
             let literal: &[u8] = match byte {
                 b't' => b"true",
@@ -299,7 +303,11 @@ impl<R: BufRead, W: Write> Parser<'_, R, W> {
                 self.expect(byte)?;
             }
             (
-                if byte == b'n' { "Null" } else { "Boolean" },
+                if byte == b'n' {
+                    JsonNodeKind::Null
+                } else {
+                    JsonNodeKind::Boolean
+                },
                 if materialize {
                     String::from_utf8_lossy(literal).into_owned()
                 } else {
@@ -518,4 +526,29 @@ fn append_scalar(output: &mut Vec<u8>, scalar: u32) {
 }
 fn displayable(unit: u32) -> bool {
     !matches!(unit, 0..0x20 | 0x22 | 0x5c | 0x7f..=0x9f | 0xad | 0x200b..=0x200f | 0x2028..=0x202e | 0x2060..=0x206f | 0xd800..=0xdfff | 0xfeff | 0xfff9..=0xfffb)
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum JsonNodeKind {
+    Object,
+    Array,
+    String,
+    Number,
+    Boolean,
+    Null,
+    Truncated,
+}
+impl JsonNodeKind {
+    #[must_use]
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Object => "Object",
+            Self::Array => "Array",
+            Self::String => "String",
+            Self::Number => "Number",
+            Self::Boolean => "Boolean",
+            Self::Null => "Null",
+            Self::Truncated => "Truncated",
+        }
+    }
 }

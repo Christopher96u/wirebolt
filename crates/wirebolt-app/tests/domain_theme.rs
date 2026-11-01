@@ -5,7 +5,11 @@ const METHODS: [&str; 8] = [
 ];
 #[test]
 fn text_contrast_is_preserved_on_every_surface() {
-    for preset in ["black", "paper", "ember"] {
+    for preset in [
+        DomainThemePreset::Black,
+        DomainThemePreset::Paper,
+        DomainThemePreset::Ember,
+    ] {
         for increased in [false, true] {
             let t = resolve(preset, increased);
             for surface in [t.definition.window, t.definition.sidebar, t.definition.card] {
@@ -21,7 +25,11 @@ fn text_contrast_is_preserved_on_every_surface() {
 }
 #[test]
 fn native_controls_are_neutral_and_keep_white_glyphs_legible() {
-    for preset in ["black", "paper", "ember"] {
+    for preset in [
+        DomainThemePreset::Black,
+        DomainThemePreset::Paper,
+        DomainThemePreset::Ember,
+    ] {
         let d = theme(preset);
         for surface in [d.window, d.sidebar, d.card] {
             assert!(d.control.contrast(surface) >= 3.0);
@@ -33,17 +41,21 @@ fn native_controls_are_neutral_and_keep_white_glyphs_legible() {
 }
 #[test]
 fn theme_selection_and_density_keep_existing_values() {
-    assert_eq!(select_preset("system", false), "paper");
-    assert_eq!(select_preset("ember", false), "ember");
-    assert_eq!(select_preset("system", true), "black");
-    assert_eq!(select_preset("light", true), "paper");
-    assert_eq!(select_preset("dark", false), "black");
+    assert_eq!(select_preset("system", false), DomainThemePreset::Paper);
+    assert_eq!(select_preset("ember", false), DomainThemePreset::Ember);
+    assert_eq!(select_preset("system", true), DomainThemePreset::Black);
+    assert_eq!(select_preset("light", true), DomainThemePreset::Paper);
+    assert_eq!(select_preset("dark", false), DomainThemePreset::Black);
     assert!((typography(false).body - 16.0).abs() < f64::EPSILON);
     assert!((typography(true).field - 11.0).abs() < f64::EPSILON);
 }
 #[test]
 fn methods_have_distinct_hues_and_readable_chips() {
-    for preset in ["black", "paper", "ember"] {
+    for preset in [
+        DomainThemePreset::Black,
+        DomainThemePreset::Paper,
+        DomainThemePreset::Ember,
+    ] {
         let t = resolve(preset, false);
         let colors: HashSet<_> = METHODS.iter().map(|m| t.chips[*m].foreground).collect();
         assert_eq!(colors.len(), METHODS.len());
@@ -88,11 +100,11 @@ fn status_classes_map_to_distinct_colors() {
     assert_eq!(
         [101, 204, 308, 422, 500].map(status_class),
         [
-            "informational",
-            "success",
-            "redirection",
-            "clientError",
-            "serverError"
+            DomainStatusClass::Informational,
+            DomainStatusClass::Success,
+            DomainStatusClass::Redirection,
+            DomainStatusClass::ClientError,
+            DomainStatusClass::ServerError
         ]
     );
     let colors: HashSet<_> = [101, 200, 301, 404, 500]

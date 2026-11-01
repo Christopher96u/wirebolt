@@ -1,3 +1,4 @@
+use wirebolt_app::domain::DomainAuthenticationKind;
 mod support;
 use std::{
     collections::{HashMap, HashSet},
@@ -224,7 +225,7 @@ fn api_keys_oauth_and_multipart_keep_secret_material_out_of_exports() {
         ]
     );
     let DomainAuthentication::Oauth2 { mut configuration } =
-        wirebolt_app::domain::request::new_auth("oauth2")
+        wirebolt_app::domain::request::new_auth(DomainAuthenticationKind::Oauth2)
     else {
         panic!("OAuth")
     };

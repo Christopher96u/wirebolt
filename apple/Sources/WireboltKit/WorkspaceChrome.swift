@@ -25,14 +25,14 @@ public enum DocumentTabDescription {
 public extension AuthenticationKind {
     /// The request composer's short label for the authentication.
     var composerTitle: String {
-        domainAuthTitle(kind: String(describing: self))
+        domainAuthTitle(kind: domain)
     }
 }
 
 public extension RequestAuthentication {
     /// Choosing the current kind again keeps its credentials; another kind starts empty.
     func switching(to kind: AuthenticationKind) -> RequestAuthentication {
-        RequestAuthentication(domain: domainSwitchAuth(authentication: domain, kind: String(describing: kind)))
+        RequestAuthentication(domain: domainSwitchAuth(authentication: domain, kind: kind.domain))
     }
 }
 
@@ -49,7 +49,7 @@ public extension EffectiveProxy {
     /// Whether the request composer shows the connection: a workspace or request override,
     /// or an invalid configuration. The app default applies everywhere and needs no reminder.
     var needsIndicator: Bool {
-        domainProxyNeedsIndicator(configuration: configuration.domain, source: source.rawValue)
+        domainProxyNeedsIndicator(configuration: configuration.domain, source: source.domain)
     }
 }
 

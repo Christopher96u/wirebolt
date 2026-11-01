@@ -1,7 +1,9 @@
 use std::{collections::BTreeMap, sync::Arc};
+use wirebolt_app::domain::DomainAuthenticationKind;
 use wirebolt_app::domain::{models::*, oauth::*, request::new_auth};
 fn configuration() -> DomainOAuthConfiguration {
-    let DomainAuthentication::Oauth2 { configuration } = new_auth("oauth2") else {
+    let DomainAuthentication::Oauth2 { configuration } = new_auth(DomainAuthenticationKind::Oauth2)
+    else {
         panic!("OAuth")
     };
     configuration

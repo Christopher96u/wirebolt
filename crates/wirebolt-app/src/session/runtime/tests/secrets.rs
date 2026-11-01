@@ -4,7 +4,7 @@ async fn staged_request_credentials_flush_before_transport_and_never_enter_draft
     let root = tempfile::tempdir().unwrap();
     let state = state(root.path());
     let doc = document("a");
-    let auth = request::new_auth("apiKey");
+    let auth = request::new_auth(crate::domain::DomainAuthenticationKind::ApiKey);
     let name = request::auth_references(&auth).remove(0);
     lock(&doc).draft.authentication = auth;
     let transport = Arc::new(Transport::default());

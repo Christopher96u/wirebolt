@@ -1,4 +1,5 @@
 //! Requests, workspaces, environments and platform-independent presentation policy.
+pub mod body;
 pub mod models;
 pub use models::*;
 pub mod curl;

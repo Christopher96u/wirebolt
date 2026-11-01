@@ -7,10 +7,10 @@ fn scalar_types() {
     let children = tree(r#"{"zero":0,"one":1,"yes":true,"no":false}"#)
         .children
         .unwrap();
-    assert_eq!(children[0].kind, "Number");
+    assert_eq!(children[0].kind, JsonNodeKind::Number);
     assert_eq!(children[0].value, "0");
     assert_eq!(children[1].value, "1");
-    assert_eq!(children[2].kind, "Boolean");
+    assert_eq!(children[2].kind, JsonNodeKind::Boolean);
     assert_eq!(children[3].value, "false");
 }
 #[test]
@@ -91,9 +91,9 @@ fn node_limit() {
     let items = &children[0];
     assert_eq!(items.value, "Array(100 items)");
     let last = items.children.as_ref().unwrap().last().unwrap();
-    assert_eq!(last.kind, "Truncated");
+    assert_eq!(last.kind, JsonNodeKind::Truncated);
     assert!(last.value.ends_with("more items not shown"));
-    assert_eq!(children.last().unwrap().kind, "Truncated");
+    assert_eq!(children.last().unwrap().kind, JsonNodeKind::Truncated);
 }
 #[test]
 fn preserves_tokens() {

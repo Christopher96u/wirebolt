@@ -107,7 +107,7 @@ warmup and the core version handshake.
 | `WireboltKit/WireboltModel.swift` | Observation, native UndoManager token registration and platform-effect relay. Rust owns workspace action construction, reversible edits and undo payloads, load/switch/rename transitions, save/discard/close policy, import/export and Git coordination (`session/workspace`), and send/cancel, history/activity, per-run cookies, variable selection and resolution, secret editing and release, proxy/transport writes, OAuth acquisition and cURL coordination (`session/runtime`). Native caches update only changed properties. |
 | `WireboltKit/WorkspaceOperations.swift` | Typed callbacks for injected stores and native editor capture/save acknowledgements. Production operations call Rust directly. Git records retain generated delta/outcome enums without parsing strings. |
 | `WireboltKit/WorkspaceChrome.swift` | Typed label facades and Apple locale-aware numeric formatting of Rust-selected timeout units. |
-| `WireboltApp/ContentView.swift` | SwiftUI request/response composition, bindings, file panels, keyboard/focus actions and native JSON parse-error localization. **R1 integration placeholder:** replace this row with the final body-format/body-kind ownership reported by R1. |
+| `WireboltApp/ContentView.swift` | SwiftUI request/response composition, bindings, file panels, keyboard/focus actions and native JSON parse-error localization. Body kinds, kind transitions and JSON/XML/HTML formatting are Rust (`domain/body`); the view passes the edited text and applies the result. JSON key collation uses Foundation through a platform adapter, called once per format command. |
 | `WireboltApp/GitCollaborationView.swift` | SwiftUI sheet/form state, native symbol/color styling and Finder reveal actions. Rust supplies porcelain diagnostics, operation labels and push help. |
 | `WireboltApp/AppearanceSettingsView.swift` | SwiftUI appearance form composition, local presentation state and native theme previews over Rust theme tokens. |
 | `WireboltApp/CookiesView.swift` | SwiftUI cookie table, selection, native dates and deletion controls over the Rust-owned cookie jar. |
@@ -119,4 +119,4 @@ warmup and the core version handshake.
 
 | Integration area | Final ownership |
 | --- | --- |
-| `wirebolt-app::response` regex and cookie dates | **R1 integration placeholder:** incorporate R1's final portable regex and cookie-date implementation here; no Apple APIs belong in the application crate. |
+| `wirebolt-app::response` regex and cookie dates | Search goes through a `RegexEngine` trait with a portable Rust default; on macOS the bridge (`wirebolt-ffi`, Apple-only) injects the ICU engine so the existing dialect is unchanged. Cookie dates are parsed in Rust (RFC 6265 plus the legacy forms Foundation accepted) as Unix seconds; Swift converts to `Date` at the boundary. `wirebolt-app` itself has no Apple dependency. |

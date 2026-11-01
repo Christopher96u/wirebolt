@@ -84,7 +84,7 @@ impl RuntimeState {
     }
     #[must_use]
     pub fn cookies(&self) -> Vec<StoredCookie> {
-        let mut cookies = lock(&self.cookie_jar()).all(reference_time());
+        let mut cookies = lock(&self.cookie_jar()).all(crate::response::unix_time());
         cookies.sort_by(|a, b| (&a.domain, &a.path, &a.name).cmp(&(&b.domain, &b.path, &b.name)));
         cookies
     }

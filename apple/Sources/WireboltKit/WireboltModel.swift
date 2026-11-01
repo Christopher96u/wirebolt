@@ -1186,7 +1186,7 @@ extension ImportFormat {
 
     /// Infers the importer for a file opened from Finder or dropped on the window.
     public static func detect(fileExtension: String, contents: String) -> ImportFormat? {
-        domainDetectImport(extension: fileExtension, contents: contents).flatMap(ImportFormat.init(rawValue:))
+        domainDetectImport(extension: fileExtension, contents: contents).map(ImportFormat.init(domain:))
     }
 }
 
