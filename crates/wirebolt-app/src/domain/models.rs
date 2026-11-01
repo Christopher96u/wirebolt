@@ -339,3 +339,13 @@ pub struct DomainRunInput {
     pub client_certificate_reference: Option<String>,
     pub custom_ca_path: Option<String>,
 }
+
+/// Composer choices are typed independently of the authentication payload.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DomainAuthenticationKind {
+    None,
+    Basic,
+    Bearer,
+    ApiKey,
+    Oauth2,
+}

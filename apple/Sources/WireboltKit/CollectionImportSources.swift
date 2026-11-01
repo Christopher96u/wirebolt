@@ -3,7 +3,7 @@ import Foundation
 public extension ImportFormat {
     static func detectCollectionExport(fileExtension: String, contents: String, root: [String: Any]?) -> ImportFormat? {
         let json = root.flatMap { try? JSONSerialization.data(withJSONObject: $0) }.map { String(decoding: $0, as: UTF8.self) }
-        return domainDetectCollection(extension: fileExtension, contents: contents, rootJson: json).flatMap(ImportFormat.init(rawValue:))
+        return domainDetectCollection(extension: fileExtension, contents: contents, rootJson: json).map(ImportFormat.init(domain:))
     }
 }
 public enum BrunoCollectionSource {
@@ -11,7 +11,12 @@ public enum BrunoCollectionSource {
     public static func isCollection(_ url: URL) -> Bool { domainIsBrunoCollection(path: url.path) }
     public static func bundle(at url: URL) throws -> String {
         do { return try domainBrunoBundle(path: url.path, policy: NativeCollectionPackages()) }
-        catch let DomainError.Invalid(reason) { throw reason == "tooLarge" ? ReadError.tooLarge : ReadError.notACollection }
+        catch let error as CollectionSourceError {
+            switch error {
+            case .NotACollection: throw ReadError.notACollection
+            case .TooLarge: throw ReadError.tooLarge
+            }
+        }
     }
 }
 

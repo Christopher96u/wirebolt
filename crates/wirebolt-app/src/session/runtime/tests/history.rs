@@ -104,7 +104,7 @@ fn cookies_are_sorted_deleted_cleared_and_scoped_per_workspace() {
             },
         ],
         "https://example.com/",
-        reference_time(),
+        crate::response::unix_time(),
     );
     let cookies = state.cookies();
     assert_eq!(
@@ -115,7 +115,7 @@ fn cookies_are_sorted_deleted_cleared_and_scoped_per_workspace() {
     assert_eq!(state.cookies().len(), 1);
     state.configure_cookies(Some("/work/b"), Some(root.path().to_str().unwrap()));
     assert!(state.cookies().is_empty());
-    assert_eq!(lock(&old).all(reference_time()).len(), 1);
+    assert_eq!(lock(&old).all(crate::response::unix_time()).len(), 1);
     state.configure_cookies(Some("/work/a"), Some(root.path().to_str().unwrap()));
     assert_eq!(state.cookies().len(), 1);
     state.clear_cookies();

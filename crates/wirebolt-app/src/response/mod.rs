@@ -18,6 +18,7 @@ pub use formatting::*;
 pub use index::*;
 pub use json::*;
 pub use markdown::*;
+pub use regex::{PortableRegexEngine, RegexEngine};
 pub use storage::*;
 pub use text::*;
 pub use wrapping::*;

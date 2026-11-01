@@ -211,17 +211,17 @@ async fn redirect_cookies_keep_response_origin_and_survive_failure() {
     let jar = state.cookie_jar();
     let mut jar = lock(&jar);
     assert_eq!(
-        jar.header("https://original.example/", reference_time())
+        jar.header("https://original.example/", crate::response::unix_time())
             .as_deref(),
         Some("first=fixture")
     );
     assert_eq!(
-        jar.header("https://redirected.example/", reference_time())
+        jar.header("https://redirected.example/", crate::response::unix_time())
             .as_deref(),
         Some("second=fixture")
     );
     assert!(
-        jar.header("https://unrelated.example/", reference_time())
+        jar.header("https://unrelated.example/", crate::response::unix_time())
             .is_none()
     );
     assert_eq!(lock(&run).snapshot().cookies.len(), 2);
@@ -239,7 +239,7 @@ async fn cookie_injection_resolves_variables_respects_explicit_headers_and_redac
                 value: "session=fixture; Path=/".into(),
             }],
             "https://resolved.example/",
-            reference_time(),
+            crate::response::unix_time(),
         );
         let doc = document("a");
         lock(&doc).draft.url = "https://{{host}}/".into();

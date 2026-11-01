@@ -93,7 +93,18 @@ impl SearchQuery {
         scope: Option<ResponseTextRange>,
         cancellation: &ResponseCancellation,
     ) -> ResponseResult<Vec<ResponseTextRange>> {
-        super::regex::matches(self, source, scope, cancellation)
+        self.matches_with_engine(source, scope, cancellation, &super::PortableRegexEngine)
+    }
+    /// # Errors
+    /// Returns the injected engine's pattern, execution-limit, or cancellation errors.
+    pub fn matches_with_engine(
+        &self,
+        source: &str,
+        scope: Option<ResponseTextRange>,
+        cancellation: &ResponseCancellation,
+        engine: &dyn super::RegexEngine,
+    ) -> ResponseResult<Vec<ResponseTextRange>> {
+        engine.matches(self, source, scope, cancellation)
     }
 }
 #[cfg(test)]

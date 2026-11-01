@@ -159,8 +159,7 @@ fn cookie_dates_preserve_pre_epoch_expiry_two_digit_years_and_named_timezones() 
         ("Sunday, 06-Nov-50 08:49:37 GMT", -604_422_623.0),
         ("Wed, 09 Jun 2027 10:18:14 PST", 1_812_565_094.0),
     ] {
-        let parsed =
-            crate::response::cookie_date::parse_cookie_date(source).unwrap() + 978_307_200.0;
+        let parsed = crate::response::cookie_date::parse_cookie_date(source).unwrap();
         assert!((parsed - unix).abs() < 0.001, "{source}: {parsed}");
     }
     let mut jar = ResponseCookieJar::new(None);

@@ -84,7 +84,7 @@ fn bruno_folders_bundle_only_supported_files_in_order() {
     );
     assert_eq!(
         bruno_bundle(&root.join("assets")).unwrap_err(),
-        "notACollection"
+        CollectionSourceError::NotACollection
     );
 }
 const LEAF: &str =
@@ -118,7 +118,16 @@ fn pem_certificate_chains_and_keys_combine_from_one_or_two_sources() {
 }
 #[test]
 fn pem_rejects_missing_duplicate_and_encrypted_keys() {
-    for(sources,error)in [(vec![KEY.into()],"noCertificate"),(vec![LEAF.into()],"noPrivateKey"),(vec!["not a certificate".into()],"noCertificate"),(vec![LEAF.into(),KEY.into(),KEY.into()],"multiplePrivateKeys"),(vec![LEAF.into(),KEY.replace("PRIVATE KEY","ENCRYPTED PRIVATE KEY")],"encryptedPrivateKey"),(vec![LEAF.into(),"-----BEGIN RSA PRIVATE KEY-----\nProc-Type: 4,ENCRYPTED\nDEK-Info: AES-128-CBC,00\n\nZml4dHVyZQ==\n-----END RSA PRIVATE KEY-----".into()],"encryptedPrivateKey")]{assert_eq!(parse_pem(&sources).unwrap_err(),error);}
+    for (sources, error) in [
+        (vec![KEY.into()], PemError::NoCertificate),
+        (vec![LEAF.into()], PemError::NoPrivateKey),
+        (vec!["not a certificate".into()], PemError::NoCertificate),
+        (vec![LEAF.into(), KEY.into(), KEY.into()], PemError::MultiplePrivateKeys),
+        (vec![LEAF.into(), KEY.replace("PRIVATE KEY", "ENCRYPTED PRIVATE KEY")], PemError::EncryptedPrivateKey),
+        (vec![LEAF.into(), "-----BEGIN RSA PRIVATE KEY-----\nProc-Type: 4,ENCRYPTED\nDEK-Info: AES-128-CBC,00\n\nZml4dHVyZQ==\n-----END RSA PRIVATE KEY-----".into()], PemError::EncryptedPrivateKey),
+    ] {
+        assert_eq!(parse_pem(&sources).unwrap_err(), error);
+    }
 }
 #[test]
 fn import_summary_preserves_counts_pluralization_and_environment_guidance() {
@@ -194,5 +203,32 @@ fn bruno_skips_native_packages_and_checks_limits_while_traversing() {
     let large = root.join("large.bru");
     let file = fs::File::create(&large).unwrap();
     file.set_len(2 * 1024 * 1024 + 1).unwrap();
-    assert_eq!(bruno_bundle(root).unwrap_err(), "tooLarge");
+    assert_eq!(
+        bruno_bundle(root).unwrap_err(),
+        CollectionSourceError::TooLarge
+    );
+}
+
+#[test]
+fn identity_error_kinds_retain_their_existing_native_messages() {
+    for (kind, message) in [
+        (
+            PemError::NoCertificate,
+            "Choose a PEM file with a certificate (BEGIN CERTIFICATE).",
+        ),
+        (
+            PemError::NoPrivateKey,
+            "Choose the certificate’s private key too, in the same PEM file or a second one.",
+        ),
+        (
+            PemError::MultiplePrivateKeys,
+            "Choose only one private key.",
+        ),
+        (
+            PemError::EncryptedPrivateKey,
+            "Encrypted private keys aren’t supported. Export the key without a passphrase.",
+        ),
+    ] {
+        assert_eq!(pem_error_message(kind), message);
+    }
 }

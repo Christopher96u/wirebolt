@@ -116,7 +116,7 @@ impl CollectionDirectoryPolicy for NoPackages {
 }
 /// # Errors
 /// Returns `notACollection` for unreadable sources or `tooLarge` for a bundle over its limits.
-pub fn bruno_bundle(path: &Path) -> Result<String, String> {
+pub fn bruno_bundle(path: &Path) -> Result<String, CollectionSourceError> {
     bruno_bundle_with_policy(path, &NoPackages)
 }
 /// # Errors
@@ -124,17 +124,19 @@ pub fn bruno_bundle(path: &Path) -> Result<String, String> {
 pub fn bruno_bundle_with_policy(
     path: &Path,
     policy: &dyn CollectionDirectoryPolicy,
-) -> Result<String, String> {
+) -> Result<String, CollectionSourceError> {
     if !path.exists() {
-        return Err("notACollection".into());
+        return Err(CollectionSourceError::NotACollection);
     }
     let files = if path.is_dir() {
-        let root = path.canonicalize().map_err(|_| "notACollection")?;
+        let root = path
+            .canonicalize()
+            .map_err(|_| CollectionSourceError::NotACollection)?;
         let mut files = vec![];
         let mut total = 0;
         collect(&root, &root, &mut files, &mut total, policy)?;
         if files.is_empty() {
-            return Err("notACollection".into());
+            return Err(CollectionSourceError::NotACollection);
         }
         files.sort_by(|a, b| a.path.cmp(&b.path));
         files
@@ -142,10 +144,11 @@ pub fn bruno_bundle_with_policy(
         vec![SourceFile {
             path: path
                 .file_name()
-                .ok_or("notACollection")?
+                .ok_or(CollectionSourceError::NotACollection)?
                 .to_string_lossy()
                 .into_owned(),
-            contents: fs::read_to_string(path).map_err(|_| "notACollection")?,
+            contents: fs::read_to_string(path)
+                .map_err(|_| CollectionSourceError::NotACollection)?,
         }]
     };
     let root = if path.is_dir() {
@@ -157,7 +160,7 @@ pub fn bruno_bundle_with_policy(
         root: root.to_string_lossy().into_owned(),
         files,
     })
-    .map_err(|_| "notACollection".into())
+    .map_err(|_| CollectionSourceError::NotACollection)
 }
 fn collect(
     root: &Path,
@@ -165,15 +168,17 @@ fn collect(
     files: &mut Vec<SourceFile>,
     total: &mut u64,
     policy: &dyn CollectionDirectoryPolicy,
-) -> Result<(), String> {
-    for entry in fs::read_dir(current).map_err(|_| "notACollection")? {
-        let entry = entry.map_err(|_| "notACollection")?;
+) -> Result<(), CollectionSourceError> {
+    for entry in fs::read_dir(current).map_err(|_| CollectionSourceError::NotACollection)? {
+        let entry = entry.map_err(|_| CollectionSourceError::NotACollection)?;
         let name = entry.file_name().to_string_lossy().into_owned();
         if name.starts_with('.') || name == "node_modules" {
             continue;
         }
         let path = entry.path();
-        let kind = entry.file_type().map_err(|_| "notACollection")?;
+        let kind = entry
+            .file_type()
+            .map_err(|_| CollectionSourceError::NotACollection)?;
         if kind.is_dir() {
             if !policy.is_package(&path) {
                 collect(root, &path, files, total, policy)?;
@@ -189,18 +194,23 @@ fn collect(
         {
             continue;
         }
-        let size = fs::metadata(&path).map_err(|_| "notACollection")?.len();
+        let size = fs::metadata(&path)
+            .map_err(|_| CollectionSourceError::NotACollection)?
+            .len();
         *total = total.saturating_add(size);
         if files.len() >= 5000 || size > 2 * 1024 * 1024 || *total > 64 * 1024 * 1024 {
-            return Err("tooLarge".into());
+            return Err(CollectionSourceError::TooLarge);
         }
-        let canonical = path.canonicalize().map_err(|_| "notACollection")?;
+        let canonical = path
+            .canonicalize()
+            .map_err(|_| CollectionSourceError::NotACollection)?;
         let Ok(relative) = canonical.strip_prefix(root) else {
             continue;
         };
         files.push(SourceFile {
             path: relative.to_string_lossy().into_owned(),
-            contents: fs::read_to_string(&path).map_err(|_| "notACollection")?,
+            contents: fs::read_to_string(&path)
+                .map_err(|_| CollectionSourceError::NotACollection)?,
         });
     }
     Ok(())
@@ -212,7 +222,7 @@ pub struct PemIdentity {
 }
 /// # Errors
 /// Returns the missing, duplicate or encrypted identity component.
-pub fn parse_pem(sources: &[String]) -> Result<PemIdentity, String> {
+pub fn parse_pem(sources: &[String]) -> Result<PemIdentity, PemError> {
     let mut certificates = vec![];
     let mut keys = vec![];
     for source in sources {
@@ -242,7 +252,7 @@ pub fn parse_pem(sources: &[String]) -> Result<PemIdentity, String> {
                         || (name.ends_with("PRIVATE KEY")
                             && text.contains("Proc-Type: 4,ENCRYPTED"))
                     {
-                        return Err("encryptedPrivateKey".into());
+                        return Err(PemError::EncryptedPrivateKey);
                     } else if ["PRIVATE KEY", "RSA PRIVATE KEY", "EC PRIVATE KEY"]
                         .contains(&name.as_str())
                     {
@@ -253,13 +263,13 @@ pub fn parse_pem(sources: &[String]) -> Result<PemIdentity, String> {
         }
     }
     if certificates.is_empty() {
-        return Err("noCertificate".into());
+        return Err(PemError::NoCertificate);
     }
     if keys.is_empty() {
-        return Err("noPrivateKey".into());
+        return Err(PemError::NoPrivateKey);
     }
     if keys.len() != 1 {
-        return Err("multiplePrivateKeys".into());
+        return Err(PemError::MultiplePrivateKeys);
     }
     Ok(PemIdentity {
         certificates,
@@ -279,14 +289,45 @@ impl PemIdentity {
     }
 }
 #[must_use]
-pub fn pem_error_message(kind: &str) -> String {
+pub fn pem_error_message(kind: PemError) -> String {
     match kind {
-        "noCertificate" => "Choose a PEM file with a certificate (BEGIN CERTIFICATE).",
-        "multiplePrivateKeys" => "Choose only one private key.",
-        "encryptedPrivateKey" => {
+        PemError::NoCertificate => "Choose a PEM file with a certificate (BEGIN CERTIFICATE).",
+        PemError::MultiplePrivateKeys => "Choose only one private key.",
+        PemError::EncryptedPrivateKey => {
             "Encrypted private keys aren’t supported. Export the key without a passphrase."
         }
-        _ => "Choose the certificate’s private key too, in the same PEM file or a second one.",
+        PemError::NoPrivateKey => {
+            "Choose the certificate’s private key too, in the same PEM file or a second one."
+        }
     }
     .into()
 }
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PemError {
+    NoCertificate,
+    NoPrivateKey,
+    MultiplePrivateKeys,
+    EncryptedPrivateKey,
+}
+impl std::fmt::Display for PemError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&pem_error_message(*self))
+    }
+}
+impl std::error::Error for PemError {}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CollectionSourceError {
+    NotACollection,
+    TooLarge,
+}
+impl std::fmt::Display for CollectionSourceError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::NotACollection => "notACollection",
+            Self::TooLarge => "tooLarge",
+        })
+    }
+}
+impl std::error::Error for CollectionSourceError {}

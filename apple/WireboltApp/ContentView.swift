@@ -4359,57 +4359,13 @@ private struct BodyTools: View {
 
     private var kindBinding: Binding<BodyKind> {
         Binding(
-            get: {
-                switch requestBody {
-                case .empty: .empty
-                case .text: .raw
-                case .json: .json
-                case .xml: .xml
-                case .html: .html
-                case .raw: .raw
-                case .formURLEncoded: .form
-                case .multipart: .multipart
-                case .file: .file
-                }
-            },
-            set: { kind in
-                let previous: String = switch requestBody {
-                case let .text(_, value), let .json(value), let .xml(value), let .html(value), let .raw(_, value): value
-                default: ""
-                }
-                requestBody = switch kind {
-                case .empty: .empty
-                case .text: .text(contentType: nil, value: previous)
-                case .json: .json(value: previous.isEmpty ? "{\n  \n}" : previous)
-                case .xml: .xml(value: previous)
-                case .html: .html(value: previous)
-                case .raw: .raw(contentType: nil, value: previous)
-                case .form: .formURLEncoded(fields: [])
-                case .multipart: .multipart(parts: previous.isEmpty ? [] : [MultipartPart(name: "name", value: .literal(previous))])
-                case .file: .file(path: "", contentType: nil)
-                }
-            }
+            get: { requestBody.composerKind },
+            set: { requestBody = requestBody.switching(to: $0) }
         )
     }
 
     private func formatBody() {
-        switch requestBody {
-        case let .json(value):
-            guard let data = value.data(using: .utf8),
-                  let object = try? JSONSerialization.jsonObject(with: data),
-                  let formatted = try? JSONSerialization.data(
-                      withJSONObject: object,
-                      options: [.prettyPrinted, .sortedKeys]
-                  )
-            else { return }
-            requestBody = .json(value: String(decoding: formatted, as: UTF8.self))
-        case let .xml(value):
-            requestBody = .xml(value: value.replacingOccurrences(of: "><", with: ">\n<"))
-        case let .html(value):
-            requestBody = .html(value: value.replacingOccurrences(of: "><", with: ">\n<"))
-        case .empty, .text, .raw, .formURLEncoded, .multipart, .file:
-            break
-        }
+        requestBody = requestBody.formatted()
     }
 }
 
@@ -4425,19 +4381,11 @@ private struct BodyTextEditor: View {
     }
 }
 
-private enum BodyKind: CaseIterable, Identifiable {
-    case empty
-    case json
-    case text
-    case xml
-    case html
-    case raw
-    case form
-    case multipart
-    case file
+private typealias BodyKind = DomainBodyKind
 
-    static var allCases: [Self] { [.json, .form, .xml, .html, .raw, .multipart, .file, .empty] }
-    var id: Self { self }
+extension DomainBodyKind: CaseIterable, Identifiable {
+    public static var allCases: [Self] { [.json, .form, .xml, .html, .raw, .multipart, .file, .empty] }
+    public var id: Self { self }
 
     var title: String {
         switch self {
@@ -4450,15 +4398,6 @@ private enum BodyKind: CaseIterable, Identifiable {
         case .form: "Form URLEncoded"
         case .multipart: "Multipart"
         case .file: "File"
-        }
-    }
-}
-
-private extension RequestBody {
-    var canFormat: Bool {
-        switch self {
-        case .json, .xml, .html: true
-        case .empty, .text, .raw, .formURLEncoded, .multipart, .file: false
         }
     }
 }

@@ -1,8 +1,8 @@
 //! Draft editing, stable row identity, credential references and transport labels.
 use super::models::{
-    DomainApiKeyPlacement, DomainAuthentication, DomainBody, DomainEnvironment, DomainField,
-    DomainOAuthConfiguration, DomainOAuthGrant, DomainProxy, DomainRequestDraft, DomainTransport,
-    DomainValueSource, DomainVariable, DomainWorkspace,
+    DomainApiKeyPlacement, DomainAuthentication, DomainAuthenticationKind, DomainBody,
+    DomainEnvironment, DomainField, DomainOAuthConfiguration, DomainOAuthGrant, DomainProxy,
+    DomainRequestDraft, DomainTransport, DomainValueSource, DomainVariable, DomainWorkspace,
 };
 use percent_encoding::percent_decode_str;
 use std::fmt::Write as _;
@@ -146,37 +146,37 @@ pub fn own_auth(
     (rename_auth(auth, &names), names)
 }
 #[must_use]
-pub fn auth_kind(auth: &DomainAuthentication) -> &'static str {
+pub fn auth_kind(auth: &DomainAuthentication) -> DomainAuthenticationKind {
     match auth {
-        DomainAuthentication::None => "none",
-        DomainAuthentication::Basic { .. } => "basic",
-        DomainAuthentication::Bearer { .. } => "bearer",
-        DomainAuthentication::ApiKey { .. } => "apiKey",
-        DomainAuthentication::Oauth2 { .. } => "oauth2",
+        DomainAuthentication::None => DomainAuthenticationKind::None,
+        DomainAuthentication::Basic { .. } => DomainAuthenticationKind::Basic,
+        DomainAuthentication::Bearer { .. } => DomainAuthenticationKind::Bearer,
+        DomainAuthentication::ApiKey { .. } => DomainAuthenticationKind::ApiKey,
+        DomainAuthentication::Oauth2 { .. } => DomainAuthenticationKind::Oauth2,
     }
 }
 #[must_use]
-pub fn new_auth(kind: &str) -> DomainAuthentication {
+pub fn new_auth(kind: DomainAuthenticationKind) -> DomainAuthentication {
     match kind {
-        "basic" => DomainAuthentication::Basic {
+        DomainAuthenticationKind::Basic => DomainAuthentication::Basic {
             username: DomainValueSource::literal(""),
             password: DomainValueSource::Secret {
                 secret: credential_reference("password", "auth"),
             },
         },
-        "bearer" => DomainAuthentication::Bearer {
+        DomainAuthenticationKind::Bearer => DomainAuthentication::Bearer {
             token: DomainValueSource::Secret {
                 secret: credential_reference("token", "auth"),
             },
         },
-        "apiKey" => DomainAuthentication::ApiKey {
+        DomainAuthenticationKind::ApiKey => DomainAuthentication::ApiKey {
             placement: DomainApiKeyPlacement::Header,
             name: "X-API-Key".into(),
             value: DomainValueSource::Secret {
                 secret: credential_reference("api-key", "auth"),
             },
         },
-        "oauth2" => DomainAuthentication::Oauth2 {
+        DomainAuthenticationKind::Oauth2 => DomainAuthentication::Oauth2 {
             configuration: DomainOAuthConfiguration {
                 grant: DomainOAuthGrant::AuthorizationCodePkce,
                 authorization_url: String::new(),
@@ -189,7 +189,7 @@ pub fn new_auth(kind: &str) -> DomainAuthentication {
                 access_token_reference: credential_reference("oauth-access-token", "auth"),
             },
         },
-        _ => DomainAuthentication::None,
+        DomainAuthenticationKind::None => DomainAuthentication::None,
     }
 }
 // URLComponents query encoding: query punctuation is legal except the item delimiters.
@@ -426,13 +426,13 @@ pub fn timeout_presentation(ms: u64) -> TimeoutPresentation {
     }
 }
 #[must_use]
-pub fn auth_title(kind: &str) -> String {
+pub fn auth_title(kind: DomainAuthenticationKind) -> String {
     match kind {
-        "basic" => "Basic",
-        "bearer" => "Bearer",
-        "apiKey" => "API key",
-        "oauth2" => "OAuth 2",
-        _ => "No auth",
+        DomainAuthenticationKind::Basic => "Basic",
+        DomainAuthenticationKind::Bearer => "Bearer",
+        DomainAuthenticationKind::ApiKey => "API key",
+        DomainAuthenticationKind::Oauth2 => "OAuth 2",
+        DomainAuthenticationKind::None => "No auth",
     }
     .into()
 }
@@ -585,7 +585,10 @@ pub fn legacy_environment(
     }
 }
 #[must_use]
-pub fn switch_auth(auth: DomainAuthentication, kind: &str) -> DomainAuthentication {
+pub fn switch_auth(
+    auth: DomainAuthentication,
+    kind: DomainAuthenticationKind,
+) -> DomainAuthentication {
     if auth_kind(&auth) == kind {
         auth
     } else {

@@ -8,7 +8,18 @@ struct JSONNode: Identifiable, Sendable {
     let value: String
     let children: [JSONNode]?
     private init(_ node: JsonTreeNode) {
-        id = node.id; key = node.key; type = node.kind; value = node.value
+        id = node.id
+        key = node.key
+        type = switch node.kind {
+        case .object: "Object"
+        case .array: "Array"
+        case .string: "String"
+        case .number: "Number"
+        case .boolean: "Boolean"
+        case .null: "Null"
+        case .truncated: "Truncated"
+        }
+        value = node.value
         children = node.children?.map(JSONNode.init)
     }
     static func makeRoot(from text: String) -> [JSONNode] { makeRoot(from: Data(text.utf8)) }

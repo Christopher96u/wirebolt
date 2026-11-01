@@ -39,7 +39,12 @@ public enum RunOutcomeBadge: Equatable, Sendable {
     /// A failure wins over a status: it is the latest outcome, and the response pane shows
     /// the failure too. Nil when nothing has run yet.
     public init?(status: UInt16?, failure: RunFailure?, host: String? = nil) {
-        guard let result = appResponseBadge(status: status, failure: failure?.kind, issues: failure?.issues.map(\.responseIssue) ?? [], host: host) else { return nil }
+        guard let result = appResponseBadge(
+            status: status,
+            failure: failure.map { ResponseFailureKind(code: $0.kind) },
+            issues: failure?.issues.map(\.responseIssue) ?? [],
+            host: host
+        ) else { return nil }
         switch result {
         case let .status(status): self = .status(status)
         case let .failed(title): self = .failed(title: title)
@@ -62,7 +67,11 @@ public struct RunFailureMessage: Equatable, Sendable {
     public let systemImage: String
     public let suggestsNetworkSettings: Bool
     public init(_ failure: RunFailure, host: String? = nil) {
-        let result = appFailureMessage(kind: failure.kind, issues: failure.issues.map(\.responseIssue), host: host)
+        let result = appFailureMessage(
+            kind: ResponseFailureKind(code: failure.kind),
+            issues: failure.issues.map(\.responseIssue),
+            host: host
+        )
         category = result.category; title = result.title; message = result.message
         systemImage = result.systemImage; suggestsNetworkSettings = result.suggestsNetworkSettings
     }
@@ -71,5 +80,57 @@ public struct RunFailureMessage: Equatable, Sendable {
     static func sentence(_ kind: String) -> String { appFailureSentence(kind: kind) }
 }
 private extension RequestIssue {
-    var responseIssue: FailureIssue { FailureIssue(path: path, kind: kind, reference: reference) }
+    var responseIssue: FailureIssue { FailureIssue(path: path, kind: ResponseIssueKind(code: kind), reference: reference) }
+}
+
+private extension ResponseFailureKind {
+    init(code: String) {
+        self = switch code {
+        case "cancelled": .cancelled
+        case "connection": .connection
+        case "connect_timeout": .connectTimeout
+        case "timeout": .timeout
+        case "total_timeout": .totalTimeout
+        case "read_timeout": .readTimeout
+        case "tls": .tls
+        case "tls_configuration": .tlsConfiguration
+        case "proxy": .proxy
+        case "proxy_configuration": .proxyConfiguration
+        case "keychain": .keychain
+        case "request": .request
+        case "response_body": .responseBody
+        case "response_too_large": .responseTooLarge
+        case "stream_stopped": .streamStopped
+        case "transport": .transport
+        case "invalid_request": .invalidRequest
+        case "invalid_input": .invalidInput
+        case "unresolved_value": .unresolvedValue
+        case "internal": .internal
+        case "bridge": .bridge
+        default: .other(code: code)
+        }
+    }
+}
+
+private extension ResponseIssueKind {
+    init(code: String) {
+        self = switch code {
+        case "invalid_method": .invalidMethod
+        case "invalid_url": .invalidUrl
+        case "invalid_header_name": .invalidHeaderName
+        case "invalid_header_value": .invalidHeaderValue
+        case "conflicting_header": .conflictingHeader
+        case "invalid_json": .invalidJson
+        case "invalid_body": .invalidBody
+        case "file_unavailable": .fileUnavailable
+        case "invalid_template": .invalidTemplate
+        case "template_too_deep": .templateTooDeep
+        case "resolved_value_too_large": .resolvedValueTooLarge
+        case "missing_variable": .missingVariable
+        case "unresolved_value": .unresolvedValue
+        case "cyclic_variable": .cyclicVariable
+        case "missing_secret": .missingSecret
+        default: .other(code: code)
+        }
+    }
 }

@@ -359,13 +359,12 @@ public enum AuthenticationKind: CaseIterable, Sendable {
 
 public extension RequestAuthentication {
     var kind: AuthenticationKind {
-        let kind = domainAuthKind(authentication: domain)
-        return AuthenticationKind.allCases.first { String(describing: $0) == kind } ?? .none
+        AuthenticationKind(domain: domainAuthKind(authentication: domain))
     }
 
     /// An empty authentication of `kind` whose secrets use fresh Keychain names.
     static func new(_ kind: AuthenticationKind) -> RequestAuthentication {
-        RequestAuthentication(domain: domainNewAuth(kind: String(describing: kind)))
+        RequestAuthentication(domain: domainNewAuth(kind: kind.domain))
     }
 }
 
@@ -1316,7 +1315,7 @@ extension GitStatusSnapshot {
 
 extension GitChangeSnapshot {
     public var kind: GitChangeKind {
-        GitChangeKind(rawValue: domainGitChangeKind(staged: staged.rawValue, unstaged: unstaged.rawValue, conflicted: conflicted))!
+        GitChangeKind(domain: domainGitChangeKind(staged: staged.domain, unstaged: unstaged.domain, conflicted: conflicted))
     }
 }
 
@@ -1796,6 +1795,120 @@ extension ProxyDocument {
         case .system: .system
         case .direct: .direct
         case let .manual(v0): .manual(routes: v0.map { ProxyRouteDocument(domain: $0) })
+        }
+    }
+}
+
+extension AuthenticationKind {
+    var domain: DomainAuthenticationKind {
+        switch self {
+        case .none: .none
+        case .basic: .basic
+        case .bearer: .bearer
+        case .apiKey: .apiKey
+        case .oauth2: .oauth2
+        }
+    }
+    init(domain: DomainAuthenticationKind) {
+        self = switch domain {
+        case .none: .none
+        case .basic: .basic
+        case .bearer: .bearer
+        case .apiKey: .apiKey
+        case .oauth2: .oauth2
+        }
+    }
+}
+
+public extension RequestBody {
+    var composerKind: DomainBodyKind { domainBodyKind(body: domainKind) }
+    var canFormat: Bool { domainBodyCanFormat(kind: domainKind) }
+    func switching(to kind: DomainBodyKind) -> RequestBody {
+        RequestBody(domain: domainSwitchBody(body: domain, kind: kind))
+    }
+    func formatted() -> RequestBody {
+        RequestBody(domain: domainFormatBody(body: domain, ordering: NativeBodyKeyOrdering()))
+    }
+}
+
+private final class NativeBodyKeyOrdering: AppBodyKeyOrdering, Sendable {
+    func sortedKeys(keys: [String]) -> [String] {
+        keys.sorted {
+            $0.compare($1, options: [.numeric, .caseInsensitive, .forcedOrdering], locale: NSLocale.system)
+                == .orderedAscending
+        }
+    }
+}
+
+extension ImportFormat {
+    init(domain: DomainImportFormat) {
+        self = switch domain {
+        case .curl: .curl
+        case .har: .har
+        case .legacyWorkspaceV1: .legacyWorkspaceV1
+        case .postmanV2: .postmanV2
+        case .insomnia: .insomnia
+        case .bruno: .bruno
+        case .brunoFolder: .brunoFolder
+        }
+    }
+}
+
+extension GitDeltaSnapshot {
+    init(domain: DomainGitDelta) {
+        self = switch domain {
+        case .none: .none
+        case .added: .added
+        case .modified: .modified
+        case .deleted: .deleted
+        case .renamed: .renamed
+        case .copied: .copied
+        case .typeChanged: .typeChanged
+        case .untracked: .untracked
+        case .unmerged: .unmerged
+        }
+    }
+    var domain: DomainGitDelta {
+        switch self {
+        case .none: .none
+        case .added: .added
+        case .modified: .modified
+        case .deleted: .deleted
+        case .renamed: .renamed
+        case .copied: .copied
+        case .typeChanged: .typeChanged
+        case .untracked: .untracked
+        case .unmerged: .unmerged
+        }
+    }
+}
+
+extension GitChangeKind {
+    init(domain: DomainGitChangeKind) {
+        self = switch domain {
+        case .new: .new
+        case .modified: .modified
+        case .deleted: .deleted
+        case .renamed: .renamed
+        case .copied: .copied
+        case .typeChanged: .typeChanged
+        case .conflicted: .conflicted
+        }
+    }
+}
+
+private extension RequestBody {
+    var domainKind: DomainBodyKind {
+        switch self {
+        case .empty: .empty
+        case .text: .text
+        case .json: .json
+        case .xml: .xml
+        case .html: .html
+        case .raw: .raw
+        case .formURLEncoded: .form
+        case .multipart: .multipart
+        case .file: .file
         }
     }
 }

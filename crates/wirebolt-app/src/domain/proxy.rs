@@ -2,6 +2,7 @@
 use super::models::{
     DomainProxy, DomainProxyCredentials, DomainProxyRoute, DomainRequestDraft, DomainTransport,
 };
+use crate::response::FailureCategory;
 use std::collections::HashSet;
 use url::Url;
 
@@ -238,15 +239,19 @@ pub fn valid_target(value: &str) -> bool {
         })
 }
 #[must_use]
-pub fn test_result(status: Option<u16>, failure: Option<&str>) -> (bool, String) {
+pub fn test_result(status: Option<u16>, failure: Option<FailureCategory>) -> (bool, String) {
     if let Some(category) = failure {
         return (
             false,
             match category {
-                "timeout" => "Connection timed out after 5 seconds.",
-                "tls" => "TLS verification failed. Check the certificate and trust settings.",
-                "proxy" | "secrets" => "Proxy configuration or credentials could not be loaded.",
-                "cancelled" => "Test cancelled.",
+                FailureCategory::Timeout => "Connection timed out after 5 seconds.",
+                FailureCategory::Tls => {
+                    "TLS verification failed. Check the certificate and trust settings."
+                }
+                FailureCategory::Proxy | FailureCategory::Secrets => {
+                    "Proxy configuration or credentials could not be loaded."
+                }
+                FailureCategory::Cancelled => "Test cancelled.",
                 _ => "Connection failed. Check the proxy address, port and destination.",
             }
             .into(),
@@ -337,7 +342,7 @@ impl ConnectionProbe {
     pub fn active(&self, id: &str) -> bool {
         self.state.run_id.as_deref() == Some(id)
     }
-    pub fn complete(&mut self, id: &str, status: Option<u16>, failure: Option<&str>) {
+    pub fn complete(&mut self, id: &str, status: Option<u16>, failure: Option<FailureCategory>) {
         if !self.active(id) {
             return;
         }
@@ -352,32 +357,29 @@ impl ConnectionProbe {
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ProxyFormInput {
-    pub mode: String,
+    pub mode: ProxyFormMode,
     pub routes: Vec<ProxyRouteInput>,
 }
 #[must_use]
 pub fn form_input(configuration: Option<DomainProxy>) -> ProxyFormInput {
     let (mode, routes) = match configuration {
-        None => ("inherit", vec![route_input(None)]),
-        Some(DomainProxy::System) => ("system", vec![route_input(None)]),
-        Some(DomainProxy::Direct) => ("direct", vec![route_input(None)]),
+        None => (ProxyFormMode::Inherit, vec![route_input(None)]),
+        Some(DomainProxy::System) => (ProxyFormMode::System, vec![route_input(None)]),
+        Some(DomainProxy::Direct) => (ProxyFormMode::Direct, vec![route_input(None)]),
         Some(DomainProxy::Manual { routes }) => (
-            "manual",
+            ProxyFormMode::Manual,
             routes.into_iter().map(|r| route_input(Some(r))).collect(),
         ),
     };
-    ProxyFormInput {
-        mode: mode.into(),
-        routes,
-    }
+    ProxyFormInput { mode, routes }
 }
 /// # Errors
 /// Returns a user-facing explanation for an invalid route or overlapping proxy routes.
 pub fn form_document(input: &ProxyFormInput) -> Result<Option<DomainProxy>, String> {
-    match input.mode.as_str() {
-        "system" => Ok(Some(DomainProxy::System)),
-        "direct" => Ok(Some(DomainProxy::Direct)),
-        "manual" => {
+    match input.mode {
+        ProxyFormMode::System => Ok(Some(DomainProxy::System)),
+        ProxyFormMode::Direct => Ok(Some(DomainProxy::Direct)),
+        ProxyFormMode::Manual => {
             let proxy = DomainProxy::Manual {
                 routes: input
                     .routes
@@ -388,13 +390,13 @@ pub fn form_document(input: &ProxyFormInput) -> Result<Option<DomainProxy>, Stri
             validate(&proxy)?;
             Ok(Some(proxy))
         }
-        _ => Ok(None),
+        ProxyFormMode::Inherit => Ok(None),
     }
 }
 #[must_use]
 pub fn form_secrets(input: &ProxyFormInput) -> std::collections::HashMap<String, String> {
     let mut secrets = std::collections::HashMap::new();
-    if input.mode == "manual" {
+    if input.mode == ProxyFormMode::Manual {
         for r in &input.routes {
             secrets.extend(route_secrets(r));
         }
@@ -426,4 +428,12 @@ pub fn url_scheme(value: &str) -> Option<String> {
         return None;
     }
     Some(scheme.to_ascii_lowercase())
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ProxyFormMode {
+    Inherit,
+    System,
+    Direct,
+    Manual,
 }

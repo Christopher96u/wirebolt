@@ -4,7 +4,7 @@ import Observation
 public enum ProxyScope: String, CaseIterable, Sendable {
     case app, workspace, request
     public var title: String {
-        domainProxyScopeTitle(scope: rawValue)
+        domainProxyScopeTitle(scope: domain)
     }
 }
 
@@ -12,7 +12,7 @@ public struct EffectiveProxy: Codable, Equatable, Sendable {
     public enum Source: String, Codable, Sendable {
         case request, workspace, appDefault = "app_default", systemDefault = "system_default"
         public var title: String {
-            domainProxyScopeTitle(scope: rawValue)
+            domainProxyScopeTitle(scope: domain)
         }
     }
     public let configuration: ProxyDocument
@@ -20,7 +20,7 @@ public struct EffectiveProxy: Codable, Equatable, Sendable {
 
     public static func resolve(request: ProxyDocument?, workspace: ProxyDocument?, app: ProxyDocument) -> Self {
         let result = domainResolveProxy(request: request?.domain, workspace: workspace?.domain, app: app.domain)
-        return Self(configuration: ProxyDocument(domain: result.configuration), source: Source(rawValue: result.source) ?? .appDefault)
+        return Self(configuration: ProxyDocument(domain: result.configuration), source: Source(domain: result.source))
     }
 
     public func summary(for url: String? = nil) -> String {
@@ -99,7 +99,7 @@ public struct ProxyRouteDraft: Identifiable, Equatable {
 public struct ProxyFormDraft: Equatable {
     public enum Mode: String, CaseIterable { case inherit, system, direct, manual }
     private var domain: ProxyFormInput
-    public var mode: Mode { get { Mode(rawValue: domain.mode)! } set { domain.mode = newValue.rawValue } }
+    public var mode: Mode { get { Mode(domain: domain.mode) } set { domain.mode = newValue.domain } }
     public var routes: [ProxyRouteDraft] {
         get { domain.routes.map { ProxyRouteDraft(domain: $0) } }
         set { domain.routes = newValue.map(\.domain) }
@@ -121,7 +121,7 @@ public struct ClientIdentityPEM: Equatable, Sendable {
         case noCertificate, noPrivateKey, multiplePrivateKeys, encryptedPrivateKey
 
         public var errorDescription: String? {
-            domainPemErrorMessage(kind: String(describing: self))
+            domainPemErrorMessage(kind: domain)
         }
     }
 
@@ -136,13 +136,75 @@ public struct ClientIdentityPEM: Equatable, Sendable {
     public init(parsing sources: [String]) throws {
         do {
             domain = try domainParsePem(sources: sources)
-        } catch let DomainError.Invalid(reason) {
-            switch reason {
-            case "encryptedPrivateKey": throw Failure.encryptedPrivateKey
-            case "noCertificate": throw Failure.noCertificate
-            case "multiplePrivateKeys": throw Failure.multiplePrivateKeys
-            default: throw Failure.noPrivateKey
-            }
+        } catch let error as PemError {
+            throw Failure(domain: error)
+        }
+    }
+}
+
+private extension ClientIdentityPEM.Failure {
+    var domain: PemError {
+        switch self {
+        case .noCertificate: .NoCertificate
+        case .noPrivateKey: .NoPrivateKey
+        case .multiplePrivateKeys: .MultiplePrivateKeys
+        case .encryptedPrivateKey: .EncryptedPrivateKey
+        }
+    }
+    init(domain: PemError) {
+        self = switch domain {
+        case .NoCertificate: .noCertificate
+        case .NoPrivateKey: .noPrivateKey
+        case .MultiplePrivateKeys: .multiplePrivateKeys
+        case .EncryptedPrivateKey: .encryptedPrivateKey
+        }
+    }
+}
+
+extension EffectiveProxy.Source {
+    init(domain: DomainProxySource) {
+        self = switch domain {
+        case .request: .request
+        case .workspace: .workspace
+        case .appDefault: .appDefault
+        case .systemDefault: .systemDefault
+        }
+    }
+    var domain: DomainProxySource {
+        switch self {
+        case .request: .request
+        case .workspace: .workspace
+        case .appDefault: .appDefault
+        case .systemDefault: .systemDefault
+        }
+    }
+}
+
+private extension ProxyScope {
+    var domain: DomainProxySource {
+        switch self {
+        case .app: .appDefault
+        case .workspace: .workspace
+        case .request: .request
+        }
+    }
+}
+
+private extension ProxyFormDraft.Mode {
+    init(domain: ProxyFormMode) {
+        self = switch domain {
+        case .inherit: .inherit
+        case .system: .system
+        case .direct: .direct
+        case .manual: .manual
+        }
+    }
+    var domain: ProxyFormMode {
+        switch self {
+        case .inherit: .inherit
+        case .system: .system
+        case .direct: .direct
+        case .manual: .manual
         }
     }
 }

@@ -6,15 +6,16 @@ use std::{
     sync::{Arc, Mutex, MutexGuard},
 };
 use wirebolt_app::response::{
-    BodyProgress, BodyStore, CodeDocument, CodeSyntax, FailureCategory, FailureIssue,
-    FailureMessage, Fold, IndexOptions, IndexedMatch, JsonDocument, JsonTreeNode, LineIndex,
-    LineIndexChange, MarkdownCache, MarkdownCacheStats, MarkdownDocument, MarkdownRun,
-    MarkdownStyle, ResponseCancellation, ResponseCookieJar, ResponseError, ResponseHeaderValue,
-    ResponseTextRange, RunHistory, SearchPosition, SearchQuery, ShapingGroup, ShapingMetrics,
-    ShapingRequest, StoredCookie, TextIndex, TextIndexCache, TextRow, TextShaper, WrapBreakIndex,
-    WrapBreakSnapshot, WrapLayout, completion_summary, cookie_storage_path, describe_issue,
-    failure_host, failure_message, format_duration, format_elapsed, json_tree, json_tree_file,
-    reason_phrase, reference_time, sentence, space_runs, status_line, uses_text_index,
+    BodyProgress, BodyStore, CodeDocument, CodeSyntax, FailureCategory,
+    FailureIssue as CoreFailureIssue, FailureMessage, Fold, IndexOptions, IndexedMatch,
+    JsonDocument, JsonNodeKind, JsonTreeNode, LineIndex, LineIndexChange, MarkdownCache,
+    MarkdownCacheStats, MarkdownDocument, MarkdownRun, MarkdownStyle, ResponseCancellation,
+    ResponseCookieJar, ResponseError, ResponseHeaderValue, ResponseTextRange, RunHistory,
+    SearchPosition, SearchQuery, ShapingGroup, ShapingMetrics, ShapingRequest, StoredCookie,
+    TextIndex, TextIndexCache, TextRow, TextShaper, WrapBreakIndex, WrapBreakSnapshot, WrapLayout,
+    completion_summary, cookie_storage_path, describe_issue, failure_host, failure_message,
+    format_duration, format_elapsed, json_tree, json_tree_file, reason_phrase, sentence,
+    space_runs, status_line, unix_time, uses_text_index,
 };
 
 #[uniffi::remote(Error)]
@@ -60,10 +61,10 @@ pub struct Fold {
     pub range: ResponseTextRange,
 }
 
-#[uniffi::remote(Record)]
+#[derive(Debug, uniffi::Record)]
 pub struct FailureIssue {
     pub path: String,
-    pub kind: String,
+    pub kind: ResponseIssueKind,
     pub reference: Option<String>,
 }
 
@@ -93,7 +94,7 @@ pub struct FailureMessage {
 pub struct JsonTreeNode {
     pub id: String,
     pub key: String,
-    pub kind: String,
+    pub kind: JsonNodeKind,
     pub value: String,
     pub children: Option<Vec<JsonTreeNode>>,
 }
@@ -203,7 +204,7 @@ pub struct WrapBreakSnapshot {
     pub length: u64,
 }
 
-fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+pub(crate) fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -262,7 +263,7 @@ pub fn app_text_search(
     scope: Option<ResponseTextRange>,
     cancellation: Arc<AppResponseCancellation>,
 ) -> Result<Vec<ResponseTextRange>, ResponseError> {
-    query.matches(&source, scope, &cancellation.inner)
+    query.matches_with_engine(&source, scope, &cancellation.inner, regex_engine())
 }
 #[uniffi::export]
 pub fn app_space_runs(text: String) -> Vec<ResponseTextRange> {
@@ -488,13 +489,13 @@ impl AppCookieJar {
         headers: Vec<ResponseHeaderValue>,
         request_url: String,
     ) -> Vec<StoredCookie> {
-        lock(&self.inner).store(&headers, &request_url, reference_time())
+        lock(&self.inner).store(&headers, &request_url, unix_time())
     }
     pub fn header(&self, url: String) -> Option<String> {
-        lock(&self.inner).header(&url, reference_time())
+        lock(&self.inner).header(&url, unix_time())
     }
     pub fn all(&self) -> Vec<StoredCookie> {
-        lock(&self.inner).all(reference_time())
+        lock(&self.inner).all(unix_time())
     }
     pub fn delete(&self, id: String) {
         lock(&self.inner).delete(&id);
@@ -535,11 +536,15 @@ pub fn app_completion_summary(
 }
 #[uniffi::export]
 pub fn app_failure_message(
-    kind: String,
+    kind: ResponseFailureKind,
     issues: Vec<FailureIssue>,
     host: Option<String>,
 ) -> FailureMessage {
-    failure_message(&kind, &issues, host.as_deref())
+    failure_message(
+        kind.as_str(),
+        &issues.into_iter().map(Into::into).collect::<Vec<_>>(),
+        host.as_deref(),
+    )
 }
 #[uniffi::export]
 pub fn app_failure_host(url: Option<String>) -> Option<String> {
@@ -547,7 +552,7 @@ pub fn app_failure_host(url: Option<String>) -> Option<String> {
 }
 #[uniffi::export]
 pub fn app_describe_issue(issue: FailureIssue) -> String {
-    describe_issue(&issue)
+    describe_issue(&issue.into())
 }
 #[uniffi::export]
 pub fn app_failure_sentence(kind: String) -> String {
@@ -638,7 +643,7 @@ impl AppTextIndex {
         cancellation: Arc<AppResponseCancellation>,
     ) -> Result<Vec<IndexedMatch>, ResponseError> {
         self.inner
-            .search(&query, start.zip(end), &cancellation.inner)
+            .search_with_engine(&query, start.zip(end), &cancellation.inner, regex_engine())
     }
     pub fn first_match(
         &self,
@@ -729,11 +734,16 @@ pub enum ResponseBadge {
 #[uniffi::export]
 pub fn app_response_badge(
     status: Option<u16>,
-    failure: Option<String>,
+    failure: Option<ResponseFailureKind>,
     issues: Vec<FailureIssue>,
     host: Option<String>,
 ) -> Option<ResponseBadge> {
-    ResponseBadge::new(status, failure.as_deref(), &issues, host.as_deref())
+    ResponseBadge::new(
+        status,
+        failure.as_ref().map(ResponseFailureKind::as_str),
+        &issues.into_iter().map(Into::into).collect::<Vec<_>>(),
+        host.as_deref(),
+    )
 }
 #[uniffi::export]
 pub fn app_response_badge_label(badge: ResponseBadge) -> String {
@@ -792,5 +802,518 @@ impl AppRunHistory {
         request_id: String,
     ) -> Vec<wirebolt_app::session::history::SessionHistoryEntry> {
         wirebolt_app::session::history::list(&mut lock(&self.inner), &request_id)
+    }
+}
+
+fn regex_engine() -> &'static dyn wirebolt_app::response::RegexEngine {
+    #[cfg(target_vendor = "apple")]
+    {
+        &apple_regex::AppleRegexEngine
+    }
+    #[cfg(not(target_vendor = "apple"))]
+    {
+        &wirebolt_app::response::PortableRegexEngine
+    }
+}
+
+// Keep the native ICU dialect and Unicode data at the platform boundary.
+#[cfg(target_vendor = "apple")]
+mod apple_regex {
+    use std::{
+        ffi::{CStr, c_char, c_void},
+        ptr::{self, NonNull},
+    };
+    use wirebolt_app::response::{
+        RegexEngine, ResponseCancellation, ResponseError, ResponseResult, ResponseTextRange,
+        SearchQuery,
+    };
+
+    const MULTILINE: u32 = 8;
+    const CASE_INSENSITIVE: u32 = 2;
+
+    // Opaque ICU handle. Pattern/text buffers and callback context remain borrowed
+    // until the expression is dropped; the handle never leaves this synchronous call.
+    struct Expression(NonNull<c_void>);
+    impl Drop for Expression {
+        fn drop(&mut self) {
+            // SAFETY: This is the sole owner of the successfully opened ICU handle.
+            unsafe {
+                uregex_close(self.0.as_ptr());
+            }
+        }
+    }
+    impl Expression {
+        fn range(&self, status: &mut i32) -> ResponseResult<ResponseTextRange> {
+            // SAFETY: A successful match has capture group zero and live bounds.
+            let (start, end) = unsafe {
+                (
+                    uregex_start64(self.0.as_ptr(), 0, status),
+                    uregex_end64(self.0.as_ptr(), 0, status),
+                )
+            };
+            check_status(*status)?;
+            let start = u64::try_from(start).map_err(|_| invalid_pattern("Invalid match start"))?;
+            let end = u64::try_from(end).map_err(|_| invalid_pattern("Invalid match end"))?;
+            Ok(ResponseTextRange {
+                location: start,
+                length: end.saturating_sub(start),
+            })
+        }
+    }
+    #[derive(Debug)]
+    pub(super) struct AppleRegexEngine;
+    impl RegexEngine for AppleRegexEngine {
+        fn matches(
+            &self,
+            query: &SearchQuery,
+            source: &str,
+            scope: Option<ResponseTextRange>,
+            cancellation: &ResponseCancellation,
+        ) -> ResponseResult<Vec<ResponseTextRange>> {
+            matches(query, source, scope, cancellation)
+        }
+    }
+    fn matches(
+        query: &SearchQuery,
+        source: &str,
+        scope: Option<ResponseTextRange>,
+        cancellation: &ResponseCancellation,
+    ) -> ResponseResult<Vec<ResponseTextRange>> {
+        cancellation.check()?;
+        if query.text.is_empty() {
+            return Ok(vec![]);
+        }
+        let pattern = if query.regular_expression {
+            query.text.clone()
+        } else {
+            format!(r"\Q{}\E", query.text.replace(r"\E", r"\E\\E\Q"))
+        };
+        let pattern = if query.whole_word {
+            format!(r"(?<![\p{{L}}\p{{N}}_])(?:{pattern})(?![\p{{L}}\p{{N}}_])")
+        } else {
+            pattern
+        };
+        let pattern: Vec<_> = pattern.encode_utf16().collect();
+        let units: Vec<_> = source.encode_utf16().collect();
+        let pattern_length =
+            i32::try_from(pattern.len()).map_err(|_| invalid_pattern("Pattern too long"))?;
+        let length = i32::try_from(units.len()).map_err(|_| invalid_pattern("Text too long"))?;
+        let mut status = 0;
+        // SAFETY: ICU copies the pattern during open. A null parse-error pointer is
+        // explicitly supported. Both buffers contain their declared UTF-16 lengths.
+        let raw = unsafe {
+            uregex_open(
+                pattern.as_ptr(),
+                pattern_length,
+                MULTILINE
+                    | if query.match_case {
+                        0
+                    } else {
+                        CASE_INSENSITIVE
+                    },
+                ptr::null_mut(),
+                &raw mut status,
+            )
+        };
+        let expression = NonNull::new(raw)
+            .map(Expression)
+            .ok_or_else(|| status_error(status))?;
+        check_status(status)?;
+        let region = scope.unwrap_or(ResponseTextRange {
+            location: 0,
+            length: u64::try_from(units.len()).unwrap_or(u64::MAX),
+        });
+        let start = i32::try_from(
+            region
+                .location
+                .min(u64::try_from(units.len()).unwrap_or(u64::MAX)),
+        )
+        .unwrap_or(length);
+        let end = i32::try_from(
+            region
+                .end()
+                .min(u64::try_from(units.len()).unwrap_or(u64::MAX)),
+        )
+        .unwrap_or(length)
+        .max(start);
+        // SAFETY: Text and cancellation context outlive the expression. ICU invokes
+        // progress callbacks synchronously; it does not retain them after close.
+        unsafe {
+            uregex_setText(
+                expression.0.as_ptr(),
+                units.as_ptr(),
+                length,
+                &raw mut status,
+            );
+            uregex_setRegion(expression.0.as_ptr(), start, end, &raw mut status);
+            uregex_setMatchCallback(
+                expression.0.as_ptr(),
+                Some(match_progress),
+                ptr::from_ref(cancellation).cast(),
+                &raw mut status,
+            );
+            uregex_setFindProgressCallback(
+                expression.0.as_ptr(),
+                Some(find_progress),
+                ptr::from_ref(cancellation).cast(),
+                &raw mut status,
+            );
+        }
+        check_status(status)?;
+        let mut result = Vec::new();
+        loop {
+            cancellation.check()?;
+            // SAFETY: The handle, text and callback context are live for the call.
+            let found = unsafe { uregex_findNext(expression.0.as_ptr(), &raw mut status) };
+            cancellation.check()?;
+            check_status(status)?;
+            if found == 0 {
+                break;
+            }
+            result.push(expression.range(&mut status)?);
+            if result.len() == SearchQuery::MAXIMUM_MATCHES {
+                break;
+            }
+        }
+        Ok(result)
+    }
+    fn invalid_pattern(reason: &str) -> ResponseError {
+        ResponseError::InvalidPattern {
+            reason: reason.into(),
+        }
+    }
+    fn status_error(status: i32) -> ResponseError {
+        // SAFETY: ICU returns a static, NUL-terminated name for every status code.
+        let reason = unsafe { CStr::from_ptr(u_errorName(status)) }.to_string_lossy();
+        invalid_pattern(&reason)
+    }
+    fn check_status(status: i32) -> ResponseResult<()> {
+        if status > 0 {
+            Err(status_error(status))
+        } else {
+            Ok(())
+        }
+    }
+    unsafe extern "C" fn match_progress(context: *const c_void, _steps: i32) -> i8 {
+        // SAFETY: `matches` installs a live borrowed cancellation token as context.
+        i8::from(
+            unsafe { &*context.cast::<ResponseCancellation>() }
+                .check()
+                .is_ok(),
+        )
+    }
+    unsafe extern "C" fn find_progress(context: *const c_void, _offset: i64) -> i8 {
+        // SAFETY: The callback has the same live context as `match_progress`.
+        unsafe { match_progress(context, 0) }
+    }
+    #[link(name = "icucore")]
+    unsafe extern "C" {
+        fn uregex_open(
+            pattern: *const u16,
+            length: i32,
+            flags: u32,
+            parse_error: *mut c_void,
+            status: *mut i32,
+        ) -> *mut c_void;
+        fn uregex_close(expression: *mut c_void);
+        fn uregex_setText(expression: *mut c_void, text: *const u16, length: i32, status: *mut i32);
+        fn uregex_setRegion(expression: *mut c_void, start: i32, end: i32, status: *mut i32);
+        fn uregex_findNext(expression: *mut c_void, status: *mut i32) -> i8;
+        fn uregex_start64(expression: *mut c_void, group: i32, status: *mut i32) -> i64;
+        fn uregex_end64(expression: *mut c_void, group: i32, status: *mut i32) -> i64;
+        fn uregex_setMatchCallback(
+            expression: *mut c_void,
+            callback: Option<unsafe extern "C" fn(*const c_void, i32) -> i8>,
+            context: *const c_void,
+            status: *mut i32,
+        );
+        fn uregex_setFindProgressCallback(
+            expression: *mut c_void,
+            callback: Option<unsafe extern "C" fn(*const c_void, i64) -> i8>,
+            context: *const c_void,
+            status: *mut i32,
+        );
+        fn u_errorName(status: i32) -> *const c_char;
+    }
+}
+
+#[cfg(all(test, target_vendor = "apple"))]
+mod regex_tests {
+    use super::*;
+    fn query(text: &str) -> SearchQuery {
+        SearchQuery {
+            text: text.into(),
+            ..SearchQuery::default()
+        }
+    }
+    fn cancellation() -> ResponseCancellation {
+        ResponseCancellation::default()
+    }
+    #[test]
+    fn search_preserves_icu_unicode_dialect_and_line_endings() {
+        let source = "a\rb\nc\r\nd\u{85}e\u{2028}f\u{2029}g";
+        for pattern in [".", "^.", ".$"] {
+            let hits = SearchQuery {
+                regular_expression: true,
+                ..query(pattern)
+            }
+            .matches_with_engine(source, None, &cancellation(), regex_engine())
+            .unwrap();
+            assert_eq!(
+                hits.iter().map(|r| r.location).collect::<Vec<_>>(),
+                [0, 2, 4, 7, 9, 11, 13]
+            );
+        }
+        assert_eq!(
+            SearchQuery {
+                regular_expression: true,
+                ..query(r"\Qabc\E")
+            }
+            .matches_with_engine("abc", None, &cancellation(), regex_engine())
+            .unwrap(),
+            [ResponseTextRange {
+                location: 0,
+                length: 3
+            }]
+        );
+        assert_eq!(
+            SearchQuery {
+                regular_expression: true,
+                ..query("(?i)strasse")
+            }
+            .matches_with_engine("Straße STRASSE", None, &cancellation(), regex_engine())
+            .unwrap()
+            .len(),
+            2
+        );
+        assert_eq!(
+            SearchQuery {
+                regular_expression: true,
+                ..query("[[:alpha:]]+")
+            }
+            .matches_with_engine("αβ ΑΒ 東京_1", None, &cancellation(), regex_engine())
+            .unwrap()
+            .len(),
+            3
+        );
+        assert_eq!(
+            SearchQuery {
+                regular_expression: true,
+                ..query(r"\X")
+            }
+            .matches_with_engine("👨‍👩‍👧‍👦e\u{301}", None, &cancellation(), regex_engine())
+            .unwrap()
+            .len(),
+            2
+        );
+        assert_eq!(
+            query(r"\E[]")
+                .matches_with_engine(r"\E[]", None, &cancellation(), regex_engine())
+                .unwrap()
+                .len(),
+            1
+        );
+    }
+    #[test]
+    fn cancellation_interrupts_icu_backtracking() {
+        let cancellation = Arc::new(cancellation());
+        let worker_cancellation = Arc::clone(&cancellation);
+        let worker = std::thread::spawn(move || {
+            SearchQuery {
+                regular_expression: true,
+                ..query("(a|aa)+$")
+            }
+            .matches_with_engine(
+                &("a".repeat(2000) + "!"),
+                None,
+                &worker_cancellation,
+                regex_engine(),
+            )
+        });
+        std::thread::sleep(std::time::Duration::from_millis(2));
+        cancellation.cancel();
+        assert_eq!(worker.join().unwrap(), Err(ResponseError::Cancelled));
+    }
+
+    #[test]
+    fn native_zero_length_matches_terminate() {
+        assert_eq!(
+            SearchQuery {
+                regular_expression: true,
+                ..query("(?=x)")
+            }
+            .matches_with_engine("xx", None, &cancellation(), regex_engine())
+            .unwrap()
+            .len(),
+            2
+        );
+    }
+}
+
+#[uniffi::remote(Enum)]
+pub enum JsonNodeKind {
+    Object,
+    Array,
+    String,
+    Number,
+    Boolean,
+    Null,
+    Truncated,
+}
+
+#[derive(Debug, uniffi::Enum)]
+pub enum ResponseFailureKind {
+    Cancelled,
+    Connection,
+    ConnectTimeout,
+    Timeout,
+    TotalTimeout,
+    ReadTimeout,
+    Tls,
+    TlsConfiguration,
+    Proxy,
+    ProxyConfiguration,
+    Keychain,
+    Request,
+    ResponseBody,
+    ResponseTooLarge,
+    StreamStopped,
+    Transport,
+    InvalidRequest,
+    InvalidInput,
+    UnresolvedValue,
+    Internal,
+    Bridge,
+    Other { code: String },
+}
+impl ResponseFailureKind {
+    fn as_str(&self) -> &str {
+        match self {
+            Self::Cancelled => "cancelled",
+            Self::Connection => "connection",
+            Self::ConnectTimeout => "connect_timeout",
+            Self::Timeout => "timeout",
+            Self::TotalTimeout => "total_timeout",
+            Self::ReadTimeout => "read_timeout",
+            Self::Tls => "tls",
+            Self::TlsConfiguration => "tls_configuration",
+            Self::Proxy => "proxy",
+            Self::ProxyConfiguration => "proxy_configuration",
+            Self::Keychain => "keychain",
+            Self::Request => "request",
+            Self::ResponseBody => "response_body",
+            Self::ResponseTooLarge => "response_too_large",
+            Self::StreamStopped => "stream_stopped",
+            Self::Transport => "transport",
+            Self::InvalidRequest => "invalid_request",
+            Self::InvalidInput => "invalid_input",
+            Self::UnresolvedValue => "unresolved_value",
+            Self::Internal => "internal",
+            Self::Bridge => "bridge",
+            Self::Other { code } => code,
+        }
+    }
+}
+
+#[derive(Debug, uniffi::Enum)]
+pub enum ResponseIssueKind {
+    InvalidMethod,
+    InvalidUrl,
+    InvalidHeaderName,
+    InvalidHeaderValue,
+    ConflictingHeader,
+    InvalidJson,
+    InvalidBody,
+    FileUnavailable,
+    InvalidTemplate,
+    TemplateTooDeep,
+    ResolvedValueTooLarge,
+    MissingVariable,
+    UnresolvedValue,
+    CyclicVariable,
+    MissingSecret,
+    Other { code: String },
+}
+impl ResponseIssueKind {
+    fn as_str(&self) -> &str {
+        match self {
+            Self::InvalidMethod => "invalid_method",
+            Self::InvalidUrl => "invalid_url",
+            Self::InvalidHeaderName => "invalid_header_name",
+            Self::InvalidHeaderValue => "invalid_header_value",
+            Self::ConflictingHeader => "conflicting_header",
+            Self::InvalidJson => "invalid_json",
+            Self::InvalidBody => "invalid_body",
+            Self::FileUnavailable => "file_unavailable",
+            Self::InvalidTemplate => "invalid_template",
+            Self::TemplateTooDeep => "template_too_deep",
+            Self::ResolvedValueTooLarge => "resolved_value_too_large",
+            Self::MissingVariable => "missing_variable",
+            Self::UnresolvedValue => "unresolved_value",
+            Self::CyclicVariable => "cyclic_variable",
+            Self::MissingSecret => "missing_secret",
+            Self::Other { code } => code,
+        }
+    }
+}
+
+impl From<FailureIssue> for CoreFailureIssue {
+    fn from(issue: FailureIssue) -> Self {
+        Self {
+            path: issue.path,
+            kind: issue.kind.as_str().to_owned(),
+            reference: issue.reference,
+        }
+    }
+}
+
+#[cfg(test)]
+mod choice_tests {
+    use super::*;
+    #[test]
+    fn unknown_diagnostics_and_issue_references_are_preserved() {
+        let issue = FailureIssue {
+            path: "body".into(),
+            kind: ResponseIssueKind::MissingVariable,
+            reference: Some("token".into()),
+        };
+        assert!(app_describe_issue(issue).contains("“token”"));
+        let unknown = ResponseFailureKind::Other {
+            code: "workspace_reload".into(),
+        };
+        assert_eq!(
+            app_failure_message(unknown, vec![], None).message,
+            "Workspace reload."
+        );
+        let unknown = FailureIssue {
+            path: "body".into(),
+            kind: ResponseIssueKind::Other {
+                code: "future_issue".into(),
+            },
+            reference: None,
+        };
+        assert_eq!(app_describe_issue(unknown), "Future issue. (body)");
+        assert_eq!(
+            app_failure_message(ResponseFailureKind::Cancelled, vec![], None).category,
+            FailureCategory::Cancelled
+        );
+        assert_eq!(
+            app_failure_message(ResponseFailureKind::TlsConfiguration, vec![], None).category,
+            FailureCategory::Tls
+        );
+    }
+    #[test]
+    fn shared_lock_recovers_the_value_after_poisoning() {
+        let mutex = Arc::new(Mutex::new(42));
+        let worker = Arc::clone(&mutex);
+        assert!(
+            std::thread::spawn(move || {
+                let _guard = worker.lock().unwrap();
+                panic!("poison fixture");
+            })
+            .join()
+            .is_err()
+        );
+        assert_eq!(*lock(&mutex), 42);
     }
 }

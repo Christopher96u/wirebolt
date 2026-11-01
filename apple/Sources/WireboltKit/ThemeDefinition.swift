@@ -21,7 +21,7 @@ public enum InterfaceDensity: String, CaseIterable, Sendable {
 /// once, so SwiftUI and AppKit draw precisely the same color.
 public struct ThemeDefinition: Equatable, Sendable {
     let domain: ThemeTokens
-    public var preset: ThemePreset { ThemePreset(rawValue: domain.preset)! }
+    public var preset: ThemePreset { ThemePreset(domain: domain.preset) }
     public let modalScrim = PaletteColor(hex: 0x000000)
     public let geometry = ThemeGeometry()
     public let typography = ThemeTypography(density: .comfortable)
@@ -53,7 +53,9 @@ public struct ThemeDefinition: Equatable, Sendable {
     public var methodBackgrounds: [PaletteColor] { domain.methodBackgrounds }
     public var methodForegrounds: [PaletteColor] { domain.methodForegrounds }
     public var control: PaletteColor { domain.control }
-    private static let presets = Dictionary(uniqueKeysWithValues: ThemePreset.allCases.map { ($0, Self(domain: domainTheme(preset: $0.rawValue))) })
+    private static let presets = Dictionary(uniqueKeysWithValues: ThemePreset.allCases.map {
+        ($0, Self(domain: domainTheme(preset: $0.domain)))
+    })
     public static func preset(_ preset: ThemePreset) -> Self { presets[preset]! }
 }
 
@@ -97,7 +99,7 @@ public struct ResolvedTheme: Equatable, Sendable {
     public var focusBorder: PaletteColor { tokens.focusBorder }
 
     public init(preset: ThemePreset, density: InterfaceDensity = .comfortable, increasedContrast: Bool = false, revision: UInt64 = 0) {
-        tokens = domainResolveTheme(preset: preset.rawValue, increased: increasedContrast)
+        tokens = domainResolveTheme(preset: preset.domain, increased: increasedContrast)
         definition = .preset(preset)
         geometry = definition.geometry
         typography = ThemeTypography(density: density)
@@ -117,8 +119,25 @@ public final class ThemeStore {
     public init() {}
 
     public func update(selection: String, systemIsDark: Bool, increasedContrast: Bool, density: InterfaceDensity) {
-        let preset = ThemePreset(rawValue: domainSelectPreset(selection: selection, dark: systemIsDark))!
+        let preset = ThemePreset(domain: domainSelectPreset(selection: selection, dark: systemIsDark))
         guard resolved.definition.preset != preset || resolved.increasedContrast != increasedContrast || resolved.density != density else { return }
         resolved = ResolvedTheme(preset: preset, density: density, increasedContrast: increasedContrast, revision: resolved.revision &+ 1)
+    }
+}
+
+private extension ThemePreset {
+    init(domain: DomainThemePreset) {
+        self = switch domain {
+        case .black: .black
+        case .paper: .paper
+        case .ember: .ember
+        }
+    }
+    var domain: DomainThemePreset {
+        switch self {
+        case .black: .black
+        case .paper: .paper
+        case .ember: .ember
+        }
     }
 }
