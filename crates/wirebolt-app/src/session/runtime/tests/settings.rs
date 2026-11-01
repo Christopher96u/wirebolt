@@ -31,7 +31,7 @@ impl RuntimeSettingsPlatform for Settings {
 async fn proxy_applies_only_selected_scope_and_persists_workspace_reset() {
     let platform = Settings::default();
     for (scope, configuration) in [
-        (RuntimeProxyScope::App, Some(DomainProxy::Direct)),
+        (RuntimeProxyScope::AppDefault, Some(DomainProxy::Direct)),
         (RuntimeProxyScope::Workspace, Some(DomainProxy::System)),
         (RuntimeProxyScope::Request, Some(DomainProxy::Direct)),
         (RuntimeProxyScope::Workspace, None),
@@ -54,7 +54,7 @@ async fn proxy_applies_only_selected_scope_and_persists_workspace_reset() {
     assert!(
         apply_proxy(
             None,
-            RuntimeProxyScope::App,
+            RuntimeProxyScope::AppDefault,
             true,
             HashMap::new(),
             None,
@@ -178,7 +178,7 @@ async fn resolved_curl_exports_keychain_references_and_effective_proxy() {
     let mut context = context();
     context.app_proxy = DomainProxy::Manual {
         routes: vec![DomainProxyRoute {
-            destination: "all".into(),
+            destination: wirebolt_core::ProxyDestination::All,
             endpoint: "http://localhost:8080".into(),
             credentials: Some(DomainProxyCredentials {
                 username: "proxy.user".into(),

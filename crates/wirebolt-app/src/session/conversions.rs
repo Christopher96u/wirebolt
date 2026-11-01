@@ -8,9 +8,9 @@ use crate::domain::{
 };
 use wirebolt_core::{
     ApiKeyPlacement, Environment, EnvironmentVariable, Group, ManualProxy, MultipartPart,
-    MultipartPartKind, Oauth2Configuration, Oauth2Grant, ProxyCredentials, ProxyDestination,
-    ProxyEndpoint, ProxyMode, ProxyRoute, Request, RequestAuthentication, RequestBody,
-    RequestHeader, RequestValueField, SecretName, TransportSettings, ValueSource,
+    MultipartPartKind, Oauth2Configuration, Oauth2Grant, ProxyCredentials, ProxyEndpoint,
+    ProxyMode, ProxyRoute, Request, RequestAuthentication, RequestBody, RequestHeader,
+    RequestValueField, SecretName, TransportSettings, ValueSource,
 };
 fn invalid() -> WorkspaceError {
     WorkspaceError::operation("workspace snapshot could not be projected")
@@ -301,14 +301,8 @@ pub fn proxy_to_core(v: DomainProxy) -> Result<ProxyMode, WorkspaceError> {
                 routes
                     .into_iter()
                     .map(|r| {
-                        let destination = match r.destination.as_str() {
-                            "all" => ProxyDestination::All,
-                            "http" => ProxyDestination::Http,
-                            "https" => ProxyDestination::Https,
-                            _ => return Err(invalid()),
-                        };
                         let mut route = ProxyRoute::new(
-                            destination,
+                            r.destination,
                             ProxyEndpoint::new(&r.endpoint).map_err(|_| invalid())?,
                         );
                         if let Some(c) = r.credentials {
@@ -334,12 +328,7 @@ pub fn proxy_from_core(v: ProxyMode) -> DomainProxy {
                 .routes()
                 .iter()
                 .map(|r| DomainProxyRoute {
-                    destination: match r.destination() {
-                        ProxyDestination::All => "all",
-                        ProxyDestination::Http => "http",
-                        ProxyDestination::Https => "https",
-                    }
-                    .into(),
+                    destination: r.destination(),
                     endpoint: r.endpoint().normalized(),
                     credentials: r.credentials().map(|c| DomainProxyCredentials {
                         username: c.username().as_str().into(),
@@ -523,7 +512,7 @@ mod tests {
             DomainProxy::System,
             DomainProxy::Manual {
                 routes: vec![DomainProxyRoute {
-                    destination: "all".into(),
+                    destination: wirebolt_core::ProxyDestination::All,
                     endpoint: "http://localhost:8080/".into(),
                     credentials: Some(DomainProxyCredentials {
                         username: "proxy.user".into(),
@@ -541,8 +530,8 @@ mod tests {
         assert!(
             proxy_to_core(DomainProxy::Manual {
                 routes: vec![DomainProxyRoute {
-                    destination: "invalid".into(),
-                    endpoint: "http://localhost:8080/".into(),
+                    destination: wirebolt_core::ProxyDestination::All,
+                    endpoint: "not a proxy endpoint".into(),
                     credentials: None
                 }]
             })

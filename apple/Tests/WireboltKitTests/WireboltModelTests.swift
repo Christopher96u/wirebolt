@@ -439,7 +439,7 @@ struct WireboltModelTests {
 
         let workspaceProxy = ProxyDocument.manual(routes: [
             ProxyRouteDocument(
-                destination: "all",
+                destination: .all,
                 endpoint: "http://proxy.internal:8080/",
                 credentials: ProxyCredentialsDocument(
                     username: "proxy.username",
@@ -465,7 +465,7 @@ struct WireboltModelTests {
     func roundTripsManualProxy() throws {
         let proxy = ProxyDocument.manual(routes: [
             ProxyRouteDocument(
-                destination: "https",
+                destination: .https,
                 endpoint: "socks5h://proxy.internal:1080/",
                 credentials: ProxyCredentialsDocument(
                     username: "proxy.username",
@@ -1199,12 +1199,12 @@ private actor PausedSecretPersistence: WorkspacePersistence {
 
 // Verify the Rust-owned interchange format while keeping native facade assertions.
 func encodeDomain(_ value: RunInput) throws -> Data { try sessionEncodeInput(value: value.domain) }
-func encodeDomain(_ value: ProxyDocument) throws -> Data { try sessionEncodeProxy(value: value.domain) }
+func encodeDomain(_ value: ProxyDocument) throws -> Data { try sessionEncodeProxy(value: value) }
 func encodeDomain(_ value: EnvironmentDraft) throws -> Data { try sessionEncodeEnvironment(value: value.domain) }
-func encodeDomain(_ value: RequestBody) throws -> Data { try sessionEncodeBody(value: value.domain) }
-func decodeDomain(_: ProxyDocument.Type, from data: Data) throws -> ProxyDocument { ProxyDocument(domain: try sessionDecodeProxy(data: data)) }
+func encodeDomain(_ value: RequestBody) throws -> Data { try sessionEncodeBody(value: value) }
+func decodeDomain(_: ProxyDocument.Type, from data: Data) throws -> ProxyDocument { try sessionDecodeProxy(data: data) }
 func decodeDomain(_: EnvironmentDraft.Type, from data: Data) throws -> EnvironmentDraft { EnvironmentDraft(domain: try sessionDecodeEnvironment(data: data)) }
-func decodeDomain(_: RequestBody.Type, from data: Data) throws -> RequestBody { RequestBody(domain: try sessionDecodeBody(data: data)) }
+func decodeDomain(_: RequestBody.Type, from data: Data) throws -> RequestBody { try sessionDecodeBody(data: data) }
 
 @Test("Default typed persistence preserves collection-qualified request identity")
 func defaultPersistenceDeltaKeepsLocationIdentity() async throws {

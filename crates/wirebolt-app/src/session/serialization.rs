@@ -91,7 +91,7 @@ mod tests {
     fn proxy_preferences_preserve_existing_strings_and_optional_credentials() {
         let proxy = DomainProxy::Manual {
             routes: vec![crate::domain::DomainProxyRoute {
-                destination: "all".into(),
+                destination: wirebolt_core::ProxyDestination::All,
                 endpoint: "http://localhost:8080".into(),
                 credentials: None,
             }],

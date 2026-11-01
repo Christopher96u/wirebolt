@@ -1,19 +1,20 @@
 import Foundation
 import Observation
 
-public typealias ProxyScope = RuntimeProxyScope
+public typealias ProxyScope = DomainProxySource
 
-extension RuntimeProxyScope: RawRepresentable, CaseIterable {
+extension DomainProxySource: RawRepresentable, CaseIterable {
+    public static var app: Self { .appDefault }
     public static var allCases: [Self] { [.app, .workspace, .request] }
     public var rawValue: String {
-        switch self { case .app: "app"; case .workspace: "workspace"; case .request: "request" }
+        switch self { case .appDefault: "app"; case .workspace: "workspace"; case .request: "request"; case .systemDefault: "systemDefault" }
     }
     public init?(rawValue: String) {
-        guard let value = Self.allCases.first(where: { $0.rawValue == rawValue }) else { return nil }
+        guard let value = (Self.allCases + [.systemDefault]).first(where: { $0.rawValue == rawValue }) else { return nil }
         self = value
     }
     public var title: String {
-        domainProxyScopeTitle(scope: domain)
+        domainProxyScopeTitle(scope: self)
     }
 }
 
@@ -24,12 +25,11 @@ extension EffectiveProxy {
 
 
     public static func resolve(request: ProxyDocument?, workspace: ProxyDocument?, app: ProxyDocument) -> Self {
-        let result = domainResolveProxy(request: request?.domain, workspace: workspace?.domain, app: app.domain)
-        return Self(configuration: ProxyDocument(domain: result.configuration), source: result.source)
+        domainResolveProxy(request: request, workspace: workspace, app: app)
     }
 
     public func summary(for url: String? = nil) -> String {
-        domainProxySummary(configuration: configuration.domain, url: url)
+        domainProxySummary(configuration: configuration, url: url)
     }
 }
 
@@ -60,11 +60,11 @@ public final class ProxyPreferences {
     public init(defaults: UserDefaults? = nil) {
         self.defaults = defaults
         configuration =
-            defaults?.data(forKey: Self.key).flatMap { try? sessionDecodeProxy(data: $0) }.map(ProxyDocument.init(domain:)) ?? .system
+            defaults?.data(forKey: Self.key).flatMap { try? sessionDecodeProxy(data: $0) } ?? .system
     }
     public func save(_ configuration: ProxyDocument) throws {
         try configuration.validate()
-        let data = try sessionEncodeProxy(value: configuration.domain)
+        let data = try sessionEncodeProxy(value: configuration)
         defaults?.set(data, forKey: Self.key)
         self.configuration = configuration
     }
@@ -78,7 +78,7 @@ public struct ProxyValidationError: LocalizedError, Equatable {
 
 extension ProxyDocument {
     public func validate() throws {
-        do { try domainValidateProxy(configuration: domain) } catch let DomainError.Invalid(reason) { throw ProxyValidationError(reason) }
+        do { try domainValidateProxy(configuration: self) } catch let DomainError.Invalid(reason) { throw ProxyValidationError(reason) }
     }
 }
 
@@ -86,7 +86,7 @@ public struct ProxyRouteDraft: Identifiable, Equatable {
     var domain: ProxyRouteInput
     public static let protocols = ["http", "https", "socks4", "socks4a", "socks5", "socks5h"]
     public let id: UUID
-    public var destination: String {
+    public var destination: ProxyDestination {
         get { domain.destination }
         set { domain.destination = newValue }
     }
@@ -119,8 +119,8 @@ public struct ProxyRouteDraft: Identifiable, Equatable {
         set { domain.password = newValue }
     }
     public var credentials: ProxyCredentialsDocument? {
-        get { domain.credentials.map(ProxyCredentialsDocument.init(domain:)) }
-        set { domain.credentials = newValue?.domain }
+        get { domain.credentials }
+        set { domain.credentials = newValue }
     }
     init(domain: ProxyRouteInput) {
         var domain = domain
@@ -129,13 +129,13 @@ public struct ProxyRouteDraft: Identifiable, Equatable {
         if parsedID == nil { domain.id = id.uuidString.lowercased() }
         self.domain = domain
     }
-    public init(route: ProxyRouteDocument? = nil) { self.init(domain: domainProxyRouteInput(route: route?.domain)) }
+    public init(route: ProxyRouteDocument? = nil) { self.init(domain: domainProxyRouteInput(route: route)) }
     public var needsCredentials: Bool { domainProxyNeedsCredentials(input: domain) }
     public var credentialReferences: ProxyCredentialsDocument? {
-        domainProxyCredentialReferences(input: domain).map(ProxyCredentialsDocument.init(domain:))
+        domainProxyCredentialReferences(input: domain)
     }
     public func document() throws -> ProxyRouteDocument {
-        do { return ProxyRouteDocument(domain: try domainProxyRouteDocument(input: domain)) } catch let DomainError.Invalid(reason) {
+        do { return try domainProxyRouteDocument(input: domain) } catch let DomainError.Invalid(reason) {
             throw ProxyValidationError(reason)
         }
     }
@@ -153,26 +153,21 @@ public struct ProxyFormDraft: Equatable {
         get { domain.routes.map { ProxyRouteDraft(domain: $0) } }
         set { domain.routes = newValue.map(\.domain) }
     }
-    public init(configuration: ProxyDocument?) { domain = domainProxyForm(configuration: configuration?.domain) }
+    public init(configuration: ProxyDocument?) { domain = domainProxyForm(configuration: configuration) }
     public func document() throws -> ProxyDocument? {
-        do { return try domainProxyFormDocument(input: domain).map(ProxyDocument.init(domain:)) } catch let DomainError.Invalid(reason) {
+        do { return try domainProxyFormDocument(input: domain) } catch let DomainError.Invalid(reason) {
             throw ProxyValidationError(reason)
         }
     }
     public var secrets: [String: String] { domainProxyFormSecrets(input: domain) }
 }
 
+
 /// A TLS client identity in the PEM form the transport accepts: one or more certificates
 /// (leaf first) and one unencrypted private key. The combined text is stored in Keychain;
 /// workspaces keep only its reference.
 public struct ClientIdentityPEM: Equatable, Sendable {
-    public enum Failure: LocalizedError, Equatable {
-        case noCertificate, noPrivateKey, multiplePrivateKeys, encryptedPrivateKey
-
-        public var errorDescription: String? {
-            domainPemErrorMessage(kind: domain)
-        }
-    }
+    public typealias Failure = PemError
 
     private let domain: DomainPemIdentity
     public var certificates: [String] { domain.certificates }
@@ -183,45 +178,16 @@ public struct ClientIdentityPEM: Equatable, Sendable {
 
     /// Native error and value projections of Rust's PEM parser.
     public init(parsing sources: [String]) throws {
-        do {
-            domain = try domainParsePem(sources: sources)
-        } catch let error as PemError {
-            throw Failure(domain: error)
-        }
+        domain = try domainParsePem(sources: sources)
     }
 }
 
-private extension ClientIdentityPEM.Failure {
-    var domain: PemError {
-        switch self {
-        case .noCertificate: .NoCertificate
-        case .noPrivateKey: .NoPrivateKey
-        case .multiplePrivateKeys: .MultiplePrivateKeys
-        case .encryptedPrivateKey: .EncryptedPrivateKey
-        }
-    }
-    init(domain: PemError) {
-        self = switch domain {
-        case .NoCertificate: .noCertificate
-        case .NoPrivateKey: .noPrivateKey
-        case .MultiplePrivateKeys: .multiplePrivateKeys
-        case .EncryptedPrivateKey: .encryptedPrivateKey
-        }
-    }
-}
-
-extension DomainProxySource: NativeDomainValue {
-    public var title: String { domainProxyScopeTitle(scope: self) }
-}
-
-private extension ProxyScope {
-    var domain: DomainProxySource {
-        switch self {
-        case .app: .appDefault
-        case .workspace: .workspace
-        case .request: .request
-        }
-    }
+extension PemError: CustomDebugStringConvertible {
+    public static var noCertificate: Self { .NoCertificate }
+    public static var noPrivateKey: Self { .NoPrivateKey }
+    public static var multiplePrivateKeys: Self { .MultiplePrivateKeys }
+    public static var encryptedPrivateKey: Self { .EncryptedPrivateKey }
+    public var debugDescription: String { domainPemErrorMessage(kind: self) }
 }
 
 extension ProxyFormMode: RawRepresentable, CaseIterable {

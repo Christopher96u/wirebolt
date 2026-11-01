@@ -10,10 +10,11 @@ final class RustRequestRunner: @unchecked Sendable, RequestRunner {
     init() {
         DispatchQueue.global(qos: .utility).async { _ = Self.proxyMonitor }
     }
+
     func proxySettingsChanged() { resetHttpEngines() }
     func resolveValues(_ values: [ValueSource], variables: [String: ValueSource]) async throws -> [String] {
         do {
-            return try await sessionTransport.resolveValues(values: values.map(\.domain), variables: variables.mapValues(\.domain))
+            return try await sessionTransport.resolveValues(values: values, variables: variables)
         } catch let RuntimeRequestError.Failure(failure) { throw RunFailure(failure) }
     }
     func events(for input: RunInput, runID: RunID) -> AsyncThrowingStream<RunEvent, any Error> {

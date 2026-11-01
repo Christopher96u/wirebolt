@@ -624,7 +624,7 @@ final class ProbeWindow: NSWindow { override var canBecomeKey: Bool { true } }
     static func proxyScreenshots(root: URL) throws {
         let model = WireboltModel(runner: OfflineRunner(), history: HistoryRepository(root: root.appending(path: "history")), cookieJar: CookieJar())
         model.workspace.name = "Demo workspace"
-        let manual = ProxyDocument.manual(routes: [ProxyRouteDocument(destination: "all", endpoint: "http://127.0.0.1:18766")])
+        let manual = ProxyDocument.manual(routes: [ProxyRouteDocument(destination: .all, endpoint: "http://127.0.0.1:18766")])
         try model.proxyPreferences.save(manual)
         model.settingsTab = "network"
         let output = root.deletingLastPathComponent()
@@ -649,14 +649,14 @@ final class ProbeWindow: NSWindow { override var canBecomeKey: Bool { true } }
         session.draft.proxy = .direct
         try capture(ContentView(model: model, interface: interface, loadsWorkspace: false), name: "05-request-direct", width: 1248, height: 760)
         let credentials = ProxyCredentialsDocument(username: "demo.proxy.user", password: "demo.proxy.password")
-        session.draft.proxy = .manual(.manual(routes: [ProxyRouteDocument(destination: "all", endpoint: "socks5h://localhost:1080", credentials: credentials)]))
+        session.draft.proxy = .manual(.manual(routes: [ProxyRouteDocument(destination: .all, endpoint: "socks5h://localhost:1080", credentials: credentials)]))
         try capture(NetworkSettingsPage(model: model, scope: .request, session: session), name: "06-request-authentication", width: 590, height: 680)
         print("native_proxy_screenshots=written")
     }
 
     static func settingsUI(root: URL) throws {
         let preferences = ProxyPreferences(defaults: fixtureDefaults)
-        let original = ProxyDocument.manual(routes: [ProxyRouteDocument(destination: "all", endpoint: "http://localhost:8080")])
+        let original = ProxyDocument.manual(routes: [ProxyRouteDocument(destination: .all, endpoint: "http://localhost:8080")])
         try preferences.save(original)
         let model = WireboltModel(runner: OfflineRunner(), history: HistoryRepository(root: root.appending(path: "history")),
             cookieJar: CookieJar(), proxyPreferences: preferences)
@@ -797,7 +797,7 @@ final class ProbeWindow: NSWindow { override var canBecomeKey: Bool { true } }
 
     static func proxySettings(root: URL) throws {
         let model = WireboltModel(runner: OfflineRunner(), history: HistoryRepository(root: root.appending(path: "history")), cookieJar: CookieJar())
-        try model.proxyPreferences.save(.manual(routes: [ProxyRouteDocument(destination: "all", endpoint: "http://localhost:8080")]))
+        try model.proxyPreferences.save(.manual(routes: [ProxyRouteDocument(destination: .all, endpoint: "http://localhost:8080")]))
         let session = model.sessions.open(draft: RequestDraft(name: "Proxy fixture", url: "https://example.invalid"))
         let (window, host, _) = mount(NetworkSettingsPage(model: model, scope: .request, session: session), width: 590, height: 850)
         defer { window.close() }
@@ -806,7 +806,7 @@ final class ProbeWindow: NSWindow { override var canBecomeKey: Bool { true } }
         spin(); flush(host)
         precondition(elements(host).contains { $0.name.contains("Source: App default") }, "Request must explain inherited app policy")
         precondition(session.draft.proxy == .inherit && model.workspace.proxy == nil)
-        session.draft.proxy = .manual(.manual(routes: [ProxyRouteDocument(destination: "all", endpoint: "http://localhost:8080")]))
+        session.draft.proxy = .manual(.manual(routes: [ProxyRouteDocument(destination: .all, endpoint: "http://localhost:8080")]))
         spin(); flush(host)
         for width in [590.0, 390.0] {
             window.setContentSize(NSSize(width: width, height: 850))
@@ -848,7 +848,7 @@ final class ProbeWindow: NSWindow { override var canBecomeKey: Bool { true } }
             window.sendEvent(event)
         }
         spin(0.2); flush(host)
-        precondition(session.draft.proxy == .manual(.manual(routes: [ProxyRouteDocument(destination: "all", endpoint: "http://127.0.0.1:12345")])), "Native text editing and Apply must update the request")
+        precondition(session.draft.proxy == .manual(.manual(routes: [ProxyRouteDocument(destination: .all, endpoint: "http://127.0.0.1:12345")])), "Native text editing and Apply must update the request")
         precondition(model.workspace.proxy == nil && model.proxyPreferences.configuration != .direct, "Request UI must not mutate parents")
         print("proxy_settings_interface=passed")
     }

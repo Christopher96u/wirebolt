@@ -9,7 +9,7 @@ final class RuntimeRunnerAdapter: SessionRuntimeTransport {
             do {
                 reply.finish(
                     values: try await runner.resolveValues(
-                        values.map(ValueSource.init(domain:)), variables: variables.mapValues(ValueSource.init(domain:))), failure: nil)
+                        values, variables: variables), failure: nil)
             } catch {
                 reply.finish(values: [], failure: ((error as? RunFailure) ?? RunFailure(kind: .invalidRequest, issues: [])).sessionRecord)
             }
@@ -60,25 +60,19 @@ final class RuntimeSettingsAdapter: SessionRuntimeSettings {
         self.persistence = persistence
         self.preferences = preferences
     }
-    func proxy(scope: RuntimeProxyScope, configuration: DomainProxy?, reply: SessionOperationReply) {
+    func appProxy(configuration: DomainProxy, reply: SessionOperationReply) {
         Task { @MainActor in
             do {
-                switch scope {
-                case .app: try preferences.save(configuration.map(ProxyDocument.init(domain:)) ?? .system)
-                case .workspace:
-                    guard let persistence else { throw WorkspaceMutationError.unsupported }
-                    _ = try await persistence.apply(.saveWorkspaceProxy(proxy: configuration))
-                case .request: break
-                }
+                try preferences.save(configuration)
                 reply.finish(reason: nil)
             } catch { reply.finish(reason: error.localizedDescription) }
         }
     }
-    func transport(value: DomainTransport, reply: SessionOperationReply) {
+    func command(command: SessionWorkspaceCommand, reply: SessionOperationReply) {
         Task {
             do {
                 guard let persistence else { throw WorkspaceMutationError.unsupported }
-                _ = try await persistence.apply(.saveWorkspaceSettings(transport: value))
+                _ = try await persistence.apply(command)
                 reply.finish(reason: nil)
             } catch { reply.finish(reason: error.localizedDescription) }
         }
@@ -95,7 +89,6 @@ final class RuntimeSettingsAdapter: SessionRuntimeSettings {
     nonisolated func acquire(configuration: DomainOAuthConfiguration, reply: SessionTokenReply) {
         Task { @MainActor in
             do {
-                let configuration = OAuth2Configuration(domain: configuration)
                 project(configuration)
                 let (token, receipt) = try await authorizer.acquireToken(configuration: configuration)
                 reply.finish(

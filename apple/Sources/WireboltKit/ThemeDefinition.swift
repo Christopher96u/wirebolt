@@ -6,10 +6,10 @@ public typealias ThemePreset = DomainThemePreset
 extension DomainThemePreset: RawRepresentable, CaseIterable {
     public static var allCases: [Self] { [.black, .paper, .ember] }
     public var rawValue: String {
-        switch self { case .black: "black"; case .paper: "paper"; case .ember: "ember" }
+        domainThemePresetValue(preset: self)
     }
     public init?(rawValue: String) {
-        guard let value = Self.allCases.first(where: { $0.rawValue == rawValue }) else { return nil }
+        guard let value = domainThemePresetFromValue(value: rawValue) else { return nil }
         self = value
     }
     public var name: String { rawValue.capitalized }

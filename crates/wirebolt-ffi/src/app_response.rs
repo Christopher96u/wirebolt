@@ -15,8 +15,8 @@ use wirebolt_app::response::{
     SearchQuery, ShapingGroup, ShapingMetrics, ShapingRequest, StoredCookie, TextIndex,
     TextIndexCache, TextRow, TextShaper, WrapBreakIndex, WrapBreakSnapshot, WrapLayout,
     completion_summary, cookie_storage_path, describe_issue, failure_host, failure_message,
-    format_duration, format_elapsed, json_tree, json_tree_file, reason_phrase, sentence,
-    space_runs, status_line, unix_time, uses_text_index,
+    format_duration, format_elapsed, json_tree, json_tree_file, reason_phrase, space_runs,
+    status_line, unix_time, uses_text_index,
 };
 
 #[uniffi::remote(Error)]
@@ -585,10 +585,6 @@ pub fn app_failure_host(url: Option<String>) -> Option<String> {
 #[uniffi::export]
 pub fn app_describe_issue(issue: FailureIssue) -> String {
     describe_issue(&issue)
-}
-#[uniffi::export]
-pub fn app_failure_sentence(kind: String) -> String {
-    sentence(&kind)
 }
 #[uniffi::export(with_foreign)]
 pub trait AppTextShaper: Send + Sync {

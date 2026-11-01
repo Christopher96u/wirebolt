@@ -46,13 +46,12 @@ struct CollectionImportSourceTests {
         #expect(BrunoCollectionSource.isCollection(root))
         #expect(!BrunoCollectionSource.isCollection(root.appendingPathComponent("assets")))
         let bundle = try BrunoCollectionSource.bundle(at: root)
-        let document = try #require(try JSONSerialization.jsonObject(with: Data(bundle.utf8)) as? [String: Any])
-        let paths = (document["files"] as? [[String: String]] ?? []).compactMap { $0["path"] }
+        let paths = bundle.files.map(\.path)
         #expect(paths == ["Users/Get member.bru", "Users/folder.bru", "bruno.json", "environments/Local.bru"])
-        #expect(document["root"] as? String == root.path)
+        #expect(bundle.root == root.path)
 
         let single = try BrunoCollectionSource.bundle(at: root.appendingPathComponent("Users/Get member.bru"))
-        #expect(single.contains(#""path":"Get member.bru""#))
+        #expect(single.files.map(\.path) == ["Get member.bru"])
         #expect(throws: BrunoCollectionSource.ReadError.notACollection) {
             try BrunoCollectionSource.bundle(at: root.appendingPathComponent("assets"))
         }
@@ -69,7 +68,7 @@ extension CollectionImportSourceTests {
         try "get {}".write(to: root.appendingPathComponent("root.bru"), atomically: true, encoding: .utf8)
         try "get {}".write(to: package.appendingPathComponent("hidden.bru"), atomically: true, encoding: .utf8)
         let bundle = try BrunoCollectionSource.bundle(at: root)
-        #expect(bundle.contains("root.bru"))
-        #expect(!bundle.contains("hidden.bru"))
+        #expect(bundle.files.contains { $0.path == "root.bru" })
+        #expect(!bundle.files.contains { $0.path.contains("hidden.bru") })
     }
 }

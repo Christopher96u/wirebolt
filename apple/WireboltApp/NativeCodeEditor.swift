@@ -1122,7 +1122,7 @@ enum SyntaxHighlighter {
         let result = NSMutableAttributedString(string: "")
         // One bridge call supplies all token passes and indent columns. Native
         // attribute construction stays chunked to avoid quadratic run insertion.
-        for chunk in appSyntaxHighlight(source: text, language: language) {
+        for chunk in domainSyntaxHighlight(source: text, language: language) {
             result.append(attributedChunk(text: source.substring(with: chunk.range.nsRange), chunk: chunk, fontSize: fontSize, theme: theme))
         }
         return result

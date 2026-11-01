@@ -42,6 +42,6 @@ pub struct SyntaxChunk {
     pub indents: Vec<SyntaxIndent>,
 }
 #[uniffi::export]
-pub fn app_syntax_highlight(source: String, language: SyntaxLanguage) -> Vec<SyntaxChunk> {
+pub fn domain_syntax_highlight(source: String, language: SyntaxLanguage) -> Vec<SyntaxChunk> {
     syntax::highlight(&source, language)
 }

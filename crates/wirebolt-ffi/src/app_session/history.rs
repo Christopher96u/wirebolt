@@ -15,8 +15,3 @@ pub struct SessionHistoryEntry {
     pub failure: Option<SessionFailure>,
     pub body_path: String,
 }
-
-#[uniffi::export]
-pub fn session_history_viewport(path: String) -> Vec<u8> {
-    wirebolt_app::session::history::viewport(&path)
-}

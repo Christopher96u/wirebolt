@@ -11,6 +11,7 @@ public struct TextLineIndex: Sendable {
         starts = snapshot.starts.map { Int(clamping: $0) }
         length = Int(clamping: snapshot.length)
     }
+
     public mutating func replace(_ range: NSRange, with text: String) {
         // Invalid bridge ranges leave both the Rust index and native mirror unchanged.
         guard range.location >= 0, range.length >= 0, range.location <= length,

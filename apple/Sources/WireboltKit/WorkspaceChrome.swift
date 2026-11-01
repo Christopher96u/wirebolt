@@ -32,7 +32,7 @@ public extension AuthenticationKind {
 public extension RequestAuthentication {
     /// Choosing the current kind again keeps its credentials; another kind starts empty.
     func switching(to kind: AuthenticationKind) -> RequestAuthentication {
-        RequestAuthentication(domain: domainSwitchAuth(authentication: domain, kind: kind))
+        domainSwitchAuth(authentication: self, kind: kind)
     }
 }
 
@@ -49,7 +49,7 @@ public extension EffectiveProxy {
     /// Whether the request composer shows the connection: a workspace or request override,
     /// or an invalid configuration. The app default applies everywhere and needs no reminder.
     var needsIndicator: Bool {
-        domainProxyNeedsIndicator(configuration: configuration.domain, source: source)
+        domainProxyNeedsIndicator(configuration: configuration, source: source)
     }
 }
 
@@ -57,7 +57,7 @@ public extension Array where Element == RequestField {
     /// The rows a section tab counts: enabled and named. A row still being typed counts
     /// once it has a name; a disabled or nameless row does not.
     var activeCount: Int {
-        Int(domainActiveCount(fields: map(\.domain)))
+        Int(domainActiveCount(fields: self))
     }
 }
 

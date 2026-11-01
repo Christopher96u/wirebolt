@@ -382,41 +382,6 @@ impl SessionOperationReply {
     }
 }
 
-struct RuntimeSettingsAdapter(Arc<dyn SessionRuntimeSettings>);
-
-#[async_trait::async_trait]
-impl RuntimeSettingsPlatform for RuntimeSettingsAdapter {
-    async fn proxy(
-        &self,
-        scope: RuntimeProxyScope,
-        configuration: Option<DomainProxy>,
-    ) -> Result<(), RuntimeOperationError> {
-        let (sender, receiver) = tokio::sync::oneshot::channel();
-        self.0.proxy(
-            scope,
-            configuration,
-            Arc::new(SessionOperationReply {
-                sender: Mutex::new(Some(sender)),
-            }),
-        );
-        receiver
-            .await
-            .unwrap_or(Err(RuntimeOperationError::Unsupported))
-    }
-    async fn transport(&self, value: DomainTransport) -> Result<(), RuntimeOperationError> {
-        let (sender, receiver) = tokio::sync::oneshot::channel();
-        self.0.transport(
-            value,
-            Arc::new(SessionOperationReply {
-                sender: Mutex::new(Some(sender)),
-            }),
-        );
-        receiver
-            .await
-            .unwrap_or(Err(RuntimeOperationError::Unsupported))
-    }
-}
-
 #[uniffi::export(async_runtime = "tokio")]
 impl AppSessionRuntime {
     pub async fn apply_proxy(
@@ -479,11 +444,6 @@ impl RuntimeAuthorizer for RuntimeAuthorizerAdapter {
             .await
             .unwrap_or(Err(RuntimeOperationError::Unsupported))
     }
-}
-
-#[uniffi::export]
-pub fn session_runtime_input(draft: DomainRequestDraft, context: RuntimeContext) -> DomainRunInput {
-    context.input(draft)
 }
 
 #[uniffi::export(async_runtime = "tokio")]
@@ -586,6 +546,40 @@ impl AppRuntimeSettings {
     }
 }
 
+impl AppRuntimeSettings {
+    async fn foreign_operation(
+        &self,
+        start: impl FnOnce(Arc<SessionOperationReply>),
+    ) -> Result<(), RuntimeOperationError> {
+        let (sender, receiver) = tokio::sync::oneshot::channel();
+        start(Arc::new(SessionOperationReply {
+            sender: Mutex::new(Some(sender)),
+        }));
+        receiver
+            .await
+            .unwrap_or(Err(RuntimeOperationError::Unsupported))
+    }
+    async fn apply_command(
+        &self,
+        command: SessionWorkspaceCommand,
+    ) -> Result<(), RuntimeOperationError> {
+        if let Some(workspace) = &self.workspace {
+            let workspace = workspace.inner.clone();
+            return tokio::task::spawn_blocking(move || {
+                workspace
+                    .apply_session_command(command)
+                    .map(|_| ())
+                    .map_err(|error| RuntimeOperationError::Workspace {
+                        reason: error.to_string(),
+                    })
+            })
+            .await
+            .unwrap_or(Err(RuntimeOperationError::Unsupported));
+        }
+        self.foreign_operation(|reply| self.foreign.command(command, reply))
+            .await
+    }
+}
 #[async_trait::async_trait]
 impl RuntimeSettingsPlatform for AppRuntimeSettings {
     async fn proxy(
@@ -593,48 +587,26 @@ impl RuntimeSettingsPlatform for AppRuntimeSettings {
         scope: RuntimeProxyScope,
         configuration: Option<DomainProxy>,
     ) -> Result<(), RuntimeOperationError> {
-        if scope == RuntimeProxyScope::Request {
-            return Ok(());
+        match scope {
+            RuntimeProxyScope::Request => Ok(()),
+            RuntimeProxyScope::Workspace => {
+                self.apply_command(SessionWorkspaceCommand::SaveWorkspaceProxy {
+                    proxy: configuration,
+                })
+                .await
+            }
+            RuntimeProxyScope::AppDefault => {
+                self.foreign_operation(|reply| {
+                    self.foreign
+                        .app_proxy(configuration.unwrap_or(DomainProxy::System), reply);
+                })
+                .await
+            }
+            RuntimeProxyScope::SystemDefault => Err(RuntimeOperationError::Unsupported),
         }
-        if scope == RuntimeProxyScope::Workspace
-            && let Some(workspace) = &self.workspace
-        {
-            let workspace = workspace.inner.clone();
-            return tokio::task::spawn_blocking(move || {
-                workspace
-                    .apply_session_command(SessionWorkspaceCommand::SaveWorkspaceProxy {
-                        proxy: configuration,
-                    })
-                    .map(|_| ())
-                    .map_err(|error| RuntimeOperationError::Workspace {
-                        reason: error.to_string(),
-                    })
-            })
-            .await
-            .unwrap_or(Err(RuntimeOperationError::Unsupported));
-        }
-        RuntimeSettingsAdapter(self.foreign.clone())
-            .proxy(scope, configuration)
-            .await
     }
     async fn transport(&self, value: DomainTransport) -> Result<(), RuntimeOperationError> {
-        if let Some(workspace) = &self.workspace {
-            let workspace = workspace.inner.clone();
-            return tokio::task::spawn_blocking(move || {
-                workspace
-                    .apply_session_command(SessionWorkspaceCommand::SaveWorkspaceSettings {
-                        transport: value,
-                    })
-                    .map(|_| ())
-                    .map_err(|error| RuntimeOperationError::Workspace {
-                        reason: error.to_string(),
-                    })
-            })
-            .await
-            .unwrap_or(Err(RuntimeOperationError::Unsupported));
-        }
-        RuntimeSettingsAdapter(self.foreign.clone())
-            .transport(value)
+        self.apply_command(SessionWorkspaceCommand::SaveWorkspaceSettings { transport: value })
             .await
     }
 }
@@ -687,13 +659,6 @@ impl AppSessionRuntime {
             )
             .await;
     }
-}
-
-#[uniffi::remote(Enum)]
-pub enum RuntimeProxyScope {
-    App,
-    Workspace,
-    Request,
 }
 
 #[uniffi::remote(Record)]
@@ -763,13 +728,8 @@ pub trait SessionRuntimeTransport: Send + Sync {
 
 #[uniffi::export(with_foreign)]
 pub trait SessionRuntimeSettings: Send + Sync {
-    fn proxy(
-        &self,
-        scope: RuntimeProxyScope,
-        configuration: Option<DomainProxy>,
-        reply: Arc<SessionOperationReply>,
-    );
-    fn transport(&self, value: DomainTransport, reply: Arc<SessionOperationReply>);
+    fn app_proxy(&self, configuration: DomainProxy, reply: Arc<SessionOperationReply>);
+    fn command(&self, command: SessionWorkspaceCommand, reply: Arc<SessionOperationReply>);
 }
 
 #[uniffi::export(with_foreign)]

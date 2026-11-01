@@ -270,6 +270,17 @@ impl fmt::Display for ImportError {
 
 impl Error for ImportError {}
 
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct BrunoSourceFile {
+    pub path: String,
+    pub contents: String,
+}
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct BrunoFolderBundle {
+    pub root: String,
+    pub files: Vec<BrunoSourceFile>,
+}
+
 #[derive(Debug, Default)]
 pub struct ImportEngine;
 
@@ -306,6 +317,17 @@ impl ImportEngine {
             }
         };
         result.map_err(|error| unsupported_document(source).unwrap_or(error))
+    }
+
+    /// Parses a typed Bruno collection folder with the same mapping as folder sources.
+    ///
+    /// # Errors
+    /// Returns the importer's user-facing reason for invalid collection files.
+    pub fn parse_bruno_folder(
+        bundle: &BrunoFolderBundle,
+        name: Option<&str>,
+    ) -> Result<ParsedImport, ImportError> {
+        bruno::parse_folder_bundle(bundle, name)
     }
 
     /// Imports a file while retaining its top-level folders under the filename.

@@ -28,7 +28,7 @@ public struct VariableCatalog: Equatable, Sendable {
     public struct Entry: Equatable, Sendable {
         let domain: CatalogEntry
         public var name: String { domain.name }
-        public var value: ValueSource { ValueSource(domain: domain.value) }
+        public var value: ValueSource { domain.value }
         public var environmentName: String { domain.environmentName }
         public var displayValue: String { domain.displayValue }
     }

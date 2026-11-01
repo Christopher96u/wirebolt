@@ -64,7 +64,7 @@ pub fn collection() -> DomainCollection {
 pub fn manual() -> DomainProxy {
     DomainProxy::Manual {
         routes: vec![DomainProxyRoute {
-            destination: "all".into(),
+            destination: wirebolt_core::ProxyDestination::All,
             endpoint: "http://localhost:8080".into(),
             credentials: None,
         }],

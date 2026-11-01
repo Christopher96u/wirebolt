@@ -3,6 +3,29 @@ mod support;
 use support::*;
 use wirebolt_app::domain::{models::*, proxy::*};
 #[test]
+fn typed_destinations_keep_persisted_spellings() {
+    for (destination, spelling) in [
+        (ProxyDestination::All, "all"),
+        (ProxyDestination::Http, "http"),
+        (ProxyDestination::Https, "https"),
+    ] {
+        let source =
+            format!(r#"{{"destination":"{spelling}","endpoint":"http://localhost:8080"}}"#);
+        let route: DomainProxyRoute = serde_json::from_str(&source).unwrap();
+        assert_eq!(route.destination, destination);
+        assert_eq!(
+            serde_json::to_value(route).unwrap()["destination"],
+            spelling
+        );
+    }
+    assert!(
+        serde_json::from_str::<DomainProxyRoute>(
+            r#"{"destination":"invalid","endpoint":"http://localhost:8080"}"#
+        )
+        .is_err()
+    );
+}
+#[test]
 fn precedence_replaces_the_whole_policy() {
     for app in [manual(), DomainProxy::System, DomainProxy::Direct] {
         assert_eq!(
@@ -73,7 +96,7 @@ fn credentials_serialize_references_and_preserve_unchanged_names() {
 fn summary_maps_websocket_schemes_and_bypasses_unmatched_routes() {
     let configuration = DomainProxy::Manual {
         routes: vec![DomainProxyRoute {
-            destination: "https".into(),
+            destination: wirebolt_core::ProxyDestination::Https,
             endpoint: "socks5h://localhost:1080".into(),
             credentials: None,
         }],
@@ -137,8 +160,8 @@ fn cancelling_a_queued_probe_invalidates_old_completions() {
 #[test]
 fn validation_rejects_paths_overlaps_empty_policies_and_unsupported_protocols() {
     assert!(validate(&DomainProxy::Manual { routes: vec![] }).is_err());
-    let route = |destination: &str, endpoint: &str| DomainProxyRoute {
-        destination: destination.into(),
+    let route = |destination, endpoint: &str| DomainProxyRoute {
+        destination,
         endpoint: endpoint.into(),
         credentials: None,
     };
@@ -153,7 +176,7 @@ fn validation_rejects_paths_overlaps_empty_policies_and_unsupported_protocols() 
     ] {
         assert!(
             validate(&DomainProxy::Manual {
-                routes: vec![route("all", endpoint)]
+                routes: vec![route(wirebolt_core::ProxyDestination::All, endpoint)]
             })
             .is_err(),
             "{endpoint}"
@@ -162,8 +185,14 @@ fn validation_rejects_paths_overlaps_empty_policies_and_unsupported_protocols() 
     assert!(
         validate(&DomainProxy::Manual {
             routes: vec![
-                route("all", "http://localhost:8080"),
-                route("http", "http://localhost:8081")
+                route(
+                    wirebolt_core::ProxyDestination::All,
+                    "http://localhost:8080"
+                ),
+                route(
+                    wirebolt_core::ProxyDestination::Http,
+                    "http://localhost:8081"
+                )
             ]
         })
         .is_err()
@@ -171,8 +200,14 @@ fn validation_rejects_paths_overlaps_empty_policies_and_unsupported_protocols() 
     assert!(
         validate(&DomainProxy::Manual {
             routes: vec![
-                route("http", "http://localhost:8080"),
-                route("https", "socks5h://localhost:1080")
+                route(
+                    wirebolt_core::ProxyDestination::Http,
+                    "http://localhost:8080"
+                ),
+                route(
+                    wirebolt_core::ProxyDestination::Https,
+                    "socks5h://localhost:1080"
+                )
             ]
         })
         .is_ok()
@@ -233,12 +268,12 @@ fn proxy_routes_match_unresolved_url_authorities_and_reject_normalized_paths() {
     let configuration = DomainProxy::Manual {
         routes: vec![
             DomainProxyRoute {
-                destination: "http".into(),
+                destination: wirebolt_core::ProxyDestination::Http,
                 endpoint: "http://plain:8080".into(),
                 credentials: None,
             },
             DomainProxyRoute {
-                destination: "https".into(),
+                destination: wirebolt_core::ProxyDestination::Https,
                 endpoint: "socks5h://secure:1080".into(),
                 credentials: None,
             },
@@ -257,7 +292,7 @@ fn proxy_routes_match_unresolved_url_authorities_and_reject_normalized_paths() {
         assert!(
             validate(&DomainProxy::Manual {
                 routes: vec![DomainProxyRoute {
-                    destination: "all".into(),
+                    destination: wirebolt_core::ProxyDestination::All,
                     endpoint: endpoint.into(),
                     credentials: None
                 }]

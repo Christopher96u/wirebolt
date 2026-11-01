@@ -76,6 +76,7 @@ public struct ResponseTextIndex: Sendable {
         }
         self.init(url: url, columns: columns, wrapping: wrapping, rust: index)
     }
+
     public func rows(start: Int, count: Int) throws -> [Row] {
         try responseCall { try rust.rows(start: UInt64(max(0, start)), count: UInt64(max(0, count)), cancellation: $0).map(Row.init) }
     }
@@ -85,6 +86,7 @@ public struct ResponseTextIndex: Sendable {
     public func row(containingByteOffset offset: UInt64) throws -> Int {
         Int(clamping: try responseCall { try rust.rowAtByte(offset: offset, cancellation: $0) })
     }
+
     public struct SearchPosition: Equatable, Sendable {
         public let row: Int
         public let column: Int
@@ -98,6 +100,7 @@ public struct ResponseTextIndex: Sendable {
             column = Int(clamping: position.column)
         }
     }
+
     public struct SearchMatch: Equatable, Sendable {
         public let start: SearchPosition
         public let end: SearchPosition
@@ -108,6 +111,7 @@ public struct ResponseTextIndex: Sendable {
                 .map { SearchMatch(start: SearchPosition($0.start), end: SearchPosition($0.end)) }
         }
     }
+
     public func firstMatch(_ query: String) throws -> Int? {
         try responseCall { try rust.firstMatch(query: query, cancellation: $0).map { Int(clamping: $0) } }
     }

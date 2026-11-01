@@ -88,6 +88,13 @@ struct RustWorkspacePersistence: WorkspacePersistence, GitCollaboration {
         }
         return reply
     }
+    func commitBrunoFolder(bundle: BrunoFolderBundle, name: String?) async throws -> ImportSummary {
+        guard case .imported(let summary) = try await execute(.importBrunoFolder(bundle: bundle, name: name)) else {
+            throw WorkspaceMutationError.unsupported
+        }
+        return ImportSummary(summary)
+    }
+
     func status() async throws -> GitStatusSnapshot {
         guard case .gitStatus(let status) = try await execute(.git(action: .status)) else { throw WorkspaceMutationError.unsupported }
         return GitStatusSnapshot(status)

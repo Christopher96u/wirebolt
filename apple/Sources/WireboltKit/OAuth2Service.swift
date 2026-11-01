@@ -41,6 +41,7 @@ public struct OAuth2ServiceError: LocalizedError, Equatable, Sendable {
         return description.isEmpty ? URLError(code).localizedDescription : description
     }
 }
+
 @MainActor
 public protocol OAuth2Authorizing: AnyObject {
     func acquireToken(configuration: OAuth2Configuration) async throws -> (String, OAuth2TokenReceipt)
@@ -52,12 +53,13 @@ public final class OAuth2Service: NSObject, OAuth2Authorizing, OAuthPlatform, AS
     private var browserSession: ASWebAuthenticationSession?
     public func acquireToken(configuration: OAuth2Configuration) async throws -> (String, OAuth2TokenReceipt) {
         do {
-            let receipt = try await domainAcquireToken(configuration: configuration.domain, platform: self)
+            let receipt = try await domainAcquireToken(configuration: configuration, platform: self)
             return (
                 receipt.token, OAuth2TokenReceipt(expiresAt: receipt.expiresAt.map(Date.init(timeIntervalSince1970:)), scope: receipt.scope)
             )
         } catch let error as DomainOAuthError { throw OAuth2ServiceError(domain: error) }
     }
+
     public func presentationAnchor(for _: ASWebAuthenticationSession) -> ASPresentationAnchor {
         NSApplication.shared.keyWindow ?? NSApplication.shared.windows.first ?? ASPresentationAnchor()
     }

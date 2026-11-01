@@ -106,7 +106,7 @@ struct WorkspaceChromeTests {
 
     @Test("The composer flags workspace and request proxy overrides, and any invalid proxy")
     func proxyIndicator() {
-        let manual = ProxyDocument.manual(routes: [ProxyRouteDocument(destination: "all", endpoint: "http://localhost:8080")])
+        let manual = ProxyDocument.manual(routes: [ProxyRouteDocument(destination: .all, endpoint: "http://localhost:8080")])
         for app in [ProxyDocument.system, .direct, manual] {
             #expect(!EffectiveProxy.resolve(request: nil, workspace: nil, app: app).needsIndicator)
             #expect(EffectiveProxy.resolve(request: nil, workspace: .system, app: app).needsIndicator)

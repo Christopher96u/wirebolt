@@ -18,6 +18,7 @@ use super::{
     WorkspaceUndoToken,
 };
 use crate::lock;
+use wirebolt_app::session::workspace::operations::WorkspaceImportSource;
 #[uniffi::remote(Enum)]
 pub enum SessionWorkspaceEdit {
     RestoreEnvironment {
@@ -697,8 +698,7 @@ pub fn workspace_default_name(path: String, built_in: String) -> String {
 
 #[uniffi::remote(Record)]
 pub struct WorkspaceImport {
-    pub source: String,
-    pub format: crate::app_domain::DomainImportFormat,
+    pub source: WorkspaceImportSource,
     pub name: Option<String>,
     pub display_name: Option<String>,
     pub selected: Option<String>,
@@ -808,4 +808,15 @@ pub enum SessionWorkspaceNodeKind {
     Group,
     Request,
     Environment,
+}
+
+#[uniffi::remote(Enum)]
+pub enum WorkspaceImportSource {
+    Document {
+        source: String,
+        format: crate::app_domain::DomainImportFormat,
+    },
+    BrunoFolder {
+        bundle: wirebolt_core::BrunoFolderBundle,
+    },
 }

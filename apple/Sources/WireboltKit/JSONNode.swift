@@ -2,6 +2,7 @@ import Foundation
 
 struct JSONNode: Identifiable, Sendable {
     static let nodeLimit = 200_000
+
     let id: String
     let key: String
     let type: JsonNodeKind

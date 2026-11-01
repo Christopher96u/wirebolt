@@ -56,9 +56,13 @@ public final class DocumentSession: Identifiable {
     @ObservationIgnored private var ingressBytes = 0
 
     public init(
-        id: String = UUID().uuidString.lowercased(), kind: DocumentKind = .http,
-        collectionID: String? = nil, requestID: String? = nil, draft: RequestDraft,
-        note: String = "", savedDraft: RequestDraft? = nil
+        id: String = UUID().uuidString.lowercased(),
+        kind: DocumentKind = .http,
+        collectionID: String? = nil,
+        requestID: String? = nil,
+        draft: RequestDraft,
+        note: String = "",
+        savedDraft: RequestDraft? = nil
     ) {
         let rust = AppDocumentSession(
             id: id, kind: kind.rust, collectionId: collectionID,
@@ -72,6 +76,7 @@ public final class DocumentSession: Identifiable {
         self.draft = RequestDraft(domain: document.draft)
         self.savedDraft = document.savedDraft.map(RequestDraft.init(domain:))
     }
+
     public var title: String { draft.name }
     public var isDirty: Bool { savedDraft != draft }
     public var isRunning: Bool { activeRunID != nil }
@@ -91,6 +96,7 @@ public final class DocumentSession: Identifiable {
         draft.name = name
         savedDraft?.name = name
     }
+
     public func beginRun(_ runID: RunID) {
         synchronizeDraft()
         progressTask?.cancel()
@@ -155,6 +161,7 @@ public final class DocumentSession: Identifiable {
         guard activeRunID == runID else { return }
         mirror()
     }
+
     public func cancel(runID: RunID) {
         guard activeRunID == runID else { return }
         if !ingress.isEmpty {
@@ -181,12 +188,14 @@ public final class DocumentSession: Identifiable {
         rust.reset()
         mirror()
     }
+
     public func copyCompletedResponse(from source: DocumentSession) {
         rust.copyCompleted(source: source.rust)
         savedDraft = source.savedDraft
         mirror()
         if !source.isRunning { bodyStore = source.bodyStore }
     }
+
     public func setResponseCookies(_ cookies: [CookieSnapshot]) {
         rust.cookies(cookies: cookies.map(\.sessionRecord), append: false)
         mirror()
@@ -195,6 +204,7 @@ public final class DocumentSession: Identifiable {
         rust.cookies(cookies: cookies.map(\.sessionRecord), append: true)
         mirror()
     }
+
     public func restore(_ entry: RunHistoryEntry, viewport: Data) {
         let bytes = entry.completion?.bytesReceived ?? UInt64(viewport.count)
         rust.restore(

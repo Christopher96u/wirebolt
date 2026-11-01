@@ -3,6 +3,7 @@ import Foundation
 public actor ResponseBodyStore {
     public static let viewportByteCount = 32 * 1024
     public static let searchChunkByteCount = 256 * 1024
+
     public nonisolated let url: URL
     nonisolated let rust: AppResponseBody
     // Only native object identity is mirrored here; Rust caches the presentations.
@@ -57,6 +58,7 @@ public actor ResponseBodyStore {
         let result = rust.progress()
         return Progress(bytes: result.bytes, data: result.data, text: result.text, truncated: result.truncated)
     }
+
     public func finish() throws {
         try flushIngress()
         try rust.finish()
@@ -74,18 +76,22 @@ public actor ResponseBodyStore {
         presentations[metadata.path] = result
         return result
     }
+
     public func viewport(offset: UInt64 = 0, length: Int = viewportByteCount) throws -> Data {
         try flushIngress()
         return try rust.viewport(offset: offset, length: UInt64(max(0, length)))
     }
+
     public func countOccurrences(of query: String) throws -> Int {
         try flushIngress()
         return Int(clamping: try rust.countOccurrences(query: query))
     }
+
     public func export(to destination: URL) throws {
         try flushIngress()
         try rust.export(destination: destination.path)
     }
+
     public func remove() {
         pending = []
         pendingBytes = 0

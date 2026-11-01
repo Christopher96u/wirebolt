@@ -83,7 +83,7 @@ const fn default_maximum_redirects() -> u8 {
 
 /// Zero disables the deadline; the engine then arms no timer at all.
 #[must_use]
-pub fn timeout_from_millis(milliseconds: u64) -> Option<Duration> {
+fn timeout_from_millis(milliseconds: u64) -> Option<Duration> {
     (milliseconds != 0).then(|| Duration::from_millis(milliseconds))
 }
 
@@ -275,32 +275,14 @@ fn prepared_run_snapshot(
                         .routes()
                         .iter()
                         .map(|route| crate::domain::DomainProxyRoute {
-                            destination: match route.destination() {
-                                wirebolt_core::ProxyDestination::All => "all",
-                                wirebolt_core::ProxyDestination::Http => "http",
-                                wirebolt_core::ProxyDestination::Https => "https",
-                            }
-                            .into(),
+                            destination: route.destination(),
                             endpoint: route.endpoint().into(),
                             credentials: None,
                         })
                         .collect(),
                 },
             },
-            source: match proxy.source() {
-                wirebolt_core::ProxySource::Request => {
-                    crate::domain::proxy::DomainProxySource::Request
-                }
-                wirebolt_core::ProxySource::Workspace => {
-                    crate::domain::proxy::DomainProxySource::Workspace
-                }
-                wirebolt_core::ProxySource::AppDefault => {
-                    crate::domain::proxy::DomainProxySource::AppDefault
-                }
-                wirebolt_core::ProxySource::SystemDefault => {
-                    crate::domain::proxy::DomainProxySource::SystemDefault
-                }
-            },
+            source: proxy.source(),
         },
     }
 }
@@ -313,7 +295,7 @@ pub fn clear_manual_http_engines() {
 /// reset is observed as a whole; clients are built outside the lock, and a
 /// build that a reset overtook serves its own run but is never pooled.
 #[derive(Debug, Default)]
-pub struct HttpEngineCache {
+struct HttpEngineCache {
     state: Mutex<HttpEngineCacheState>,
 }
 
@@ -335,7 +317,8 @@ const MAX_CACHED_MANUAL_ENGINES: usize = 8;
 impl HttpEngineCache {
     /// # Errors
     /// Returns the client builder failure.
-    pub fn engine(
+    #[cfg(test)]
+    fn engine(
         &self,
         mode: &ProxyMode,
         build: impl FnOnce() -> Result<HttpEngine, RunError>,
@@ -366,7 +349,7 @@ impl HttpEngineCache {
         Ok(state.insert(mode, config.clone(), engine))
     }
 
-    pub fn reset(&self) {
+    fn reset(&self) {
         let mut state = crate::lock(&self.state);
         state.generation += 1;
         state.system = None;
@@ -610,3 +593,6 @@ impl StreamBatch {
         }
     }
 }
+
+#[cfg(test)]
+mod tests;

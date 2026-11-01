@@ -5,6 +5,11 @@
 )]
 use crate::WorkspaceBridge;
 use crate::lock;
+use domain::chrome::TimeoutPresentation;
+use domain::git::PushAvailability;
+use domain::models::DomainRunInput;
+use domain::url::UrlQueryEdit;
+use domain::variables::{CatalogIndex, NameMatch, VariableComparison};
 use std::{collections::HashMap, sync::Arc};
 pub(crate) use wirebolt_app::domain::git::DomainGitChangeKind;
 use wirebolt_app::domain::theme::{DensityTokens, GeometryTokens};
@@ -12,7 +17,7 @@ use wirebolt_app::domain::{
     self,
     body::{BodyKeyOrdering, DomainBodyKind},
     curl::CurlExport,
-    imports::{CollectionSourceError, PemError},
+    imports::{BrunoFolderBundle, BrunoSourceFile, CollectionSourceError, PemError},
     models::{
         DomainApiKeyPlacement, DomainAuthentication, DomainAuthenticationKind, DomainBody,
         DomainCollection, DomainEnvironment, DomainField, DomainGroup, DomainLocation,
@@ -41,11 +46,12 @@ use wirebolt_app::response::FailureCategory;
 #[cfg(test)]
 use wirebolt_core::GitDelta;
 pub(crate) use wirebolt_core::ImportFormat as DomainImportFormat;
+use wirebolt_core::ProxyDestination;
 
 #[uniffi::remote(Record)]
 pub struct ProxyRouteInput {
     pub id: String,
-    pub destination: String,
+    pub destination: wirebolt_core::ProxyDestination,
     pub scheme: String,
     pub host: String,
     pub port: String,
@@ -211,7 +217,7 @@ pub struct DomainWorkspace {
 
 #[uniffi::remote(Record)]
 pub struct DomainProxyRoute {
-    pub destination: String,
+    pub destination: wirebolt_core::ProxyDestination,
     pub endpoint: String,
     pub credentials: Option<DomainProxyCredentials>,
 }
@@ -583,11 +589,6 @@ pub struct ResolvedDomainProxy {
     pub source: DomainProxySource,
 }
 #[derive(Clone, Debug, uniffi::Record)]
-pub struct ProxyTestResult {
-    pub succeeded: bool,
-    pub message: String,
-}
-#[derive(Clone, Debug, uniffi::Record)]
 pub struct DomainPemIdentity {
     pub certificates: Vec<String>,
     pub private_key: String,
@@ -645,12 +646,10 @@ pub fn domain_own_auth(
     authentication: DomainAuthentication,
     only_legacy: bool,
 ) -> OwnedAuthentication {
-    {
-        let (authentication, renames) = domain::request::own_auth(authentication, only_legacy);
-        OwnedAuthentication {
-            authentication,
-            renames,
-        }
+    let (authentication, renames) = domain::request::own_auth(authentication, only_legacy);
+    OwnedAuthentication {
+        authentication,
+        renames,
     }
 }
 
@@ -737,27 +736,6 @@ pub fn domain_open_reference(text: String, caret: u64) -> Option<OpenTemplateRef
 #[must_use]
 pub fn domain_template_segments(text: String) -> Vec<TemplateSegment> {
     domain::variables::segments(&text)
-}
-
-#[uniffi::export]
-#[must_use]
-pub fn domain_catalog(
-    environments: Vec<DomainEnvironment>,
-    selected: Option<String>,
-) -> Vec<CatalogEntry> {
-    domain::variables::catalog(&environments, selected.as_deref())
-}
-
-#[uniffi::export]
-#[must_use]
-pub fn domain_completions(entries: Vec<CatalogEntry>, prefix: String) -> Vec<CatalogEntry> {
-    domain::variables::completions(&entries, &prefix)
-}
-
-#[uniffi::export]
-#[must_use]
-pub fn domain_variable_summary(entries: Vec<CatalogEntry>, text: String) -> Option<String> {
-    domain::variables::summary(&entries, &text)
 }
 
 #[uniffi::export]
@@ -857,26 +835,6 @@ pub fn domain_valid_proxy_target(url: String) -> bool {
 
 #[uniffi::export]
 #[must_use]
-pub fn domain_proxy_test_result(
-    status: Option<u16>,
-    failure: Option<FailureCategory>,
-) -> ProxyTestResult {
-    {
-        let (succeeded, message) = domain::proxy::test_result(status, failure);
-        ProxyTestResult { succeeded, message }
-    }
-}
-
-#[uniffi::export]
-pub fn domain_proxy_test_draft(
-    configuration: DomainProxy,
-    url: String,
-) -> Result<DomainRequestDraft, DomainError> {
-    domain::proxy::test_draft(configuration, url).map_err(invalid)
-}
-
-#[uniffi::export]
-#[must_use]
 pub fn domain_theme(preset: DomainThemePreset) -> ThemeTokens {
     domain::theme::theme(preset)
 }
@@ -946,9 +904,13 @@ pub fn domain_encode_oauth_form(form: HashMap<String, String>) -> String {
 pub fn domain_curl_export(
     draft: DomainRequestDraft,
     variables: HashMap<String, DomainValueSource>,
-    hex: Vec<String>,
+    hex_encoded_secrets: Vec<String>,
 ) -> CurlExport {
-    domain::curl::export(&draft, &variables, &hex.into_iter().collect())
+    domain::curl::export(
+        &draft,
+        &variables,
+        &hex_encoded_secrets.into_iter().collect(),
+    )
 }
 
 #[uniffi::export]
@@ -977,32 +939,19 @@ pub fn domain_curl_proxy_route(
 pub fn domain_curl_proxy_arguments(
     configuration: DomainProxy,
     url: String,
-    hex: Vec<String>,
+    hex_encoded_secrets: Vec<String>,
 ) -> String {
-    domain::curl::proxy_arguments(&configuration, &url, &hex.into_iter().collect())
+    domain::curl::proxy_arguments(
+        &configuration,
+        &url,
+        &hex_encoded_secrets.into_iter().collect(),
+    )
 }
 
 #[uniffi::export]
 #[must_use]
 pub fn domain_detect_import(extension: String, contents: String) -> Option<DomainImportFormat> {
     domain::imports::detect(&extension, &contents)
-}
-
-#[uniffi::export]
-#[must_use]
-pub fn domain_detect_collection(
-    extension: String,
-    contents: String,
-    root_json: Option<String>,
-) -> Option<DomainImportFormat> {
-    domain::imports::detect_collection(
-        &extension,
-        &contents,
-        root_json
-            .as_deref()
-            .and_then(|s| serde_json::from_str::<serde_json::Value>(s).ok())
-            .as_ref(),
-    )
 }
 
 #[uniffi::export]
@@ -1015,7 +964,7 @@ pub fn domain_is_bruno_collection(path: String) -> bool {
 pub fn domain_bruno_bundle(
     path: String,
     policy: Arc<dyn CollectionPackageServices>,
-) -> Result<String, CollectionSourceError> {
+) -> Result<BrunoFolderBundle, CollectionSourceError> {
     domain::imports::bruno_bundle_with_policy(std::path::Path::new(&path), &PackageAdapter(policy))
 }
 
@@ -1159,7 +1108,6 @@ pub fn domain_proxy_form_document(
 pub fn domain_proxy_form_secrets(input: ProxyFormInput) -> HashMap<String, String> {
     domain::proxy::form_secrets(&input)
 }
-use domain::chrome::TimeoutPresentation;
 #[uniffi::remote(Record)]
 pub struct TimeoutPresentation {
     pub text: Option<String>,
@@ -1188,10 +1136,9 @@ pub fn domain_proxy_needs_indicator(configuration: DomainProxy, source: DomainPr
 }
 #[uniffi::export]
 #[must_use]
-pub fn domain_sanitized(text: String) -> String {
+pub fn domain_sanitize_credential_reference(text: String) -> String {
     domain::request::sanitized(&text)
 }
-use domain::git::PushAvailability;
 #[uniffi::remote(Enum)]
 pub enum PushAvailability {
     Push,
@@ -1277,7 +1224,6 @@ pub fn domain_geometry() -> GeometryTokens {
 pub fn domain_density(compact: bool) -> DensityTokens {
     domain::theme::density(compact)
 }
-use domain::models::DomainRunInput;
 #[uniffi::remote(Record)]
 pub struct DomainRunInput {
     pub method: String,
@@ -1400,7 +1346,6 @@ mod tests {
         assert_eq!(adapter.request_headers().await.user_agent, "fixture");
     }
 }
-use domain::variables::{CatalogIndex, NameMatch, VariableComparison};
 #[uniffi::remote(Record)]
 pub struct NameMatch {
     pub has_prefix: bool,
@@ -1490,7 +1435,6 @@ pub struct DomainOAuthHeaders {
     pub accept_language: String,
 }
 
-use domain::url::UrlQueryEdit;
 #[uniffi::remote(Record)]
 pub struct UrlQueryEdit {
     pub url: String,
@@ -1800,4 +1744,33 @@ pub fn domain_method_chip_kinds() -> HashMap<String, MethodChipKind> {
         .into_iter()
         .map(|kind| (kind.method().into(), kind))
         .collect()
+}
+
+#[uniffi::remote(Enum)]
+pub enum ProxyDestination {
+    All,
+    Http,
+    Https,
+}
+
+#[uniffi::remote(Record)]
+pub struct BrunoFolderBundle {
+    pub root: String,
+    pub files: Vec<BrunoSourceFile>,
+}
+#[uniffi::remote(Record)]
+pub struct BrunoSourceFile {
+    pub path: String,
+    pub contents: String,
+}
+
+#[uniffi::export]
+#[must_use]
+pub fn domain_theme_preset_value(preset: DomainThemePreset) -> String {
+    preset.preference_value().into()
+}
+#[uniffi::export]
+#[must_use]
+pub fn domain_theme_preset_from_value(value: String) -> Option<DomainThemePreset> {
+    DomainThemePreset::from_preference(&value)
 }

@@ -18,7 +18,7 @@ impl std::fmt::Display for PemFileError {
 }
 impl std::error::Error for PemFileError {}
 /// # Errors
-/// Returns the existing PEM diagnostic for oversized, unreadable or non-UTF-8 input.
+/// Returns the PEM diagnostic for oversized, unreadable or non-UTF-8 input.
 pub fn read(path: &Path) -> Result<String, PemFileError> {
     let error = || PemFileError {
         name: path

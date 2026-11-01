@@ -257,7 +257,7 @@ mod tests {
         input.workspace_proxy = None;
         input.app_proxy = Some(wirebolt_app::domain::DomainProxy::Manual {
             routes: vec![wirebolt_app::domain::DomainProxyRoute {
-                destination: "all".into(),
+                destination: wirebolt_core::ProxyDestination::All,
                 endpoint: format!("http://{address}"),
                 credentials: None,
             }],

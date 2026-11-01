@@ -27,7 +27,7 @@ crates/
 │   └── session/     #   documents, editor groups, tabs, preview tabs, back/forward, layout,
 │                    #   runs and streaming preview, WebSocket sessions, workspace orchestration
 │                    #   (load, mutations, undo, send/cancel, environments, secrets, import/export, git)
-└── wirebolt-ffi/    # UniFFI bridge; `app_domain.rs`, `app_response.rs`, `app_session/` expose wirebolt-app
+└── wirebolt-ffi/    # UniFFI bridge; `app_domain.rs`, `domain_syntax.rs`, `app_response.rs`, `app_session/` expose wirebolt-app
 apple/
 ├── Sources/WireboltKit/  # shrinks to: thin @Observable facades over Rust state, platform adapters
 └── WireboltApp/          # SwiftUI/AppKit views (unchanged except call sites)
@@ -57,7 +57,7 @@ Each row identifies the native responsibility retained by that source. Rust owns
 application state, workspace and transport operations, serialization, presentation
 migrations and diagnostics. Typed callbacks carry isolated probe/socket events;
 application HTTP response bytes remain in Rust. The C header only exposes runtime
-warmup and the core version handshake.
+warmup and the core version handshake (ABI revision 5).
 
 | File | What remains and why |
 | --- | --- |
@@ -80,9 +80,9 @@ warmup and the core version handshake.
 | `WireboltApp/WireboltTheme.swift` | SwiftUI/AppKit Color, Font and environment projections of Rust theme tokens. |
 | `WireboltApp/WorkspaceActions.swift` | AppKit file panels, alerts, application/window registry, NSWorkspace actions and UserDefaults storage. Rust selects import routes and messages, recent-workspace membership/order, external-file queue contents and unsaved-document prompt text. |
 | `WireboltApp/WorkspaceUIState.swift` | Native focus, editor-storage and presentation identity, geometry, window closing and UserDefaults access. Rust owns sidebar coordination, saved-preference migrations, default request panels and the sole pending dirty-close request; Swift observes a revision and projects that request. |
-| `WireboltKit/CodeFolding.swift` | Projection facade, incremental edit ingress, and batched editor coordinate conversion; native text snapshots are never echoed across the bridge on keystrokes. |
+| `WireboltKit/CodeFolding.swift` | Projection facade with a generated syntax enum, incremental edit ingress, and batched editor coordinate conversion; native text snapshots are never echoed across the bridge on keystrokes. |
 | `WireboltKit/CodeTextWrapping.swift` | CoreText font measurement, native shaping adapter, direct lookup of Rust-produced break snapshots and native attributed-string invisible-space rendering. |
-| `WireboltKit/CollectionImportSources.swift` | URL/error projections and a native package-folder foreign trait; recognition, filesystem traversal, limits and bundle construction are Rust. Collection recognition crosses the bridge as typed records. |
+| `WireboltKit/CollectionImportSources.swift` | URL/error projections and a native package-folder foreign trait; recognition, filesystem traversal, limits and bundle construction are Rust. Collection recognition and Bruno bundles cross the bridge as generated records, with generated error aliases. |
 | `WireboltKit/CurlExport.swift` | Typed export facade and Keychain-service identity; expansion, quoting and argument construction are Rust. |
 | `WireboltKit/DocumentSessions.swift` | Main-actor observation, native editor projections, object identity and UserDefaults storage of Rust-encoded layouts, with corrupt native preferences treated as absent. Run heads/completions/failures use generated records directly; prepared runs retain only native transport/proxy naming projections. Rust owns run transitions, body ownership, publication deadlines, groups, previews, navigation, close scopes and layout serialization/policy. Drafts synchronize at commands; response ingress is batched. |
 | `WireboltKit/JSONNode.swift` | Projects Rust-produced tree records and their typed JsonNodeKind directly into the native tree view. |
@@ -91,17 +91,17 @@ warmup and the core version handshake.
 | `WireboltKit/Models.swift` | Generated value/body/authentication-kind/OAuth/field/multipart/proxy and run records are used directly, with native naming/default conveniences. Foundation supplies numeric/case-insensitive JSON key collation through a platform trait, once per format command. Request/workspace/environment and prepared-run facades project Rust records; cached child arrays and URL-edit results keep view reads cheap. Serialization and workspace policy live in Rust. Git change/status/operation snapshots and delta/outcome values use generated records/enums; the existing typed workspace ingress API remains stable. |
 | `WireboltKit/OAuth2Service.swift` | ASWebAuthenticationSession presentation, Keychain access and CFNetwork system-proxy/PAC resolution implement the Rust foreign trait; native error localization preserves network diagnostics; protocol requests, PKCE and token parsing/exchange are Rust. |
 | `WireboltKit/ProxyConnectionTest.swift` | Main-actor observation and task lifetime for the isolated probe. Rust owns validation, probe state, draft construction, stale-event checks and results; the native runner uses typed Rust runtime transport. |
-| `WireboltKit/ProxySettings.swift` | Observable UserDefaults preferences, native UUID/error projections and typed proxy-form facades; effective proxy/source, scopes, form modes and proxy documents use generated records/enums directly. Invalid bridge UUIDs are repaired once per draft and retained for stable native identity. |
-| `WireboltKit/ResponseFormatting.swift` | Localized Foundation byte-count formatting and native presentation projections. Duration, status, failure and outcome policy live in Rust. |
+| `WireboltKit/ProxySettings.swift` | Observable UserDefaults preferences, native UUID/error projections and typed proxy-form facades; effective proxy/source, scopes, typed destinations, form modes and proxy documents use generated records/enums directly; PEM errors keep native spellings through generated aliases. Invalid bridge UUIDs are repaired once per draft and retained for stable native identity. |
+| `WireboltKit/ResponseFormatting.swift` | Localized Foundation byte-count formatting and native presentation conveniences on the generated outcome badge. Duration, status, failure and outcome policy live in Rust. |
 | `WireboltKit/ResponseIndexCache.swift` | Detached-task scheduling and Swift task cancellation forwarded to Rust; the retained cache and shared scans live in Rust. |
 | `WireboltKit/ResponseStorage.swift` | Actor facades, Foundation URL/date cookie/history projections and shared native object identity. History crosses as typed session records; Rust owns serialization, storage formats and bounded body ingestion. |
-| `WireboltKit/RuntimeAdapters.swift` | Native task/main-actor callbacks for injected runners, settings preferences, OAuth presentation and fine-grained invalidations. Production sends call Rust transport; the editor callback captures the latest native draft after credential flushing. |
+| `WireboltKit/RuntimeAdapters.swift` | Native task/main-actor callbacks for injected runners, app-default preferences, persistence commands, OAuth presentation and fine-grained invalidations; Rust routes settings by scope. Production sends call Rust transport; the editor callback captures the latest native draft after credential flushing. |
 | `WireboltKit/ResponseTextIndex.swift` | Immutable viewport metadata and batched row/search coordinate conversion for native views. |
-| `WireboltKit/SemanticPalette.swift` | Cached native color projections for renderers; color selection, luminance and contrast are Rust. |
-| `WireboltKit/SidebarSnapshot.swift` | Shared native row projections and expansion presentation state, with one batched Rust index/filter call; rendering reads cached metadata. Drop eligibility, move-menu collection order and environment-picker order use Rust policy over bounded metadata. |
+| `WireboltKit/SemanticPalette.swift` | Cached native color projections and a generated status-class alias for renderers; color selection, luminance and contrast are Rust. |
+| `WireboltKit/SidebarSnapshot.swift` | Shared native row projections and expansion presentation state, with one batched Rust index/filter call; rendering reads cached metadata. Navigation outcomes use the generated enum. Drop eligibility, move-menu collection order and environment-picker order use Rust policy over bounded metadata. |
 | `WireboltKit/TextLineIndex.swift` | Value facade applying Rust-produced edit deltas to a native line-start mirror; keystrokes never transfer the complete index. Invalid edit ranges leave the index unchanged. |
 | `WireboltKit/TextSearch.swift` | Query facade, UTF-16 `NSRange` adaptation and Swift cancellation/error adaptation. |
-| `WireboltKit/ThemeDefinition.swift` | Cached token projections and the observable ThemeStore; presets use a generated enum with native preference-string projection. Density, geometry, typography, typed method-chip tokens and contrast resolution are Rust. |
+| `WireboltKit/ThemeDefinition.swift` | Cached token projections and the observable ThemeStore; presets use a generated enum with Rust-supplied persisted preference strings. Density, geometry, typography, typed method-chip tokens and contrast resolution are Rust. |
 | `WireboltKit/VariableTemplates.swift` | Native UTF-16/NSRange projections, cached completion entries and a batched Foundation locale-comparison foreign trait; all parsing, merging, masking and matching are Rust. |
 | `WireboltKit/WebSocket.swift` | Main-actor observation, native callback/async-sequence handoff, cached native UUID/date projections, and Foundation localization of Cocoa diagnostics. Rust owns lifecycle generations, message retention, body preparation and binary decoding. |
 | `WireboltKit/WireboltModel.swift` | Observation, native UndoManager token registration and platform-effect relay. Rust owns workspace action construction, reversible edits and undo payloads, load/switch/rename transitions, save/discard/close policy, import/export and Git coordination (`session/workspace`), and send/cancel, history/activity, per-run cookies, variable selection and resolution, secret editing and release, proxy/transport writes, OAuth acquisition and cURL coordination (`session/runtime`). Native caches update only changed properties. |

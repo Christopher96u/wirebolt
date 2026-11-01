@@ -20,7 +20,7 @@ struct SyntaxHighlightTests {
         let json = fixtures[0]
         let escapes = ["\r\n", "\r", "\u{b}", "\u{c}", "\u{85}", "\u{2028}", "\u{2029}", "\n"].map { (json.0, "\"escaped " + "\\" + $0 + "\": false cafétrue étrue a\u{200d}false", json.2) }
         for (language, source, patterns) in fixtures + lineEndings + escapes {
-            let chunk = try #require(appSyntaxHighlight(source: source, language: language).first)
+            let chunk = try #require(domainSyntaxHighlight(source: source, language: language).first)
             let native = try patterns.flatMap { pattern, kind in
                 try NSRegularExpression(pattern: pattern).matches(in: source, range: NSRange(location: 0, length: (source as NSString).length)).map {
                     SyntaxToken(range: ResponseTextRange(location: UInt64($0.range.location), length: UInt64($0.range.length)), kind: kind)
@@ -33,7 +33,7 @@ struct SyntaxHighlightTests {
     @Test func nativeLineRangesIndentAndChunkBoundaries() throws {
         for source in ["", "🚀\r\n \tx\r  y\u{85}\t z\u{2028} end\u{2029}last", String(repeating: "  {\"🚀\": true}\r\n", count: 4_000)] {
             let native = source as NSString
-            let chunks = appSyntaxHighlight(source: source, language: .json)
+            let chunks = domainSyntaxHighlight(source: source, language: .json)
             var offset = 0
             for chunk in chunks {
                 let range = source.utf8.count > 16 * 1024

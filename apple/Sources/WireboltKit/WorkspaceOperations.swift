@@ -41,6 +41,9 @@ final class WorkspacePlatformAdapter: WorkspaceIoPlatform {
                     try await persistence.commitImport(format: format, source: source)
                 }
             return .imported(summary: result.summary.workspaceRecord)
+        case .importBrunoFolder(let bundle, let name):
+            let result = try await requiredPersistence().commitBrunoFolder(bundle: bundle, name: name)
+            return .imported(summary: result.workspaceRecord)
         case .export(let target):
             let persistence = try requiredPersistence()
             let content: String

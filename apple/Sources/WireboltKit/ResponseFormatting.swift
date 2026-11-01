@@ -31,38 +31,17 @@ public enum ResponseFormatting {
 }
 
 /// What the URL bar's status slot shows for a document's latest run.
-public enum RunOutcomeBadge: Equatable, Sendable {
-    /// The response status, such as "200 OK".
-    case status(UInt16)
-    /// The run failed; `title` is the failure's headline, used as the help tag.
-    case failed(title: String)
-    case cancelled
-
-    /// A failure wins over a status: it is the latest outcome, and the response pane shows
-    /// the failure too. Nil when nothing has run yet.
+public typealias RunOutcomeBadge = ResponseBadge
+extension ResponseBadge {
+    public static func status(_ status: UInt16) -> Self { .status(status: status) }
     public init?(status: UInt16?, failure: RunFailure?, host: String? = nil) {
         guard let result = appResponseBadge(
-            status: status,
-            failure: failure?.kind,
-            issues: failure?.issues ?? [],
-            host: host
+            status: status, failure: failure?.kind, issues: failure?.issues ?? [], host: host
         ) else { return nil }
-        switch result {
-        case .status(let status): self = .status(status)
-        case .failed(let title): self = .failed(title: title)
-        case .cancelled: self = .cancelled
-        }
+        self = result
     }
-    private var rust: ResponseBadge {
-        switch self {
-        case .status(let status): .status(status: status)
-        case .failed(let title): .failed(title: title)
-        case .cancelled: .cancelled
-        }
-    }
-    public var label: String { appResponseBadgeLabel(badge: rust) }
-    public var detail: String { appResponseBadgeDetail(badge: rust) }
-
+    public var label: String { appResponseBadgeLabel(badge: self) }
+    public var detail: String { appResponseBadgeDetail(badge: self) }
 }
 
 public struct RunFailureMessage: Equatable, Sendable {
@@ -86,5 +65,4 @@ public struct RunFailureMessage: Equatable, Sendable {
     }
     public static func host(from url: String?) -> String? { appFailureHost(url: url) }
     static func describe(_ issue: RequestIssue) -> String { appDescribeIssue(issue: issue) }
-    static func sentence(_ kind: String) -> String { appFailureSentence(kind: kind) }
 }

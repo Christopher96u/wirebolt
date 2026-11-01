@@ -708,8 +708,8 @@ private struct ResponseBodyViewer: View {
 
 }
 
-extension UInt64 {
-    fileprivate func saturatingSubtract(_ amount: UInt64) -> UInt64 {
+private extension UInt64 {
+    func saturatingSubtract(_ amount: UInt64) -> UInt64 {
         self > amount ? self - amount : 0
     }
 }
@@ -749,8 +749,7 @@ private struct ResponseImageView: View {
         }
         .task(id: url?.path ?? String(data.count)) {
             isLoading = true
-            let url = url
-            let data = data
+            let url = url, data = data
             let decoder = Task.detached(priority: .userInitiated) { Self.decode(url: url, data: data) }
             let result = await withTaskCancellationHandler { await decoder.value } onCancel: { decoder.cancel() }
             guard !Task.isCancelled else { return }
@@ -953,8 +952,7 @@ private struct JSONResponseTree: View {
             }
             .task(id: url) {
                 isParsing = true
-                let url = url
-                let preview = preview
+                let url = url, preview = preview
                 let parse = responseTask(priority: .userInitiated) {
                     try Task.checkCancellation()
                     return url.map { JSONNode.makeRoot(from: $0) } ?? JSONNode.makeRoot(from: preview)
@@ -1070,11 +1068,11 @@ struct JSONTreeView: NSViewRepresentable {
             else {
                 field.textColor = switch node.value.type {
                 case .string: theme.definition.syntaxString.nsColor
-                    case .number: theme.definition.syntaxNumber.nsColor
-                    case .boolean: theme.definition.syntaxKeyword.nsColor
-                    case .null: theme.definition.syntaxKeyword.nsColor
-                    default: theme.muted.nsColor
-                    }
+                case .number: theme.definition.syntaxNumber.nsColor
+                case .boolean: theme.definition.syntaxKeyword.nsColor
+                case .null: theme.definition.syntaxKeyword.nsColor
+                case .object, .array, .truncated: theme.muted.nsColor
+                }
             }
             return field
         }
