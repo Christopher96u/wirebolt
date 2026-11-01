@@ -1,6 +1,322 @@
 use super::*;
 use crate::lock;
 #[tokio::test]
+async fn redo_environment_creation_selects_the_created_environment() {
+    let h = Harness::new(DomainWorkspace::default());
+    let environment = DomainEnvironment {
+        id: "local".into(),
+        ..Default::default()
+    };
+    let created = h
+        .apply(Action::SaveEnvironment {
+            environment: environment.clone(),
+        })
+        .await;
+    let plan = created.plan.unwrap();
+    assert!(plan.changes_environment_selection);
+    assert_eq!(plan.selected_environment_id.as_deref(), Some("local"));
+    let (removed, redo) = h.undo(created.undo.unwrap()).await;
+    assert!(removed.succeeded && h.workspace.snapshot().environments.is_empty());
+    let (restored, _) = h.undo(redo).await;
+    assert!(restored.succeeded);
+    assert_eq!(h.workspace.snapshot().environments, [environment]);
+    let plan = restored.plan.unwrap();
+    assert!(plan.changes_environment_selection);
+    assert_eq!(plan.selected_environment_id.as_deref(), Some("local"));
+}
+
+#[tokio::test]
+async fn undo_active_environment_deletion_selects_the_restored_environment() {
+    let environment = DomainEnvironment {
+        id: "local".into(),
+        ..Default::default()
+    };
+    let h = Harness::new(DomainWorkspace {
+        environments: vec![environment.clone()],
+        ..Default::default()
+    });
+    let deleted = h
+        .ops
+        .mutate(
+            Action::DeleteEnvironment {
+                id: environment.id.clone(),
+            },
+            Some(environment.id.clone()),
+            &h.store,
+            &h.secrets,
+            &Secrets,
+        )
+        .await;
+    assert!(deleted.succeeded);
+    let plan = deleted.plan.unwrap();
+    assert!(plan.changes_environment_selection && plan.selected_environment_id.is_none());
+    let (restored, redo) = h.undo(deleted.undo.unwrap()).await;
+    assert!(restored.succeeded);
+    assert_eq!(h.workspace.snapshot().environments, [environment]);
+    let plan = restored.plan.unwrap();
+    assert!(plan.changes_environment_selection);
+    assert_eq!(plan.selected_environment_id.as_deref(), Some("local"));
+    // The user deselected it before redo, so this deletion must preserve that choice.
+    let (deleted, undo) = h.undo(redo).await;
+    assert!(deleted.succeeded && h.workspace.snapshot().environments.is_empty());
+    assert!(!deleted.plan.unwrap().changes_environment_selection);
+    let (restored, _) = h.undo(undo).await;
+    let plan = restored.plan.unwrap();
+    assert!(!plan.changes_environment_selection && plan.selected_environment_id.is_none());
+}
+
+#[tokio::test]
+async fn undo_inactive_environment_deletion_preserves_selection() {
+    let local = DomainEnvironment {
+        id: "local".into(),
+        ..Default::default()
+    };
+    let staging = DomainEnvironment {
+        id: "staging".into(),
+        ..Default::default()
+    };
+    for selected in [Some("local".to_owned()), None] {
+        let h = Harness::new(DomainWorkspace {
+            environments: vec![local.clone(), staging.clone()],
+            ..Default::default()
+        });
+        let deleted = h
+            .ops
+            .mutate(
+                Action::DeleteEnvironment {
+                    id: staging.id.clone(),
+                },
+                selected.clone(),
+                &h.store,
+                &h.secrets,
+                &Secrets,
+            )
+            .await;
+        assert!(deleted.succeeded);
+        let plan = deleted.plan.unwrap();
+        assert!(!plan.changes_environment_selection);
+        assert_eq!(plan.selected_environment_id, selected);
+        let undo = deleted.undo.unwrap();
+        let redo = h.ops.reverse_token(undo.token).unwrap();
+        let restored = h
+            .ops
+            .undo(
+                undo.token,
+                redo.token,
+                selected.clone(),
+                &h.store,
+                &h.secrets,
+                &Secrets,
+            )
+            .await;
+        assert!(restored.succeeded);
+        assert_eq!(
+            h.workspace.snapshot().environments,
+            [local.clone(), staging.clone()]
+        );
+        let plan = restored.plan.unwrap();
+        assert!(!plan.changes_environment_selection);
+        assert_eq!(plan.selected_environment_id, selected);
+        let undo = h.ops.reverse_token(redo.token).unwrap();
+        let deleted = h
+            .ops
+            .undo(
+                redo.token,
+                undo.token,
+                selected.clone(),
+                &h.store,
+                &h.secrets,
+                &Secrets,
+            )
+            .await;
+        assert!(deleted.succeeded);
+        assert_eq!(
+            h.workspace.snapshot().environments,
+            std::slice::from_ref(&local)
+        );
+        let plan = deleted.plan.unwrap();
+        assert!(!plan.changes_environment_selection);
+        assert_eq!(plan.selected_environment_id, selected);
+    }
+}
+
+#[derive(Default)]
+struct EnvironmentSecrets(
+    Mutex<std::collections::HashMap<String, String>>,
+    std::sync::atomic::AtomicBool,
+);
+#[async_trait]
+impl SessionSecretPlatform for EnvironmentSecrets {
+    async fn read(&self, name: String) -> Result<Option<String>, ()> {
+        Ok(lock(&self.0).get(&name).cloned())
+    }
+    async fn save(&self, name: String, value: String) -> Result<(), ()> {
+        if self.1.load(std::sync::atomic::Ordering::Relaxed) {
+            return Err(());
+        }
+        lock(&self.0).insert(name, value);
+        Ok(())
+    }
+    async fn remove(&self, name: String) -> Result<(), ()> {
+        lock(&self.0).remove(&name);
+        Ok(())
+    }
+}
+#[tokio::test]
+async fn environment_secret_save_failure_preserves_workspace_and_previous_keychain_item() {
+    let original = DomainEnvironment {
+        id: "local".into(),
+        variables: vec![DomainVariable {
+            value: DomainValueSource::Secret {
+                secret: "env.local.token".into(),
+            },
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+    let h = Harness::new(DomainWorkspace {
+        environments: vec![original.clone()],
+        ..Default::default()
+    });
+    let platform = EnvironmentSecrets::default();
+    lock(&platform.0).insert("env.local.token".into(), "old-token".into());
+    platform.1.store(true, std::sync::atomic::Ordering::Relaxed);
+    let result = h
+        .ops
+        .save_environment(
+            original.clone(),
+            [("env.local.token".into(), "new-token".into())].into(),
+            None,
+            &h.store,
+            &h.secrets,
+            &platform,
+        )
+        .await;
+    assert!(!result.succeeded && result.undo.is_none());
+    assert!(lock(&h.store.commands).is_empty());
+    assert_eq!(h.workspace.snapshot().environments, [original]);
+    assert_eq!(
+        lock(&platform.0).get("env.local.token").unwrap(),
+        "old-token"
+    );
+    assert_eq!(
+        h.ops.presentation().operation_failure,
+        Some(crate::response::ResponseFailureKind::Keychain)
+    );
+}
+#[tokio::test]
+async fn secret_only_environment_edit_undo_redo_retains_values_and_selection() {
+    let platform = EnvironmentSecrets::default();
+    lock(&platform.0).insert("env.local.token".into(), "old-token".into());
+    let original = DomainEnvironment {
+        id: "local".into(),
+        name: "Local".into(),
+        variables: vec![DomainVariable {
+            key: "token".into(),
+            value: DomainValueSource::Secret {
+                secret: "env.local.token".into(),
+            },
+            ..Default::default()
+        }],
+    };
+    let other = DomainEnvironment {
+        id: "production".into(),
+        ..Default::default()
+    };
+    let h = Harness::new(DomainWorkspace {
+        environments: vec![original.clone(), other.clone()],
+        ..Default::default()
+    });
+    let result = h
+        .ops
+        .save_environment(
+            original.clone(),
+            [("env.local.token".into(), "new-token".into())].into(),
+            Some("production".into()),
+            &h.store,
+            &h.secrets,
+            &platform,
+        )
+        .await;
+    assert!(result.succeeded);
+    let plan = result.plan.unwrap();
+    assert!(!plan.changes_environment_selection);
+    assert_eq!(plan.selected_environment_id.as_deref(), Some("production"));
+    let changed = h.workspace.snapshot().environments[0].clone();
+    let name = changed.variables[0].value.secret_name().unwrap();
+    assert_ne!(name, "env.local.token");
+    assert_eq!(lock(&platform.0).get(name).unwrap(), "new-token");
+    let undo = result.undo.unwrap();
+    let redo = h.ops.reverse_token(undo.token).unwrap();
+    let result = h
+        .ops
+        .undo(
+            undo.token, redo.token, None, &h.store, &h.secrets, &platform,
+        )
+        .await;
+    assert!(result.succeeded);
+    assert!(!result.plan.as_ref().unwrap().changes_environment_selection);
+    assert!(result.plan.unwrap().selected_environment_id.is_none());
+    assert_eq!(
+        h.workspace.snapshot().environments,
+        [original, other.clone()]
+    );
+    assert_eq!(
+        h.secrets
+            .load("env.local.token".into(), &platform)
+            .await
+            .unwrap(),
+        "old-token"
+    );
+    let undo = h.ops.reverse_token(redo.token).unwrap();
+    let result = h
+        .ops
+        .undo(
+            redo.token,
+            undo.token,
+            Some("production".into()),
+            &h.store,
+            &h.secrets,
+            &platform,
+        )
+        .await;
+    assert!(result.succeeded && !result.plan.unwrap().changes_environment_selection);
+    assert_eq!(
+        h.workspace.snapshot().environments,
+        [changed.clone(), other]
+    );
+    assert_eq!(
+        h.secrets.load(name.into(), &platform).await.unwrap(),
+        "new-token"
+    );
+    let payload = format!("{:?}{:?}", lock(&h.store.commands), h.ops);
+    assert!(!payload.contains("old-token") && !payload.contains("new-token"));
+    assert_environment_files_keep_only_references(lock(&h.store.commands).clone());
+}
+
+fn assert_environment_files_keep_only_references(commands: Vec<SessionWorkspaceCommand>) {
+    let directory = tempfile::tempdir().unwrap();
+    let persistence = crate::session::persistence::SessionPersistence::open_or_create(
+        directory.path().to_string_lossy().into_owned(),
+        "Undo".into(),
+        Arc::new(super::files::NoSecrets),
+    )
+    .unwrap();
+    for command in commands {
+        let reply = persistence.workspace_io(WorkspaceIO::Commands {
+            commands: vec![command],
+        });
+        assert!(
+            matches!(reply, WorkspaceReply::Commands { result } if result.failure_reason.is_none())
+        );
+        let stored =
+            std::fs::read_to_string(directory.path().join("environments/local.toml")).unwrap();
+        assert!(!stored.contains("old-token") && !stored.contains("new-token"));
+        assert!(stored.contains("env."));
+    }
+}
+
+#[tokio::test]
 async fn environment_undo_and_redo_preserve_position_and_secret_rows() {
     let original = DomainEnvironment {
         id: "local".into(),

@@ -250,6 +250,67 @@ impl WorkspaceOperations {
             None
         };
         let _guard = self.edits.lock().await;
+        self.mutate_locked(command, selected, platform, secrets, secret_platform)
+            .await
+    }
+    pub async fn save_environment(
+        &self,
+        mut environment: crate::domain::DomainEnvironment,
+        values: HashMap<String, String>,
+        selected: Option<String>,
+        platform: &dyn WorkspacePlatform,
+        secrets: &SessionSecrets,
+        secret_platform: &dyn SessionSecretPlatform,
+    ) -> WorkspaceMutation {
+        let _guard = self.edits.lock().await;
+        // Keep prior Keychain items alive for undo, just as deleted request credentials are.
+        let mut replacements = HashMap::new();
+        let mut material = HashMap::new();
+        for variable in &mut environment.variables {
+            let Some(name) = variable.value.secret_name() else {
+                continue;
+            };
+            let Some(value) = values.get(name) else {
+                continue;
+            };
+            let replacement = replacements
+                .entry(name.to_owned())
+                .or_insert_with(|| {
+                    crate::domain::request::credential_reference(&environment.id, "env")
+                })
+                .clone();
+            material.insert(replacement.clone(), value.clone());
+            variable.value = crate::domain::DomainValueSource::Secret {
+                secret: replacement,
+            };
+        }
+        if secrets.save(material, secret_platform).await.is_err() {
+            self.fail(crate::response::ResponseFailureKind::Keychain);
+            return WorkspaceMutation::default();
+        }
+        if self.environment_unchanged(&environment) {
+            return WorkspaceMutation {
+                succeeded: true,
+                ..Default::default()
+            };
+        }
+        self.mutate_locked(
+            WorkspaceAction::SaveEnvironment { environment },
+            selected,
+            platform,
+            secrets,
+            secret_platform,
+        )
+        .await
+    }
+    async fn mutate_locked(
+        &self,
+        command: WorkspaceAction,
+        selected: Option<String>,
+        platform: &dyn WorkspacePlatform,
+        secrets: &SessionSecrets,
+        secret_platform: &dyn SessionSecretPlatform,
+    ) -> WorkspaceMutation {
         let needs_root = matches!(&command, WorkspaceAction::CreateRequest { collection_id, .. } if collection_id.as_deref().unwrap_or(actions::ROOT_COLLECTION) == actions::ROOT_COLLECTION)
             || matches!(&command, WorkspaceAction::CreateGroup { collection_id, .. } if collection_id == actions::ROOT_COLLECTION);
         let mut root = None;

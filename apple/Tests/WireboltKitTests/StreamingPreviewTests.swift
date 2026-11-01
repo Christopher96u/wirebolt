@@ -7,7 +7,7 @@ struct StreamingPreviewTests {
     /// Previews publish asynchronously; wait for the expected state rather than a fixed
     /// delay, which slower CI runners can miss.
     private func waitUntil(_ condition: () -> Bool) async throws {
-        let deadline = ContinuousClock.now + .seconds(2)
+        let deadline = ContinuousClock.now + .seconds(5)
         while !condition(), ContinuousClock.now < deadline {
             try await Task.sleep(for: .milliseconds(10))
         }
@@ -80,5 +80,32 @@ struct StreamingPreviewTests {
         await session.consume(.chunk(Data("done".utf8)), runID: run)
         await session.consume(.complete(RunCompletion(bytesReceived: 4, totalTimeNS: 1)), runID: run)
         #expect(session.responseText == "done" && session.responseBytes == 4)
+    }
+
+    @Test func storageFailureKeepsPartialPreviewAndRejectsLateCompletion() async throws {
+        let session = DocumentSession(draft: RequestDraft())
+        let run = RunID()
+        session.beginRun(run)
+        await session.consume(.head(ResponseHead(status: 200, version: "HTTP/1.1", headers: [], timeToHeadersNS: 1)), runID: run)
+        #expect(session.rust.appendBatch(runId: run.description, chunks: [Data("partial".utf8)]))
+        let body = try #require(session.bodyStore)
+        try body.rust.finish()
+        await session.consume(.chunk(Data(repeating: 65, count: ResponseBodyStore.searchChunkByteCount)), runID: run)
+        #expect(session.failure?.kind == .storage && !session.isRunning)
+        #expect(session.responseText == "partial")
+        await session.consume(.chunk(Data("late".utf8)), runID: run)
+        await session.consume(.complete(RunCompletion(bytesReceived: 999, totalTimeNS: 1)), runID: run)
+        #expect(session.completion == nil)
+    }
+
+    @Test func completedRunKeepsCompletionForARejectedLateBatch() async {
+        let session = DocumentSession(draft: RequestDraft())
+        let run = RunID()
+        session.beginRun(run)
+        await session.consume(.chunk(Data("late batch".utf8)), runID: run)
+        // Model a completion arriving in Rust before the native publication task resumes.
+        session.rust.consume(runId: run.description, event: .complete(completion: RunCompletion(bytesReceived: 0, totalTimeNS: 1)))
+        await session.consume(.complete(RunCompletion(bytesReceived: 0, totalTimeNS: 1)), runID: run)
+        #expect(session.completion != nil && session.failure == nil)
     }
 }

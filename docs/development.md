@@ -4,7 +4,7 @@
 
 ## Requirements
 
-Use an Apple Silicon Mac with the Xcode toolchain selected by `xcode-select`. The repository pins Rust **1.98.0**. The existing development baseline is Xcode **26.6**; Xcode is not pinned by mise. Install `mise` if you use the repository's tool manager setup, plus `shellcheck` and `shfmt` for shell linting. Python 3 is used by documentation examples and release packaging.
+Use an Apple Silicon Mac with the Xcode toolchain selected by `xcode-select`. The repository pins Rust **1.98.0**. The existing development baseline is Xcode **26.6**; Xcode is not pinned by mise. Install `mise` if you use the repository's tool manager setup, plus `shellcheck` and `shfmt` for shell linting. Python 3 is required by the Swift test watchdog, documentation examples and release packaging.
 
 Inspect `.mise.toml`, `rust-toolchain.toml` and `.github/workflows/ci.yml` when reproducing the CI environment; these are the source of truth for versions.
 
@@ -38,6 +38,18 @@ For a focused change:
 ./scripts/test.sh
 ```
 
+`scripts/test.sh` builds the Swift tests, then runs them with
+`LIBDISPATCH_COOPERATIVE_POOL_STRICT=1` locally and in CI. Blocking Swift's
+cooperative pool therefore stalls the local suite too. `scripts/swift-tests.py`
+stops the test runner and its full descendant process tree after 180 seconds,
+including SwiftPM helpers in separate process groups. It prints tests that started
+without finishing and keeps the output in `build/swift-tests.log`. The limit covers test
+execution, not compilation; override it with
+`WIREBOLT_SWIFT_TEST_TIMEOUT_SECONDS` when investigating a slow run. To repeat an
+already built suite with the same guard, run `python3 scripts/swift-tests.py`.
+The bridge smoke executable also uses the strict pool and watchdog, with its
+output in `build/bridge-smoke.log`.
+
 Generated bindings live under `apple/Generated` and are produced by the scripts. Do not hand-edit them. The Swift package compiles the generated bindings into `WireboltKit` and links the Rust bridge: run `./scripts/generate-bindings.sh` before invoking `swift test --package-path apple` directly. `./scripts/test.sh` does this automatically. Response search accepts a Rust regex-engine trait: `wirebolt-app` provides a portable default, and the Apple-only `wirebolt-ffi` adapter injects system ICU (`-licucore`) to preserve the native dialect; cookie dates parse in pure Rust to Unix seconds, with native `Date` conversion in Swift.
 
 The Rust session suite covers storage conversions, typed secret/Git operations,
@@ -67,6 +79,23 @@ Run on an idle Apple Silicon Mac:
 The contract distinguishes the response engine's cold first viewport (50 ms budget) from a complete native window's first content (300 ms budget, including native view construction and JSON formatting when applicable). Budgets are test targets, not universal timings promised for every Mac or workload.
 
 Native workloads cover request and tab selection, large responses, resizing, renderer changes, scrolling, notes and editor behavior. Large response viewers index files in the background and draw bounded viewports.
+
+The native `editor_scroll` workload retains its 16 ms p95 budget. It measures main
+thread CPU time (`CLOCK_THREAD_CPUTIME_ID`) for a clip-view scroll, scroller
+reflection and one flush of pending layout/display. This counts viewport layout,
+highlighting and drawing work without charging AppKit's display-frame waits to
+the application; a wall-time measurement can sit at the display interval even
+when the app has little work to do. The same samples also enforce an
+`editor_scroll_wall` p95 gate of **33.3 ms** (1000/30 ms): two frames at 60 Hz.
+This fixed budget tolerates display waits across variable refresh rates while
+catching main-thread blocking in locks, synchronous FFI, file I/O or highlighting
+waits that consume little CPU. Both metrics include the same scroll and viewport
+flush; run-loop pacing stays outside the timed interval.
+Scrolling already redraws the exposed viewport; forcing `NSTextView.display()`
+after that flush requests a second draw and includes another display-frame wait
+in the sample. The workload omits that redundant draw. These gates measure
+application work and blocking through the native display flush, not physical frame presentation;
+the other native editor workloads continue to measure wall time.
 
 ## Code map
 

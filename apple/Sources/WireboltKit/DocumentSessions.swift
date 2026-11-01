@@ -146,7 +146,11 @@ public final class DocumentSession: Identifiable {
         ingress.removeAll(keepingCapacity: true)
         ingressBytes = 0
         let accepted = await Task.detached(priority: .userInitiated) { rust.appendBatch(runId: runID.description, chunks: chunks) }.value
-        if !accepted, activeRunID == runID { mirror() }
+        if !accepted, activeRunID == runID {
+            progressTask?.cancel()
+            progressTask = nil
+            mirror()
+        }
     }
     public func finish(runID: RunID, failure: RunFailure?) async {
         guard activeRunID == runID else { return }

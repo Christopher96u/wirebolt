@@ -13,84 +13,20 @@ use url::Url;
 
 pub const VIEWPORT_BYTES: usize = 32 * 1024;
 pub const SEARCH_CHUNK_BYTES: usize = 256 * 1024;
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct BodyProgress {
-    pub bytes: u64,
-    pub data: Vec<u8>,
-    pub text: String,
-    pub truncated: bool,
-}
 #[derive(Clone, Debug, Default)]
-enum JsonCache {
-    #[default]
-    Unparsed,
-    Parsed(Option<Arc<JsonDocument>>),
-}
-#[derive(Debug)]
-pub struct BodyStore {
-    path: PathBuf,
-    owns_file: bool,
-    writer: Option<File>,
+pub struct BodyPreview {
     bytes: u64,
     preview: Vec<u8>,
     decoded: Option<(Vec<u8>, String)>,
-    json: [JsonCache; 2],
 }
-impl BodyStore {
-    /// # Errors
-    /// Returns an I/O error when the body file cannot be created.
-    pub fn new(run_id: &str, directory: &Path) -> ResponseResult<Self> {
-        let path = directory.join(format!("wirebolt-response-{run_id}.body"));
-        let writer = File::create(&path)?;
-        Ok(Self {
-            path,
-            owns_file: true,
-            writer: Some(writer),
-            bytes: 0,
-            preview: vec![],
-            decoded: None,
-            json: [JsonCache::Unparsed, JsonCache::Unparsed],
-        })
-    }
-    /// # Errors
-    /// Returns an I/O error when the existing body cannot be inspected.
-    pub fn existing(path: PathBuf) -> ResponseResult<Self> {
-        let bytes = fs::metadata(&path)?.len();
-        Ok(Self {
-            path,
-            owns_file: false,
-            writer: None,
-            bytes,
-            preview: vec![],
-            decoded: None,
-            json: [JsonCache::Unparsed, JsonCache::Unparsed],
-        })
-    }
-    #[must_use]
-    pub fn path(&self) -> PathBuf {
-        self.path.clone()
-    }
-    #[must_use]
-    pub fn size(&self) -> u64 {
-        self.bytes
-    }
-    /// # Errors
-    /// Returns an error for closed stores or failed disk writes.
-    pub fn append(&mut self, data: &[u8]) -> ResponseResult<()> {
-        self.json = [JsonCache::Unparsed, JsonCache::Unparsed];
-        self.writer
-            .as_mut()
-            .ok_or_else(|| ResponseError::Io {
-                reason: "Response body is closed".into(),
-            })?
-            .write_all(data)?;
+impl BodyPreview {
+    pub fn append(&mut self, data: &[u8]) {
         self.bytes += count(data.len());
         if self.preview.len() < VIEWPORT_BYTES {
             self.preview
                 .extend_from_slice(&data[..data.len().min(VIEWPORT_BYTES - self.preview.len())]);
             self.decoded = None;
         }
-        Ok(())
     }
     #[must_use]
     pub fn progress(&mut self) -> BodyProgress {
@@ -126,6 +62,83 @@ impl BodyStore {
             truncated: self.bytes > count(data.len()),
         }
     }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BodyProgress {
+    pub bytes: u64,
+    pub data: Vec<u8>,
+    pub text: String,
+    pub truncated: bool,
+}
+#[derive(Clone, Debug, Default)]
+enum JsonCache {
+    #[default]
+    Unparsed,
+    Parsed(Option<Arc<JsonDocument>>),
+}
+#[derive(Debug)]
+pub struct BodyStore {
+    path: PathBuf,
+    owns_file: bool,
+    writer: Option<File>,
+    preview: BodyPreview,
+    json: [JsonCache; 2],
+}
+impl BodyStore {
+    /// # Errors
+    /// Returns an I/O error when the body file cannot be created.
+    pub fn new(run_id: &str, directory: &Path) -> ResponseResult<Self> {
+        let path = directory.join(format!("wirebolt-response-{run_id}.body"));
+        let writer = File::create(&path)?;
+        Ok(Self {
+            path,
+            owns_file: true,
+            writer: Some(writer),
+            preview: BodyPreview::default(),
+            json: [JsonCache::Unparsed, JsonCache::Unparsed],
+        })
+    }
+    /// # Errors
+    /// Returns an I/O error when the existing body cannot be inspected.
+    pub fn existing(path: PathBuf) -> ResponseResult<Self> {
+        let bytes = fs::metadata(&path)?.len();
+        Ok(Self {
+            path,
+            owns_file: false,
+            writer: None,
+            preview: BodyPreview {
+                bytes,
+                ..BodyPreview::default()
+            },
+            json: [JsonCache::Unparsed, JsonCache::Unparsed],
+        })
+    }
+    #[must_use]
+    pub fn path(&self) -> PathBuf {
+        self.path.clone()
+    }
+    #[must_use]
+    pub fn size(&self) -> u64 {
+        self.preview.bytes
+    }
+    /// # Errors
+    /// Returns an error for closed stores or failed disk writes.
+    pub fn append(&mut self, data: &[u8]) -> ResponseResult<()> {
+        self.json = [JsonCache::Unparsed, JsonCache::Unparsed];
+        self.writer
+            .as_mut()
+            .ok_or_else(|| ResponseError::Io {
+                reason: "Response body is closed".into(),
+            })?
+            .write_all(data)?;
+        self.preview.append(data);
+        Ok(())
+    }
+    #[must_use]
+    pub fn progress(&mut self) -> BodyProgress {
+        self.preview.progress()
+    }
     /// # Errors
     /// Returns an I/O error if synchronising the body fails.
     pub fn finish(&mut self) -> ResponseResult<()> {
@@ -138,8 +151,8 @@ impl BodyStore {
     /// Returns an I/O error if reading the viewport fails.
     pub fn viewport(&self, offset: u64, length: u64) -> ResponseResult<Vec<u8>> {
         let mut reader = File::open(&self.path)?;
-        reader.seek(SeekFrom::Start(offset.min(self.bytes)))?;
-        let mut bytes = Vec::with_capacity(size(length.min(self.bytes)));
+        reader.seek(SeekFrom::Start(offset.min(self.preview.bytes)))?;
+        let mut bytes = Vec::with_capacity(size(length.min(self.preview.bytes)));
         reader.take(length).read_to_end(&mut bytes)?;
         Ok(bytes)
     }

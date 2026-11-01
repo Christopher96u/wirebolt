@@ -204,6 +204,32 @@ fn storage_failure_ends_run_without_accepting_completion() {
     assert!(run.snapshot().completion.is_none());
 }
 #[test]
+fn missing_body_file_keeps_bounded_utf8_preview_and_reports_storage_failure() {
+    let directory = tempfile::tempdir().unwrap();
+    let blocked = directory.path().join("not-a-directory");
+    std::fs::write(&blocked, b"fixture").unwrap();
+    let mut run = DocumentRun::default();
+    run.begin("run", &blocked);
+    run.consume("run", head(200));
+    let text = format!("hello 🌍{}", "x".repeat(VIEWPORT_BYTES));
+    let start = Instant::now();
+    run.append_batch("run", &[text.as_bytes()[..8].to_vec()], start);
+    run.publish_due("run", start + PUBLICATION_INTERVAL);
+    assert_eq!(run.snapshot().text, "hello ");
+    run.append_batch("run", &[text.as_bytes()[8..].to_vec()], start);
+    run.consume("run", complete(text.len() as u64));
+    let snapshot = run.snapshot();
+    assert_eq!(snapshot.text, text[..VIEWPORT_BYTES]);
+    assert_eq!(snapshot.data.len(), VIEWPORT_BYTES);
+    assert_eq!(snapshot.bytes, text.len() as u64);
+    assert!(snapshot.truncated && snapshot.body_path.is_none());
+    assert_eq!(
+        snapshot.failure.unwrap().kind,
+        crate::response::ResponseFailureKind::Storage
+    );
+    assert!(snapshot.completion.is_none() && snapshot.active_run_id.is_none());
+}
+#[test]
 fn copy_shares_completed_body_but_does_not_copy_active_run() {
     let (directory, mut source) = completed();
     let mut copy = DocumentRun::default();
@@ -216,6 +242,23 @@ fn copy_shares_completed_body_but_does_not_copy_active_run() {
     let before = copy.snapshot();
     copy.copy_completed(&source);
     assert_eq!(copy.snapshot(), before);
+}
+#[test]
+fn copying_memory_preview_replaces_the_previous_preview() {
+    let directory = tempfile::tempdir().unwrap();
+    let blocked = directory.path().join("not-a-directory");
+    std::fs::write(&blocked, b"fixture").unwrap();
+    let mut source = DocumentRun::default();
+    source.begin("source", &blocked);
+    source.append_batch("source", &[b"source".to_vec()], Instant::now());
+    source.consume("source", complete(6));
+    let mut copy = DocumentRun::default();
+    copy.begin("previous", &blocked);
+    copy.append_batch("previous", &[b"previous".to_vec()], Instant::now());
+    copy.consume("previous", complete(8));
+    copy.copy_completed(&source);
+    copy.publish();
+    assert_eq!(copy.snapshot(), source.snapshot());
 }
 
 #[test]

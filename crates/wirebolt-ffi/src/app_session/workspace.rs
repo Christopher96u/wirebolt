@@ -18,15 +18,25 @@ use super::{
     WorkspaceSelectionProblem, WorkspaceUndoToken,
 };
 use crate::lock;
-use wirebolt_app::session::workspace::operations::WorkspaceImportSource;
+use wirebolt_app::session::workspace::{
+    SessionEnvironmentRestoreSelection, operations::WorkspaceImportSource,
+};
+#[uniffi::remote(Enum)]
+pub enum SessionEnvironmentRestoreSelection {
+    SelectCreated,
+    SelectRestored,
+    Preserve,
+}
 #[uniffi::remote(Enum)]
 pub enum SessionWorkspaceEdit {
     RestoreEnvironment {
         environment: DomainEnvironment,
         index: u64,
+        selection: SessionEnvironmentRestoreSelection,
     },
     RemoveEnvironment {
         id: String,
+        is_creation: bool,
     },
     RestoreRequest {
         location: DomainLocation,
@@ -495,6 +505,26 @@ impl AppWorkspaceOperations {
     ) -> Option<String> {
         self.inner.rename(proposed, platform.as_ref()).await
     }
+    pub async fn save_environment(
+        &self,
+        environment: DomainEnvironment,
+        values: std::collections::HashMap<String, String>,
+        selected: Option<String>,
+        platform: Arc<AppWorkspacePlatform>,
+        secrets: Arc<AppSessionSecrets>,
+        secret_platform: Arc<AppSecretPlatform>,
+    ) -> WorkspaceMutation {
+        self.inner
+            .save_environment(
+                environment,
+                values,
+                selected,
+                platform.as_ref(),
+                &secrets.inner,
+                secret_platform.as_ref(),
+            )
+            .await
+    }
     pub async fn mutate(
         &self,
         command: WorkspaceAction,
@@ -746,13 +776,6 @@ pub fn workspace_selection_problem(
     mode: WorkspaceOpenMode,
 ) -> Option<WorkspaceSelectionProblem> {
     wirebolt_app::session::workspace::files::selection_problem(Path::new(&path), mode)
-}
-
-#[uniffi::export]
-impl AppWorkspaceOperations {
-    pub fn environment_unchanged(&self, environment: DomainEnvironment) -> bool {
-        self.inner.environment_unchanged(&environment)
-    }
 }
 
 #[uniffi::export]

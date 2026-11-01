@@ -1,4 +1,5 @@
 import AppKit
+import Darwin
 import UniformTypeIdentifiers
 import Foundation
 import Observation
@@ -120,19 +121,31 @@ final class ProbeWindow: NSWindow { override var canBecomeKey: Bool { true } }
         }
         record("editor_resize",resized,budget:16,details:["rows":rows])
         var scrolling: [Double] = []
+        var scrollWall: [Double] = []
         if let scroll = editor.enclosingScrollView {
             for i in 0..<samples {
-                let start = ContinuousClock.now
+                let wallStart = ContinuousClock.now
+                let start = clock_gettime_nsec_np(CLOCK_THREAD_CPUTIME_ID)
                 let y = max(0, editor.bounds.height - scroll.contentView.bounds.height) * CGFloat(i % 10) / 9
                 scroll.contentView.scroll(to: NSPoint(x: 0, y: y))
                 scroll.reflectScrolledClipView(scroll.contentView)
+                // Flush one viewport draw. Thread CPU time counts scroll/layout/highlight/
+                // drawing work while excluding AppKit's wait for a display frame.
                 flush(host)
-                editor.display()
-                scrolling.append(ms(start))
+                scrolling.append(Double(clock_gettime_nsec_np(CLOCK_THREAD_CPUTIME_ID) - start) / 1e6)
+                scrollWall.append(ms(wallStart))
                 spin(0.01)
             }
         }
-        if !scrolling.isEmpty { record("editor_scroll", scrolling, budget: 16, details: ["rows": rows]) }
+        if !scrolling.isEmpty {
+            let path = "clip-view scroll + scroller reflection + pending layout/display, one viewport draw"
+            record("editor_scroll", scrolling, budget: 16, details: ["rows": rows,
+                "clock": "main-thread CPU (CLOCK_THREAD_CPUTIME_ID)", "path": path])
+            // Two 60 Hz frames tolerate AppKit's display wait, including on variable
+            // refresh displays, while still gating locks, synchronous I/O and FFI waits.
+            record("editor_scroll_wall", scrollWall, budget: 1000.0 / 30, details: ["rows": rows,
+                "clock": "wall (ContinuousClock)", "path": path])
+        }
         window.makeKey()
         window.makeFirstResponder(editor)
         let before = fixture.text
@@ -382,7 +395,37 @@ final class ProbeWindow: NSWindow { override var canBecomeKey: Bool { true } }
         return [current] + (value("accessibilityChildren") as? [Any] ?? []).flatMap { elements($0, depth: depth + 1) }
     }
 
+    static func missingBodyFilePresentation(root: URL) async throws {
+        let blocked = root.appending(path: "not-a-body-directory")
+        try Data("fixture".utf8).write(to: blocked)
+        let session = DocumentSession(draft: RequestDraft())
+        let run = RunID()
+        session.rust.begin(runId: run.description, directory: blocked.path)
+        session.mirror()
+        let body = String(repeating: "preview survives 🌍\n", count: 4000)
+        await session.consume(.head(ResponseHead(status: 200, version: "HTTP/1.1", headers: [], timeToHeadersNS: 1)), runID: run)
+        await session.consume(.chunk(Data(body.utf8)), runID: run)
+        await session.consume(.complete(RunCompletion(bytesReceived: UInt64(body.utf8.count), totalTimeNS: 1)), runID: run)
+        precondition(session.bodyStore == nil && session.failure?.kind == .storage)
+        precondition(session.responsePreviewData.count <= DocumentSession.previewByteLimit && session.responseWasTruncated)
+        let state = DocumentPresentationState()
+        state.responseRenderer = .raw
+        let (window, host, _) = mount(ResponseViewer(interface: state, session: session))
+        defer { window.close() }
+        var shown = false
+        for _ in 0..<200 {
+            try await Task.sleep(for: .milliseconds(5)); flush(host)
+            shown = textViews(host).contains { !$0.isHiddenOrHasHiddenAncestor && $0.string.hasPrefix("preview survives 🌍") }
+            if shown { break }
+        }
+        precondition(shown, "a failed body-file creation must leave the memory preview visible after completion")
+        let title = RunFailureMessage(RunFailure(kind: .storage, issues: [])).title
+        precondition(elements(host).contains { $0.name.contains(title) }, "the partial preview must still report the storage failure")
+        print("missing_body_file_presentation=passed")
+    }
+
     static func verifyRedesignFlows(root: URL) async throws {
+        try await missingBodyFilePresentation(root: root)
         let persistence = try RustWorkspacePersistence(path: root.appending(path: "redesign-flows"))
         let model = WireboltModel(runner: OfflineRunner(), persistence: persistence,
             history: HistoryRepository(root: root.appending(path: "flow-history")), cookieJar: CookieJar())

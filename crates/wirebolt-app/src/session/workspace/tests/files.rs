@@ -89,7 +89,7 @@ fn external_file_queue_retains_order_filters_nonfiles_and_drains_once() {
     assert!(ui.drain_files().is_empty());
 }
 #[derive(Debug)]
-struct NoSecrets;
+pub(super) struct NoSecrets;
 impl crate::session::persistence::WorkspaceSecrets for NoSecrets {
     fn read(&self, _: &str) -> Result<Option<String>, crate::session::persistence::WorkspaceError> {
         Ok(None)

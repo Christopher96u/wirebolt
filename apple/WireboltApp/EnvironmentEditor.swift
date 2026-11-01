@@ -331,27 +331,25 @@ struct EnvironmentEditor: View {
         }
         isSaving = true
         defer { isSaving = false }
-        // Values first: a saved reference must never point at a value that was not stored.
-        let referenced = Set(environments.flatMap(\.variables).compactMap { row -> String? in
-            if case let .secret(name) = row.value { name } else { nil }
-        })
-        guard await model.saveSecrets(stagedSecrets.filter { referenced.contains($0.key) }) else {
-            validationMessage = "The secret values could not be saved in Keychain. Your edits are still open."
-            return false
-        }
-        stagedSecrets = [:]
         for id in deletedIDs {
             guard model.workspaceLocation == workspaceLocation else { return false }
             guard await model.deleteEnvironment(id: id) else { validationMessage = "The environment could not be deleted."; return false }
             deletedIDs.remove(id)
             original.removeAll { $0.id == id }
         }
-        for environment in environments where !original.contains(environment) {
+        for index in environments.indices {
+            let environment = environments[index]
+            let references = environment.secretReferences
+            let values = stagedSecrets.filter { references.contains($0.key) }
+            guard !original.contains(environment) || !values.isEmpty else { continue }
             guard model.workspaceLocation == workspaceLocation else { return false }
-            guard await model.saveEnvironment(environment) else { validationMessage = "The workspace could not be saved. Your edits are still open."; return false }
-            if let index = original.firstIndex(where: { $0.id == environment.id }) { original[index] = environment }
-            else { original.append(environment) }
+            guard await model.saveEnvironment(environment, secrets: values) else { validationMessage = "The environment or its Keychain values could not be saved. Your edits are still open."; return false }
+            guard let saved = model.workspace.environments.first(where: { $0.id == environment.id }) else { return false }
+            environments[index] = saved
+            if let originalIndex = original.firstIndex(where: { $0.id == saved.id }) { original[originalIndex] = saved }
+            else { original.append(saved) }
         }
+        stagedSecrets = [:]
         model.selectedEnvironmentID = selectedID == WorkspaceDraft.globalEnvironmentID ? nil : selectedID
         isSaving = false
         onClose()

@@ -26,7 +26,8 @@ final class RuntimeRunnerAdapter: SessionRuntimeTransport {
                     switch event {
                     case .prepared(let value): sink.event(event: .prepared(snapshot: value.sessionRecord))
                     case .head(let value): sink.event(event: .head(head: value))
-                    case .chunk(let data): sink.bytes(data: data)
+                    case .chunk(let data):
+                        guard sink.bytes(data: data) else { return }
                     case .cookies(let value):
                         sink.cookies(url: value.url, headers: value.headers.map { ResponseHeaderValue(name: $0.name, value: $0.value) })
                     case .complete(let value): sink.event(event: .complete(completion: value))

@@ -47,6 +47,42 @@ struct WorkspaceUndoTests {
         #expect(model.workspace.environments[0].variables[0].value == .secret("env.local.token"))
     }
 
+    @Test("Environment undo restores Keychain values without changing the active environment")
+    func environmentSecretUndoKeepsSelection() async throws {
+        let (model, persistence, manager) = makeModel()
+        let reference = "env.local.token"
+        let original = EnvironmentDraft(id: "local", name: "Local", variables: [
+            EnvironmentVariableDraft(id: "token", key: "token", value: .secret(reference)),
+        ])
+        let other = EnvironmentDraft(id: "production", name: "Production")
+        model.workspace.environments = [original, other]
+        model.selectedEnvironmentID = other.id
+        try await persistence.saveSecret(name: reference, value: "old-token")
+        var changed = original
+        changed.name = "Development"
+        #expect(await model.saveEnvironment(changed, secrets: [reference: "new-token"]))
+        let saved = try #require(model.workspace.environments.first)
+        let savedReference = try #require(saved.variables.first?.value.secretName)
+        #expect(savedReference != reference)
+        #expect(model.selectedEnvironmentID == other.id)
+        model.selectedEnvironmentID = other.id
+        await undo(model, manager)
+        #expect(model.workspace.environments == [original, other])
+        #expect(try await persistence.readSecret(name: reference) == "old-token")
+        #expect(model.selectedEnvironmentID == other.id)
+        await redo(model, manager)
+        #expect(model.workspace.environments == [saved, other])
+        #expect(try await persistence.readSecret(name: savedReference) == "new-token")
+        #expect(model.secretMaterial(for: .secret(savedReference)) == "new-token")
+        #expect(model.selectedEnvironmentID == other.id)
+        #expect(await model.deleteEnvironment(id: original.id))
+        await undo(model, manager)
+        #expect(model.workspace.environments == [saved, other])
+        #expect(try await persistence.readSecret(name: savedReference) == "new-token")
+        let commands = String(describing: await persistence.commands)
+        #expect(!commands.contains("old-token") && !commands.contains("new-token"))
+    }
+
     private var nested: CollectionDraft {
         CollectionDraft(id: "api", name: "API", order: 3, groups: [
             GroupDraft(id: "child", name: "Child", parentID: "parent", order: 1),
@@ -252,6 +288,7 @@ private struct UndoStubRunner: RequestRunner {
 private actor UndoRecorder: WorkspacePersistence {
     private var fails: Bool
     private(set) var commands: [SessionWorkspaceCommand] = []
+    private var secrets: [String: String] = [:]
 
     init(fails: Bool = false) { self.fails = fails }
 
@@ -259,7 +296,8 @@ private actor UndoRecorder: WorkspacePersistence {
     func load() async throws -> WorkspaceDraft { WorkspaceDraft(name: "Undo") }
     func save(request _: RequestDraft, in _: String) async throws {}
     func save(environment _: EnvironmentDraft) async throws {}
-    func saveSecret(name _: String, value _: String) async throws {}
+    func saveSecret(name: String, value: String) async throws { secrets[name] = value }
+    func readSecret(name: String) async throws -> String? { secrets[name] }
 
     func apply(_ command: SessionWorkspaceCommand) async throws -> WorkspaceDelta {
         if fails { throw RunFailure(kind: .workspace, issues: []) }
