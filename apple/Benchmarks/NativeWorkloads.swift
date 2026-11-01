@@ -1079,43 +1079,45 @@ final class ProbeWindow: NSWindow { override var canBecomeKey: Bool { true } }
         print("markdown_native=passed")
     }
 
+    static func closeFixture(_ count: Int, root: URL) -> (WireboltModel, WorkspaceUIState) {
+        let model = WireboltModel(
+            runner: OfflineRunner(), history: HistoryRepository(root: root.appending(path: "history")),
+            cookieJar: CookieJar(storageURL: root.appending(path: "cookies.json")),
+            proxyPreferences: ProxyPreferences(defaults: fixtureDefaults))
+        let interface = WorkspaceUIState(defaults: fixtureDefaults)
+        let raw = String(repeating: "x", count: 1_048_576)
+        for i in 0..<count {
+            _ = model.sessions.open(draft: RequestDraft(id: "body\(i)", name: "Body \(i)", body: .json(value: raw)))
+        }
+        interface.synchronizeSelection(model: model)
+        return (model, interface)
+    }
+
     static func closeTabs(_ count: Int, root: URL) {
         var values: [Double] = []
-        var draftSerializations = 0
-        var restoredDrafts = 0
-        var documentReads: UInt64 = 0
-        var draftWrites: UInt64 = 0
-        let raw = String(repeating: "x", count: 1_048_576)
         for _ in 0..<max(5, samples) {
-            let model = WireboltModel(
-                runner: OfflineRunner(), history: HistoryRepository(root: root.appending(path: "history")),
-                cookieJar: CookieJar(storageURL: root.appending(path: "cookies.json")),
-                proxyPreferences: ProxyPreferences(defaults: fixtureDefaults))
-            let interface = WorkspaceUIState(defaults: fixtureDefaults)
-            for i in 0..<count {
-                _ = model.sessions.open(draft: RequestDraft(id: "body\(i)", name: "Body \(i)", body: .json(value: raw)))
-            }
-            interface.synchronizeSelection(model: model)
-            let sessions = Array(model.sessions.sessions.values)
-            let trafficBefore = sessions.map { $0.rust.bridgeTraffic() }
+            let (model, interface) = closeFixture(count, root: root)
             let id = model.sessions.activeSession!.id
             let start = ContinuousClock.now
             interface.closeTab(id: id, model: model)
             values.append(ms(start))
             precondition(model.sessions.sessions.count == count - 1)
-            draftSerializations += sessions.reduce(0) { $0 + $1.draftSynchronizationCount }
-            restoredDrafts += model.sessions.lastCloseRestoredDraftCount
-            for (session, before) in zip(sessions, trafficBefore) {
-                let after = session.rust.bridgeTraffic()
-                documentReads += after.documentReads - before.documentReads
-                draftWrites += after.draftWrites - before.draftWrites
-            }
         }
-        precondition(draftSerializations == 0 && restoredDrafts == 0 && documentReads == 0 && draftWrites == 0,
-                     "Clean close must carry no draft payloads")
-        record("tab_close_command", values, budget: tabCloseBudget, details: ["tabs": count, "body_bytes_each": raw.utf8.count,
-            "draft_serializations": draftSerializations, "restored_drafts": restoredDrafts,
-            "bridge_document_reads": documentReads, "bridge_draft_writes": draftWrites, "bridge_body_bytes": 0])
+        // Run the traffic guard separately: retaining the removed session to read
+        // counters must not keep document destruction out of the timed command.
+        let (model, interface) = closeFixture(count, root: root)
+        let sessions = Array(model.sessions.sessions.values)
+        let trafficBefore = sessions.map { $0.rust.bridgeTraffic() }
+        interface.closeTab(id: model.sessions.activeSession!.id, model: model)
+        for (session, before) in zip(sessions, trafficBefore) {
+            let after = session.rust.bridgeTraffic()
+            precondition(after.documentReads == before.documentReads && after.draftWrites == before.draftWrites)
+            precondition(session.draftSynchronizationCount == 0)
+        }
+        precondition(model.sessions.lastCloseRestoredDraftCount == 0, "Clean close must carry no draft payloads")
+        record("tab_close_command", values, budget: tabCloseBudget, details: ["tabs": count, "body_bytes_each": 1_048_576,
+            "draft_serializations": 0, "restored_drafts": 0,
+            "bridge_document_reads": 0, "bridge_draft_writes": 0, "bridge_body_bytes": 0])
     }
 
     static func verifyLastTabReopen(root: URL) {
@@ -1168,7 +1170,7 @@ final class ProbeWindow: NSWindow { override var canBecomeKey: Bool { true } }
         else if mode=="markdown" { try await markdownPreview(size) }
         else if mode=="editor" { try editor(size) }
         else if mode=="workspace" { try workspace(size,root:root) }
-        else if mode=="tab-close" { verifyLastTabReopen(root: root); closeTabs(size, root: root) }
+        else if mode=="tab-close" { closeTabs(size, root: root); verifyLastTabReopen(root: root) }
         else if mode=="response" { try response(size) }
         else if mode=="interface" { try verifyInterface(root: root); try await verifyRedesignFlows(root: root); verifyTreeTheme() }
         else if mode=="request-click-notes" || mode=="tab-click-notes" {
