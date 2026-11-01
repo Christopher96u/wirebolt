@@ -19,6 +19,14 @@ private struct EditorFixture: View {
     @Bindable var fixture: TextFixture
     var body: some View { NativeCodeEditor(text: $fixture.text, language: .json) }
 }
+private struct BodyEditorFixture: View {
+    @Bindable var session: DocumentSession
+    var body: some View {
+        NativeCodeEditor(text: Binding(
+            get: { if case .json(let value) = session.draft.body { value } else { "" } },
+            set: { session.draft.body = .json(value: $0) }), language: .json)
+    }
+}
 private struct NotesFixture: View {
     @Bindable var fixture: TextFixture
     var body: some View { NotesEditor(text: $fixture.text, preview: $fixture.preview) }
@@ -1093,6 +1101,26 @@ final class ProbeWindow: NSWindow { override var canBecomeKey: Bool { true } }
         return (model, interface)
     }
 
+    static func bodyTyping() throws {
+        let body = String(repeating: String(repeating: "x", count: 63) + "\n", count: 16_384)
+        let draft = RequestDraft(id: "typing", body: .json(value: body))
+        let session = DocumentSession(draft: draft, savedDraft: draft)
+        let (window, host, _) = mount(BodyEditorFixture(session: session))
+        defer { window.close() }
+        spin()
+        guard let editor = textViews(host).first else { throw CocoaError(.coderValueNotFound) }
+        var values: [Double] = []
+        for i in 0..<samples {
+            let start = ContinuousClock.now
+            editor.insertText(i.isMultiple(of: 2) ? "!" : "", replacementRange: NSRange(location: 1, length: i.isMultiple(of: 2) ? 0 : 1))
+            flush(host)
+            values.append(ms(start))
+            spin(0.01)
+        }
+        record("body_editor_typing", values, budget: 16, details: ["body_bytes": 1_048_576,
+            "path": "NSTextView insert/delete + DocumentSession binding + layout/display"])
+    }
+
     static func closeTabs(_ count: Int, root: URL) {
         var values: [Double] = []
         for _ in 0..<max(5, samples) {
@@ -1109,15 +1137,18 @@ final class ProbeWindow: NSWindow { override var canBecomeKey: Bool { true } }
         let sessions = Array(model.sessions.sessions.values)
         let trafficBefore = sessions.map { $0.rust.bridgeTraffic() }
         interface.closeTab(id: model.sessions.activeSession!.id, model: model)
+        var documentReads: UInt64 = 0
+        var draftWrites: UInt64 = 0
         for (session, before) in zip(sessions, trafficBefore) {
             let after = session.rust.bridgeTraffic()
-            precondition(after.documentReads == before.documentReads && after.draftWrites == before.draftWrites)
+            documentReads += after.documentReads - before.documentReads
+            draftWrites += after.draftWrites - before.draftWrites
             precondition(session.draftSynchronizationCount == 0)
         }
-        precondition(model.sessions.lastCloseRestoredDraftCount == 0, "Clean close must carry no draft payloads")
+        let draftsReturned = model.sessions.lastCloseRestoredDraftCount
+        precondition(documentReads == 0 && draftWrites == 0 && draftsReturned == 0, "Clean close must carry no draft records")
         record("tab_close_command", values, budget: tabCloseBudget, details: ["tabs": count, "body_bytes_each": 1_048_576,
-            "draft_serializations": 0, "restored_drafts": 0,
-            "bridge_document_reads": 0, "bridge_draft_writes": 0, "bridge_body_bytes": 0])
+            "bridge_document_reads": documentReads, "bridge_draft_writes": draftWrites, "bridge_drafts_returned": draftsReturned])
     }
 
     static func verifyLastTabReopen(root: URL) {
@@ -1171,6 +1202,7 @@ final class ProbeWindow: NSWindow { override var canBecomeKey: Bool { true } }
         else if mode=="editor" { try editor(size) }
         else if mode=="workspace" { try workspace(size,root:root) }
         else if mode=="tab-close" { closeTabs(size, root: root); verifyLastTabReopen(root: root) }
+        else if mode=="body-typing" { try bodyTyping() }
         else if mode=="response" { try response(size) }
         else if mode=="interface" { try verifyInterface(root: root); try await verifyRedesignFlows(root: root); verifyTreeTheme() }
         else if mode=="request-click-notes" || mode=="tab-click-notes" {

@@ -518,16 +518,36 @@ private enum PerformanceContract {
         var milliseconds: [Double] = []
         var rssMebibytes: [Double] = []
         let fileManager = FileManager.default
+        let defaultsBefore = try realDefaultsSnapshot()
         let root = fileManager.temporaryDirectory.appendingPathComponent("wirebolt-launch-\(UUID().uuidString)")
         try fileManager.createDirectory(at: root, withIntermediateDirectories: true)
-        defer { try? fileManager.removeItem(at: root) }
+        let copiedApp = root.appendingPathComponent("LaunchProbe.app")
+        defer {
+            // LaunchServices can register a directly executed app outside HOME.
+            // Unregister while the bundle still exists, including on failed runs.
+            do {
+                let unregister = Process()
+                unregister.executableURL = URL(fileURLWithPath: "/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister")
+                unregister.arguments = ["-u", copiedApp.path]
+                unregister.standardOutput = FileHandle.nullDevice
+                unregister.standardError = FileHandle.nullDevice
+                if fileManager.fileExists(atPath: copiedApp.path) {
+                    try unregister.run()
+                    unregister.waitUntilExit()
+                    precondition(unregister.terminationStatus == 0, "Could not unregister launch copy")
+                }
+                try fileManager.removeItem(at: root)
+                let defaultsAfter = try realDefaultsSnapshot()
+                precondition(defaultsBefore == defaultsAfter, "Launch smoke changed the real defaults domain")
+                FileHandle.standardError.write(Data("launch isolation: unregistered and deleted \(copiedApp.path); real defaults export byte-identical\n".utf8))
+            } catch { preconditionFailure("Launch smoke cleanup failed: \(error)") }
+        }
         // Give CFPreferences a distinct application domain as well as an isolated
         // home. Modifying/signing only this copy leaves every installed app alone.
         let sourceApp = executable.deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
         guard sourceApp.pathExtension == "app" else {
             throw HarnessError.invalidMeasurement("launch smoke requires a bundled app")
         }
-        let copiedApp = root.appendingPathComponent("LaunchProbe.app")
         try fileManager.copyItem(at: sourceApp, to: copiedApp)
         let plistURL = copiedApp.appendingPathComponent("Contents/Info.plist")
         var plist = try PropertyListSerialization.propertyList(from: Data(contentsOf: plistURL), format: nil) as! [String: Any]
@@ -617,6 +637,21 @@ private enum PerformanceContract {
         }
 
         return (milliseconds, rssMebibytes)
+    }
+
+    private static func realDefaultsSnapshot() throws -> Data {
+        let process = Process()
+        let output = Pipe()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/defaults")
+        process.arguments = ["export", "io.github.christopher96u.wirebolt", "-"]
+        process.standardOutput = output
+        process.standardError = FileHandle.nullDevice
+        try process.run()
+        let data = output.fileHandleForReading.readDataToEndOfFile()
+        process.waitUntilExit()
+        // A missing domain is also a snapshot; fail if it appears after launch.
+        precondition(process.terminationStatus == 0 || process.terminationStatus == 1)
+        return Data([UInt8(process.terminationStatus)]) + data
     }
 
     private static func stop(_ process: Process) {

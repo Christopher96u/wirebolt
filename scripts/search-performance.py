@@ -20,12 +20,12 @@ for index, measurement in enumerate(results[0]["measurements"]):
     values = [run["measurements"][index]["samples_ms"][0] for run in results]
     measurements.append(dict(name=measurement["name"], samples_ms=values,
                              median_ms=statistics.median(values), min_ms=min(values),
-                             max_ms=max(values), p95_ms=max(values)))
+                             max_ms=max(values)))
 peaks = [run["two_query_peak_rss_bytes"] / 1_048_576 for run in results]
 failed = int(size) == 100 and (
-    measurements[0]["p95_ms"] > budgets["indexedSearchAbsentP95Milliseconds"]
+    measurements[0]["max_ms"] > budgets["indexedSearchAbsentP95Milliseconds"]
     or measurements[1]["median_ms"] > budgets["indexedSearchCappedMedianMilliseconds"]
-    or measurements[1]["p95_ms"] > budgets["indexedSearchCappedP95Milliseconds"]
+    or measurements[1]["max_ms"] > budgets["indexedSearchCappedP95Milliseconds"]
     or max(peaks) > budgets["indexedSearchTwoQueryPeakMebibytes"])
 summary = dict(size_mib=int(size), measurements=measurements, two_query_peak_rss_mib=peaks,
                peak_rss_median_mib=statistics.median(peaks), peak_rss_min_mib=min(peaks),

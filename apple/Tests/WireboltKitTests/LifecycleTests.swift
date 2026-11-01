@@ -222,7 +222,7 @@ func signedLayoutIndicesRemainCompatible() throws {
 }
 
 extension LifecycleTests {
-    @Test("Canonically equivalent Unicode edits keep byte-exact save and close semantics")
+    @Test("Canonically equivalent edits preserve native dirty presentation and synchronize bytes")
     @MainActor func unicodeBytesSurviveSynchronizationSaveAndClose() async throws {
         let persistence = SaveRecorder()
         let model = WireboltModel(runner: LifecycleRunner(), persistence: persistence)
@@ -231,11 +231,14 @@ extension LifecycleTests {
         let session = model.sessions.open(draft: original, collectionID: "api")
         session.draft.note = "é"
         session.draft.body = .json(value: "é")
-        #expect(session.isDirty && session.isTouched)
+        #expect(!session.isDirty && !session.isTouched)
+        #expect(model.dirtySessions.isEmpty)
+        #expect(await model.saveAllDirtySessions())
+        #expect(await persistence.saved.isEmpty)
         #expect(model.closeDocuments(.one(session.id)).map(\.id) == [session.id])
         #expect(session.rust.document().draft.note.utf8.elementsEqual("é".utf8))
         #expect(session.draftSynchronizationCount == 1)
-        #expect(await model.saveAllDirtySessions())
+        #expect(await model.saveDocuments([session.id]))
         let saved = try #require(await persistence.saved.last)
         #expect(saved.location.request.note.utf8.elementsEqual("é".utf8))
         #expect(!session.isDirty)
@@ -339,16 +342,16 @@ extension LifecycleTests {
         let unchanged = session.draft
         session.draft = unchanged
         session.synchronizeDraft()
-        #expect(session.draftSynchronizationCount == 0)
+        #expect(session.draftSynchronizationCount == 1)
         session.draft.note = "Edited"
         session.synchronizeDraft()
         session.synchronizeDraft()
         #expect(session.rust.document().draft.note == "Edited")
-        #expect(session.draftSynchronizationCount == 1)
+        #expect(session.draftSynchronizationCount == 2)
         session.renameSavedRequest("Renamed")
         session.synchronizeDraft()
         #expect(session.rust.document().draft.name == "Renamed")
-        #expect(session.draftSynchronizationCount == 1)
+        #expect(session.draftSynchronizationCount == 2)
         _ = store.closeWorkspace(.one(session.id), in: nil, allowDirty: true)
         #expect(session.draft.note.isEmpty)
         store.reopen(session)
@@ -357,7 +360,7 @@ extension LifecycleTests {
         #expect(session.rust.document().draft.note == "After reopen")
         session.markSaved(session.draft)
         session.synchronizeDraft()
-        #expect(session.draftSynchronizationCount == 2)
+        #expect(session.draftSynchronizationCount == 3)
         #expect(!session.isDirty)
     }
 

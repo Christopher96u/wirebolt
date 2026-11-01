@@ -172,6 +172,13 @@ pub enum SessionCloseScope {
     RightOf { id: String },
     All,
 }
+/// A scope resolved once, before native editor synchronization. The command is
+/// synchronous on the native actor, so the group cannot change between phases.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SessionCloseTargets {
+    pub group_id: String,
+    pub ids: Vec<String>,
+}
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SessionTabSnapshot {
     pub groups: Vec<SessionEditorGroup>,
@@ -326,13 +333,20 @@ impl SessionTabs {
         }
     }
     #[must_use]
-    pub fn close_targets(&self, scope: &SessionCloseScope, group: Option<&str>) -> Vec<String> {
+    pub fn close_targets(
+        &self,
+        scope: &SessionCloseScope,
+        group: Option<&str>,
+    ) -> SessionCloseTargets {
         let group = group.unwrap_or(&self.active_group_id);
-        let Some(index) = self.groups.iter().position(|g| g.id == group) else {
-            return vec![];
+        let mut targets = SessionCloseTargets {
+            group_id: group.into(),
+            ids: vec![],
         };
-        let target = &self.groups[index];
-        match scope {
+        let Some(target) = self.groups.iter().find(|g| g.id == group) else {
+            return targets;
+        };
+        targets.ids = match scope {
             SessionCloseScope::One { id } => vec![id.clone()],
             SessionCloseScope::Others { id } => target
                 .tab_ids
@@ -347,7 +361,8 @@ impl SessionTabs {
                 .map(|i| target.tab_ids[i + 1..].to_vec())
                 .unwrap_or_default(),
             SessionCloseScope::All => target.tab_ids.clone(),
-        }
+        };
+        targets
     }
     pub fn close(
         &mut self,
@@ -356,11 +371,19 @@ impl SessionTabs {
         allow_dirty: bool,
         documents: &mut HashMap<String, SessionTabDocument>,
     ) -> Vec<String> {
-        let group = group.unwrap_or(&self.active_group_id);
-        let Some(index) = self.groups.iter().position(|g| g.id == group) else {
+        let targets = self.close_targets(scope, group);
+        self.close_resolved(&targets, allow_dirty, documents)
+    }
+    pub fn close_resolved(
+        &mut self,
+        targets: &SessionCloseTargets,
+        allow_dirty: bool,
+        documents: &mut HashMap<String, SessionTabDocument>,
+    ) -> Vec<String> {
+        let Some(index) = self.groups.iter().position(|g| g.id == targets.group_id) else {
             return vec![];
         };
-        let ids = self.close_targets(scope, Some(group));
+        let ids = &targets.ids;
         let blocked: Vec<_> = ids
             .iter()
             .filter(|id| documents.get(*id).is_some_and(|d| d.dirty))
@@ -387,7 +410,7 @@ impl SessionTabs {
         {
             target.selected_tab_id = target.tab_ids.last().cloned();
         }
-        self.remove_unreferenced(documents, &ids);
+        self.remove_unreferenced(documents, ids);
         self.groups
             .retain(|g| g.id == self.active_group_id || !g.tab_ids.is_empty());
         if self.groups.len() > 1

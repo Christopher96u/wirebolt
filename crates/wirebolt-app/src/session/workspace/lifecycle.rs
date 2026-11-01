@@ -2,8 +2,8 @@
 use crate::{
     domain::{DomainRequestDraft, DomainWorkspace},
     session::tabs::{
-        SessionDocument, SessionEditorGroup, SessionLayout, SessionRestoreResult,
-        SessionTabDocument, SessionTabs,
+        SessionCloseTargets, SessionDocument, SessionEditorGroup, SessionLayout,
+        SessionRestoreResult, SessionTabDocument, SessionTabs,
     },
 };
 use std::collections::{HashMap, HashSet};
@@ -120,33 +120,58 @@ pub struct WorkspaceClose {
     pub removed: Vec<WorkspaceDiscard>,
     pub snapshot: crate::session::tabs::SessionTabSnapshot,
 }
+/// Read target state without cloning a whole live document across the bridge.
+pub trait CloseDocument {
+    fn is_dirty(&self) -> bool;
+    fn saved_draft(&self) -> Option<DomainRequestDraft>;
+}
+impl CloseDocument for SessionDocument {
+    fn is_dirty(&self) -> bool {
+        self.dirty()
+    }
+    fn saved_draft(&self) -> Option<DomainRequestDraft> {
+        self.saved_draft.clone()
+    }
+}
 #[must_use]
 #[allow(
     clippy::implicit_hasher,
     reason = "This is the retained SessionTabs projection store."
 )]
 pub fn close(
-    tabs: &mut SessionTabs,
-    projections: &mut HashMap<String, SessionTabDocument>,
-    scope: &crate::session::tabs::SessionCloseScope,
-    group: Option<&str>,
+    state: &mut (SessionTabs, HashMap<String, SessionTabDocument>),
+    documents: Vec<(SessionTabDocument, impl CloseDocument)>,
+    targets: &SessionCloseTargets,
     allow_dirty: bool,
-    mut saved_draft: impl FnMut(&str) -> Option<DomainRequestDraft>,
 ) -> WorkspaceClose {
+    let (tabs, projections) = state;
+    let target_ids: HashSet<_> = targets.ids.iter().collect();
+    let handles: HashMap<_, _> = documents
+        .into_iter()
+        .map(|(mut projection, document)| {
+            if target_ids.contains(&projection.id) {
+                projection.dirty = document.is_dirty();
+            }
+            let id = projection.id.clone();
+            projections.insert(id.clone(), projection);
+            (id, document)
+        })
+        .collect();
+    projections.retain(|id, _| handles.contains_key(id));
     // Close policy needs only native editor metadata. Fetch saved payloads lazily,
     // after the entire scope has passed the dirty-close decision.
     let prior: Vec<_> = projections
         .values()
         .map(|d| (d.id.clone(), d.dirty))
         .collect();
-    let blocked = tabs.close(scope, group, allow_dirty, projections);
+    let blocked = tabs.close_resolved(targets, allow_dirty, projections);
     let removed = if blocked.is_empty() {
         prior
             .into_iter()
             .filter(|(id, _)| !projections.contains_key(id))
             .map(|(id, dirty)| WorkspaceDiscard {
                 saved: if allow_dirty && dirty {
-                    saved_draft(&id)
+                    handles.get(&id).and_then(CloseDocument::saved_draft)
                 } else {
                     None
                 },

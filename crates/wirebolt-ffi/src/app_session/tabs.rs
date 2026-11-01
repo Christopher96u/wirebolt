@@ -11,6 +11,7 @@ use super::{
     WorkspaceClose,
 };
 use crate::lock;
+use wirebolt_app::session::tabs::SessionCloseTargets;
 
 /// A native editor's bounded projection and the Rust document that owns its
 /// saved state. Draft bodies never enter the close-decision boundary.
@@ -82,6 +83,12 @@ pub enum SessionCloseScope {
     Others { id: String },
     RightOf { id: String },
     All,
+}
+
+#[uniffi::remote(Record)]
+pub struct SessionCloseTargets {
+    group_id: String,
+    ids: Vec<String>,
 }
 
 #[uniffi::remote(Record)]
@@ -231,85 +238,24 @@ impl AppSessionTabs {
     pub fn close_workspace(
         &self,
         documents: Vec<AppCloseDocument>,
-        scope: SessionCloseScope,
-        group: Option<String>,
+        targets: SessionCloseTargets,
         allow_dirty: bool,
     ) -> WorkspaceClose {
-        let mut state = lock(&self.tabs);
-        let targets: std::collections::HashSet<_> = state
-            .0
-            .close_targets(&scope, group.as_deref())
-            .into_iter()
-            .collect();
-        let handles: HashMap<_, _> = documents
-            .into_iter()
-            .map(|mut entry| {
-                let id = entry.projection.id.clone();
-                if targets.contains(&id) {
-                    // The native editor has synchronized only these targets.
-                    // Rust retains byte-exact dirty policy, including Unicode.
-                    entry.projection.dirty = lock(&entry.document.document).dirty();
-                }
-                state.1.insert(id.clone(), entry.projection);
-                (id, entry.document)
-            })
-            .collect();
-        state.1.retain(|id, _| handles.contains_key(id));
-        let (tabs, projections) = &mut *state;
         wirebolt_app::session::workspace::lifecycle::close(
-            tabs,
-            projections,
-            &scope,
-            group.as_deref(),
+            &mut lock(&self.tabs),
+            documents
+                .iter()
+                .map(|entry| (entry.projection.clone(), entry.document.as_ref()))
+                .collect(),
+            &targets,
             allow_dirty,
-            |id| {
-                handles
-                    .get(id)
-                    .and_then(|session| lock(&session.document).saved_draft.clone())
-            },
         )
     }
-    pub fn close_targets(&self, scope: SessionCloseScope, group: Option<String>) -> Vec<String> {
+    pub fn close_targets(
+        &self,
+        scope: SessionCloseScope,
+        group: Option<String>,
+    ) -> SessionCloseTargets {
         lock(&self.tabs).0.close_targets(&scope, group.as_deref())
-    }
-}
-
-#[cfg(test)]
-mod close_tests {
-    use super::*;
-
-    #[test]
-    fn rust_dirty_policy_overrides_a_clean_native_projection() {
-        let draft = DomainRequestDraft {
-            note: "e\u{301}".into(),
-            ..Default::default()
-        };
-        let document = AppDocumentSession::new(
-            "unicode".into(),
-            SessionKind::Http,
-            None,
-            None,
-            draft.clone(),
-            Some(draft),
-            String::new(),
-        );
-        let tabs = AppSessionTabs::new();
-        let projection = SessionTabDocument::from_document(&lock(&document.document));
-        tabs.open(projection.clone(), None, false, false);
-        let mut edited = lock(&document.document).draft.clone();
-        edited.note = "é".into();
-        document.edit(edited);
-        // Model the canonical-equivalence mismatch at the native boundary.
-        let result = tabs.close_workspace(
-            vec![AppCloseDocument {
-                document,
-                projection,
-            }],
-            SessionCloseScope::All,
-            None,
-            false,
-        );
-        assert_eq!(result.blocked, ["unicode"]);
-        assert!(result.removed.is_empty());
     }
 }

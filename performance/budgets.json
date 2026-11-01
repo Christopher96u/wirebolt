@@ -1,5 +1,6 @@
 {
   "referenceMachine": "Apple M2 Pro, 10 cores, 16 GB",
+  "searchAndTabCloseCalibrationMachine": "Apple M5 Pro, 15 cores, 24 GB; indexedSearch* and nativeTabCloseCommand* only",
   "processLaunchP95Milliseconds": 300,
   "nativeColdWindowFirstContentMilliseconds": 300,
   "idleRssP95Mebibytes": 120,

@@ -224,3 +224,12 @@ impl AppDocumentSession {
         lock(&self.document).touched
     }
 }
+
+impl wirebolt_app::session::workspace::lifecycle::CloseDocument for &AppDocumentSession {
+    fn is_dirty(&self) -> bool {
+        AppDocumentSession::is_dirty(self)
+    }
+    fn saved_draft(&self) -> Option<DomainRequestDraft> {
+        lock(&self.document).saved_draft.clone()
+    }
+}

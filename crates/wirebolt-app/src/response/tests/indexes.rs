@@ -658,28 +658,24 @@ fn search_maps_malformed_utf8_surrogates_and_combining_marks() {
     let mut bytes = vec![0xff];
     bytes.extend_from_slice("🚀e\u{301}!".as_bytes());
     let (_root, store) = body(&bytes);
-    for wrapping in [None, Some(layout(900.0))] {
-        let idx = index(&store, 80, "", wrapping, u64::MAX);
-        for (query, column, end) in [("�", 0, 1), ("🚀", 1, 3), ("e\u{301}", 3, 5), ("!", 5, 6)]
-        {
-            let matches = idx
-                .search(
-                    &SearchQuery {
-                        text: query.into(),
-                        ..SearchQuery::default()
-                    },
-                    None,
-                    &cancellation(),
-                )
-                .unwrap();
-            assert_eq!(matches[0].start, SearchPosition { row: 0, column });
-            assert_eq!(
-                matches[0].end,
-                SearchPosition {
-                    row: 0,
-                    column: end
-                }
-            );
+    for (prefix, row) in [("", 0), ("Header: owned fallback\n", 1)] {
+        for wrapping in [None, Some(layout(900.0))] {
+            let idx = index(&store, 80, prefix, wrapping, u64::MAX);
+            for (query, column, end) in [("�", 0, 1), ("🚀", 1, 3), ("e\u{301}", 3, 5), ("!", 5, 6)]
+            {
+                let matches = idx
+                    .search(
+                        &SearchQuery {
+                            text: query.into(),
+                            ..SearchQuery::default()
+                        },
+                        None,
+                        &cancellation(),
+                    )
+                    .unwrap();
+                assert_eq!(matches[0].start, SearchPosition { row, column });
+                assert_eq!(matches[0].end, SearchPosition { row, column: end });
+            }
         }
     }
 }

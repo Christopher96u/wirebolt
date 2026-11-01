@@ -54,6 +54,20 @@ import Testing
 }
 
 extension TextSearchTests {
+    @Test func indexedICUOwnedFallbackCombinesPrefixAndInvalidUTF8() throws {
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: url) }
+        try (Data([0xff]) + Data("🚀e\u{301}!".utf8)).write(to: url)
+        let index = try ResponseTextIndex(url: url, columns: 80, prefix: "Header: fallback\n")
+        #expect(try index.search(TextSearchQuery(text: "fallback")).first?.start == .init(row: 0, column: 8))
+        for (text, start, end) in [("�", 0, 1), ("🚀", 1, 3), ("e\u{301}", 3, 5), ("!", 5, 6)] {
+            let matches = try index.search(TextSearchQuery(text: text))
+            #expect(matches.count == 1)
+            #expect(matches.first?.start == .init(row: 1, column: start))
+            #expect(matches.first?.end == .init(row: 1, column: end))
+        }
+    }
+
     @Test func indexedICUMatchesFoundationForUnicodeAndSelections() throws {
         let url = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: url) }
