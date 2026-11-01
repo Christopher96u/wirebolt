@@ -36,8 +36,7 @@ struct RustWorkspacePersistence: WorkspacePersistence, GitCollaboration {
     func load() async throws -> WorkspaceDraft {
         let bridge = bridge
         return try await Task.detached(priority: .userInitiated) {
-            let data = Data(try bridge.snapshotJson().utf8)
-            return try JSONDecoder().decode(WorkspaceSnapshotDocument.self, from: data).workspace
+            WorkspaceDraft(domain: try bridge.domainSnapshot())
         }.value
     }
 
@@ -274,74 +273,6 @@ enum WorkspaceSelectionError: LocalizedError {
         case .workspaceNotFound: "Choose a folder containing wirebolt.toml."
         case .workspaceAlreadyExists: "This folder already contains a workspace. Use Open Workspace."
         }
-    }
-}
-
-private struct WorkspaceSnapshotDocument: Decodable {
-    let name: String
-    let proxy: ProxyDocument?
-    let transport: TransportSettings
-    let collections: [CollectionSnapshotDocument]
-    let environments: [EnvironmentDraft]
-
-    private enum CodingKeys: String, CodingKey {
-        case name, proxy, transport, collections, environments
-    }
-
-    init(from decoder: any Decoder) throws {
-        let container = try decoder.container(keyedBy: CodingKeys.self)
-        name = try container.decode(String.self, forKey: .name)
-        proxy = try container.decodeIfPresent(ProxyDocument.self, forKey: .proxy)
-        transport = try container.decodeIfPresent(TransportSettings.self, forKey: .transport)
-            ?? TransportSettings()
-        collections = try container.decode([CollectionSnapshotDocument].self, forKey: .collections)
-        environments = try container.decode([EnvironmentDraft].self, forKey: .environments)
-    }
-
-    var workspace: WorkspaceDraft {
-        WorkspaceDraft(
-            name: name,
-            proxy: proxy,
-            transport: transport,
-            collections: collections.map(\.collection),
-            environments: environments
-        )
-    }
-}
-
-private struct CollectionSnapshotDocument: Decodable {
-    let id: String
-    let name: String
-    let order: Int
-    let groups: [GroupDraft]
-    let requests: [SavedRequestDocument]
-
-    private enum CodingKeys: String, CodingKey { case id, name, order, groups, requests }
-
-    init(from decoder: any Decoder) throws {
-        let container = try decoder.container(keyedBy: CodingKeys.self)
-        id = try container.decode(String.self, forKey: .id)
-        name = try container.decode(String.self, forKey: .name)
-        order = try container.decodeIfPresent(Int.self, forKey: .order) ?? 0
-        groups = try container.decodeIfPresent([GroupDraft].self, forKey: .groups) ?? []
-        requests = try container.decode([SavedRequestDocument].self, forKey: .requests)
-    }
-
-    var collection: CollectionDraft {
-        CollectionDraft(
-            id: id,
-            name: name,
-            order: order,
-            groups: groups,
-            requests: requests.map {
-                RequestLocation(
-                    collectionID: id,
-                    groupID: $0.groupID,
-                    order: $0.order,
-                    request: $0.request
-                )
-            }
-        )
     }
 }
 

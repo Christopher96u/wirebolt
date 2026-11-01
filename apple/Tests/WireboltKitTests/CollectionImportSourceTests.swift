@@ -58,3 +58,18 @@ struct CollectionImportSourceTests {
         }
     }
 }
+
+extension CollectionImportSourceTests {
+    @Test("Bruno import preserves the native rule to skip package contents")
+    func skipsFilePackages() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("bruno-package-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let package = root.appendingPathComponent("Fixture.app/Contents")
+        try FileManager.default.createDirectory(at: package, withIntermediateDirectories: true)
+        try "get {}".write(to: root.appendingPathComponent("root.bru"), atomically: true, encoding: .utf8)
+        try "get {}".write(to: package.appendingPathComponent("hidden.bru"), atomically: true, encoding: .utf8)
+        let bundle = try BrunoCollectionSource.bundle(at: root)
+        #expect(bundle.contains("root.bru"))
+        #expect(!bundle.contains("hidden.bru"))
+    }
+}

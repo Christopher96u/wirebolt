@@ -16,3 +16,14 @@ struct OAuthFormTests {
         #expect(decoded == original)
     }
 }
+
+extension OAuthFormTests {
+    @Test("Rust transport failures retain native localized network diagnostics")
+    func nativeNetworkMessages() {
+        let cases: [(DomainNetworkFailure, URLError.Code)] = [(.timeout, .timedOut), (.hostNotFound, .cannotFindHost), (.cannotConnect, .cannotConnectToHost), (.offline, .notConnectedToInternet), (.connectionLost, .networkConnectionLost), (.certificate, .serverCertificateUntrusted), (.tls, .secureConnectionFailed), (.decode, .cannotDecodeContentData)]
+        for (kind, code) in cases {
+            let error = OAuth2ServiceError(domain: .TransportFailure(kind: kind))
+            #expect(error.errorDescription == URLError(code).localizedDescription)
+        }
+    }
+}

@@ -48,9 +48,12 @@ its workspace. Runtime storage remains outside Git-visible workspace files.
 
 ## Ownership
 
-- Rust owns workspace persistence, import parsing, variable resolution,
-  immutable request preparation, HTTP transport, proxy policy, and TLS input.
-- Swift owns macOS interaction, document sessions, window composition, response
+- Rust owns workspace persistence, import parsing, the editable request/workspace/
+  environment records, variable editing and resolution, cURL exports, proxy forms
+  and probe state, sidebar indexes, chrome labels, theme/contrast computation,
+  OAuth 2 protocol logic, immutable request preparation, HTTP transport, and TLS input.
+- Swift projects typed Rust domain records and owns macOS interaction, document
+  sessions, window composition, response
   presentation, Keychain orchestration, and local runtime repositories.
 - `WireboltModel` publishes small presentation state and coordinates these deep
   modules; views do not parse imports, resolve secrets, or assemble transport

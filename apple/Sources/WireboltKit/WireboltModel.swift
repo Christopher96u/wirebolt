@@ -1861,24 +1861,7 @@ public extension ImportFormat {
 
     /// Infers the importer for a file opened from Finder or dropped on the window.
     static func detect(fileExtension: String, contents: String) -> ImportFormat? {
-        let trimmed = contents.trimmingCharacters(in: .whitespacesAndNewlines)
-        // Shell files may start with comments before the first command.
-        let command = trimmed.split(whereSeparator: \.isNewline)
-            .map { $0.trimmingCharacters(in: .whitespaces) }
-            .first { !$0.isEmpty && !$0.hasPrefix("#") } ?? ""
-        if command.hasPrefix("curl ") || command.hasPrefix("curl\t") { return .curl }
-        guard let data = trimmed.data(using: .utf8),
-              let root = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
-        else { return detectCollectionExport(fileExtension: fileExtension, contents: trimmed, root: nil) }
-        if let log = root["log"] as? [String: Any], log["entries"] is [Any] { return .har }
-        if let info = root["info"] as? [String: Any], info["schema"] != nil || info["_postman_id"] != nil {
-            return .postmanV2
-        }
-        if root["version"] as? Int == 1, root["nodes"] is [Any] { return .legacyWorkspaceV1 }
-        if let format = detectCollectionExport(fileExtension: fileExtension, contents: trimmed, root: root) {
-            return format
-        }
-        return fileExtension.lowercased() == "har" ? .har : nil
+        domainDetectImport(extension: fileExtension, contents: contents).flatMap(ImportFormat.init(rawValue:))
     }
 }
 

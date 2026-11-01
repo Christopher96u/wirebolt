@@ -4,14 +4,11 @@ public struct HTTPMethod: RawRepresentable, CaseIterable, Codable, Hashable, Sen
     public let rawValue: String
 
     public init?(rawValue: String) {
-        let normalized = rawValue.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
-        guard normalized.isEmpty == false,
-              normalized.utf8.allSatisfy({ byte in
-                  (65 ... 90).contains(byte) || (48 ... 57).contains(byte) || byte == 45
-              })
-        else { return nil }
+        guard let normalized = domainNormalizeMethod(value: rawValue) else { return nil }
         self.rawValue = normalized
     }
+
+    init(domainValue: String) { rawValue = domainValue }
 
     private init(_ value: String) {
         rawValue = value
@@ -79,16 +76,33 @@ public enum ValueSource: Codable, Equatable, Hashable, Sendable {
 }
 
 public struct RequestField: Identifiable, Codable, Equatable, Sendable {
-    public var id: String
-    public var name: String
-    public var value: ValueSource
-    public var enabled: Bool
-    public var sensitive: Bool
+    var domain: DomainField = DomainField(id: "", name: "", value: .literal(value: ""), enabled: false, sensitive: false)
+    init(domain: DomainField) { self.domain = domain }
 
+    public var id: String {
+        get { domain.id }
+        set { domain.id = newValue }
+    }
+    public var name: String {
+        get { domain.name }
+        set { domain.name = newValue }
+    }
+    public var value: ValueSource {
+        get { ValueSource(domain: domain.value) }
+        set { domain.value = newValue.domain }
+    }
+    public var enabled: Bool {
+        get { domain.enabled }
+        set { domain.enabled = newValue }
+    }
+    public var sensitive: Bool {
+        get { domain.sensitive }
+        set { domain.sensitive = newValue }
+    }
     enum CodingKeys: String, CodingKey { case id, name, value, enabled, sensitive }
 
     public init(
-        id: String = UUID().uuidString.lowercased(),
+        id: String = domainUniqueId(),
         name: String = "",
         value: ValueSource = .literal(""),
         enabled: Bool = true,
@@ -104,7 +118,7 @@ public struct RequestField: Identifiable, Codable, Equatable, Sendable {
     public init(from decoder: any Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         id = try container.decodeIfPresent(String.self, forKey: .id)
-            ?? UUID().uuidString.lowercased()
+            ?? domainUniqueId()
         name = try container.decode(String.self, forKey: .name)
         value = try container.decode(ValueSource.self, forKey: .value)
         enabled = try container.decode(Bool.self, forKey: .enabled)
@@ -132,16 +146,45 @@ public enum OAuth2Grant: String, Codable, CaseIterable, Sendable {
 }
 
 public struct OAuth2Configuration: Codable, Equatable, Sendable {
-    public var grant: OAuth2Grant
-    public var authorizationURL: String
-    public var tokenURL: String
-    public var clientID: String
-    public var clientSecretReference: String
-    public var scopes: String
-    public var audience: String
-    public var redirectURI: String
-    public var accessTokenReference: String
+    var domain: DomainOAuthConfiguration = DomainOAuthConfiguration(grant: .authorizationCodePkce, authorizationUrl: "", tokenUrl: "", clientId: "", clientSecretReference: "", scopes: "", audience: "", redirectUri: "", accessTokenReference: "")
+    init(domain: DomainOAuthConfiguration) { self.domain = domain }
 
+    public var grant: OAuth2Grant {
+        get { OAuth2Grant(domain: domain.grant) }
+        set { domain.grant = newValue.domain }
+    }
+    public var authorizationURL: String {
+        get { domain.authorizationUrl }
+        set { domain.authorizationUrl = newValue }
+    }
+    public var tokenURL: String {
+        get { domain.tokenUrl }
+        set { domain.tokenUrl = newValue }
+    }
+    public var clientID: String {
+        get { domain.clientId }
+        set { domain.clientId = newValue }
+    }
+    public var clientSecretReference: String {
+        get { domain.clientSecretReference }
+        set { domain.clientSecretReference = newValue }
+    }
+    public var scopes: String {
+        get { domain.scopes }
+        set { domain.scopes = newValue }
+    }
+    public var audience: String {
+        get { domain.audience }
+        set { domain.audience = newValue }
+    }
+    public var redirectURI: String {
+        get { domain.redirectUri }
+        set { domain.redirectUri = newValue }
+    }
+    public var accessTokenReference: String {
+        get { domain.accessTokenReference }
+        set { domain.accessTokenReference = newValue }
+    }
     public init(
         grant: OAuth2Grant = .authorizationCodePKCE,
         authorizationURL: String = "",
@@ -172,6 +215,32 @@ public struct OAuth2Configuration: Codable, Equatable, Sendable {
         case clientSecretReference = "client_secret_reference"
         case redirectURI = "redirect_uri"
         case accessTokenReference = "access_token_reference"
+    }
+
+    public init(from decoder: any Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        grant = try c.decode(OAuth2Grant.self, forKey: .grant)
+        authorizationURL = try c.decode(String.self, forKey: .authorizationURL)
+        tokenURL = try c.decode(String.self, forKey: .tokenURL)
+        clientID = try c.decode(String.self, forKey: .clientID)
+        clientSecretReference = try c.decode(String.self, forKey: .clientSecretReference)
+        scopes = try c.decode(String.self, forKey: .scopes)
+        audience = try c.decode(String.self, forKey: .audience)
+        redirectURI = try c.decode(String.self, forKey: .redirectURI)
+        accessTokenReference = try c.decode(String.self, forKey: .accessTokenReference)
+    }
+
+    public func encode(to encoder: any Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(grant, forKey: .grant)
+        try c.encode(authorizationURL, forKey: .authorizationURL)
+        try c.encode(tokenURL, forKey: .tokenURL)
+        try c.encode(clientID, forKey: .clientID)
+        try c.encode(clientSecretReference, forKey: .clientSecretReference)
+        try c.encode(scopes, forKey: .scopes)
+        try c.encode(audience, forKey: .audience)
+        try c.encode(redirectURI, forKey: .redirectURI)
+        try c.encode(accessTokenReference, forKey: .accessTokenReference)
     }
 }
 
@@ -236,7 +305,7 @@ public enum RequestAuthentication: Codable, Equatable, Sendable {
 /// name so two requests never read or overwrite each other's secret material.
 public enum CredentialReference {
     public static func unique(role: String, scope: String = "auth") -> String {
-        String("\(scope).\(UUID().uuidString.lowercased()).\(sanitized(role))".prefix(128))
+        domainCredentialReference(role: role, scope: scope)
     }
 
     /// Names earlier versions gave every API Key and OAuth request. Other workspaces may still
@@ -249,19 +318,12 @@ public enum CredentialReference {
     /// item can be deleted once nothing references it. Names people chose (such as proxy
     /// credentials or `{{secret}}` references) and legacy shared names never qualify.
     public static func isOwned(_ name: String) -> Bool {
-        name.wholeMatch(of: ownedPattern) != nil
+        domainOwnedReference(name: name)
     }
 
-    // `auth.<uuid>.<role>` and `env.<uuid>.<environment>` from this version, the uppercase
-    // `auth.<UUID>.<role>` and `request.<uuid>.<role>` from earlier ones, and names created
-    // by an import (`import-<time>-<process>-<sequence>-request-<n>-<role>`).
-    private nonisolated(unsafe) static let ownedPattern =
-        /(?:(?:auth|env|request)\.[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\.[A-Za-z0-9._-]+)|(?:import-[0-9a-f]+-[0-9a-f]+-[0-9a-f]+-request-[0-9]+-[a-z-]+)/
 
     static func sanitized(_ text: String) -> String {
-        let allowed = Set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789.-_")
-        let clean = String(text.map { allowed.contains($0) ? $0 : "-" })
-        return clean.isEmpty ? "value" : clean
+        domainSanitized(text: text)
     }
 }
 
@@ -274,50 +336,20 @@ public extension ValueSource {
 public extension RequestAuthentication {
     /// Keychain names this authentication reads or writes.
     var secretReferences: [String] {
-        switch self {
-        case .none: []
-        case let .basic(username, password): [username.secretName, password.secretName].compactMap { $0 }
-        case let .bearer(token): [token.secretName].compactMap { $0 }
-        case let .apiKey(_, _, value): [value.secretName].compactMap { $0 }
-        case let .oauth2(configuration):
-            [configuration.clientSecretReference, configuration.accessTokenReference].filter { !$0.isEmpty }
-        }
+        domainAuthReferences(authentication: domain)
     }
 
     /// The same authentication with each Keychain name passed through `rename`.
     func renamingSecrets(_ rename: (String) -> String) -> RequestAuthentication {
-        func renamed(_ source: ValueSource) -> ValueSource {
-            source.secretName.map { .secret(rename($0)) } ?? source
-        }
-        switch self {
-        case .none: return .none
-        case let .basic(username, password): return .basic(username: renamed(username), password: renamed(password))
-        case let .bearer(token): return .bearer(token: renamed(token))
-        case let .apiKey(placement, name, value): return .apiKey(placement: placement, name: name, value: renamed(value))
-        case var .oauth2(configuration):
-            if !configuration.clientSecretReference.isEmpty {
-                configuration.clientSecretReference = rename(configuration.clientSecretReference)
-            }
-            if !configuration.accessTokenReference.isEmpty {
-                configuration.accessTokenReference = rename(configuration.accessTokenReference)
-            }
-            return .oauth2(configuration: configuration)
-        }
+        let names = Dictionary(secretReferences.map { ($0, rename($0)) }, uniquingKeysWith: { first, _ in first })
+        return RequestAuthentication(domain: domainRenameAuth(authentication: domain, names: names))
     }
 
     /// Fresh per-request names for every credential, for a copy of a request (`all`) or for
     /// migrating legacy shared names only. Returns the new authentication and old → new names.
     func withOwnKeychainNames(onlyLegacy: Bool) -> (RequestAuthentication, [String: String]) {
-        var renames: [String: String] = [:]
-        let authentication = renamingSecrets { name in
-            guard !onlyLegacy || CredentialReference.isLegacyShared(name) else { return name }
-            if let existing = renames[name] { return existing }
-            let role = name.contains(".") ? String(name.split(separator: ".").last ?? "secret") : "secret"
-            let fresh = CredentialReference.unique(role: role)
-            renames[name] = fresh
-            return fresh
-        }
-        return (authentication, renames)
+        let result = domainOwnAuth(authentication: domain, onlyLegacy: onlyLegacy)
+        return (RequestAuthentication(domain: result.authentication), result.renames)
     }
 }
 
@@ -327,26 +359,13 @@ public enum AuthenticationKind: CaseIterable, Sendable {
 
 public extension RequestAuthentication {
     var kind: AuthenticationKind {
-        switch self {
-        case .none: .none
-        case .basic: .basic
-        case .bearer: .bearer
-        case .apiKey: .apiKey
-        case .oauth2: .oauth2
-        }
+        let kind = domainAuthKind(authentication: domain)
+        return AuthenticationKind.allCases.first { String(describing: $0) == kind } ?? .none
     }
 
     /// An empty authentication of `kind` whose secrets use fresh Keychain names.
     static func new(_ kind: AuthenticationKind) -> RequestAuthentication {
-        switch kind {
-        case .none: .none
-        case .basic: .basic(username: .literal(""), password: .secret(CredentialReference.unique(role: "password")))
-        case .bearer: .bearer(token: .secret(CredentialReference.unique(role: "token")))
-        case .apiKey:
-            .apiKey(placement: .header, name: "X-API-Key", value: .secret(CredentialReference.unique(role: "api-key")))
-        case .oauth2:
-            .oauth2(configuration: OAuth2Configuration())
-        }
+        RequestAuthentication(domain: domainNewAuth(kind: String(describing: kind)))
     }
 }
 
@@ -442,17 +461,43 @@ public enum MultipartPartKind: String, Codable, CaseIterable, Sendable {
 }
 
 public struct MultipartPart: Identifiable, Codable, Equatable, Sendable {
-    public var id: String
-    public var name: String
-    public var kind: MultipartPartKind
-    public var value: ValueSource
-    public var filePath: String?
-    public var fileName: String?
-    public var contentType: String?
-    public var enabled: Bool
+    var domain: DomainMultipartPart = DomainMultipartPart(id: "", name: "", kind: .text, value: .literal(value: ""), filePath: nil, fileName: nil, contentType: nil, enabled: false)
+    init(domain: DomainMultipartPart) { self.domain = domain }
 
+    public var id: String {
+        get { domain.id }
+        set { domain.id = newValue }
+    }
+    public var name: String {
+        get { domain.name }
+        set { domain.name = newValue }
+    }
+    public var kind: MultipartPartKind {
+        get { MultipartPartKind(domain: domain.kind) }
+        set { domain.kind = newValue.domain }
+    }
+    public var value: ValueSource {
+        get { ValueSource(domain: domain.value) }
+        set { domain.value = newValue.domain }
+    }
+    public var filePath: String? {
+        get { domain.filePath.map { $0 } }
+        set { domain.filePath = newValue.map { $0 } }
+    }
+    public var fileName: String? {
+        get { domain.fileName.map { $0 } }
+        set { domain.fileName = newValue.map { $0 } }
+    }
+    public var contentType: String? {
+        get { domain.contentType.map { $0 } }
+        set { domain.contentType = newValue.map { $0 } }
+    }
+    public var enabled: Bool {
+        get { domain.enabled }
+        set { domain.enabled = newValue }
+    }
     public init(
-        id: String = UUID().uuidString.lowercased(),
+        id: String = domainUniqueId(),
         name: String = "",
         kind: MultipartPartKind = .text,
         value: ValueSource = .literal(""),
@@ -477,6 +522,30 @@ public struct MultipartPart: Identifiable, Codable, Equatable, Sendable {
         case fileName = "file_name"
         case contentType = "content_type"
     }
+
+    public init(from decoder: any Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(String.self, forKey: .id)
+        name = try c.decode(String.self, forKey: .name)
+        kind = try c.decode(MultipartPartKind.self, forKey: .kind)
+        value = try c.decode(ValueSource.self, forKey: .value)
+        filePath = try c.decodeIfPresent(String.self, forKey: .filePath)
+        fileName = try c.decodeIfPresent(String.self, forKey: .fileName)
+        contentType = try c.decodeIfPresent(String.self, forKey: .contentType)
+        enabled = try c.decode(Bool.self, forKey: .enabled)
+    }
+
+    public func encode(to encoder: any Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(id, forKey: .id)
+        try c.encode(name, forKey: .name)
+        try c.encode(kind, forKey: .kind)
+        try c.encode(value, forKey: .value)
+        try c.encodeIfPresent(filePath, forKey: .filePath)
+        try c.encodeIfPresent(fileName, forKey: .fileName)
+        try c.encodeIfPresent(contentType, forKey: .contentType)
+        try c.encode(enabled, forKey: .enabled)
+    }
 }
 
 public enum ProxySelection: Hashable, Sendable {
@@ -487,14 +556,37 @@ public enum ProxySelection: Hashable, Sendable {
 }
 
 public struct TransportSettings: Codable, Equatable, Sendable {
-    public var validateTLS: Bool
-    public var followRedirects: Bool
-    public var maximumRedirects: Int
-    public var totalTimeoutMS: UInt64
-    public var readTimeoutMS: UInt64
-    public var clientCertificateReference: String?
-    public var customCAPath: String?
+    var domain: DomainTransport = DomainTransport(validateTls: false, followRedirects: false, maximumRedirects: 0, totalTimeoutMs: 0, readTimeoutMs: 0, clientCertificateReference: nil, customCaPath: nil)
+    init(domain: DomainTransport) { self.domain = domain }
 
+    public var validateTLS: Bool {
+        get { domain.validateTls }
+        set { domain.validateTls = newValue }
+    }
+    public var followRedirects: Bool {
+        get { domain.followRedirects }
+        set { domain.followRedirects = newValue }
+    }
+    public var maximumRedirects: Int {
+        get { Int(domain.maximumRedirects) }
+        set { domain.maximumRedirects = Int64(newValue) }
+    }
+    public var totalTimeoutMS: UInt64 {
+        get { domain.totalTimeoutMs }
+        set { domain.totalTimeoutMs = newValue }
+    }
+    public var readTimeoutMS: UInt64 {
+        get { domain.readTimeoutMs }
+        set { domain.readTimeoutMs = newValue }
+    }
+    public var clientCertificateReference: String? {
+        get { domain.clientCertificateReference.map { $0 } }
+        set { domain.clientCertificateReference = newValue.map { $0 } }
+    }
+    public var customCAPath: String? {
+        get { domain.customCaPath.map { $0 } }
+        set { domain.customCaPath = newValue.map { $0 } }
+    }
     public init(
         validateTLS: Bool = true,
         followRedirects: Bool = false,
@@ -506,7 +598,7 @@ public struct TransportSettings: Codable, Equatable, Sendable {
     ) {
         self.validateTLS = validateTLS
         self.followRedirects = followRedirects
-        self.maximumRedirects = min(max(maximumRedirects, 0), 10)
+        self.maximumRedirects = Int(domainClampRedirects(value: Int64(maximumRedirects)))
         self.totalTimeoutMS = totalTimeoutMS
         self.readTimeoutMS = readTimeoutMS
         self.clientCertificateReference = clientCertificateReference
@@ -522,23 +614,88 @@ public struct TransportSettings: Codable, Equatable, Sendable {
         case clientCertificateReference = "client_certificate_reference"
         case customCAPath = "custom_ca_path"
     }
+
+    public init(from decoder: any Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        validateTLS = try c.decode(Bool.self, forKey: .validateTLS)
+        followRedirects = try c.decode(Bool.self, forKey: .followRedirects)
+        maximumRedirects = try c.decode(Int.self, forKey: .maximumRedirects)
+        totalTimeoutMS = try c.decode(UInt64.self, forKey: .totalTimeoutMS)
+        readTimeoutMS = try c.decode(UInt64.self, forKey: .readTimeoutMS)
+        clientCertificateReference = try c.decodeIfPresent(String.self, forKey: .clientCertificateReference)
+        customCAPath = try c.decodeIfPresent(String.self, forKey: .customCAPath)
+    }
+
+    public func encode(to encoder: any Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(validateTLS, forKey: .validateTLS)
+        try c.encode(followRedirects, forKey: .followRedirects)
+        try c.encode(maximumRedirects, forKey: .maximumRedirects)
+        try c.encode(totalTimeoutMS, forKey: .totalTimeoutMS)
+        try c.encode(readTimeoutMS, forKey: .readTimeoutMS)
+        try c.encodeIfPresent(clientCertificateReference, forKey: .clientCertificateReference)
+        try c.encodeIfPresent(customCAPath, forKey: .customCAPath)
+    }
 }
 
 public struct RequestDraft: Equatable, Sendable {
-    public var id: String
-    public var name: String
-    public var method: HTTPMethod
-    public var url: String
-    public var webSocket: Bool
-    public var note: String
-    public var query: [RequestField]
-    public var headers: [RequestField]
-    public var authentication: RequestAuthentication
-    public var body: RequestBody
-    public var proxy: ProxySelection
-    public var transport: TransportSettings
-    public var inheritsWorkspaceTransport: Bool
+    private var displayCache: UrlQueryEdit?
+    public static func == (lhs: Self, rhs: Self) -> Bool { lhs.domain == rhs.domain }
+    var domain: DomainRequestDraft = DomainRequestDraft(id: "", name: "", method: "", url: "", webSocket: false, note: "", query: [], headers: [], authentication: .none, body: .empty, proxy: nil, transport: DomainTransport(validateTls: false, followRedirects: false, maximumRedirects: 0, totalTimeoutMs: 0, readTimeoutMs: 0, clientCertificateReference: nil, customCaPath: nil), inheritsWorkspaceTransport: false)
+    init(domain: DomainRequestDraft) { self.domain = domain }
 
+    public var id: String {
+        get { domain.id }
+        set { domain.id = newValue }
+    }
+    public var name: String {
+        get { domain.name }
+        set { domain.name = newValue }
+    }
+    public var method: HTTPMethod {
+        get { HTTPMethod(domainValue: domain.method) }
+        set { domain.method = newValue.rawValue }
+    }
+    public var url: String {
+        get { domain.url }
+        set { domain.url = newValue }
+    }
+    public var webSocket: Bool {
+        get { domain.webSocket }
+        set { domain.webSocket = newValue }
+    }
+    public var note: String {
+        get { domain.note }
+        set { domain.note = newValue }
+    }
+    public var query: [RequestField] {
+        get { domain.query.map { RequestField(domain: $0) } }
+        set { domain.query = newValue.map { $0.domain } }
+    }
+    public var headers: [RequestField] {
+        get { domain.headers.map { RequestField(domain: $0) } }
+        set { domain.headers = newValue.map { $0.domain } }
+    }
+    public var authentication: RequestAuthentication {
+        get { RequestAuthentication(domain: domain.authentication) }
+        set { domain.authentication = newValue.domain }
+    }
+    public var body: RequestBody {
+        get { RequestBody(domain: domain.body) }
+        set { domain.body = newValue.domain }
+    }
+    public var proxy: ProxySelection {
+        get { ProxySelection(document: domain.proxy.map(ProxyDocument.init(domain:))) }
+        set { domain.proxy = newValue.document?.domain }
+    }
+    public var transport: TransportSettings {
+        get { TransportSettings(domain: domain.transport) }
+        set { domain.transport = newValue.domain }
+    }
+    public var inheritsWorkspaceTransport: Bool {
+        get { domain.inheritsWorkspaceTransport }
+        set { domain.inheritsWorkspaceTransport = newValue }
+    }
     public init(
         id: String = "draft",
         name: String = "Untitled Request",
@@ -573,74 +730,54 @@ public struct RequestDraft: Equatable, Sendable {
 public extension RequestDraft {
     var separatingURLQuery: RequestDraft {
         var result = self
-        let explicitFields = query
-        result.query = []
-        result.editURL(url)
-        result.query += explicitFields
+        result.apply(domainSeparateUrlQuery(url: domain.url, query: domain.query))
         return result
     }
 
     /// The URL field combines the base URL and the editable query table. Transport
     /// receives them separately so each query parameter is encoded exactly once.
     var displayURL: String {
-        let enabled = query.filter(\.enabled)
-        guard !enabled.isEmpty else { return url }
-        var components = URLComponents()
-        components.queryItems = enabled.map { URLQueryItem(name: $0.name, value: $0.value.editableValue) }
-        let fragment = url.firstIndex(of: "#") ?? url.endIndex
-        let prefix = String(url[..<fragment])
-        let separator = prefix.contains("?") ? "&" : "?"
-        // Variable references stay readable (and show as chips); the run resolves and
-        // encodes them when it sends.
-        let query = (components.percentEncodedQuery ?? "")
-            .replacingOccurrences(of: "%7B%7B", with: "{{")
-            .replacingOccurrences(of: "%7D%7D", with: "}}")
-        return prefix + separator + query + url[fragment...]
+        if let cache = displayCache, cache.url == domain.url, cache.query == domain.query { return cache.displayUrl }
+        return domainDisplayUrl(url: domain.url, query: domain.query)
     }
 
     mutating func editURL(_ text: String) {
-        let fragment = text.firstIndex(of: "#") ?? text.endIndex
-        let prefix = text[..<fragment]
-        guard let start = prefix.firstIndex(of: "?") else {
-            url = text
-            query.removeAll(where: \.enabled)
-            return
-        }
-        // `{{variable}}` braces are not valid URL characters; encode them so the parser
-        // does not re-encode the whole query (and every `%20` with it). Query items decode
-        // them back.
-        let rawQuery = String(prefix[prefix.index(after: start)...])
-            .replacingOccurrences(of: "{", with: "%7B")
-            .replacingOccurrences(of: "}", with: "%7D")
-        var components = URLComponents()
-        // URLComponents(string:) accepts partially typed and Unicode query values.
-        components = URLComponents(string: "https://query.invalid/?" + rawQuery) ?? components
-        guard let items = components.queryItems else { return }
-        var previous = query.filter(\.enabled)
-        let disabled = query.filter { !$0.enabled }
-        query = items.map { item in
-            if let index = previous.firstIndex(where: { $0.name == item.name }) {
-                var field = previous.remove(at: index)
-                if field.value.editableValue != (item.value ?? "") {
-                    field.value = .literal(item.value ?? "")
-                }
-                return field
-            }
-            return RequestField(name: item.name, value: .literal(item.value ?? ""))
-        } + disabled
-        url = String(prefix[..<start]) + text[fragment...]
+        apply(domainEditUrl(url: domain.url, query: domain.query, text: text))
+    }
+
+    private mutating func apply(_ edit: UrlQueryEdit) {
+        domain.url = edit.url
+        domain.query = edit.query
+        displayCache = edit
     }
 }
 
 public struct EnvironmentVariableDraft: Identifiable, Codable, Equatable, Sendable {
-    public var id: String
-    public var key: String
-    public var value: ValueSource
-    public var enabled: Bool
-    public var order: Int
+    var domain: DomainVariable = DomainVariable(id: "", key: "", value: .literal(value: ""), enabled: false, order: 0)
+    init(domain: DomainVariable) { self.domain = domain }
 
+    public var id: String {
+        get { domain.id }
+        set { domain.id = newValue }
+    }
+    public var key: String {
+        get { domain.key }
+        set { domain.key = newValue }
+    }
+    public var value: ValueSource {
+        get { ValueSource(domain: domain.value) }
+        set { domain.value = newValue.domain }
+    }
+    public var enabled: Bool {
+        get { domain.enabled }
+        set { domain.enabled = newValue }
+    }
+    public var order: Int {
+        get { Int(domain.order) }
+        set { domain.order = Int64(newValue) }
+    }
     public init(
-        id: String = UUID().uuidString.lowercased(),
+        id: String = domainUniqueId(),
         key: String = "",
         value: ValueSource = .literal(""),
         enabled: Bool = true,
@@ -652,6 +789,26 @@ public struct EnvironmentVariableDraft: Identifiable, Codable, Equatable, Sendab
         self.enabled = enabled
         self.order = order
     }
+
+    public init(from decoder: any Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(String.self, forKey: .id)
+        key = try c.decode(String.self, forKey: .key)
+        value = try c.decode(ValueSource.self, forKey: .value)
+        enabled = try c.decode(Bool.self, forKey: .enabled)
+        order = try c.decode(Int.self, forKey: .order)
+    }
+
+    public func encode(to encoder: any Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(id, forKey: .id)
+        try c.encode(key, forKey: .key)
+        try c.encode(value, forKey: .value)
+        try c.encode(enabled, forKey: .enabled)
+        try c.encode(order, forKey: .order)
+    }
+
+    private enum CodingKeys: String, CodingKey { case id, key, value, enabled, order }
 }
 
 public extension EnvironmentVariableDraft {
@@ -672,40 +829,34 @@ public extension EnvironmentDraft {
 }
 
 public extension RequestDraft {
-    /// Every Keychain name the request refers to: authentication, fields, bodies and proxy.
-    var secretReferences: Set<String> {
-        var names = Set(authentication.secretReferences)
-        names.formUnion((query + headers).compactMap(\.value.secretName))
-        switch body {
-        case let .formURLEncoded(fields): names.formUnion(fields.compactMap(\.value.secretName))
-        case let .multipart(parts): names.formUnion(parts.compactMap(\.value.secretName))
-        default: break
-        }
-        if case let .manual(.manual(routes)) = proxy {
-            names.formUnion(routes.compactMap(\.credentials).flatMap { [$0.username, $0.password] })
-        }
-        return names
-    }
+    /// Keychain references are collected in Rust, with no secret material.
+    var secretReferences: Set<String> { Set(domainRequestReferences(draft: domain)) }
 }
 
 public extension WorkspaceDraft {
-    var secretReferences: Set<String> {
-        var names = Set(environments.flatMap(\.secretReferences))
-        for collection in collections {
-            for location in collection.requests { names.formUnion(location.request.secretReferences) }
-        }
-        if case let .manual(routes) = proxy {
-            names.formUnion(routes.compactMap(\.credentials).flatMap { [$0.username, $0.password] })
-        }
-        return names
-    }
+    var secretReferences: Set<String> { Set(domainWorkspaceReferences(workspace: domain)) }
 }
 
 public struct EnvironmentDraft: Identifiable, Codable, Equatable, Sendable {
-    public var id: String
-    public var name: String
-    public var variables: [EnvironmentVariableDraft]
+    var domain: DomainEnvironment = DomainEnvironment(id: "", name: "", variables: [])
+    private var projectedVariables: [EnvironmentVariableDraft] = []
+    init(domain: DomainEnvironment) {
+        self.domain = domain
+        projectedVariables = domain.variables.map(EnvironmentVariableDraft.init(domain:))
+    }
 
+    public var id: String {
+        get { domain.id }
+        set { domain.id = newValue }
+    }
+    public var name: String {
+        get { domain.name }
+        set { domain.name = newValue }
+    }
+    public var variables: [EnvironmentVariableDraft] {
+        get { projectedVariables }
+        set { projectedVariables = newValue; domain.variables = newValue.map(\.domain) }
+    }
     public init(
         id: String,
         name: String,
@@ -717,36 +868,51 @@ public struct EnvironmentDraft: Identifiable, Codable, Equatable, Sendable {
     }
 
     public init(id: String, name: String, legacyVariables: [String: ValueSource]) {
-        self.id = id
-        self.name = name
-        variables = legacyVariables.sorted(by: { $0.key < $1.key }).enumerated().map {
-            EnvironmentVariableDraft(
-                id: "variable-\($0.offset)",
-                key: $0.element.key,
-                value: $0.element.value,
-                order: $0.offset
-            )
-        }
+        self.init(domain: domainLegacyEnvironment(id: id, name: name, values: legacyVariables.mapValues(\.domain)))
     }
 
     public var enabledValues: [String: ValueSource] {
-        Dictionary(
-            variables
-                .filter { $0.enabled && $0.key.isEmpty == false }
-                .sorted { ($0.order, $0.key) < ($1.order, $1.key) }
-                .map { ($0.key, $0.value) },
-            uniquingKeysWith: { _, newest in newest }
-        )
+        domainEnabledValues(environment: domain).mapValues(ValueSource.init(domain:))
     }
+
+    public init(from decoder: any Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(String.self, forKey: .id)
+        name = try c.decode(String.self, forKey: .name)
+        variables = try c.decode([EnvironmentVariableDraft].self, forKey: .variables)
+    }
+
+    public func encode(to encoder: any Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(id, forKey: .id)
+        try c.encode(name, forKey: .name)
+        try c.encode(variables, forKey: .variables)
+    }
+
+    private enum CodingKeys: String, CodingKey { case id, name, variables }
 }
 
 public struct RequestLocation: Identifiable, Equatable, Sendable {
-    public var id: String { "\(collectionID)/\(request.id)" }
-    public let collectionID: String
-    public var groupID: String?
-    public var order: Int
-    public var request: RequestDraft
+    var domain: DomainLocation = DomainLocation(collectionId: "", groupId: nil, order: 0, request: DomainRequestDraft(id: "", name: "", method: "", url: "", webSocket: false, note: "", query: [], headers: [], authentication: .none, body: .empty, proxy: nil, transport: DomainTransport(validateTls: false, followRedirects: false, maximumRedirects: 0, totalTimeoutMs: 0, readTimeoutMs: 0, clientCertificateReference: nil, customCaPath: nil), inheritsWorkspaceTransport: false))
+    init(domain: DomainLocation) { self.domain = domain }
 
+    public var id: String { "\(collectionID)/\(request.id)" }
+    public var collectionID: String {
+        get { domain.collectionId }
+        set { domain.collectionId = newValue }
+    }
+    public var groupID: String? {
+        get { domain.groupId.map { $0 } }
+        set { domain.groupId = newValue.map { $0 } }
+    }
+    public var order: Int {
+        get { Int(domain.order) }
+        set { domain.order = Int64(newValue) }
+    }
+    public var request: RequestDraft {
+        get { RequestDraft(domain: domain.request) }
+        set { domain.request = newValue.domain }
+    }
     public init(
         collectionID: String,
         groupID: String? = nil,
@@ -761,11 +927,25 @@ public struct RequestLocation: Identifiable, Equatable, Sendable {
 }
 
 public struct GroupDraft: Identifiable, Codable, Equatable, Sendable {
-    public var id: String
-    public var name: String
-    public var parentID: String?
-    public var order: Int
+    var domain: DomainGroup = DomainGroup(id: "", name: "", parentId: nil, order: 0)
+    init(domain: DomainGroup) { self.domain = domain }
 
+    public var id: String {
+        get { domain.id }
+        set { domain.id = newValue }
+    }
+    public var name: String {
+        get { domain.name }
+        set { domain.name = newValue }
+    }
+    public var parentID: String? {
+        get { domain.parentId.map { $0 } }
+        set { domain.parentId = newValue.map { $0 } }
+    }
+    public var order: Int {
+        get { Int(domain.order) }
+        set { domain.order = Int64(newValue) }
+    }
     public init(id: String, name: String, parentID: String? = nil, order: Int = 0) {
         self.id = id
         self.name = name
@@ -777,15 +957,54 @@ public struct GroupDraft: Identifiable, Codable, Equatable, Sendable {
         case id, name, order
         case parentID = "parent_id"
     }
+
+    public init(from decoder: any Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(String.self, forKey: .id)
+        name = try c.decode(String.self, forKey: .name)
+        parentID = try c.decodeIfPresent(String.self, forKey: .parentID)
+        order = try c.decode(Int.self, forKey: .order)
+    }
+
+    public func encode(to encoder: any Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(id, forKey: .id)
+        try c.encode(name, forKey: .name)
+        try c.encodeIfPresent(parentID, forKey: .parentID)
+        try c.encode(order, forKey: .order)
+    }
 }
 
 public struct CollectionDraft: Identifiable, Equatable, Sendable {
-    public var id: String
-    public var name: String
-    public var order: Int
-    public var groups: [GroupDraft]
-    public var requests: [RequestLocation]
+    var domain: DomainCollection = DomainCollection(id: "", name: "", order: 0, groups: [], requests: [])
+    private var projectedGroups: [GroupDraft] = []
+    private var projectedRequests: [RequestLocation] = []
+    init(domain: DomainCollection) {
+        self.domain = domain
+        projectedGroups = domain.groups.map(GroupDraft.init(domain:))
+        projectedRequests = domain.requests.map(RequestLocation.init(domain:))
+    }
 
+    public var id: String {
+        get { domain.id }
+        set { domain.id = newValue }
+    }
+    public var name: String {
+        get { domain.name }
+        set { domain.name = newValue }
+    }
+    public var order: Int {
+        get { Int(domain.order) }
+        set { domain.order = Int64(newValue) }
+    }
+    public var groups: [GroupDraft] {
+        get { projectedGroups }
+        set { projectedGroups = newValue; domain.groups = newValue.map(\.domain) }
+    }
+    public var requests: [RequestLocation] {
+        get { projectedRequests }
+        set { projectedRequests = newValue; domain.requests = newValue.map(\.domain) }
+    }
     public init(
         id: String,
         name: String,
@@ -929,32 +1148,14 @@ public struct ImportSummary: Codable, Equatable, Identifiable, Sendable {
     /// One sentence describing what was imported, such as
     /// "Imported 9 requests in 3 folders into “Shop API”."
     public var headline: String {
-        var text = "Imported \(Self.counted(requestCount, "request"))"
-        if groupCount > 0 { text += " in \(Self.counted(groupCount, "folder"))" }
-        if collectionNames.count == 1, let name = collectionNames.first {
-            text += " into “\(name)”."
-        } else if collectionNames.count > 1 {
-            text += " into \(collectionNames.count) collections."
-        } else {
-            text += "."
-        }
-        return text
+        domainImportHeadline(names: collectionNames, requests: Int64(requestCount), groups: Int64(groupCount))
     }
 
     /// Describes the environments the import created, if any.
     public var environmentLine: String? {
-        switch environments.count {
-        case 0: nil
-        case 1: "Created the environment “\(environments[0].name)” for its variables."
-        default:
-            "Created \(environments.count) environments: "
-                + ListFormatter.localizedString(byJoining: environments.map { "“\($0.name)”" }) + "."
-        }
+        domainImportEnvironmentLine(names: environments.map(\.name), localizedList: ListFormatter.localizedString(byJoining: environments.map { "“\($0.name)”" }))
     }
 
-    private static func counted(_ count: Int, _ noun: String) -> String {
-        "\(count) \(noun)\(count == 1 ? "" : "s")"
-    }
 
     enum CodingKeys: String, CodingKey {
         case warnings, environments
@@ -983,14 +1184,37 @@ public struct ImportResult: Decodable, Equatable, Sendable {
 }
 
 public struct WorkspaceDraft: Equatable, Sendable {
+    var domain: DomainWorkspace = DomainWorkspace(name: "", proxy: nil, transport: DomainTransport(validateTls: false, followRedirects: false, maximumRedirects: 0, totalTimeoutMs: 0, readTimeoutMs: 0, clientCertificateReference: nil, customCaPath: nil), collections: [], environments: [])
+    private var projectedCollections: [CollectionDraft] = []
+    private var projectedEnvironments: [EnvironmentDraft] = []
+    init(domain: DomainWorkspace) {
+        self.domain = domain
+        projectedCollections = domain.collections.map(CollectionDraft.init(domain:))
+        projectedEnvironments = domain.environments.map(EnvironmentDraft.init(domain:))
+    }
+
     public static let globalEnvironmentID = "global"
     public static let rootCollectionID = "workspace-root"
-    public var name: String
-    public var proxy: ProxyDocument?
-    public var transport: TransportSettings
-    public var collections: [CollectionDraft]
-    public var environments: [EnvironmentDraft]
-
+    public var name: String {
+        get { domain.name }
+        set { domain.name = newValue }
+    }
+    public var proxy: ProxyDocument? {
+        get { domain.proxy.map { ProxyDocument(domain: $0) } }
+        set { domain.proxy = newValue.map { $0.domain } }
+    }
+    public var transport: TransportSettings {
+        get { TransportSettings(domain: domain.transport) }
+        set { domain.transport = newValue.domain }
+    }
+    public var collections: [CollectionDraft] {
+        get { projectedCollections }
+        set { projectedCollections = newValue; domain.collections = newValue.map(\.domain) }
+    }
+    public var environments: [EnvironmentDraft] {
+        get { projectedEnvironments }
+        set { projectedEnvironments = newValue; domain.environments = newValue.map(\.domain) }
+    }
     public init(
         name: String,
         proxy: ProxyDocument? = nil,
@@ -1015,15 +1239,7 @@ public struct WorkspaceDraft: Equatable, Sendable {
 
 public extension CollectionDraft {
     func descendantGroupIDs(of rootID: String) -> Set<String> {
-        var result: Set<String> = [rootID]
-        var frontier = [rootID]
-        while let parent = frontier.popLast() {
-            for group in groups where group.parentID == parent && !result.contains(group.id) {
-                result.insert(group.id)
-                frontier.append(group.id)
-            }
-        }
-        return result
+        Set(domainSubtree(collection: domain, root: rootID).map { groups[Int($0)].id }).union([rootID])
     }
 }
 
@@ -1090,25 +1306,17 @@ public enum GitPushAvailability: Equatable, Sendable {
 
 extension GitStatusSnapshot {
     public var pushAvailability: GitPushAvailability {
-        guard let branch else { return .unavailable(reason: "Check out a branch to push. HEAD is detached.") }
-        guard upstream != nil else { return .publish(branch: branch) }
-        guard ahead > 0 else { return .unavailable(reason: "No local commits to push.") }
-        return .push
+        switch domainPushAvailability(branch: branch, upstream: upstream, ahead: ahead) {
+        case .push: .push
+        case let .publish(branch): .publish(branch: branch)
+        case let .unavailable(reason): .unavailable(reason: reason)
+        }
     }
 }
 
 extension GitChangeSnapshot {
     public var kind: GitChangeKind {
-        if conflicted { return .conflicted }
-        let deltas = [staged, unstaged]
-        if deltas.contains(where: { $0 == .unmerged }) { return .conflicted }
-        // A file added in the index stays "new" even with further unstaged edits.
-        if deltas.contains(where: { $0 == .added || $0 == .untracked }) { return .new }
-        if deltas.contains(.deleted) { return .deleted }
-        if deltas.contains(.renamed) { return .renamed }
-        if deltas.contains(.copied) { return .copied }
-        if deltas.contains(.typeChanged) { return .typeChanged }
-        return .modified
+        GitChangeKind(rawValue: domainGitChangeKind(staged: staged.rawValue, unstaged: unstaged.rawValue, conflicted: conflicted))!
     }
 }
 
@@ -1283,25 +1491,25 @@ public enum RunEvent: Equatable, Sendable {
 }
 
 public struct RunInput: Encodable, Sendable {
-    public let method: String
-    public let url: String
-    public let query: [RequestField]
-    public let headers: [RequestField]
-    public let authentication: RequestAuthentication
-    public let body: RequestBody
-    public let variables: [String: ValueSource]
-    public let appProxy: ProxyDocument?
-    public let workspaceProxy: ProxyDocument?
-    public let requestProxy: ProxyDocument?
-    public let totalTimeoutMS: UInt64
-    public let readTimeoutMS: UInt64
-    public let maxResponseBytes: UInt64?
-    public let validateTLS: Bool
-    public let followRedirects: Bool
-    public let maximumRedirects: UInt8
-    public let clientCertificateReference: String?
-    public let customCAPath: String?
-
+    let domain: DomainRunInput
+    public var method: String { domain.method }
+    public var url: String { domain.url }
+    public var query: [RequestField] { domain.query.map(RequestField.init(domain:)) }
+    public var headers: [RequestField] { domain.headers.map(RequestField.init(domain:)) }
+    public var authentication: RequestAuthentication { RequestAuthentication(domain: domain.authentication) }
+    public var body: RequestBody { RequestBody(domain: domain.body) }
+    public var variables: [String: ValueSource] { domain.variables.mapValues(ValueSource.init(domain:)) }
+    public var appProxy: ProxyDocument? { domain.appProxy.map(ProxyDocument.init(domain:)) }
+    public var workspaceProxy: ProxyDocument? { domain.workspaceProxy.map(ProxyDocument.init(domain:)) }
+    public var requestProxy: ProxyDocument? { domain.requestProxy.map(ProxyDocument.init(domain:)) }
+    public var totalTimeoutMS: UInt64 { domain.totalTimeoutMs }
+    public var readTimeoutMS: UInt64 { domain.readTimeoutMs }
+    public var maxResponseBytes: UInt64? { domain.maxResponseBytes }
+    public var validateTLS: Bool { domain.validateTls }
+    public var followRedirects: Bool { domain.followRedirects }
+    public var maximumRedirects: UInt8 { domain.maximumRedirects }
+    public var clientCertificateReference: String? { domain.clientCertificateReference }
+    public var customCAPath: String? { domain.customCaPath }
     enum CodingKeys: String, CodingKey {
         case method, url, query, headers, authentication, body, variables
         case appProxy = "app_proxy"
@@ -1317,35 +1525,29 @@ public struct RunInput: Encodable, Sendable {
         case customCAPath = "custom_ca_path"
     }
 
-    public init(
-        draft: RequestDraft,
-        variables: [String: ValueSource],
-        workspaceProxy: ProxyDocument? = nil,
-        appProxy: ProxyDocument? = nil
-    ) {
-        method = draft.method.rawValue
-        url = draft.url
-        query = draft.query
-        headers = draft.headers
-        authentication = draft.authentication
-        body = draft.body
-        self.variables = variables
-        self.appProxy = appProxy
-        self.workspaceProxy = workspaceProxy
-        requestProxy = switch draft.proxy {
-        case .inherit: nil
-        case .system: .system
-        case .direct: .direct
-        case let .manual(document): document
-        }
-        totalTimeoutMS = draft.transport.totalTimeoutMS
-        readTimeoutMS = draft.transport.readTimeoutMS
-        maxResponseBytes = nil
-        validateTLS = draft.transport.validateTLS
-        followRedirects = draft.transport.followRedirects
-        maximumRedirects = UInt8(clamping: draft.transport.maximumRedirects)
-        clientCertificateReference = draft.transport.clientCertificateReference
-        customCAPath = draft.transport.customCAPath
+    public init(draft: RequestDraft, variables: [String: ValueSource], workspaceProxy: ProxyDocument? = nil, appProxy: ProxyDocument? = nil) {
+        domain = domainRunInput(draft: draft.domain, variables: variables.mapValues(\.domain), workspaceProxy: workspaceProxy?.domain, appProxy: appProxy?.domain)
+    }
+    public func encode(to encoder: any Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(method, forKey: .method)
+        try container.encode(url, forKey: .url)
+        try container.encode(query, forKey: .query)
+        try container.encode(headers, forKey: .headers)
+        try container.encode(authentication, forKey: .authentication)
+        try container.encode(body, forKey: .body)
+        try container.encode(variables, forKey: .variables)
+        try container.encodeIfPresent(appProxy, forKey: .appProxy)
+        try container.encodeIfPresent(workspaceProxy, forKey: .workspaceProxy)
+        try container.encodeIfPresent(requestProxy, forKey: .requestProxy)
+        try container.encode(totalTimeoutMS, forKey: .totalTimeoutMS)
+        try container.encode(readTimeoutMS, forKey: .readTimeoutMS)
+        try container.encodeIfPresent(maxResponseBytes, forKey: .maxResponseBytes)
+        try container.encode(validateTLS, forKey: .validateTLS)
+        try container.encode(followRedirects, forKey: .followRedirects)
+        try container.encode(maximumRedirects, forKey: .maximumRedirects)
+        try container.encodeIfPresent(clientCertificateReference, forKey: .clientCertificateReference)
+        try container.encodeIfPresent(customCAPath, forKey: .customCAPath)
     }
 }
 
@@ -1380,10 +1582,21 @@ public enum ProxyDocument: Codable, Hashable, Sendable {
 }
 
 public struct ProxyRouteDocument: Codable, Hashable, Sendable {
-    public let destination: String
-    public let endpoint: String
-    public let credentials: ProxyCredentialsDocument?
+    var domain: DomainProxyRoute = DomainProxyRoute(destination: "", endpoint: "", credentials: nil)
+    init(domain: DomainProxyRoute) { self.domain = domain }
 
+    public var destination: String {
+        get { domain.destination }
+        set { domain.destination = newValue }
+    }
+    public var endpoint: String {
+        get { domain.endpoint }
+        set { domain.endpoint = newValue }
+    }
+    public var credentials: ProxyCredentialsDocument? {
+        get { domain.credentials.map { ProxyCredentialsDocument(domain: $0) } }
+        set { domain.credentials = newValue.map { $0.domain } }
+    }
     public init(
         destination: String,
         endpoint: String,
@@ -1393,43 +1606,60 @@ public struct ProxyRouteDocument: Codable, Hashable, Sendable {
         self.endpoint = endpoint
         self.credentials = credentials
     }
+
+    public init(from decoder: any Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        destination = try c.decode(String.self, forKey: .destination)
+        endpoint = try c.decode(String.self, forKey: .endpoint)
+        credentials = try c.decodeIfPresent(ProxyCredentialsDocument.self, forKey: .credentials)
+    }
+
+    public func encode(to encoder: any Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(destination, forKey: .destination)
+        try c.encode(endpoint, forKey: .endpoint)
+        try c.encodeIfPresent(credentials, forKey: .credentials)
+    }
+
+    private enum CodingKeys: String, CodingKey { case destination, endpoint, credentials }
 }
 
 public struct ProxyCredentialsDocument: Codable, Hashable, Sendable {
-    public let username: String
-    public let password: String
+    var domain: DomainProxyCredentials = DomainProxyCredentials(username: "", password: "")
+    init(domain: DomainProxyCredentials) { self.domain = domain }
 
+    public var username: String {
+        get { domain.username }
+        set { domain.username = newValue }
+    }
+    public var password: String {
+        get { domain.password }
+        set { domain.password = newValue }
+    }
     public init(username: String, password: String) {
         self.username = username
         self.password = password
     }
+
+    public init(from decoder: any Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        username = try c.decode(String.self, forKey: .username)
+        password = try c.decode(String.self, forKey: .password)
+    }
+
+    public func encode(to encoder: any Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(username, forKey: .username)
+        try c.encode(password, forKey: .password)
+    }
+
+    private enum CodingKeys: String, CodingKey { case username, password }
 }
 
 public extension RequestField {
     /// Bulk editing changes values, not the credential storage or redaction policy.
     static func parseBulk(_ source: String, preserving previous: [RequestField]) -> [RequestField] {
-        var unused = previous
-        return source.split(separator: "\n", omittingEmptySubsequences: true).compactMap { line in
-            var text = String(line)
-            let enabled = !text.hasPrefix("#")
-            if !enabled { text.removeFirst(); text = text.trimmingCharacters(in: .whitespaces) }
-            guard let separator = text.firstIndex(of: ":") else { return nil }
-            let name = String(text[..<separator]).trimmingCharacters(in: .whitespaces)
-            let value = String(text[text.index(after: separator)...]).trimmingCharacters(in: .whitespaces)
-            let match = unused.firstIndex { $0.name == name && $0.value.editableValue == value }
-                ?? unused.firstIndex { $0.name == name }
-                ?? unused.firstIndex { field in
-                    guard field.value.editableValue == value else { return false }
-                    if case .secret = field.value { return true }
-                    return field.sensitive
-                }
-            var field = match.map { unused.remove(at: $0) } ?? RequestField()
-            field.name = name
-            field.enabled = enabled
-            if case .secret = field.value { field.value = .secret(value) }
-            else { field.value = .literal(value) }
-            return field
-        }
+        domainParseBulk(source: source, previous: previous.map(\.domain)).map(RequestField.init(domain:))
     }
 }
 
@@ -1437,4 +1667,133 @@ public extension RequestField {
 public struct ResponseCookies: Decodable, Equatable, Sendable {
     public let url: String
     public let headers: [ResponseHeader]
+}
+
+extension ValueSource {
+    var domain: DomainValueSource {
+        switch self {
+        case let .literal(v0): .literal(value: v0)
+        case let .secret(v0): .secret(secret: v0)
+        }
+    }
+    init(domain: DomainValueSource) {
+        self = switch domain {
+        case let .literal(v0): .literal(v0)
+        case let .secret(v0): .secret(v0)
+        }
+    }
+}
+
+extension APIKeyPlacement {
+    var domain: DomainApiKeyPlacement {
+        switch self {
+        case .header: .header
+        case .query: .query
+        }
+    }
+    init(domain: DomainApiKeyPlacement) {
+        self = switch domain {
+        case .header: .header
+        case .query: .query
+        }
+    }
+}
+
+extension OAuth2Grant {
+    var domain: DomainOAuthGrant {
+        switch self {
+        case .authorizationCodePKCE: .authorizationCodePkce
+        case .clientCredentials: .clientCredentials
+        }
+    }
+    init(domain: DomainOAuthGrant) {
+        self = switch domain {
+        case .authorizationCodePkce: .authorizationCodePKCE
+        case .clientCredentials: .clientCredentials
+        }
+    }
+}
+
+extension RequestAuthentication {
+    var domain: DomainAuthentication {
+        switch self {
+        case .none: .none
+        case let .basic(v0, v1): .basic(username: v0.domain, password: v1.domain)
+        case let .bearer(v0): .bearer(token: v0.domain)
+        case let .apiKey(v0, v1, v2): .apiKey(placement: v0.domain, name: v1, value: v2.domain)
+        case let .oauth2(v0): .oauth2(configuration: v0.domain)
+        }
+    }
+    init(domain: DomainAuthentication) {
+        self = switch domain {
+        case .none: .none
+        case let .basic(v0, v1): .basic(username: ValueSource(domain: v0), password: ValueSource(domain: v1))
+        case let .bearer(v0): .bearer(token: ValueSource(domain: v0))
+        case let .apiKey(v0, v1, v2): .apiKey(placement: APIKeyPlacement(domain: v0), name: v1, value: ValueSource(domain: v2))
+        case let .oauth2(v0): .oauth2(configuration: OAuth2Configuration(domain: v0))
+        }
+    }
+}
+
+extension RequestBody {
+    var domain: DomainBody {
+        switch self {
+        case .empty: .empty
+        case let .text(v0, v1): .text(contentType: v0.map { $0 }, value: v1)
+        case let .json(v0): .json(value: v0)
+        case let .xml(v0): .xml(value: v0)
+        case let .html(v0): .html(value: v0)
+        case let .raw(v0, v1): .raw(contentType: v0.map { $0 }, value: v1)
+        case let .formURLEncoded(v0): .formUrlEncoded(fields: v0.map { $0.domain })
+        case let .multipart(v0): .multipart(parts: v0.map { $0.domain })
+        case let .file(v0, v1): .file(path: v0, contentType: v1.map { $0 })
+        }
+    }
+    init(domain: DomainBody) {
+        self = switch domain {
+        case .empty: .empty
+        case let .text(v0, v1): .text(contentType: v0.map { $0 }, value: v1)
+        case let .json(v0): .json(value: v0)
+        case let .xml(v0): .xml(value: v0)
+        case let .html(v0): .html(value: v0)
+        case let .raw(v0, v1): .raw(contentType: v0.map { $0 }, value: v1)
+        case let .formUrlEncoded(v0): .formURLEncoded(fields: v0.map { RequestField(domain: $0) })
+        case let .multipart(v0): .multipart(parts: v0.map { MultipartPart(domain: $0) })
+        case let .file(v0, v1): .file(path: v0, contentType: v1.map { $0 })
+        }
+    }
+}
+
+extension MultipartPartKind {
+    var domain: DomainMultipartKind {
+        switch self {
+        case .text: .text
+        case .binary: .binary
+        case .file: .file
+        }
+    }
+    init(domain: DomainMultipartKind) {
+        self = switch domain {
+        case .text: .text
+        case .binary: .binary
+        case .file: .file
+        }
+    }
+}
+
+extension ProxyDocument {
+    var domain: DomainProxy {
+        switch self {
+        case .system: .system
+        case .direct: .direct
+        case let .manual(v0): .manual(routes: v0.map { $0.domain })
+        }
+    }
+    init(domain: DomainProxy) {
+        self = switch domain {
+        case .system: .system
+        case .direct: .direct
+        case let .manual(v0): .manual(routes: v0.map { ProxyRouteDocument(domain: $0) })
+        }
+    }
 }
