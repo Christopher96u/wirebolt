@@ -124,7 +124,7 @@ fn assemble_markdown(
     cancellation: &ResponseCancellation,
 ) -> ResponseResult<MarkdownDocument> {
     let input_count = input.len();
-    let mut runs: Vec<MarkdownRun> = Vec::new();
+    let mut runs: Vec<MarkdownRun> = Vec::with_capacity(input_count);
     let mut previous_block = None;
     let mut previous_item = None;
     for mut run in input {

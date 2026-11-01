@@ -656,7 +656,7 @@ pub struct WorkspaceSession {
 }
 impl WorkspaceSession {
     pub fn replace(&self, workspace: DomainWorkspace) {
-        *super::run::lock(&self.workspace) = workspace;
+        *crate::lock(&self.workspace) = workspace;
     }
     #[must_use]
     pub fn plan(
@@ -664,10 +664,10 @@ impl WorkspaceSession {
         selected: Option<String>,
         step: SessionWorkspaceEdit,
     ) -> Option<SessionWorkspacePlan> {
-        plan_edit(&super::run::lock(&self.workspace), selected, step)
+        plan_edit(&crate::lock(&self.workspace), selected, step)
     }
     pub fn commit(&self, plan: SessionWorkspacePlan) {
-        let mut workspace = super::run::lock(&self.workspace);
+        let mut workspace = crate::lock(&self.workspace);
         workspace
             .collections
             .retain(|c| !plan.removed_collection_ids.contains(&c.id));
@@ -700,7 +700,7 @@ impl WorkspaceSession {
         target: SessionDeleteTarget,
         documents: &[super::tabs::SessionTabDocument],
     ) -> String {
-        let workspace = super::run::lock(&self.workspace);
+        let workspace = crate::lock(&self.workspace);
         let (collection_id, requests, folder_count, container) = match target {
             SessionDeleteTarget::Request { collection_id, id } => {
                 let requests = location(&workspace, &collection_id, &id)
@@ -803,7 +803,7 @@ impl WorkspaceSession {
         if completed == 0 {
             return None;
         }
-        let workspace = super::run::lock(&self.workspace);
+        let workspace = crate::lock(&self.workspace);
         let mut changed: Vec<DomainCollection> = vec![];
         for command in plan
             .commands

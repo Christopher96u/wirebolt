@@ -1,17 +1,16 @@
 use super::{RuntimeContext, RuntimeState};
+use crate::lock;
+use crate::response::FailureIssue;
 use crate::{
     domain::{DomainRunInput, DomainValueSource},
     response::ResponseHeaderValue,
     session::{
         run::{
             DocumentRun, PUBLICATION_INTERVAL, SessionCompletion, SessionFailure, SessionHead,
-            SessionPrepared, SessionRunEvent, SessionRunSnapshot, SharedBody, lock,
+            SessionPrepared, SessionRunEvent, SessionRunSnapshot, SharedBody,
         },
         tabs::SessionDocument,
-        transport::{
-            PreparedRunSnapshotDocument, RequestIssueDocument, RunFailureDocument,
-            TransportObserver,
-        },
+        transport::{PreparedRunSnapshotDocument, RunFailureDocument, TransportObserver},
     },
 };
 use async_trait::async_trait;
@@ -351,16 +350,11 @@ impl RunObserver {
 }
 impl TransportObserver for RunObserver {
     fn prepared(&self, snapshot: &PreparedRunSnapshotDocument) {
-        // The existing redacted wire snapshot has diagnostic-only manual proxy routes.
-        if let Ok(snapshot) = SessionPrepared::try_from(snapshot) {
-            self.event(SessionRunEvent::Prepared { snapshot });
-        } else {
-            self.finish(Some(SessionFailure::new(
-                crate::response::ResponseFailureKind::Bridge,
-            )));
-        }
+        self.event(SessionRunEvent::Prepared {
+            snapshot: SessionPrepared::from(snapshot),
+        });
     }
-    fn head(&self, head: &wirebolt_core::RunHead, _: &[RequestIssueDocument]) {
+    fn head(&self, head: &wirebolt_core::RunHead, _: &[FailureIssue]) {
         self.event(SessionRunEvent::Head {
             head: SessionHead::from(head),
         });

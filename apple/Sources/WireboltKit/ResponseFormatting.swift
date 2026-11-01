@@ -44,7 +44,7 @@ public enum RunOutcomeBadge: Equatable, Sendable {
         guard let result = appResponseBadge(
             status: status,
             failure: failure?.kind,
-            issues: failure?.issues.map(\.responseIssue) ?? [],
+            issues: failure?.issues ?? [],
             host: host
         ) else { return nil }
         switch result {
@@ -75,7 +75,7 @@ public struct RunFailureMessage: Equatable, Sendable {
     public init(_ failure: RunFailure, host: String? = nil) {
         let result = appFailureMessage(
             kind: failure.kind,
-            issues: failure.issues.map(\.responseIssue),
+            issues: failure.issues,
             host: host
         )
         category = result.category
@@ -85,32 +85,6 @@ public struct RunFailureMessage: Equatable, Sendable {
         suggestsNetworkSettings = result.suggestsNetworkSettings
     }
     public static func host(from url: String?) -> String? { appFailureHost(url: url) }
-    static func describe(_ issue: RequestIssue) -> String { appDescribeIssue(issue: issue.responseIssue) }
+    static func describe(_ issue: RequestIssue) -> String { appDescribeIssue(issue: issue) }
     static func sentence(_ kind: String) -> String { appFailureSentence(kind: kind) }
-}
-private extension RequestIssue {
-    var responseIssue: FailureIssue { FailureIssue(path: path, kind: ResponseIssueKind(code: kind), reference: reference) }
-}
-
-private extension ResponseIssueKind {
-    init(code: String) {
-        self = switch code {
-        case "invalid_method": .invalidMethod
-        case "invalid_url": .invalidUrl
-        case "invalid_header_name": .invalidHeaderName
-        case "invalid_header_value": .invalidHeaderValue
-        case "conflicting_header": .conflictingHeader
-        case "invalid_json": .invalidJson
-        case "invalid_body": .invalidBody
-        case "file_unavailable": .fileUnavailable
-        case "invalid_template": .invalidTemplate
-        case "template_too_deep": .templateTooDeep
-        case "resolved_value_too_large": .resolvedValueTooLarge
-        case "missing_variable": .missingVariable
-        case "unresolved_value": .unresolvedValue
-        case "cyclic_variable": .cyclicVariable
-        case "missing_secret": .missingSecret
-        default: .other(code: code)
-        }
-    }
 }

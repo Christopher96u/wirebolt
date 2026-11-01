@@ -1,22 +1,30 @@
 import Foundation
 
 struct RustWebSocketRunner: WebSocketConnecting {
-    func connection(for input: RunInput) -> any WebSocketTransport { RustWebSocketConnection(input: input) }
+    func connection(for input: RunInput, state: AppSessionSocket, generation: String) -> any WebSocketTransport {
+        RustWebSocketConnection(input: input, state: state, generation: generation)
+    }
 }
 
 private final class RustWebSocketConnection: @unchecked Sendable, WebSocketTransport {
     private let input: RunInput
+    private let state: AppSessionSocket
+    private let generation: String
     private let lock = NSLock()
     private var session: AppSocketConnection?
     private var disconnected = false
     private let buffer = WebSocketEventBuffer()
 
-    init(input: RunInput) { self.input = input }
+    init(input: RunInput, state: AppSessionSocket, generation: String) {
+        self.input = input
+        self.state = state
+        self.generation = generation
+    }
 
     func events() -> AsyncThrowingStream<WebSocketEvent, any Error> {
         lock.withLock {
             if session == nil && !disconnected {
-                session = AppSocketConnection.start(input: input.domain, observer: SocketStreamObserver(buffer: buffer))
+                session = AppSocketConnection.start(input: input.domain, state: state, generation: generation, observer: SocketStreamObserver(buffer: buffer))
             }
         }
         return AsyncThrowingStream(unfolding: { [self] in
@@ -43,13 +51,6 @@ private final class RustWebSocketConnection: @unchecked Sendable, WebSocketTrans
 private final class SocketStreamObserver: SessionSocketObserver {
     let buffer: WebSocketEventBuffer
     init(buffer: WebSocketEventBuffer) { self.buffer = buffer }
-    func event(event: SocketEvent) -> Bool {
-        switch event {
-        case .connected(let headers):
-            buffer.push(.connected(headers.map { ResponseHeader(name: $0.name, value: $0.value) }))
-        case .message(let data, let binary, let outgoing, let control):
-            buffer.push(.message(data, binary: binary, outgoing: outgoing, control: control))
-        }
-    }
-    func finish(reason: String?) { buffer.finish(reason.map(WebSocketUIError.init)) }
+    func update(snapshot: SessionSocketSnapshot) -> Bool { buffer.push(.state(snapshot)) }
+    func finish(reason: String?) { buffer.finish() }
 }

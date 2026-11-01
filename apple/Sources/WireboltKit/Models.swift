@@ -813,7 +813,7 @@ extension RunCompletion {
     public init(bytesReceived: UInt64, totalTimeNS: UInt64) { self.init(bytesReceived: bytesReceived, totalTimeNs: totalTimeNS) }
 }
 
-public typealias RequestIssue = SessionIssue
+public typealias RequestIssue = FailureIssue
 
 public typealias RunFailure = SessionFailure
 extension RunFailure: Error {}
@@ -825,8 +825,8 @@ public typealias PreparedBodySnapshot = SessionPreparedBody
 public struct PreparedRunSnapshot: Equatable, Sendable {
     var record: SessionPrepared
     public var proxy: EffectiveProxy? {
-        get { record.proxy.map { EffectiveProxy(configuration: $0.configuration, source: $0.source) } }
-        set { record.proxy = newValue.map { SessionProxy(configuration: $0.configuration, source: $0.source) } }
+        get { record.proxy }
+        set { record.proxy = newValue }
     }
     public var method: String { record.method }
     public var url: String { record.url }
@@ -834,7 +834,7 @@ public struct PreparedRunSnapshot: Equatable, Sendable {
     public var body: PreparedBodySnapshot { record.body }
     public var transport: TransportSettings { TransportSettings(domain: record.transport) }
     public init(proxy: EffectiveProxy? = nil, method: String, url: String, headers: [PreparedHeaderSnapshot], body: PreparedBodySnapshot, transport: TransportSettings) {
-        record = SessionPrepared(proxy: proxy.map { SessionProxy(configuration: $0.configuration, source: $0.source) },
+        record = SessionPrepared(proxy: proxy,
                                  method: method, url: url, headers: headers, body: body, transport: transport.domain)
     }
 }

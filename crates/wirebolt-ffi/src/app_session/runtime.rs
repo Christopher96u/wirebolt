@@ -12,8 +12,9 @@ use super::{
     RuntimeSendAction, RuntimeSettingsPlatform, RuntimeSnapshot, RuntimeState, RuntimeTokenReceipt,
     RuntimeTransport, RuntimeTransportSettings, RuntimeTransportSnapshot, SessionFailure,
     SessionHistoryEntry, SessionKind, SessionRunEvent, SessionSocketStatus,
-    SessionWorkspaceCommand, StoredCookie, WorkspaceBridge, app_runtime, lock,
+    SessionWorkspaceCommand, StoredCookie, WorkspaceBridge, app_runtime,
 };
+use crate::lock;
 #[uniffi::remote(Record)]
 pub struct RuntimeContext {
     pub transport: DomainTransport,

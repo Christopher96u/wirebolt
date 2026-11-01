@@ -1,4 +1,5 @@
 use super::*;
+use crate::lock;
 #[tokio::test]
 async fn failed_workspace_switch_leaves_previous_workspace_intact() {
     let h = Harness::new(nested());

@@ -8,8 +8,9 @@ use super::{
     SessionWorkspaceCommand, WorkspaceBridge, WorkspaceExport, WorkspaceFailure,
     WorkspaceGitAction, WorkspaceGitChange, WorkspaceGitDelta, WorkspaceGitOperation,
     WorkspaceGitOutcome, WorkspaceGitStatus, WorkspaceIO, WorkspaceImportSummary,
-    WorkspaceImportedEnvironment, WorkspaceReply, lock,
+    WorkspaceImportedEnvironment, WorkspaceReply,
 };
+use crate::lock;
 #[uniffi::remote(Record)]
 pub struct WorkspaceFailure {
     pub kind: wirebolt_app::session::workspace::io::WorkspaceFailureKind,

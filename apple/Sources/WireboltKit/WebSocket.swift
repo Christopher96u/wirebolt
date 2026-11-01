@@ -5,6 +5,7 @@ public enum WebSocketEvent: Sendable {
     case connected([ResponseHeader])
     case message(Data, binary: Bool, outgoing: Bool, control: String? = nil)
     case closed
+    case state(SessionSocketSnapshot)
 }
 
 public protocol WebSocketTransport: Sendable {
@@ -14,7 +15,7 @@ public protocol WebSocketTransport: Sendable {
 }
 
 public protocol WebSocketConnecting: Sendable {
-    func connection(for input: RunInput) -> any WebSocketTransport
+    func connection(for input: RunInput, state: AppSessionSocket, generation: String) -> any WebSocketTransport
 }
 
 /// A connection lifecycle entry shown in the message list.
@@ -104,13 +105,19 @@ public final class WebSocketDocumentState {
         guard let generation = rust.begin() else { return }
         self.generation = generation
         mirror()
-        let connection = connector.connection(for: input)
+        let connection = connector.connection(for: input, state: rust, generation: generation)
         self.connection = connection
         receiver = Task { [weak self] in
             var failure: String?
+            var ownsState = false
             do {
                 for try await event in connection.events() {
                     guard let self, self.generation == generation, !Task.isCancelled else { break }
+                    if case .state(let snapshot) = event {
+                        ownsState = true
+                        self.apply(snapshot)
+                        continue
+                    }
                     switch event {
                     case .connected(let headers):
                         self.rust.connected(
@@ -119,14 +126,17 @@ public final class WebSocketDocumentState {
                     case .message(let data, let binary, let outgoing, let control):
                         self.rust.append(generation: generation, data: data, binary: binary, outgoing: outgoing, control: control)
                     case .closed: self.rust.closed(generation: generation)
+                    case .state: break
                     }
                     self.mirror()
                 }
             } catch { if !Task.isCancelled { failure = error.localizedDescription } }
             connection.disconnect()
             guard let self, self.generation == generation else { return }
-            self.rust.finish(generation: generation, error: failure)
-            self.mirror()
+            if !ownsState {
+                self.rust.finish(generation: generation, error: failure)
+                self.mirror()
+            }
             self.connection = nil
         }
     }
@@ -157,7 +167,10 @@ public final class WebSocketDocumentState {
         mirror()
     }
     private func mirror() {
-        let state = rust.snapshot(since: nextSequence)
+        apply(rust.snapshot(since: nextSequence))
+    }
+    private func apply(_ state: SessionSocketSnapshot) {
+        guard state.nextSequence >= nextSequence, state.firstSequence >= firstSequence else { return }
         let next: WebSocketStatus =
             switch state.status {
             case .disconnected: .disconnected
@@ -170,7 +183,9 @@ public final class WebSocketDocumentState {
         if headers != nextHeaders { headers = nextHeaders }
         let removed = min(messages.count, Int(clamping: state.firstSequence - firstSequence))
         if removed > 0 { messages.removeFirst(removed) }
-        if !state.messages.isEmpty { messages.append(contentsOf: state.messages.map(WebSocketMessage.init)) }
+        let start = state.nextSequence - UInt64(state.messages.count)
+        let skip = Int(clamping: nextSequence > start ? nextSequence - start : 0)
+        if skip < state.messages.count { messages.append(contentsOf: state.messages.dropFirst(skip).map(WebSocketMessage.init)) }
         firstSequence = state.firstSequence
         nextSequence = state.nextSequence
     }
@@ -213,7 +228,7 @@ final class WebSocketEventBuffer: @unchecked Sendable {
     private var failure: (any Error)?
     private var waiter: CheckedContinuation<WebSocketEvent?, any Error>?
 
-    init(byteLimit: Int = 16 * 1024 * 1024 + 1024, eventLimit: Int = 256) {
+    init(byteLimit: Int = 16 * 1024 * 1024 + 64 * 1001, eventLimit: Int = 256) {
         self.byteLimit = max(1, byteLimit)
         self.eventLimit = max(1, eventLimit)
     }
@@ -224,6 +239,7 @@ final class WebSocketEventBuffer: @unchecked Sendable {
             case .message(let data, _, _, _): data.count + 64
             case .connected(let headers): headers.reduce(64) { $0 + $1.name.utf8.count + $1.value.utf8.count }
             case .closed: 64
+            case .state(let snapshot): snapshot.messages.reduce(64) { $0 + $1.data.count + 64 }
             }
         condition.lock()
         guard cost <= byteLimit else {

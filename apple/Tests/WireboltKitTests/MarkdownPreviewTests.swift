@@ -92,6 +92,20 @@ extension MarkdownPreviewTests {
         #expect(new.text.isEqual(to: old.text))
         #expect(new.cost == old.cost)
     }
+    @Test("Native Markdown storage preserves normalized attributes and independent view ownership", arguments: corpus)
+    @MainActor
+    func nativeStorage(source: String) async throws {
+        let rendered = try await MarkdownPreviewCache().render(source)
+        let expected = NSTextStorage(attributedString: try Self.legacyRender(source).text)
+        expected.ensureAttributesAreFixed(in: NSRange(location: 0, length: expected.length))
+        let first = rendered.makeTextStorage()
+        let second = rendered.makeTextStorage()
+        #expect(first.isEqual(to: expected))
+        #expect(second.isEqual(to: expected))
+        first.replaceCharacters(in: NSRange(location: 0, length: first.length), with: "changed")
+        #expect(second.isEqual(to: expected))
+        #expect(rendered.text.string == expected.string)
+    }
     static func legacyRender(_ source: String) throws -> RenderedMarkdown {
         let markdown = try AttributedString(markdown: source, options: .init(interpretedSyntax: .full))
         try Task.checkCancellation()

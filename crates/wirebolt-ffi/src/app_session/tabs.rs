@@ -7,8 +7,9 @@ use super::{
     AppSessionLayout, AppSessionLayoutGroup, Arc, DomainLocation, DomainRequestDraft, HashMap,
     Mutex, SessionCloseScope, SessionDocument, SessionDocumentEffect, SessionEditorGroup,
     SessionKind, SessionLayoutTab, SessionRestoreResult, SessionTabDocument, SessionTabSnapshot,
-    SessionTabs, WorkspaceClose, lock,
+    SessionTabs, WorkspaceClose,
 };
+use crate::lock;
 #[uniffi::remote(Enum)]
 pub enum SessionKind {
     Http,

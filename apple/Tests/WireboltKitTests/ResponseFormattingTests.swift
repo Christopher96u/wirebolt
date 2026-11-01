@@ -79,7 +79,7 @@ struct RunFailureMessageTests {
 
     @Test("Request issues and unknown kinds read as sentences")
     func issues() {
-        let issue = RequestIssue(path: "url", kind: "missing_variable", reference: "base")
+        let issue = RequestIssue(path: "url", kind: .missingVariable, reference: "base")
         let message = RunFailureMessage(RunFailure(kind: .invalidRequest, issues: [issue]))
         #expect(message.message == "The variable “base” isn’t defined in the active environment. (url)")
         #expect(RunFailureMessage(RunFailure(kind: .other(code: "workspace_reload"), issues: [])).message == "Workspace reload.")

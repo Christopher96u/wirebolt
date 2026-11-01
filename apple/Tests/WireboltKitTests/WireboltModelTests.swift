@@ -313,7 +313,7 @@ struct WireboltModelTests {
     @Test("surfaces structured validation failures")
     @MainActor
     func reportsFailure() async {
-        let issue = RequestIssue(path: "url", kind: "invalid_url", reference: nil)
+        let issue = RequestIssue(path: "url", kind: .invalidUrl, reference: nil)
         let model = WireboltModel(runner: StubRunner(failure: RunFailure(kind: .invalidRequest, issues: [issue])))
 
         await model.send()

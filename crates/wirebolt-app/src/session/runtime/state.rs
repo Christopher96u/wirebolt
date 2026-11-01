@@ -1,9 +1,10 @@
+use crate::lock;
 use crate::{
     domain::{DomainEnvironment, DomainValueSource},
     response::{ResponseCookieJar, RunHistory, StoredCookie, cookie_storage_path, reference_time},
     session::{
         history::{self, SessionHistoryEntry},
-        run::{DocumentRun, SessionRunSnapshot, lock},
+        run::{DocumentRun, SessionRunSnapshot},
     },
 };
 use std::{

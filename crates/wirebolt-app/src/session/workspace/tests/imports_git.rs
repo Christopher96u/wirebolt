@@ -1,4 +1,5 @@
 use super::*;
+use crate::lock;
 fn status() -> WorkspaceGitStatus {
     WorkspaceGitStatus {
         branch: Some("main".into()),

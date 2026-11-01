@@ -1,4 +1,5 @@
 use super::*;
+use crate::lock;
 #[tokio::test]
 async fn environment_undo_and_redo_preserve_position_and_secret_rows() {
     let original = DomainEnvironment {

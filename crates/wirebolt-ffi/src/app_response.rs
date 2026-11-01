@@ -6,12 +6,12 @@ use std::{
     sync::{Arc, Mutex},
 };
 use wirebolt_app::response::{
-    BodyProgress, BodyStore, CodeDocument, CodeSyntax, FailureCategory,
-    FailureIssue as CoreFailureIssue, FailureMessage, Fold, IndexOptions, IndexedMatch,
-    JsonDocument, JsonNodeKind, JsonTreeNode, LineIndex, LineIndexChange, MarkdownCache,
-    MarkdownCacheStats, MarkdownDocument, MarkdownInputRun, MarkdownListItem, MarkdownParser,
-    MarkdownRun, MarkdownStyle, ResponseCancellation, ResponseCookieJar, ResponseError,
-    ResponseFailureKind, ResponseHeaderValue, ResponseTextRange, RunHistory, SearchPosition,
+    BodyProgress, BodyStore, CodeDocument, CodeSyntax, FailureCategory, FailureIssue,
+    FailureMessage, Fold, IndexOptions, IndexedMatch, JsonDocument, JsonNodeKind, JsonTreeNode,
+    LineIndex, LineIndexChange, MarkdownCache, MarkdownCacheStats, MarkdownDocument,
+    MarkdownInputRun, MarkdownListItem, MarkdownParser, MarkdownRun, MarkdownStyle,
+    ResponseCancellation, ResponseCookieJar, ResponseError, ResponseFailureKind,
+    ResponseHeaderValue, ResponseIssueKind, ResponseTextRange, RunHistory, SearchPosition,
     SearchQuery, ShapingGroup, ShapingMetrics, ShapingRequest, StoredCookie, TextIndex,
     TextIndexCache, TextRow, TextShaper, WrapBreakIndex, WrapBreakSnapshot, WrapLayout,
     completion_summary, cookie_storage_path, describe_issue, failure_host, failure_message,
@@ -62,7 +62,7 @@ pub struct Fold {
     pub range: ResponseTextRange,
 }
 
-#[derive(Debug, uniffi::Record)]
+#[uniffi::remote(Record)]
 pub struct FailureIssue {
     pub path: String,
     pub kind: ResponseIssueKind,
@@ -238,7 +238,7 @@ pub struct WrapBreakSnapshot {
     pub length: u64,
 }
 
-pub(crate) use wirebolt_app::lock;
+use crate::lock;
 #[derive(Debug, uniffi::Object)]
 pub struct AppResponseCancellation {
     inner: Arc<ResponseCancellation>,
@@ -576,11 +576,7 @@ pub fn app_failure_message(
     issues: Vec<FailureIssue>,
     host: Option<String>,
 ) -> FailureMessage {
-    failure_message(
-        &kind,
-        &issues.into_iter().map(Into::into).collect::<Vec<_>>(),
-        host.as_deref(),
-    )
+    failure_message(&kind, &issues, host.as_deref())
 }
 #[uniffi::export]
 pub fn app_failure_host(url: Option<String>) -> Option<String> {
@@ -588,7 +584,7 @@ pub fn app_failure_host(url: Option<String>) -> Option<String> {
 }
 #[uniffi::export]
 pub fn app_describe_issue(issue: FailureIssue) -> String {
-    describe_issue(&issue.into())
+    describe_issue(&issue)
 }
 #[uniffi::export]
 pub fn app_failure_sentence(kind: String) -> String {
@@ -780,12 +776,7 @@ pub fn app_response_badge(
     issues: Vec<FailureIssue>,
     host: Option<String>,
 ) -> Option<ResponseBadge> {
-    ResponseBadge::new(
-        status,
-        failure.as_ref(),
-        &issues.into_iter().map(Into::into).collect::<Vec<_>>(),
-        host.as_deref(),
-    )
+    ResponseBadge::new(status, failure.as_ref(), &issues, host.as_deref())
 }
 #[uniffi::export]
 pub fn app_response_badge_label(badge: ResponseBadge) -> String {
@@ -1232,7 +1223,7 @@ pub enum ResponseFailureKind {
     Other { code: String },
 }
 
-#[derive(Debug, uniffi::Enum)]
+#[uniffi::remote(Enum)]
 pub enum ResponseIssueKind {
     InvalidMethod,
     InvalidUrl,
@@ -1251,39 +1242,6 @@ pub enum ResponseIssueKind {
     MissingSecret,
     Other { code: String },
 }
-impl ResponseIssueKind {
-    fn as_str(&self) -> &str {
-        match self {
-            Self::InvalidMethod => "invalid_method",
-            Self::InvalidUrl => "invalid_url",
-            Self::InvalidHeaderName => "invalid_header_name",
-            Self::InvalidHeaderValue => "invalid_header_value",
-            Self::ConflictingHeader => "conflicting_header",
-            Self::InvalidJson => "invalid_json",
-            Self::InvalidBody => "invalid_body",
-            Self::FileUnavailable => "file_unavailable",
-            Self::InvalidTemplate => "invalid_template",
-            Self::TemplateTooDeep => "template_too_deep",
-            Self::ResolvedValueTooLarge => "resolved_value_too_large",
-            Self::MissingVariable => "missing_variable",
-            Self::UnresolvedValue => "unresolved_value",
-            Self::CyclicVariable => "cyclic_variable",
-            Self::MissingSecret => "missing_secret",
-            Self::Other { code } => code,
-        }
-    }
-}
-
-impl From<FailureIssue> for CoreFailureIssue {
-    fn from(issue: FailureIssue) -> Self {
-        Self {
-            path: issue.path,
-            kind: issue.kind.as_str().to_owned(),
-            reference: issue.reference,
-        }
-    }
-}
-
 #[cfg(test)]
 mod choice_tests {
     use super::*;

@@ -2,7 +2,8 @@ import AppKit
 import AuthenticationServices
 import Foundation
 import CFNetwork
-import Security
+import Darwin
+import Synchronization
 
 public struct OAuth2TokenReceipt: Equatable, Sendable {
     public let expiresAt: Date?
@@ -11,7 +12,7 @@ public struct OAuth2TokenReceipt: Equatable, Sendable {
 public struct OAuth2ServiceError: LocalizedError, Equatable, Sendable {
     let domain: DomainOAuthError
     public var errorDescription: String? {
-        guard case .TransportFailure(let kind) = domain else { return domainOauthErrorMessage(error: domain) }
+        guard case .TransportFailure(let kind, let host) = domain else { return domainOauthErrorMessage(error: domain) }
         let code: URLError.Code =
             switch kind {
             case .timeout: .timedOut
@@ -22,8 +23,22 @@ public struct OAuth2ServiceError: LocalizedError, Equatable, Sendable {
             case .certificate: .serverCertificateUntrusted
             case .tls: .secureConnectionFailed
             case .decode: .cannotDecodeContentData
+            case .cancelled: .cancelled
+            case .tooManyRedirects: .httpTooManyRedirects
+            case .unsupportedUrl: .unsupportedURL
+            case .noPermissionsToReadFile: .noPermissionsToReadFile
+            case .cannotParseResponse: .cannotParseResponse
+            case .certificateExpired: .serverCertificateHasBadDate
+            case .certificateNotYetValid: .serverCertificateNotYetValid
+            case .unknown: .unknown
             }
-        return URLError(code).localizedDescription
+        let bundle = Bundle(identifier: "com.apple.CFNetwork")
+        let key = "Err\(code == .unknown ? -998 : code.rawValue)"
+        if let host, let warning = bundle?.localizedString(forKey: key + ".w", value: "", table: nil), !warning.isEmpty {
+            return String(format: warning, host)
+        }
+        let description = bundle?.localizedString(forKey: key, value: "", table: nil) ?? ""
+        return description.isEmpty ? URLError(code).localizedDescription : description
     }
 }
 @MainActor
@@ -31,7 +46,7 @@ public protocol OAuth2Authorizing: AnyObject {
     func acquireToken(configuration: OAuth2Configuration) async throws -> (String, OAuth2TokenReceipt)
 }
 
-/// Apple adapters only: the browser presentation and Keychain implement Rust's foreign trait.
+/// Native browser presentation, proxy routing, HTTP defaults and localized diagnostics.
 @MainActor
 public final class OAuth2Service: NSObject, OAuth2Authorizing, OAuthPlatform, ASWebAuthenticationPresentationContextProviding {
     private var browserSession: ASWebAuthenticationSession?
@@ -127,18 +142,39 @@ public final class OAuth2Service: NSObject, OAuth2Authorizing, OAuthPlatform, AS
         }
         return result.proxies
     }
-    nonisolated public func readSecret(name: String) -> String? {
-        guard !name.isEmpty else { return nil }
-        let query: [CFString: Any] = [
-            kSecClass: kSecClassGenericPassword,
-            kSecAttrService: "io.github.christopher96u.wirebolt",
-            kSecAttrAccount: name,
-            kSecReturnData: true,
-            kSecMatchLimit: kSecMatchLimitOne,
-        ]
-        var value: CFTypeRef?
-        guard SecItemCopyMatching(query as CFDictionary, &value) == errSecSuccess, let data = value as? Data else { return nil }
-        return String(data: data, encoding: .utf8)
+    nonisolated public func requestHeaders(completion: OAuthHeadersReply) {
+        Task { completion.complete(headers: await Self.nativeHeaders()) }
+    }
+    nonisolated static func nativeHeaders() async -> DomainOAuthHeaders {
+        let bundle = Bundle.main
+        let name = bundle.object(forInfoDictionaryKey: "CFBundleName") as? String ?? ProcessInfo.processInfo.processName
+        let version = (bundle.object(forInfoDictionaryKey: "CFBundleVersion") as? String).map { "/" + $0 } ?? " (unknown version)"
+        let network = Bundle(identifier: "com.apple.CFNetwork")?.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "0"
+        var system = utsname()
+        uname(&system)
+        let release = withUnsafeBytes(of: &system.release) { bytes in
+            String(decoding: bytes.prefix(while: { $0 != 0 }), as: UTF8.self)
+        }
+        let capture = OAuthHeaderCapture()
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.connectionProxyDictionary = [:]
+        configuration.waitsForConnectivity = false
+        configuration.timeoutIntervalForRequest = 1
+        let session = URLSession(configuration: configuration, delegate: capture, delegateQueue: nil)
+        defer { session.invalidateAndCancel() }
+        // Port zero cannot reach a service; task metrics expose Foundation's generated headers.
+        if let url = URL(string: "http://[::1]:0") { _ = try? await session.data(from: url) }
+        return DomainOAuthHeaders(userAgent: "\(name)\(version) CFNetwork/\(network) Darwin/\(release)",
+            acceptLanguage: capture.acceptLanguage.withLock { $0 })
     }
     nonisolated static func encodeForm(_ form: [String: String]) -> Data { Data(domainEncodeOauthForm(form: form).utf8) }
+}
+
+private final class OAuthHeaderCapture: NSObject, URLSessionTaskDelegate, Sendable {
+    let acceptLanguage = Mutex("")
+    func urlSession(_ session: URLSession, task: URLSessionTask, didFinishCollecting metrics: URLSessionTaskMetrics) {
+        if let value = metrics.transactionMetrics.last?.request.value(forHTTPHeaderField: "Accept-Language") {
+            acceptLanguage.withLock { $0 = value }
+        }
+    }
 }

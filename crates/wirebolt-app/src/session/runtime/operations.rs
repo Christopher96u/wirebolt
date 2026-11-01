@@ -1,11 +1,12 @@
 use super::{RuntimeContext, RuntimeTransport};
+use crate::lock;
 use crate::{
     domain::{
         DomainAuthentication, DomainProxy, DomainRequestDraft, DomainTransport, DomainValueSource,
         DomainWorkspace, curl, proxy, request,
     },
     session::{
-        run::{SessionFailure, lock},
+        run::SessionFailure,
         secrets::{SecretAccessError, SessionSecretPlatform, SessionSecrets},
         tabs::SessionDocument,
     },

@@ -4,11 +4,13 @@
     reason = "UniFFI lifts owned records at the boundary."
 )]
 use super::{
-    AppResponseBody, Arc, DocumentRun, DomainProxy, DomainRequestDraft, DomainTransport, Instant,
-    Mutex, Path, PathBuf, ResponseHeaderValue, SessionCompletion, SessionDocument, SessionFailure,
-    SessionHead, SessionIssue, SessionKind, SessionPrepared, SessionPreparedBody,
-    SessionPreparedHeader, SessionProxy, SessionRunEvent, SessionRunSnapshot, StoredCookie, lock,
+    AppResponseBody, Arc, DocumentRun, DomainRequestDraft, DomainTransport, Instant, Mutex, Path,
+    PathBuf, ResolvedDomainProxy, ResponseHeaderValue, SessionCompletion, SessionDocument,
+    SessionFailure, SessionHead, SessionKind, SessionPrepared, SessionPreparedBody,
+    SessionPreparedHeader, SessionRunEvent, SessionRunSnapshot, StoredCookie,
 };
+use crate::lock;
+use wirebolt_app::response::FailureIssue;
 #[uniffi::remote(Record)]
 pub struct SessionHead {
     status: u16,
@@ -24,16 +26,9 @@ pub struct SessionCompletion {
 }
 
 #[uniffi::remote(Record)]
-pub struct SessionIssue {
-    path: String,
-    kind: String,
-    reference: Option<String>,
-}
-
-#[uniffi::remote(Record)]
 pub struct SessionFailure {
     kind: wirebolt_app::response::ResponseFailureKind,
-    issues: Vec<SessionIssue>,
+    issues: Vec<FailureIssue>,
 }
 
 #[uniffi::remote(Record)]
@@ -52,14 +47,8 @@ pub struct SessionPreparedBody {
 }
 
 #[uniffi::remote(Record)]
-pub struct SessionProxy {
-    configuration: DomainProxy,
-    source: super::SessionProxySource,
-}
-
-#[uniffi::remote(Record)]
 pub struct SessionPrepared {
-    proxy: Option<SessionProxy>,
+    proxy: Option<ResolvedDomainProxy>,
     method: String,
     url: String,
     headers: Vec<SessionPreparedHeader>,

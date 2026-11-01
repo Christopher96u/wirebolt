@@ -137,15 +137,7 @@ pub fn resolve_values(
         .resolve_values(&values)
         .map_err(|error| SessionFailure {
             kind: crate::response::ResponseFailureKind::InvalidRequest,
-            issues: error
-                .issues
-                .into_iter()
-                .map(|issue| crate::session::run::SessionIssue {
-                    path: issue.path,
-                    kind: transport::request_issue_kind(issue.kind).into(),
-                    reference: issue.reference,
-                })
-                .collect(),
+            issues: error.issues.into_iter().map(Into::into).collect(),
         })
 }
 

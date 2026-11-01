@@ -1,4 +1,5 @@
 use super::*;
+use crate::lock;
 #[tokio::test]
 async fn history_counts_and_clear_revision_belong_to_each_request() {
     let root = tempfile::tempdir().unwrap();
@@ -194,4 +195,38 @@ async fn latest_restore_checks_membership_after_io_and_rejects_departed_workspac
         assert!(lock(&run).snapshot().head.is_none());
         assert!(lock(&run).body().is_none());
     }
+}
+
+#[tokio::test]
+async fn corrupt_history_does_not_stop_recording_or_clearing() {
+    let root = tempfile::tempdir().unwrap();
+    let directory = root.path().join("history");
+    std::fs::create_dir(&directory).unwrap();
+    let index = directory.join("index.json");
+    std::fs::write(&index, b"corrupt index").unwrap();
+    let state = state(root.path());
+    RuntimeRuns::default()
+        .send(command(
+            state.clone(),
+            document("health"),
+            Arc::new(Mutex::new(DocumentRun::default())),
+            Arc::new(Transport {
+                body: b"history".to_vec(),
+                ..Default::default()
+            }),
+            root.path(),
+        ))
+        .await;
+    assert_eq!(state.history_count("health").unwrap(), 1);
+    assert_eq!(state.snapshot().history_entries.len(), 1);
+    assert_eq!(
+        crate::response::RunHistory::new(directory)
+            .count("health")
+            .unwrap(),
+        1
+    );
+    state.clear_history("health");
+    assert_eq!(state.history_count("health").unwrap(), 0);
+    assert!(state.snapshot().history_entries.is_empty());
+    assert_eq!(std::fs::read(index).unwrap(), b"[]");
 }

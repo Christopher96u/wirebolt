@@ -85,7 +85,9 @@ enum BridgeSmoke {
     private static func verifyTypedSocket() async {
         let (events, continuation) = AsyncStream<String?>.makeStream()
         let input = RunInput(draft: RequestDraft(url: "not a URL"), variables: [:])
-        let socket = AppSocketConnection.start(input: input.domain, observer: SocketSmokeObserver(continuation: continuation))
+        let socketState = AppSessionSocket()
+        let socketGeneration = socketState.begin() ?? ""
+        let socket = AppSocketConnection.start(input: input.domain, state: socketState, generation: socketGeneration, observer: SocketSmokeObserver(continuation: continuation))
         var terminals = 0
         for await reason in events {
             precondition(reason != nil, "Invalid typed WebSocket input must report preparation failure")
@@ -146,7 +148,7 @@ enum BridgeSmoke {
 private final class SocketSmokeObserver: SessionSocketObserver {
     let continuation: AsyncStream<String?>.Continuation
     init(continuation: AsyncStream<String?>.Continuation) { self.continuation = continuation }
-    func event(event: SocketEvent) -> Bool { true }
+    func update(snapshot: SessionSocketSnapshot) -> Bool { true }
     func finish(reason: String?) {
         continuation.yield(reason)
         continuation.finish()

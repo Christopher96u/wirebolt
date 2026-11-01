@@ -1,5 +1,10 @@
 use super::super::run::*;
+use crate::lock;
 use crate::response::{StoredCookie, VIEWPORT_BYTES};
+use crate::{
+    domain::proxy::{DomainProxySource, ResolvedDomainProxy},
+    response::{FailureIssue, ResponseIssueKind},
+};
 use std::time::{Duration, Instant};
 fn head(status: u16) -> SessionRunEvent {
     SessionRunEvent::Head {
@@ -215,12 +220,10 @@ fn copy_shares_completed_body_but_does_not_copy_active_run() {
 
 #[test]
 fn shared_transport_projection_preserves_redaction_proxy_source_and_timing() {
-    use crate::session::run::{
-        SessionCompletion, SessionFailure, SessionPrepared, SessionProxySource,
-    };
+    use crate::session::run::{SessionCompletion, SessionFailure, SessionPrepared};
     use crate::session::transport::{
         PreparedBodyDocument, PreparedHeaderDocument, PreparedRunSnapshotDocument,
-        RequestIssueDocument, RunFailureDocument,
+        RunFailureDocument,
     };
     let snapshot = PreparedRunSnapshotDocument {
         method: "POST".into(),
@@ -237,12 +240,15 @@ fn shared_transport_projection_preserves_redaction_proxy_source_and_timing() {
             redacted: true,
         },
         transport: wirebolt_core::TransportSettings::default(),
-        proxy: serde_json::json!({"configuration":{"mode":"direct"},"source":"app_default"}),
+        proxy: ResolvedDomainProxy {
+            configuration: crate::domain::DomainProxy::Direct,
+            source: DomainProxySource::AppDefault,
+        },
     };
-    let projected = SessionPrepared::try_from(&snapshot).unwrap();
+    let projected = SessionPrepared::from(&snapshot);
     assert_eq!(
         projected.proxy.unwrap().source,
-        SessionProxySource::AppDefault
+        DomainProxySource::AppDefault
     );
     assert_eq!(projected.url, "[REDACTED]");
     assert!(projected.headers[0].redacted);
@@ -257,9 +263,9 @@ fn shared_transport_projection_preserves_redaction_proxy_source_and_timing() {
     );
     let failure = SessionFailure::from(&RunFailureDocument {
         kind: crate::response::ResponseFailureKind::InvalidRequest,
-        issues: vec![RequestIssueDocument {
+        issues: vec![FailureIssue {
             path: "url".into(),
-            kind: "missing_secret",
+            kind: ResponseIssueKind::MissingSecret,
             reference: Some("api.token".into()),
         }],
     });

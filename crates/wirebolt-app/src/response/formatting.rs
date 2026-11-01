@@ -96,6 +96,106 @@ impl From<ResponseFailureKind> for String {
     }
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(from = "String", into = "String")]
+pub enum ResponseIssueKind {
+    InvalidMethod,
+    InvalidUrl,
+    InvalidHeaderName,
+    InvalidHeaderValue,
+    ConflictingHeader,
+    InvalidJson,
+    InvalidBody,
+    FileUnavailable,
+    InvalidTemplate,
+    TemplateTooDeep,
+    ResolvedValueTooLarge,
+    MissingVariable,
+    UnresolvedValue,
+    CyclicVariable,
+    MissingSecret,
+    Other { code: String },
+}
+impl ResponseIssueKind {
+    #[must_use]
+    pub fn code(&self) -> &str {
+        match self {
+            Self::InvalidMethod => "invalid_method",
+            Self::InvalidUrl => "invalid_url",
+            Self::InvalidHeaderName => "invalid_header_name",
+            Self::InvalidHeaderValue => "invalid_header_value",
+            Self::ConflictingHeader => "conflicting_header",
+            Self::InvalidJson => "invalid_json",
+            Self::InvalidBody => "invalid_body",
+            Self::FileUnavailable => "file_unavailable",
+            Self::InvalidTemplate => "invalid_template",
+            Self::TemplateTooDeep => "template_too_deep",
+            Self::ResolvedValueTooLarge => "resolved_value_too_large",
+            Self::MissingVariable => "missing_variable",
+            Self::UnresolvedValue => "unresolved_value",
+            Self::CyclicVariable => "cyclic_variable",
+            Self::MissingSecret => "missing_secret",
+            Self::Other { code } => code,
+        }
+    }
+}
+impl From<String> for ResponseIssueKind {
+    fn from(code: String) -> Self {
+        match code.as_str() {
+            "invalid_method" => Self::InvalidMethod,
+            "invalid_url" => Self::InvalidUrl,
+            "invalid_header_name" => Self::InvalidHeaderName,
+            "invalid_header_value" => Self::InvalidHeaderValue,
+            "conflicting_header" => Self::ConflictingHeader,
+            "invalid_json" => Self::InvalidJson,
+            "invalid_body" => Self::InvalidBody,
+            "file_unavailable" => Self::FileUnavailable,
+            "invalid_template" => Self::InvalidTemplate,
+            "template_too_deep" => Self::TemplateTooDeep,
+            "resolved_value_too_large" => Self::ResolvedValueTooLarge,
+            "missing_variable" => Self::MissingVariable,
+            "unresolved_value" => Self::UnresolvedValue,
+            "cyclic_variable" => Self::CyclicVariable,
+            "missing_secret" => Self::MissingSecret,
+            _ => Self::Other { code },
+        }
+    }
+}
+impl From<ResponseIssueKind> for String {
+    fn from(kind: ResponseIssueKind) -> Self {
+        kind.code().to_owned()
+    }
+}
+impl From<wirebolt_core::RequestIssue> for FailureIssue {
+    fn from(issue: wirebolt_core::RequestIssue) -> Self {
+        Self {
+            path: issue.path,
+            kind: issue.kind.into(),
+            reference: issue.reference,
+        }
+    }
+}
+impl From<wirebolt_core::RequestIssueKind> for ResponseIssueKind {
+    fn from(kind: wirebolt_core::RequestIssueKind) -> Self {
+        match kind {
+            wirebolt_core::RequestIssueKind::InvalidMethod => Self::InvalidMethod,
+            wirebolt_core::RequestIssueKind::InvalidUrl => Self::InvalidUrl,
+            wirebolt_core::RequestIssueKind::InvalidHeaderName => Self::InvalidHeaderName,
+            wirebolt_core::RequestIssueKind::InvalidHeaderValue => Self::InvalidHeaderValue,
+            wirebolt_core::RequestIssueKind::ConflictingHeader => Self::ConflictingHeader,
+            wirebolt_core::RequestIssueKind::InvalidJson => Self::InvalidJson,
+            wirebolt_core::RequestIssueKind::InvalidBody => Self::InvalidBody,
+            wirebolt_core::RequestIssueKind::FileUnavailable => Self::FileUnavailable,
+            wirebolt_core::RequestIssueKind::InvalidTemplate => Self::InvalidTemplate,
+            wirebolt_core::RequestIssueKind::TemplateTooDeep => Self::TemplateTooDeep,
+            wirebolt_core::RequestIssueKind::ResolvedValueTooLarge => Self::ResolvedValueTooLarge,
+            wirebolt_core::RequestIssueKind::MissingVariable => Self::MissingVariable,
+            wirebolt_core::RequestIssueKind::CyclicVariable => Self::CyclicVariable,
+            wirebolt_core::RequestIssueKind::MissingSecret => Self::MissingSecret,
+        }
+    }
+}
+
 use url::Url;
 
 #[must_use]
@@ -232,10 +332,10 @@ pub fn completion_summary(
     parts.push(formatted_bytes);
     parts.join(", ")
 }
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct FailureIssue {
     pub path: String,
-    pub kind: String,
+    pub kind: ResponseIssueKind,
     pub reference: Option<String>,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -365,24 +465,26 @@ pub fn describe_issue(issue: &FailureIssue) -> String {
         .reference
         .as_ref()
         .map_or_else(String::new, |r| format!("“{r}”"));
-    let detail = match issue.kind.as_str() {
-        "invalid_method" => "The HTTP method isn’t valid.".to_string(),
-        "invalid_url" => "The URL isn’t valid.".to_string(),
-        "invalid_header_name" => "A header name isn’t valid.".to_string(),
-        "invalid_header_value" => "A header value isn’t valid.".to_string(),
-        "conflicting_header" => "Two headers conflict with each other.".to_string(),
-        "invalid_json" => "The JSON body isn’t valid.".to_string(),
-        "invalid_body" => "The body isn’t valid.".to_string(),
-        "file_unavailable" => "The body file can’t be read.".to_string(),
-        "invalid_template" => "A {{variable}} template isn’t valid.".to_string(),
-        "template_too_deep" => "Variables are nested too deeply.".to_string(),
-        "resolved_value_too_large" => "A resolved value is too large.".to_string(),
-        "missing_variable" | "unresolved_value" => {
+    let detail = match &issue.kind {
+        ResponseIssueKind::InvalidMethod => "The HTTP method isn’t valid.".to_string(),
+        ResponseIssueKind::InvalidUrl => "The URL isn’t valid.".to_string(),
+        ResponseIssueKind::InvalidHeaderName => "A header name isn’t valid.".to_string(),
+        ResponseIssueKind::InvalidHeaderValue => "A header value isn’t valid.".to_string(),
+        ResponseIssueKind::ConflictingHeader => "Two headers conflict with each other.".to_string(),
+        ResponseIssueKind::InvalidJson => "The JSON body isn’t valid.".to_string(),
+        ResponseIssueKind::InvalidBody => "The body isn’t valid.".to_string(),
+        ResponseIssueKind::FileUnavailable => "The body file can’t be read.".to_string(),
+        ResponseIssueKind::InvalidTemplate => "A {{variable}} template isn’t valid.".to_string(),
+        ResponseIssueKind::TemplateTooDeep => "Variables are nested too deeply.".to_string(),
+        ResponseIssueKind::ResolvedValueTooLarge => "A resolved value is too large.".to_string(),
+        ResponseIssueKind::MissingVariable | ResponseIssueKind::UnresolvedValue => {
             format!("The variable {reference} isn’t defined in the active environment.")
         }
-        "cyclic_variable" => format!("The variable {reference} refers to itself."),
-        "missing_secret" => format!("The secret {reference} isn’t in the Keychain."),
-        _ => sentence(&issue.kind),
+        ResponseIssueKind::CyclicVariable => format!("The variable {reference} refers to itself."),
+        ResponseIssueKind::MissingSecret => {
+            format!("The secret {reference} isn’t in the Keychain.")
+        }
+        ResponseIssueKind::Other { code } => sentence(code),
     };
     let location = if issue.path.is_empty() || issue.path == "values" {
         String::new()

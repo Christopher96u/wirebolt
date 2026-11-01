@@ -1,4 +1,5 @@
 use super::*;
+use crate::lock;
 #[tokio::test]
 async fn streams_response_into_bounded_visible_state() {
     let root = tempfile::tempdir().unwrap();
@@ -176,7 +177,10 @@ async fn resolution_failures_preserve_issue_details_and_skip_history() {
         failure.kind,
         crate::response::ResponseFailureKind::InvalidRequest
     );
-    assert_eq!(failure.issues[0].kind, "missing_variable");
+    assert_eq!(
+        failure.issues[0].kind,
+        crate::response::ResponseIssueKind::MissingVariable
+    );
     assert!(lock(&transport.inputs).is_empty());
     assert_eq!(state.history_count("a").unwrap(), 0);
 }

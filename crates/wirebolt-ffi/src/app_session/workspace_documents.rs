@@ -3,7 +3,8 @@
     clippy::needless_pass_by_value,
     reason = "UniFFI lifts owned records at the boundary."
 )]
-use super::{Arc, Mutex, SessionDocument, WorkspaceSave, lock};
+use super::{Arc, Mutex, SessionDocument, WorkspaceSave};
+use crate::lock;
 #[derive(Debug, uniffi::Object)]
 pub struct WorkspaceDocumentReply {
     sender: Mutex<Option<tokio::sync::oneshot::Sender<Option<SessionDocument>>>>,

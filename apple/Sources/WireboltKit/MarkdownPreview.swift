@@ -3,10 +3,13 @@ import AppKit
 public final class RenderedMarkdown: @unchecked Sendable {
     public let text: NSAttributedString
     public let cost: Int
-    init(_ text: NSAttributedString, cost: Int) {
+    private let nativeText: NSAttributedString
+    init(_ text: NSAttributedString, cost: Int, nativeText: NSAttributedString? = nil) {
         self.text = text
         self.cost = cost
+        self.nativeText = nativeText ?? text
     }
+    @MainActor public func makeTextStorage() -> NSTextStorage { NSTextStorage(attributedString: nativeText) }
 }
 
 /// Rust assembles runs and owns cache retention; Foundation supplies Markdown intents.
@@ -23,11 +26,42 @@ public actor MarkdownPreviewCache {
         let id = document.id()
         if let cached = rendered[id] { return cached }
         let output = NSMutableAttributedString(string: "")
+        var attributes: [MarkdownStyle: [NSAttributedString.Key: Any]] = [:]
+        let native = NSMutableAttributedString(string: "")
+        var trailingParagraphStyle: NSParagraphStyle?
+        output.beginEditing()
+        native.beginEditing()
         for run in document.runs() {
             try Task.checkCancellation()
-            output.append(NSAttributedString(string: run.text, attributes: Self.attributes(run.style)))
+            let style: [NSAttributedString.Key: Any]
+            if let cached = attributes[run.style] {
+                style = cached
+            } else {
+                style = Self.attributes(run.style)
+                attributes[run.style] = style
+            }
+            let attributed = NSAttributedString(string: run.text, attributes: style)
+            output.append(attributed)
+            if run.style.blockSeparator, let paragraph = trailingParagraphStyle {
+                var nativeStyle = style
+                nativeStyle[.paragraphStyle] = paragraph
+                native.append(NSAttributedString(string: run.text, attributes: nativeStyle))
+            } else {
+                native.append(attributed)
+            }
+            let string = run.text as NSString
+            if string.length > 0 {
+                var end = 0
+                var contentsEnd = 0
+                string.getParagraphStart(nil, end: &end, contentsEnd: &contentsEnd, for: NSRange(location: string.length - 1, length: 1))
+                trailingParagraphStyle = contentsEnd < end ? nil : style[.paragraphStyle] as? NSParagraphStyle
+            }
         }
-        let result = RenderedMarkdown(NSAttributedString(attributedString: output), cost: Int(clamping: document.cost()))
+        output.endEditing()
+        native.endEditing()
+        try Task.checkCancellation()
+        let result = RenderedMarkdown(NSAttributedString(attributedString: output), cost: Int(clamping: document.cost()),
+            nativeText: NSAttributedString(attributedString: native))
         let retained = Set(rust.stats().retainedIds)
         rendered = rendered.filter { retained.contains($0.key) }
         if retained.contains(id) { rendered[id] = result }
