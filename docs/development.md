@@ -61,8 +61,9 @@ Native workloads cover request and tab selection, large responses, resizing, ren
 | `crates/wirebolt-core` | Workspace persistence, import/export, request preparation and transport |
 | `crates/wirebolt-app/src/domain` | Typed editable records, draft/variable editing, cURL exports, proxy forms and probe state, sidebar indexes, theme tokens and OAuth 2 protocol logic |
 | `crates/wirebolt-app/src/response` | File-backed response bodies, sparse indexes, search, folding, wrapping policy, JSON/Markdown parsing, history and cookies |
-| `crates/wirebolt-ffi` | Swift-facing bridge: typed domain and response objects, platform foreign traits and the streaming interface |
-| `apple/Sources/WireboltKit` | Native observation facades, typed record projections, sessions and Apple platform adapters |
+| `crates/wirebolt-app/src/session` | Document/run state, editor groups and previews, layout, WebSocket lifecycle, reversible workspace plans, credential lifecycle, typed history, workspace persistence/import/export/Git and transport execution |
+| `crates/wirebolt-ffi` | Typed domain, response and session objects; foreign platform traits and narrow streaming callback adapters |
+| `apple/Sources/WireboltKit` | Native observation facades, editor projections and Apple platform adapters; remaining model orchestration is tracked in the Rust application-core spec |
 | `apple/WireboltApp` | Native interface and app adapters |
 | `apple/Tests` | Swift tests and bridge smoke validation |
 | `apple/Benchmarks` | Native performance workloads |

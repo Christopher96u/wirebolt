@@ -1025,15 +1025,6 @@ pub fn domain_oauth_error_message(error: DomainOAuthError) -> String {
 pub fn domain_curl_value_sources(draft: DomainRequestDraft) -> Vec<DomainValueSource> {
     domain::curl::value_sources(&draft)
 }
-fn project<S: serde::Serialize, T: serde::de::DeserializeOwned>(
-    value: &S,
-) -> Result<T, crate::WorkspaceBridgeError> {
-    serde_json::to_value(value)
-        .and_then(serde_json::from_value)
-        .map_err(|_| {
-            crate::WorkspaceBridgeError::operation("workspace snapshot could not be projected")
-        })
-}
 #[uniffi::export]
 impl WorkspaceBridge {
     /// Loads typed application records without a JSON round trip through Swift.
@@ -1041,40 +1032,7 @@ impl WorkspaceBridge {
     /// # Errors
     /// Returns an error if the workspace cannot be read or projected.
     pub fn domain_snapshot(&self) -> Result<DomainWorkspace, crate::WorkspaceBridgeError> {
-        let snapshot = self
-            .store
-            .load()
-            .map_err(|_| crate::WorkspaceBridgeError::operation("workspace could not be loaded"))?;
-        let mut collections = vec![];
-        for c in snapshot.collections {
-            let mut requests = vec![];
-            for r in c.requests {
-                let mut draft: DomainRequestDraft = project(&r)?;
-                draft.method = domain::request::normalize_method(&draft.method)
-                    .unwrap_or_else(|| "GET".into());
-                draft.proxy = project(&r.proxy_override)?;
-                requests.push(DomainLocation {
-                    collection_id: c.collection.id.to_string(),
-                    group_id: r.group_id.map(|id| id.to_string()),
-                    order: r.order,
-                    request: draft,
-                });
-            }
-            collections.push(DomainCollection {
-                id: c.collection.id.to_string(),
-                name: c.collection.name,
-                order: c.collection.order,
-                groups: project(&c.collection.groups)?,
-                requests,
-            });
-        }
-        Ok(DomainWorkspace {
-            name: snapshot.workspace.name,
-            proxy: project(&snapshot.workspace.proxy)?,
-            transport: project(&snapshot.workspace.transport)?,
-            collections,
-            environments: project(&snapshot.environments)?,
-        })
+        self.inner.domain_snapshot()
     }
 }
 #[uniffi::remote(Record)]

@@ -3,6 +3,7 @@ import Foundation
 struct RustWorkspacePersistence: WorkspacePersistence, GitCollaboration {
     private let bridge: WorkspaceBridge
     let location: URL?
+    var sessionSecretPlatform: AppSecretPlatform { AppSecretPlatform.workspace(bridge: bridge) }
 
     init(
         path: URL = Self.defaultWorkspaceURL,
@@ -40,25 +41,17 @@ struct RustWorkspacePersistence: WorkspacePersistence, GitCollaboration {
         }.value
     }
 
-    func save(request: RequestDraft, in collectionID: String) async throws {
+    func loadSession(_ application: AppWorkspaceSession) async throws -> WorkspaceDraft {
         let bridge = bridge
-        let document = SavedRequestDocument(request: request)
-        try await Task.detached(priority: .userInitiated) {
-            let data = try JSONEncoder.wirebolt.encode(document)
-            try bridge.saveRequest(
-                collectionId: collectionID,
-                requestJson: String(decoding: data, as: UTF8.self)
-            )
+        return try await Task.detached(priority: .userInitiated) {
+            WorkspaceDraft(domain: try bridge.loadSession(application: application))
         }.value
     }
 
-    func save(environment: EnvironmentDraft) async throws {
-        let bridge = bridge
-        try await Task.detached(priority: .userInitiated) {
-            let data = try JSONEncoder.wirebolt.encode(environment)
-            try bridge.saveEnvironment(environmentJson: String(decoding: data, as: UTF8.self))
-        }.value
+    func save(request: RequestDraft, in collectionID: String) async throws {
+        _ = try await apply(.saveRequest(collectionID: collectionID, location: RequestLocation(collectionID: collectionID, request: request)))
     }
+    func save(environment: EnvironmentDraft) async throws { _ = try await apply(.saveEnvironment(environment)) }
 
     func readSecret(name: String) async throws -> String? {
         let bridge = bridge
@@ -83,14 +76,14 @@ struct RustWorkspacePersistence: WorkspacePersistence, GitCollaboration {
 
     func apply(_ command: WorkspaceCommand) async throws -> WorkspaceDelta {
         let bridge = bridge
-        let document = WorkspaceCommandDocument(command)
         return try await Task.detached(priority: .userInitiated) {
-            let encoded = try JSONEncoder.wirebolt.encode(document)
-            let response = try bridge.applyWorkspaceCommand(
-                commandJson: String(decoding: encoded, as: UTF8.self)
-            )
-            return try JSONDecoder().decode(WorkspaceDelta.self, from: Data(response.utf8))
+            let delta = try bridge.applySessionCommand(command: command.sessionRecord)
+            return WorkspaceDelta(version: delta.version, kind: WorkspaceNodeKind(rawValue: delta.kind)!, affectedIDs: delta.affectedIds)
         }.value
+    }
+    func applySessionCommands(_ commands: [SessionWorkspaceCommand]) async -> SessionCommandBatchResult {
+        let bridge = bridge
+        return await Task.detached(priority: .userInitiated) { bridge.executeSessionCommands(commands: commands) }.value
     }
 
         func previewImport(format: ImportFormat, source: String) async throws -> ImportPreview {
@@ -273,190 +266,5 @@ enum WorkspaceSelectionError: LocalizedError {
         case .workspaceNotFound: "Choose a folder containing wirebolt.toml."
         case .workspaceAlreadyExists: "This folder already contains a workspace. Use Open Workspace."
         }
-    }
-}
-
-private struct SavedRequestDocument: Codable {
-    let id: String
-    let name: String
-    var groupID: String?
-    var order: Int
-    let method: String
-    let url: String
-    let webSocket: Bool?
-    let note: String?
-    let query: [RequestField]
-    let headers: [RequestField]
-    let authentication: RequestAuthentication
-    let body: RequestBody
-    let proxy: ProxyDocument?
-    let transport: TransportSettings
-    let inheritsWorkspaceTransport: Bool
-
-    private enum CodingKeys: String, CodingKey {
-        case id, name, order, method, url, query, headers, authentication, body, proxy, transport
-        case webSocket = "web_socket"
-        case note
-        case inheritsWorkspaceTransport = "inherits_workspace_transport"
-        case groupID = "group_id"
-    }
-
-    init(request: RequestDraft) {
-        id = request.id
-        name = request.name
-        groupID = nil
-        order = 0
-        method = request.method.rawValue
-        url = request.url
-        webSocket = request.webSocket
-        note = request.note
-        query = request.query
-        headers = request.headers
-        authentication = request.authentication
-        body = request.body
-        proxy = switch request.proxy {
-        case .inherit: nil
-        case .system: .system
-        case .direct: .direct
-        case let .manual(document): document
-        }
-        transport = request.transport
-        inheritsWorkspaceTransport = request.inheritsWorkspaceTransport
-    }
-
-    init(location: RequestLocation) {
-        self.init(request: location.request)
-        groupID = location.groupID
-        order = location.order
-    }
-
-    var request: RequestDraft {
-        let proxySelection: ProxySelection = switch proxy {
-        case nil: .inherit
-        case .system: .system
-        case .direct: .direct
-        case let .manual(routes): .manual(.manual(routes: routes))
-        }
-        return RequestDraft(
-            id: id,
-            name: name,
-            method: HTTPMethod(rawValue: method) ?? .get,
-            url: url,
-            webSocket: webSocket ?? false,
-            note: note ?? "",
-            query: query,
-            headers: headers,
-            authentication: authentication,
-            body: body,
-            proxy: proxySelection,
-            transport: transport,
-            inheritsWorkspaceTransport: inheritsWorkspaceTransport
-        )
-    }
-}
-
-private struct WorkspaceCommandDocument: Encodable {
-    private let command: WorkspaceCommand
-
-    init(_ command: WorkspaceCommand) {
-        self.command = command
-    }
-
-    private enum CodingKeys: String, CodingKey {
-        case kind, id, name, order, groups, requests, group, location, request, transport
-        case environment, proxy, items
-        case collectionID = "collection_id"
-        case parentID = "parent_id"
-        case newID = "new_id"
-        case fromCollectionID = "from_collection_id"
-        case requestID = "request_id"
-        case toCollectionID = "to_collection_id"
-        case groupID = "group_id"
-    }
-
-    func encode(to encoder: any Encoder) throws {
-        var container = encoder.container(keyedBy: CodingKeys.self)
-        switch command {
-        case let .reorderChildren(collectionID, parentID, items):
-            try container.encode("reorder_children", forKey: .kind)
-            try container.encode(collectionID, forKey: .collectionID)
-            try container.encodeIfPresent(parentID, forKey: .parentID)
-            try container.encode(items, forKey: .items)
-        case let .saveWorkspaceProxy(proxy):
-            try container.encode("save_workspace_proxy", forKey: .kind)
-            try container.encode(proxy, forKey: .proxy)
-        case let .saveWorkspaceSettings(transport):
-            try container.encode("save_workspace_settings", forKey: .kind)
-            try container.encode(transport, forKey: .transport)
-        case let .renameWorkspace(name):
-            try container.encode("rename_workspace", forKey: .kind)
-            try container.encode(name, forKey: .name)
-        case let .createCollection(collection):
-            try container.encode("create_collection", forKey: .kind)
-            try container.encode(collection.id, forKey: .id)
-            try container.encode(collection.name, forKey: .name)
-            try container.encode(collection.order, forKey: .order)
-        case let .renameCollection(id, name):
-            try container.encode("rename_collection", forKey: .kind)
-            try container.encode(id, forKey: .id)
-            try container.encode(name, forKey: .name)
-        case let .deleteCollection(id):
-            try container.encode("delete_collection", forKey: .kind)
-            try container.encode(id, forKey: .id)
-        case let .createGroup(collectionID, group):
-            try container.encode("create_group", forKey: .kind)
-            try container.encode(collectionID, forKey: .collectionID)
-            try container.encode(group, forKey: .group)
-        case let .renameGroup(collectionID, id, name):
-            try container.encode("rename_group", forKey: .kind)
-            try container.encode(collectionID, forKey: .collectionID)
-            try container.encode(id, forKey: .id)
-            try container.encode(name, forKey: .name)
-        case let .deleteGroup(collectionID, id):
-            try container.encode("delete_group", forKey: .kind)
-            try container.encode(collectionID, forKey: .collectionID)
-            try container.encode(id, forKey: .id)
-        case let .moveGroup(collectionID, id, parentID, order):
-            try container.encode("move_group", forKey: .kind)
-            try container.encode(collectionID, forKey: .collectionID)
-            try container.encode(id, forKey: .id)
-            try container.encodeIfPresent(parentID, forKey: .parentID)
-            try container.encode(order, forKey: .order)
-        case let .saveRequest(collectionID, location):
-            try container.encode("save_request", forKey: .kind)
-            try container.encode(collectionID, forKey: .collectionID)
-            try container.encode(SavedRequestDocument(location: location), forKey: .request)
-        case let .deleteRequest(collectionID, id):
-            try container.encode("delete_request", forKey: .kind)
-            try container.encode(collectionID, forKey: .collectionID)
-            try container.encode(id, forKey: .id)
-        case let .duplicateRequest(collectionID, id, newID, name):
-            try container.encode("duplicate_request", forKey: .kind)
-            try container.encode(collectionID, forKey: .collectionID)
-            try container.encode(id, forKey: .id)
-            try container.encode(newID, forKey: .newID)
-            try container.encode(name, forKey: .name)
-        case let .moveRequest(fromCollectionID, requestID, toCollectionID, groupID, order):
-            try container.encode("move_request", forKey: .kind)
-            try container.encode(fromCollectionID, forKey: .fromCollectionID)
-            try container.encode(requestID, forKey: .requestID)
-            try container.encode(toCollectionID, forKey: .toCollectionID)
-            try container.encodeIfPresent(groupID, forKey: .groupID)
-            try container.encode(order, forKey: .order)
-        case let .saveEnvironment(environment):
-            try container.encode("save_environment", forKey: .kind)
-            try container.encode(environment, forKey: .environment)
-        case let .deleteEnvironment(id):
-            try container.encode("delete_environment", forKey: .kind)
-            try container.encode(id, forKey: .id)
-        }
-    }
-}
-
-private extension JSONEncoder {
-    static var wirebolt: JSONEncoder {
-        let encoder = JSONEncoder()
-        encoder.outputFormatting = [.sortedKeys]
-        return encoder
     }
 }

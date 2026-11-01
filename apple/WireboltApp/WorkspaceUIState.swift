@@ -168,10 +168,8 @@ final class WorkspaceUIState {
     }
     func selectTab(index: Int? = nil, offset: Int = 0, model: WireboltModel) {
         guard let group = model.sessions.activeGroup, !group.tabIDs.isEmpty else { return }
-        let current = group.tabIDs.firstIndex(of: group.selectedTabID ?? "") ?? 0
-        let target = index ?? ((current + offset + group.tabIDs.count) % group.tabIDs.count)
-        guard group.tabIDs.indices.contains(target) else { return }
-        model.sessions.select(tabID: group.tabIDs[target]); synchronizeSelection(model: model)
+        guard let target = sessionTabDestination(tabs: group.tabIDs, selected: group.selectedTabID, index: index.map(Int64.init), offset: Int64(offset)) else { return }
+        model.sessions.select(tabID: target); synchronizeSelection(model: model)
     }
     var activeTabID: String?
     /// The folder of the open workspace; editor layouts are remembered per folder.
@@ -425,43 +423,12 @@ final class WorkspaceUIState {
 
     /// Describes what a deletion removes besides the item itself; empty when nothing else is lost.
     func deleteConsequences(of target: WorkspaceDeleteTarget, model: WireboltModel) -> String {
-        let collectionID: String
-        let requests: [RequestLocation]
-        let folderCount: Int
-        switch target {
-        case let .request(id, requestID):
-            collectionID = id
-            requests = model.workspace.location(collectionID: id, requestID: requestID).map { [$0] } ?? []
-            folderCount = 0
-        case let .group(id, groupID):
-            guard let collection = model.workspace.collections.first(where: { $0.id == id }) else { return "" }
-            let folders = collection.descendantGroupIDs(of: groupID)
-            collectionID = id
-            requests = collection.requests.filter { $0.groupID.map(folders.contains) ?? false }
-            folderCount = folders.count - 1
-        case let .collection(id):
-            guard let collection = model.workspace.collections.first(where: { $0.id == id }) else { return "" }
-            collectionID = id
-            requests = collection.requests
-            folderCount = collection.groups.count
+        let target: SessionDeleteTarget = switch target {
+        case let .collection(id): .collection(id: id)
+        case let .group(collectionID, id): .group(collectionId: collectionID, id: id)
+        case let .request(collectionID, id): .request(collectionId: collectionID, id: id)
         }
-        let ids = Set(requests.map(\.request.id))
-        let hasUnsavedEdits = model.sessions.sessions.values.contains {
-            $0.isDirty && $0.collectionID == collectionID && ids.contains($0.requestID)
-        }
-        var parts: [String] = []
-        let isContainer = if case .request = target { false } else { true }
-        if isContainer {
-            let contents = [
-                requests.isEmpty ? nil : requests.count == 1 ? "1 request" : "\(requests.count) requests",
-                folderCount == 0 ? nil : folderCount == 1 ? "1 folder" : "\(folderCount) folders",
-            ].compactMap(\.self)
-            if !contents.isEmpty { parts.append("Its \(contents.joined(separator: " and ")) will also be deleted.") }
-        }
-        if hasUnsavedEdits { parts.append("Unsaved changes in open tabs will be discarded and can’t be restored.") }
-        guard !parts.isEmpty else { return "" }
-        parts.append("You can undo the deletion with Edit ▸ Undo (⌘Z).")
-        return parts.joined(separator: " ")
+        return model.deleteConsequences(target)
     }
 
     func openInNewSplit(tabID: String, model: WireboltModel) {

@@ -2707,6 +2707,7 @@ dependencies = [
  "sha2",
  "tempfile",
  "tokio",
+ "tokio-util",
  "unicode-casefold",
  "unicode-normalization",
  "unicode-segmentation",

@@ -383,7 +383,7 @@ impl StoredCookie {
         format!("{}\0{}\0{}", self.domain, self.path, self.name)
     }
 }
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ResponseHeaderValue {
     pub name: String,
     pub value: String,

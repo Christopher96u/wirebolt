@@ -2,14 +2,13 @@ use std::{
     ffi::c_void,
     ptr,
     sync::{Mutex, mpsc},
-    time::Duration,
 };
 
 use tokio::sync::mpsc::{Receiver, Sender};
 use tokio_util::sync::CancellationToken;
-use wirebolt_core::{RequestBody, WebSocketConnection, WebSocketFrame};
+use wirebolt_core::{WebSocketConnection, WebSocketFrame};
 
-use super::{RunInput, SHARED_RUNTIME, prepare_protocol_run};
+use super::SHARED_RUNTIME;
 
 type EventCallback = extern "C" fn(*mut c_void, u8, *const u8, usize) -> u8;
 
@@ -150,82 +149,29 @@ fn emit(callback: EventCallback, address: usize, kind: u8, payload: &[u8]) -> bo
 
 async fn run(
     input: Vec<u8>,
-    mut messages: Receiver<WebSocketFrame>,
+    messages: Receiver<WebSocketFrame>,
     cancellation: CancellationToken,
     callback: EventCallback,
     address: usize,
 ) -> Result<(), String> {
-    let mut input: RunInput =
-        serde_json::from_slice(&input).map_err(|_| "The connection settings are invalid.")?;
-    "GET".clone_into(&mut input.method);
-    input.body = RequestBody::Empty;
-    let timeout = input.total_timeout_ms;
-    let preparation = tokio::task::spawn_blocking(move || {
-        #[cfg(target_vendor = "apple")]
-        let secrets = wirebolt_core::KeychainSecretResolver::default();
-        #[cfg(not(target_vendor = "apple"))]
-        let secrets = wirebolt_core::NoSecrets;
-        prepare_protocol_run(input, &secrets, true)
-            .map_err(|_| "The URL, headers or credentials could not be prepared.")
-    });
-    let prepared = tokio::select! {
-        () = cancellation.cancelled() => return Ok(()),
-        result = preparation => result.map_err(|_| "The connection could not be prepared.")??,
-    };
-    let connect = WebSocketConnection::connect(&prepared.1, &prepared.0);
-    let mut socket = tokio::select! {
-        () = cancellation.cancelled() => return Ok(()),
-        result = async {
-            if timeout == 0 { connect.await.map_err(|error| error.to_string()) }
-            else { tokio::time::timeout(Duration::from_millis(timeout), connect).await
-                .map_err(|_| "The connection timed out.".to_owned())?.map_err(|error| error.to_string()) }
-        } => result?,
-    };
-    let headers = socket
-        .handshake_headers
-        .iter()
-        .map(|header| serde_json::json!({"name": header.name, "value": header.value}))
-        .collect::<Vec<_>>();
-    let headers =
-        serde_json::to_vec(&headers).map_err(|_| "The handshake headers could not be read.")?;
-    if !emit(callback, address, 0, &headers) {
-        return Ok(());
-    }
-    loop {
-        tokio::select! {
-            () = cancellation.cancelled() => {
-                let _ = tokio::time::timeout(Duration::from_millis(500), socket.send(WebSocketFrame::Closed { code: None, reason: String::new() })).await;
-                return Ok(());
-            }
-            message = messages.recv() => {
-                let Some(message) = message else { return Ok(()) };
-                let (kind, payload) = match &message {
-                    WebSocketFrame::Text(value) => (5, value.as_bytes().to_vec()),
-                    WebSocketFrame::Binary(value) => (6, value.clone()),
-                    WebSocketFrame::Closed { .. } | WebSocketFrame::Ping(_) | WebSocketFrame::Pong(_) => return Ok(()),
-                };
-                tokio::select! {
-                    () = cancellation.cancelled() => return Ok(()),
-                    result = socket.send(message) => result.map_err(|error| error.to_string())?,
-                }
-                if !emit(callback, address, kind, &payload) { return Err("Messages arrived faster than they could be displayed.".into()); }
-            }
-            result = socket.next() => match result.map_err(|error| error.to_string())? {
-                Some(WebSocketFrame::Text(value)) => { if !emit(callback, address, 1, value.as_bytes()) { return Err("Messages arrived faster than they could be displayed.".into()); } }
-                Some(WebSocketFrame::Binary(value)) => { if !emit(callback, address, 2, &value) { return Err("Messages arrived faster than they could be displayed.".into()); } }
-                Some(WebSocketFrame::Ping(value)) => {
-                    if !emit(callback, address, 7, &value) || !emit(callback, address, 9, &value) { return Ok(()); }
-                }
-                Some(WebSocketFrame::Pong(value)) => { if !emit(callback, address, 8, &value) { return Ok(()); } }
-                Some(WebSocketFrame::Closed { .. }) | None => return Ok(()),
-            }
-        }
-    }
+    #[cfg(target_vendor = "apple")]
+    let secrets = wirebolt_core::KeychainSecretResolver::default();
+    #[cfg(not(target_vendor = "apple"))]
+    let secrets = wirebolt_core::NoSecrets;
+    wirebolt_app::session::socket_transport::run_websocket(
+        input,
+        messages,
+        cancellation,
+        move |kind, payload| emit(callback, address, kind, payload),
+        secrets,
+    )
+    .await
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::Duration;
     use std::{io::Read, net::TcpListener, thread};
 
     extern "C" fn collect(context: *mut c_void, kind: u8, bytes: *const u8, length: usize) -> u8 {

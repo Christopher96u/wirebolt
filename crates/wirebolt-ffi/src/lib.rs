@@ -3,34 +3,33 @@ mod app_domain;
 mod app_response;
 mod app_session;
 mod websocket;
+#[cfg(test)]
+use wirebolt_app::session::transport::{HttpEngineCache, timeout_from_millis};
+use wirebolt_app::session::transport::{
+    PreparedRunSnapshotDocument, RequestIssueDocument, RunFailureDocument, RunInput,
+    clear_manual_http_engines, duration_ns, http_version, shared_http_engine,
+};
 
 use std::{
-    collections::{BTreeMap, HashMap},
+    collections::BTreeMap,
     error::Error,
     ffi::c_void,
-    fmt,
-    path::PathBuf,
-    ptr,
-    sync::{
-        Arc, LazyLock, Mutex,
-        atomic::{AtomicU64, Ordering},
-        mpsc,
-    },
+    fmt, ptr,
+    sync::{Arc, LazyLock, Mutex, mpsc},
     time::Duration,
 };
 
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 #[cfg(not(target_vendor = "apple"))]
 use wirebolt_core::NoSecrets;
+#[cfg(test)]
 use wirebolt_core::{
-    Collection, DocumentId, DocumentProblem, DocumentProblemKind, Environment, EnvironmentVariable,
-    GitChange, GitDelta, GitError, GitErrorKind, GitOperation, GitOperationOutcome, GitStatus,
-    GitWorkspace, Group, HttpEngine, HttpEngineConfig, HttpVersion, ImportEngine, ImportFormat,
-    ProxyMode, ProxyPolicy, Request, RequestAuthentication, RequestBody, RequestHeader,
-    RequestIssue, RequestIssueKind, RequestPipeline, RequestValueField, ResolvedProxy,
-    RunCancellation, RunError, RunErrorKind, RunHead, RunOptions, SecretName, SecretResolver,
-    StreamControl, TransportSettings, ValueSource, Workspace, WorkspaceDocument, WorkspaceSnapshot,
+    Collection, HttpEngine, Request, RequestHeader, ResolvedProxy, Workspace, WorkspaceDocument,
     WorkspaceStore,
+};
+use wirebolt_core::{
+    DocumentId, Environment, HttpEngineConfig, ProxyMode, ProxyPolicy, RequestPipeline,
+    RunCancellation, RunHead, SecretName, SecretResolver, ValueSource,
 };
 
 #[derive(Debug, Eq, PartialEq, uniffi::Record)]
@@ -77,534 +76,164 @@ impl fmt::Display for RequestPreparationError {
 
 impl Error for RequestPreparationError {}
 
-#[derive(Clone, Debug, Eq, PartialEq, uniffi::Error)]
+use wirebolt_app::session::persistence::{
+    GitBridgeError, SessionPersistence, WorkspaceBridgeError, WorkspaceSecrets,
+};
+#[uniffi::remote(Error)]
 pub enum WorkspaceBridgeError {
     OperationFailed { reason: String },
 }
-
-impl fmt::Display for WorkspaceBridgeError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::OperationFailed { reason } => formatter.write_str(reason),
-        }
-    }
-}
-
-impl Error for WorkspaceBridgeError {}
-
-#[derive(Clone, Debug, Eq, PartialEq, uniffi::Error)]
+#[uniffi::remote(Error)]
 pub enum GitBridgeError {
     OperationFailed { kind: String, reason: String },
 }
-
-impl fmt::Display for GitBridgeError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::OperationFailed { reason, .. } => formatter.write_str(reason),
-        }
-    }
-}
-
-impl Error for GitBridgeError {}
-
 #[derive(Debug, uniffi::Object)]
 pub struct WorkspaceBridge {
-    store: WorkspaceStore,
-    version: AtomicU64,
+    inner: Arc<SessionPersistence>,
 }
-
-#[derive(Debug, Serialize)]
-struct WorkspaceSnapshotDocument<'a> {
-    name: &'a str,
-    proxy: &'a Option<ProxyMode>,
-    transport: &'a TransportSettings,
-    collections: Vec<CollectionSnapshotDocument<'a>>,
-    environments: Vec<EnvironmentSnapshotDocument<'a>>,
-    problems: Vec<DocumentProblemDocument<'a>>,
-}
-
-#[derive(Debug, Serialize)]
-struct CollectionSnapshotDocument<'a> {
-    id: &'a str,
-    name: &'a str,
-    order: i64,
-    groups: &'a [Group],
-    requests: Vec<RequestSnapshotDocument<'a>>,
-}
-
-#[derive(Debug, Serialize)]
-struct RequestSnapshotDocument<'a> {
-    id: &'a str,
-    name: &'a str,
-    group_id: Option<&'a str>,
-    order: i64,
-    method: &'a str,
-    url: &'a str,
-    web_socket: bool,
-    note: &'a str,
-    query: &'a [RequestValueField],
-    headers: &'a [RequestHeader],
-    authentication: &'a RequestAuthentication,
-    body: &'a RequestBody,
-    proxy: &'a Option<ProxyMode>,
-    transport: &'a TransportSettings,
-    inherits_workspace_transport: bool,
-}
-
-#[derive(Debug, Serialize)]
-struct EnvironmentSnapshotDocument<'a> {
-    id: &'a str,
-    name: &'a str,
-    variables: &'a [EnvironmentVariable],
-}
-
-#[derive(Debug, Serialize)]
-struct DocumentProblemDocument<'a> {
-    path: String,
-    kind: &'static str,
-    reason: &'a str,
-}
-
-#[derive(Debug, Serialize)]
-struct GitStatusDocument<'a> {
-    branch: &'a Option<String>,
-    upstream: &'a Option<String>,
-    ahead: u64,
-    behind: u64,
-    revision: &'a Option<String>,
-    changes: Vec<GitChangeDocument<'a>>,
-    merging: bool,
-}
-
-#[derive(Debug, Serialize)]
-struct GitChangeDocument<'a> {
-    path: &'a str,
-    previous_path: &'a Option<String>,
-    staged: &'static str,
-    unstaged: &'static str,
-    conflicted: bool,
-}
-
-#[derive(Debug, Serialize)]
-struct GitOperationDocument<'a> {
-    outcome: &'static str,
-    revision: &'a Option<String>,
-    status: GitStatusDocument<'a>,
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
-struct SavedRequestDocument {
-    id: String,
-    name: String,
-    #[serde(default)]
-    group_id: Option<String>,
-    #[serde(default)]
-    order: i64,
-    method: String,
-    url: String,
-    #[serde(default)]
-    web_socket: bool,
-    #[serde(default)]
-    note: String,
-    #[serde(default)]
-    query: Vec<RequestValueField>,
-    #[serde(default)]
-    headers: Vec<RequestHeader>,
-    #[serde(default)]
-    authentication: RequestAuthentication,
-    #[serde(default = "empty_body")]
-    body: RequestBody,
-    #[serde(default)]
-    proxy: Option<ProxyMode>,
-    #[serde(default)]
-    transport: TransportSettings,
-    #[serde(default = "default_inherits_workspace_transport")]
-    inherits_workspace_transport: bool,
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
-struct SavedEnvironmentDocument {
-    id: String,
-    name: String,
-    #[serde(default)]
-    variables: Vec<EnvironmentVariable>,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields, rename_all = "snake_case", tag = "kind")]
-enum WorkspaceCommandDocument {
-    SaveWorkspaceProxy {
-        proxy: Option<ProxyMode>,
-    },
-    SaveWorkspaceSettings {
-        transport: TransportSettings,
-    },
-    RenameWorkspace {
-        name: String,
-    },
-    CreateCollection {
-        id: String,
-        name: String,
-        order: i64,
-    },
-    RenameCollection {
-        id: String,
-        name: String,
-    },
-    DeleteCollection {
-        id: String,
-    },
-    CreateGroup {
-        collection_id: String,
-        group: SavedGroupDocument,
-    },
-    RenameGroup {
-        collection_id: String,
-        id: String,
-        name: String,
-    },
-    DeleteGroup {
-        collection_id: String,
-        id: String,
-    },
-    ReorderChildren {
-        collection_id: String,
-        parent_id: Option<String>,
-        items: Vec<String>,
-    },
-    MoveGroup {
-        collection_id: String,
-        id: String,
-        parent_id: Option<String>,
-        order: i64,
-    },
-    SaveRequest {
-        collection_id: String,
-        request: Box<SavedRequestDocument>,
-    },
-    DeleteRequest {
-        collection_id: String,
-        id: String,
-    },
-    DuplicateRequest {
-        collection_id: String,
-        id: String,
-        new_id: String,
-        name: String,
-    },
-    MoveRequest {
-        from_collection_id: String,
-        request_id: String,
-        to_collection_id: String,
-        group_id: Option<String>,
-        order: i64,
-    },
-    SaveEnvironment {
-        environment: SavedEnvironmentDocument,
-    },
-    DeleteEnvironment {
-        id: String,
-    },
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct SavedGroupDocument {
-    id: String,
-    name: String,
-    #[serde(default)]
-    parent_id: Option<String>,
-    #[serde(default)]
-    order: i64,
-}
-
-#[derive(Debug, Serialize)]
-struct WorkspaceDeltaDocument {
-    version: u64,
-    kind: &'static str,
-    affected_ids: Vec<String>,
-}
-
-/// What an import creates, shown before and after committing it.
-#[derive(Debug, Serialize)]
-struct ImportSummaryDocument {
-    /// The first collection's name, kept for the preview's single-collection shape.
-    collection_name: String,
-    collection_names: Vec<String>,
-    request_count: usize,
-    group_count: usize,
-    environments: Vec<ImportedEnvironmentDocument>,
-    warnings: Vec<String>,
-}
-
-#[derive(Debug, Serialize)]
-struct ImportedEnvironmentDocument {
-    /// Empty in a preview, where nothing has been created yet.
-    id: String,
-    name: String,
-}
-
-impl ImportSummaryDocument {
-    fn new(imported: &wirebolt_core::ParsedImport) -> Self {
-        let collections = &imported.workspace.collections;
-        let collection_names: Vec<String> = collections
-            .iter()
-            .map(|collection| collection.name.clone())
-            .collect();
-        Self {
-            collection_name: collection_names.first().cloned().unwrap_or_default(),
-            collection_names,
-            request_count: collections
-                .iter()
-                .map(|collection| collection.requests.len())
-                .sum(),
-            group_count: collections
-                .iter()
-                .map(|collection| collection.groups.len())
-                .sum(),
-            environments: imported
-                .workspace
-                .environments
-                .iter()
-                .map(|environment| ImportedEnvironmentDocument {
-                    id: String::new(),
-                    name: environment.name.clone(),
-                })
-                .collect(),
-            warnings: imported.warnings().map(str::to_owned).collect(),
-        }
-    }
-}
-
-/// A committed import: the workspace delta plus its summary for the app.
-#[derive(Debug, Serialize)]
-struct ImportCommitDocument {
-    #[serde(flatten)]
-    delta: WorkspaceDeltaDocument,
-    summary: ImportSummaryDocument,
-}
-
 #[uniffi::export]
 impl WorkspaceBridge {
     #[uniffi::constructor]
-    /// Opens an existing workspace or creates an empty one.
-    ///
-    /// Documents that cannot be migrated are skipped and reported through
-    /// the snapshot's `problems`; they never prevent the workspace from
-    /// opening.
-    ///
     /// # Errors
-    ///
-    /// Returns [`WorkspaceBridgeError`] when storage cannot be initialized.
+    /// Returns the application operation error.
     pub fn open_or_create(path: String, name: String) -> Result<Arc<Self>, WorkspaceBridgeError> {
-        let root = PathBuf::from(path);
-        let store = if root.join("wirebolt.toml").is_file() {
-            WorkspaceStore::open(root)
-        } else {
-            WorkspaceStore::create(root, &Workspace::new(name))
-        }
-        .map_err(|_| WorkspaceBridgeError::operation("workspace could not be opened"))?;
-        store
-            .migrate()
-            .map_err(|_| WorkspaceBridgeError::operation("workspace could not be migrated"))?;
         Ok(Arc::new(Self {
-            store,
-            version: AtomicU64::new(0),
+            inner: SessionPersistence::open_or_create(
+                path,
+                name,
+                Arc::new(PlatformWorkspaceSecrets),
+            )?,
         }))
     }
-
-    /// Returns one stable JSON snapshot without exposing filesystem layout.
-    ///
     /// # Errors
-    ///
-    /// Returns [`WorkspaceBridgeError`] when the workspace cannot be loaded.
+    /// Returns the application operation error.
     pub fn snapshot_json(&self) -> Result<String, WorkspaceBridgeError> {
-        let snapshot = self
-            .store
-            .load()
-            .map_err(|_| WorkspaceBridgeError::operation("workspace could not be loaded"))?;
-        serde_json::to_string(&WorkspaceSnapshotDocument::from(&snapshot))
-            .map_err(|_| WorkspaceBridgeError::operation("workspace snapshot could not be encoded"))
+        self.inner.snapshot_json()
     }
-
-    /// Exports the complete saved workspace with secret references intact.
-    ///
     /// # Errors
-    /// Returns [`WorkspaceBridgeError`] if loading or encoding fails.
+    /// Returns the application operation error.
     pub fn export_workspace_json(&self) -> Result<String, WorkspaceBridgeError> {
-        let snapshot = self
-            .store
-            .load()
-            .map_err(|_| WorkspaceBridgeError::operation("workspace could not be loaded"))?;
-        wirebolt_core::export_legacy_v1_workspace(&snapshot)
-            .map_err(|error| WorkspaceBridgeError::operation(&error.to_string()))
+        self.inner.export_workspace_json()
     }
-
-    /// Exports one collection and all of its requests as a portable JSON document.
-    /// Secret material is absent because saved requests contain references only.
-    ///
     /// # Errors
-    ///
-    /// Returns [`WorkspaceBridgeError`] if the collection is absent or cannot be encoded.
+    /// Returns the application operation error.
     pub fn export_collection_json(&self, id: &str) -> Result<String, WorkspaceBridgeError> {
-        let id = document_id(id.to_owned())?;
-        let snapshot = self
-            .store
-            .load()
-            .map_err(|_| WorkspaceBridgeError::operation("workspace could not be loaded"))?
-            .collections
-            .into_iter()
-            .find(|collection| collection.collection.id == id)
-            .ok_or_else(|| WorkspaceBridgeError::operation("collection does not exist"))?;
-        wirebolt_core::export_legacy_v1_collection(&snapshot.collection, &snapshot.requests)
-            .map_err(|error| WorkspaceBridgeError::operation(&error.to_string()))
+        self.inner.export_collection_json(id)
     }
-
-    /// Exports one saved request as portable JSON with secret references intact.
-    ///
     /// # Errors
-    ///
-    /// Returns [`WorkspaceBridgeError`] if the request is absent or cannot be encoded.
+    /// Returns the application operation error.
     pub fn export_request_json(
         &self,
         collection_id: &str,
         id: &str,
     ) -> Result<String, WorkspaceBridgeError> {
-        let request = self.request(collection_id, id)?;
-        wirebolt_core::export_legacy_v1_request(&request)
-            .map_err(|error| WorkspaceBridgeError::operation(&error.to_string()))
+        self.inner.export_request_json(collection_id, id)
     }
-
-    /// Creates or updates a collection.
-    ///
     /// # Errors
-    ///
-    /// Returns [`WorkspaceBridgeError`] for invalid IDs or storage failures.
+    /// Returns the application operation error.
     pub fn save_collection(&self, id: String, name: String) -> Result<(), WorkspaceBridgeError> {
-        let id = document_id(id)?;
-        self.store
-            .save(&WorkspaceDocument::Collection(Collection::new(id, name)))
-            .map(|_| ())
-            .map_err(|_| WorkspaceBridgeError::operation("collection could not be saved"))
+        self.inner.save_collection(id, name)
     }
-
-    /// Creates or updates one request from a bridge JSON document.
-    ///
     /// # Errors
-    ///
-    /// Returns [`WorkspaceBridgeError`] for invalid input or storage failures.
+    /// Returns the application operation error.
     pub fn save_request(
         &self,
         collection_id: String,
         request_json: &str,
     ) -> Result<(), WorkspaceBridgeError> {
-        let collection_id = document_id(collection_id)?;
-        let document: SavedRequestDocument = serde_json::from_str(request_json)
-            .map_err(|_| WorkspaceBridgeError::operation("request document is invalid"))?;
-        let request = request_from_document(document)?;
-        self.store
-            .save(&WorkspaceDocument::Request {
-                collection_id,
-                request,
-            })
-            .map(|_| ())
-            .map_err(|_| WorkspaceBridgeError::operation("request could not be saved"))
+        self.inner.save_request(collection_id, request_json)
     }
-
-    /// Creates or updates one environment from a bridge JSON document.
-    ///
     /// # Errors
-    ///
-    /// Returns [`WorkspaceBridgeError`] for invalid input or storage failures.
+    /// Returns the application operation error.
     pub fn save_environment(&self, environment_json: &str) -> Result<(), WorkspaceBridgeError> {
-        let document: SavedEnvironmentDocument = serde_json::from_str(environment_json)
-            .map_err(|_| WorkspaceBridgeError::operation("environment document is invalid"))?;
-        let environment =
-            Environment::from_rows(document_id(document.id)?, document.name, document.variables);
-        self.store
-            .save(&WorkspaceDocument::Environment(environment))
-            .map(|_| ())
-            .map_err(|_| WorkspaceBridgeError::operation("environment could not be saved"))
+        self.inner.save_environment(environment_json)
     }
-
-    /// Applies one versioned workspace mutation and returns a compact delta.
-    ///
     /// # Errors
-    ///
-    /// Returns [`WorkspaceBridgeError`] when the command is malformed, references
-    /// a missing document, creates a group cycle, or cannot be persisted.
+    /// Returns the application operation error.
     pub fn apply_workspace_command(
         &self,
         command_json: &str,
     ) -> Result<String, WorkspaceBridgeError> {
-        let command: WorkspaceCommandDocument = serde_json::from_str(command_json)
-            .map_err(|_| WorkspaceBridgeError::operation("workspace command is invalid"))?;
-        let (kind, affected_ids) = self.apply_workspace_command_document(command)?;
-        let delta = WorkspaceDeltaDocument {
-            version: self.version.fetch_add(1, Ordering::Relaxed) + 1,
-            kind,
-            affected_ids,
-        };
-        serde_json::to_string(&delta)
-            .map_err(|_| WorkspaceBridgeError::operation("workspace delta could not be encoded"))
+        self.inner.apply_workspace_command(command_json)
     }
-
-    /// Parses an import fully and returns its metadata without mutating storage.
-    ///
     /// # Errors
-    ///
-    /// Returns [`WorkspaceBridgeError`] for unsupported formats or invalid source.
+    /// Returns the application operation error.
     pub fn preview_import(
         &self,
         format: &str,
         source: &str,
     ) -> Result<String, WorkspaceBridgeError> {
-        let imported = parse_import(format, source, None)?;
-        serde_json::to_string(&ImportSummaryDocument::new(&imported))
-            .map_err(|_| WorkspaceBridgeError::operation("import preview could not be encoded"))
+        self.inner.preview_import(format, source)
     }
-
-    /// Commits a fully parsed import: its collections, environments and
-    /// Keychain credentials, or none of them.
-    ///
-    /// Returns the workspace delta with a `summary` of what was created and
-    /// every import warning.
-    ///
     /// # Errors
-    ///
-    /// Returns [`WorkspaceBridgeError`] with the import's user-facing reason
-    /// for parse failures, or a storage failure.
+    /// Returns the application operation error.
     pub fn commit_import(
         &self,
         format: &str,
         source: &str,
     ) -> Result<String, WorkspaceBridgeError> {
-        self.commit_imported(parse_import(format, source, None)?)
+        self.inner.commit_import(format, source)
     }
-
-    /// Imports a file under its filename, preserving every exported folder. A
-    /// Wirebolt workspace export creates each of its collections and environments.
-    ///
     /// # Errors
-    /// Returns [`WorkspaceBridgeError`] with the import's user-facing reason
-    /// for invalid source, or a storage failure.
+    /// Returns the application operation error.
     pub fn commit_import_file(
         &self,
         format: &str,
         source: &str,
         name: &str,
     ) -> Result<String, WorkspaceBridgeError> {
-        self.commit_imported(parse_import(format, source, Some(name))?)
+        self.inner.commit_import_file(format, source, name)
     }
-
-    /// Reads a credential only for the authentication editor, never diagnostics.
-    ///
     /// # Errors
-    ///
-    /// Returns [`WorkspaceBridgeError`] for invalid names or Keychain failures.
-    pub fn read_secret(&self, name: String) -> Result<Option<String>, WorkspaceBridgeError> {
+    /// Returns the application operation error.
+    pub fn read_secret(&self, name: &str) -> Result<Option<String>, WorkspaceBridgeError> {
+        self.inner.read_secret(name)
+    }
+    /// # Errors
+    /// Returns the application operation error.
+    pub fn save_secret(&self, name: &str, value: &str) -> Result<(), WorkspaceBridgeError> {
+        self.inner.save_secret(name, value)
+    }
+    /// # Errors
+    /// Returns the application operation error.
+    pub fn delete_secret(&self, name: &str) -> Result<(), WorkspaceBridgeError> {
+        self.inner.delete_secret(name)
+    }
+    /// # Errors
+    /// Returns the application operation error.
+    pub fn git_status_json(&self) -> Result<String, GitBridgeError> {
+        self.inner.git_status_json()
+    }
+    /// # Errors
+    /// Returns the application operation error.
+    pub fn git_pull_json(&self) -> Result<String, GitBridgeError> {
+        self.inner.git_pull_json()
+    }
+    /// # Errors
+    /// Returns the application operation error.
+    pub fn git_commit_json(&self, message: &str) -> Result<String, GitBridgeError> {
+        self.inner.git_commit_json(message)
+    }
+    /// # Errors
+    /// Returns the application operation error.
+    pub fn git_push_json(&self) -> Result<String, GitBridgeError> {
+        self.inner.git_push_json()
+    }
+    /// # Errors
+    /// Returns the application operation error.
+    pub fn git_abort_merge_json(&self) -> Result<String, GitBridgeError> {
+        self.inner.git_abort_merge_json()
+    }
+    /// # Errors
+    /// Returns the application operation error.
+    pub fn git_initialize_json(&self) -> Result<String, GitBridgeError> {
+        self.inner.git_initialize_json()
+    }
+}
+#[derive(Debug)]
+struct PlatformWorkspaceSecrets;
+impl WorkspaceSecrets for PlatformWorkspaceSecrets {
+    fn read(&self, name: &str) -> Result<Option<String>, WorkspaceBridgeError> {
         let name = SecretName::new(name)
             .map_err(|_| WorkspaceBridgeError::operation("secret name is invalid"))?;
         #[cfg(target_vendor = "apple")]
@@ -621,13 +250,7 @@ impl WorkspaceBridge {
             ))
         }
     }
-
-    /// Stores secret material in Keychain, never in the workspace.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`WorkspaceBridgeError`] for invalid names or Keychain failures.
-    pub fn save_secret(&self, name: String, value: &str) -> Result<(), WorkspaceBridgeError> {
+    fn save(&self, name: &str, value: &str) -> Result<(), WorkspaceBridgeError> {
         let name = SecretName::new(name)
             .map_err(|_| WorkspaceBridgeError::operation("secret name is invalid"))?;
         #[cfg(target_vendor = "apple")]
@@ -646,14 +269,7 @@ impl WorkspaceBridge {
             ))
         }
     }
-
-    /// Removes a credential Wirebolt created once nothing references it. A missing item
-    /// counts as removed.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`WorkspaceBridgeError`] for invalid names or Keychain failures.
-    pub fn delete_secret(&self, name: String) -> Result<(), WorkspaceBridgeError> {
+    fn remove(&self, name: &str) -> Result<(), WorkspaceBridgeError> {
         let name = SecretName::new(name)
             .map_err(|_| WorkspaceBridgeError::operation("secret name is invalid"))?;
         #[cfg(target_vendor = "apple")]
@@ -675,956 +291,7 @@ impl WorkspaceBridge {
             ))
         }
     }
-
-    /// Returns a read-only Git status snapshot without fetching.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`GitBridgeError`] when this workspace is not a repository or
-    /// Git cannot inspect it.
-    pub fn git_status_json(&self) -> Result<String, GitBridgeError> {
-        let status = self.git_workspace()?.status()?;
-        encode_git_document(&GitStatusDocument::from(&status))
-    }
-
-    /// Pulls the configured upstream explicitly and leaves conflicts intact.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`GitBridgeError`] when Git rejects or cannot run the pull.
-    pub fn git_pull_json(&self) -> Result<String, GitBridgeError> {
-        let operation = self.git_workspace()?.pull()?;
-        encode_git_document(&GitOperationDocument::from(&operation))
-    }
-
-    /// Commits only Wirebolt-managed workspace documents.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`GitBridgeError`] for invalid messages, missing Git identity,
-    /// or another failed Git operation.
-    pub fn git_commit_json(&self, message: &str) -> Result<String, GitBridgeError> {
-        let operation = self.git_workspace()?.commit(message)?;
-        encode_git_document(&GitOperationDocument::from(&operation))
-    }
-
-    /// Pushes the current branch using the user's Git credentials.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`GitBridgeError`] when the repository has no usable branch or
-    /// remote, authentication fails, or the update is rejected.
-    pub fn git_push_json(&self) -> Result<String, GitBridgeError> {
-        let operation = self.git_workspace()?.push()?;
-        encode_git_document(&GitOperationDocument::from(&operation))
-    }
-
-    /// Aborts the merge left behind by a conflicted pull.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`GitBridgeError`] when no merge is in progress or Git cannot abort it.
-    pub fn git_abort_merge_json(&self) -> Result<String, GitBridgeError> {
-        let operation = self.git_workspace()?.abort_merge()?;
-        encode_git_document(&GitOperationDocument::from(&operation))
-    }
-
-    /// Makes the workspace folder the root of a new Git repository and
-    /// returns its status.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`GitBridgeError`] when the workspace is inside another
-    /// repository or Git cannot initialize it.
-    pub fn git_initialize_json(&self) -> Result<String, GitBridgeError> {
-        let status = GitWorkspace::initialize(self.store.root())?.status()?;
-        encode_git_document(&GitStatusDocument::from(&status))
-    }
 }
-
-impl WorkspaceBridge {
-    /// Creates every imported collection, environment and credential, or none of them.
-    fn commit_imported(
-        &self,
-        imported: wirebolt_core::ParsedImport,
-    ) -> Result<String, WorkspaceBridgeError> {
-        let sequence = self.version.load(Ordering::Relaxed) + 1;
-        let timestamp = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_err(|_| WorkspaceBridgeError::operation("import identifier could not be created"))?
-            .as_nanos();
-        let prefix = format!("import-{timestamp:x}-{:x}-{sequence:x}", std::process::id());
-        let mut summary = ImportSummaryDocument::new(&imported);
-        let mut created = CreatedImport::default();
-        if let Err(error) = self.save_imported(&prefix, imported, &mut created) {
-            for id in &created.collections {
-                let _ = self.store.delete_collection(id);
-            }
-            for id in &created.environments {
-                let _ = self.store.delete_environment(id);
-            }
-            #[cfg(target_vendor = "apple")]
-            for name in created.secrets {
-                let _ = wirebolt_core::KeychainSecretStore::default().remove(&name);
-            }
-            return Err(error);
-        }
-        for (environment, id) in summary.environments.iter_mut().zip(&created.environments) {
-            environment.id = id.to_string();
-        }
-
-        let delta = WorkspaceDeltaDocument {
-            version: self.version.fetch_add(1, Ordering::Relaxed) + 1,
-            kind: "collection",
-            affected_ids: created
-                .collections
-                .iter()
-                .map(ToString::to_string)
-                .collect(),
-        };
-        serde_json::to_string(&ImportCommitDocument { delta, summary })
-            .map_err(|_| WorkspaceBridgeError::operation("import delta could not be encoded"))
-    }
-
-    fn save_imported(
-        &self,
-        prefix: &str,
-        imported: wirebolt_core::ParsedImport,
-        created: &mut CreatedImport,
-    ) -> Result<(), WorkspaceBridgeError> {
-        let wirebolt_core::ParsedImport { workspace, secrets } = imported;
-        let wirebolt_core::ImportedWorkspace {
-            collections,
-            environments,
-            mut request_settings,
-        } = workspace;
-        // Placeholder references become unique Keychain names for this import.
-        let mut keychain_names = BTreeMap::new();
-        for secret in secrets {
-            let name = SecretName::new(format!("{prefix}-{}", secret.reference)).map_err(|_| {
-                WorkspaceBridgeError::operation("import credential name is invalid")
-            })?;
-            save_import_credential(&name, &secret.material)?;
-            created.secrets.push(name.clone());
-            keychain_names.insert(secret.reference, name);
-        }
-        for (index, imported) in collections.into_iter().enumerate() {
-            let collection_id = document_id(format!("{prefix}-{index}"))?;
-            self.save_imported_collection(
-                &collection_id,
-                imported,
-                &mut request_settings,
-                &keychain_names,
-                created,
-            )?;
-        }
-        let has_global = environments.iter().any(|environment| environment.global)
-            && self
-                .store
-                .load()
-                .map_err(|_| WorkspaceBridgeError::operation("workspace could not be loaded"))?
-                .environments
-                .iter()
-                .any(|environment| environment.id.as_str() == wirebolt_core::GLOBAL_ENVIRONMENT_ID);
-        for (index, environment) in environments.into_iter().enumerate() {
-            // Never replace this workspace's own global environment.
-            let id = if environment.global && !has_global {
-                wirebolt_core::GLOBAL_ENVIRONMENT_ID.to_owned()
-            } else {
-                format!("{prefix}-env-{index}")
-            };
-            let mut variables = environment.variables;
-            for variable in &mut variables {
-                if let ValueSource::Secret { secret } = &mut variable.value
-                    && let Some(name) = keychain_names.get(secret)
-                {
-                    *secret = name.clone();
-                }
-            }
-            let environment = Environment::from_rows(document_id(id)?, environment.name, variables);
-            created.environments.push(environment.id.clone());
-            self.store
-                .save(&WorkspaceDocument::Environment(environment))
-                .map_err(|_| {
-                    WorkspaceBridgeError::operation("import environment could not be saved")
-                })?;
-        }
-        Ok(())
-    }
-
-    fn save_imported_collection(
-        &self,
-        collection_id: &DocumentId,
-        imported: wirebolt_core::ImportedCollection,
-        request_settings: &mut std::collections::BTreeMap<
-            String,
-            wirebolt_core::ImportedRequestSettings,
-        >,
-        keychain_names: &BTreeMap<SecretName, SecretName>,
-        created: &mut CreatedImport,
-    ) -> Result<(), WorkspaceBridgeError> {
-        let mut group_ids = HashMap::new();
-        for (index, group) in imported.groups.iter().enumerate() {
-            group_ids.insert(
-                group.source_id.clone(),
-                document_id(format!("group-{index}"))?,
-            );
-        }
-        let mut collection = Collection::new(collection_id.clone(), imported.name);
-        collection.groups = imported
-            .groups
-            .into_iter()
-            .map(|group| {
-                let parent_id = match group.parent_source_id {
-                    Some(parent) => Some(group_ids.get(&parent).cloned().ok_or_else(|| {
-                        WorkspaceBridgeError::operation("import group hierarchy is invalid")
-                    })?),
-                    None => None,
-                };
-                Ok(Group::new(
-                    group_ids[&group.source_id].clone(),
-                    group.name,
-                    parent_id,
-                    group.order,
-                ))
-            })
-            .collect::<Result<Vec<_>, WorkspaceBridgeError>>()?;
-        self.store
-            .save(&WorkspaceDocument::Collection(collection))
-            .map_err(|_| {
-                WorkspaceBridgeError::operation("import collection could not be created")
-            })?;
-        created.collections.push(collection_id.clone());
-
-        for (index, imported_request) in imported.requests.into_iter().enumerate() {
-            let request_id = document_id(format!("request-{index}"))?;
-            let group_id = imported_request
-                .group_source_id
-                .as_ref()
-                .and_then(|source| group_ids.get(source))
-                .cloned();
-            let settings = request_settings.remove(&imported_request.source_id);
-            let mut request = imported_request.into_request(request_id, group_id);
-            if let Some(settings) = settings {
-                settings.apply(&mut request);
-            }
-            secure_import_authentication(
-                &mut request.authentication,
-                &format!("{collection_id}-{}", request.id),
-                keychain_names,
-                &mut created.secrets,
-            )?;
-            self.store
-                .save(&WorkspaceDocument::Request {
-                    collection_id: collection_id.clone(),
-                    request,
-                })
-                .map_err(|_| {
-                    WorkspaceBridgeError::operation("import request could not be saved")
-                })?;
-        }
-        Ok(())
-    }
-}
-
-/// Documents and credentials an import has written so far, for rollback.
-#[derive(Default)]
-struct CreatedImport {
-    collections: Vec<DocumentId>,
-    environments: Vec<DocumentId>,
-    secrets: Vec<SecretName>,
-}
-
-impl WorkspaceBridge {
-    #[expect(
-        clippy::too_many_lines,
-        reason = "the command router keeps each transactional mutation and its affected IDs in one exhaustive match"
-    )]
-    fn apply_workspace_command_document(
-        &self,
-        command: WorkspaceCommandDocument,
-    ) -> Result<(&'static str, Vec<String>), WorkspaceBridgeError> {
-        match command {
-            WorkspaceCommandDocument::SaveWorkspaceProxy { proxy } => {
-                let mut workspace = self
-                    .store
-                    .load()
-                    .map_err(|_| WorkspaceBridgeError::operation("workspace could not be loaded"))?
-                    .workspace;
-                workspace.proxy = proxy;
-                self.store
-                    .save(&WorkspaceDocument::Workspace(workspace))
-                    .map_err(|_| {
-                        WorkspaceBridgeError::operation("workspace proxy could not be saved")
-                    })?;
-                Ok(("workspace", vec!["proxy".to_owned()]))
-            }
-            WorkspaceCommandDocument::SaveWorkspaceSettings { transport } => {
-                let mut workspace = self
-                    .store
-                    .load()
-                    .map_err(|_| WorkspaceBridgeError::operation("workspace could not be loaded"))?
-                    .workspace;
-                workspace.transport = transport;
-                self.store
-                    .save(&WorkspaceDocument::Workspace(workspace))
-                    .map_err(|_| {
-                        WorkspaceBridgeError::operation("workspace settings could not be saved")
-                    })?;
-                Ok(("workspace", vec!["transport".to_owned()]))
-            }
-            WorkspaceCommandDocument::RenameWorkspace { name } => {
-                let name = name.trim();
-                if name.is_empty() {
-                    return Err(WorkspaceBridgeError::operation(
-                        "workspace name must not be empty",
-                    ));
-                }
-                let mut workspace = self
-                    .store
-                    .load()
-                    .map_err(|_| WorkspaceBridgeError::operation("workspace could not be loaded"))?
-                    .workspace;
-                name.clone_into(&mut workspace.name);
-                self.store
-                    .save(&WorkspaceDocument::Workspace(workspace))
-                    .map_err(|_| {
-                        WorkspaceBridgeError::operation("workspace could not be renamed")
-                    })?;
-                Ok(("workspace", vec!["name".to_owned()]))
-            }
-            WorkspaceCommandDocument::CreateCollection { id, name, order } => {
-                let mut collection = Collection::new(document_id(id.clone())?, name);
-                collection.order = order;
-                self.store
-                    .save(&WorkspaceDocument::Collection(collection))
-                    .map_err(|_| {
-                        WorkspaceBridgeError::operation("collection could not be created")
-                    })?;
-                Ok(("collection", vec![id]))
-            }
-            WorkspaceCommandDocument::RenameCollection { id, name } => {
-                let mut collection = self.collection(&id)?;
-                collection.name = name;
-                self.store
-                    .save(&WorkspaceDocument::Collection(collection))
-                    .map_err(|_| {
-                        WorkspaceBridgeError::operation("collection could not be renamed")
-                    })?;
-                Ok(("collection", vec![id]))
-            }
-            WorkspaceCommandDocument::DeleteCollection { id } => {
-                self.store
-                    .delete_collection(&document_id(id.clone())?)
-                    .map_err(|_| {
-                        WorkspaceBridgeError::operation("collection could not be deleted")
-                    })?;
-                Ok(("collection", vec![id]))
-            }
-            WorkspaceCommandDocument::CreateGroup {
-                collection_id,
-                group,
-            } => {
-                let mut collection = self.collection(&collection_id)?;
-                let group_id = document_id(group.id.clone())?;
-                let parent_id = group.parent_id.map(document_id).transpose()?;
-                if parent_id.as_ref().is_some_and(|parent| {
-                    collection
-                        .groups
-                        .iter()
-                        .all(|existing| &existing.id != parent)
-                }) {
-                    return Err(WorkspaceBridgeError::operation(
-                        "parent group does not exist",
-                    ));
-                }
-                if collection
-                    .groups
-                    .iter()
-                    .any(|existing| existing.id == group_id)
-                {
-                    return Err(WorkspaceBridgeError::operation("group already exists"));
-                }
-                collection
-                    .groups
-                    .push(Group::new(group_id, group.name, parent_id, group.order));
-                self.save_collection_document(collection)?;
-                Ok(("group", vec![collection_id, group.id]))
-            }
-            WorkspaceCommandDocument::RenameGroup {
-                collection_id,
-                id,
-                name,
-            } => {
-                let mut collection = self.collection(&collection_id)?;
-                let group_id = document_id(id.clone())?;
-                let group = collection
-                    .groups
-                    .iter_mut()
-                    .find(|group| group.id == group_id)
-                    .ok_or_else(|| WorkspaceBridgeError::operation("group does not exist"))?;
-                group.name = name;
-                self.save_collection_document(collection)?;
-                Ok(("group", vec![collection_id, id]))
-            }
-            WorkspaceCommandDocument::DeleteGroup { collection_id, id } => {
-                let mut collection = self.collection(&collection_id)?;
-                let group_id = document_id(id.clone())?;
-                let descendants = descendant_group_ids(&collection.groups, &group_id);
-                if descendants.is_empty() {
-                    return Err(WorkspaceBridgeError::operation("group does not exist"));
-                }
-                let snapshot = self.store.load().map_err(|_| {
-                    WorkspaceBridgeError::operation("workspace could not be loaded")
-                })?;
-                if let Some(found) = snapshot
-                    .collections
-                    .iter()
-                    .find(|found| found.collection.id == collection.id)
-                {
-                    for request in &found.requests {
-                        if request
-                            .group_id
-                            .as_ref()
-                            .is_some_and(|group| descendants.contains(group))
-                        {
-                            self.store
-                                .delete_request(&collection.id, &request.id)
-                                .map_err(|_| {
-                                    WorkspaceBridgeError::operation(
-                                        "group requests could not be deleted",
-                                    )
-                                })?;
-                        }
-                    }
-                }
-                collection
-                    .groups
-                    .retain(|group| !descendants.contains(&group.id));
-                self.save_collection_document(collection)?;
-                Ok(("group", vec![collection_id, id]))
-            }
-            WorkspaceCommandDocument::ReorderChildren {
-                collection_id,
-                parent_id,
-                items,
-            } => {
-                self.reorder_children(&collection_id, parent_id, items)?;
-                Ok(("collection", vec![collection_id]))
-            }
-            WorkspaceCommandDocument::MoveGroup {
-                collection_id,
-                id,
-                parent_id,
-                order,
-            } => {
-                let mut collection = self.collection(&collection_id)?;
-                let group_id = document_id(id.clone())?;
-                let parent_id = parent_id.map(document_id).transpose()?;
-                let descendants = descendant_group_ids(&collection.groups, &group_id);
-                if parent_id
-                    .as_ref()
-                    .is_some_and(|parent| descendants.contains(parent))
-                {
-                    return Err(WorkspaceBridgeError::operation(
-                        "a group cannot contain itself",
-                    ));
-                }
-                if parent_id.as_ref().is_some_and(|parent| {
-                    collection
-                        .groups
-                        .iter()
-                        .all(|existing| &existing.id != parent)
-                }) {
-                    return Err(WorkspaceBridgeError::operation(
-                        "parent group does not exist",
-                    ));
-                }
-                let group = collection
-                    .groups
-                    .iter_mut()
-                    .find(|group| group.id == group_id)
-                    .ok_or_else(|| WorkspaceBridgeError::operation("group does not exist"))?;
-                group.parent_id = parent_id;
-                group.order = order;
-                self.save_collection_document(collection)?;
-                Ok(("group", vec![collection_id, id]))
-            }
-            WorkspaceCommandDocument::SaveRequest {
-                collection_id,
-                request,
-            } => {
-                let id = request.id.clone();
-                let request = request_from_document(*request)?;
-                self.store
-                    .save(&WorkspaceDocument::Request {
-                        collection_id: document_id(collection_id.clone())?,
-                        request,
-                    })
-                    .map_err(|_| WorkspaceBridgeError::operation("request could not be saved"))?;
-                Ok(("request", vec![collection_id, id]))
-            }
-            WorkspaceCommandDocument::DeleteRequest { collection_id, id } => {
-                self.store
-                    .delete_request(
-                        &document_id(collection_id.clone())?,
-                        &document_id(id.clone())?,
-                    )
-                    .map_err(|_| WorkspaceBridgeError::operation("request could not be deleted"))?;
-                Ok(("request", vec![collection_id, id]))
-            }
-            WorkspaceCommandDocument::DuplicateRequest {
-                collection_id,
-                id,
-                new_id,
-                name,
-            } => {
-                let snapshot = self.request(&collection_id, &id)?;
-                let mut duplicate = snapshot;
-                duplicate.id = document_id(new_id.clone())?;
-                duplicate.name = name;
-                duplicate.order += 1;
-                self.store
-                    .save(&WorkspaceDocument::Request {
-                        collection_id: document_id(collection_id.clone())?,
-                        request: duplicate,
-                    })
-                    .map_err(|_| {
-                        WorkspaceBridgeError::operation("request could not be duplicated")
-                    })?;
-                Ok(("request", vec![collection_id, id, new_id]))
-            }
-            WorkspaceCommandDocument::MoveRequest {
-                from_collection_id,
-                request_id,
-                to_collection_id,
-                group_id,
-                order,
-            } => {
-                let mut request = self.request(&from_collection_id, &request_id)?;
-                request.group_id = group_id.map(document_id).transpose()?;
-                request.order = order;
-                let destination = document_id(to_collection_id.clone())?;
-                self.store
-                    .save(&WorkspaceDocument::Request {
-                        collection_id: destination,
-                        request,
-                    })
-                    .map_err(|_| WorkspaceBridgeError::operation("request could not be moved"))?;
-                if from_collection_id != to_collection_id {
-                    self.store
-                        .delete_request(
-                            &document_id(from_collection_id.clone())?,
-                            &document_id(request_id.clone())?,
-                        )
-                        .map_err(|_| {
-                            WorkspaceBridgeError::operation("source request could not be removed")
-                        })?;
-                }
-                Ok((
-                    "request",
-                    vec![from_collection_id, to_collection_id, request_id],
-                ))
-            }
-            WorkspaceCommandDocument::SaveEnvironment { environment } => {
-                let id = environment.id.clone();
-                let environment = Environment::from_rows(
-                    document_id(environment.id)?,
-                    environment.name,
-                    environment.variables,
-                );
-                self.store
-                    .save(&WorkspaceDocument::Environment(environment))
-                    .map_err(|_| {
-                        WorkspaceBridgeError::operation("environment could not be saved")
-                    })?;
-                Ok(("environment", vec![id]))
-            }
-            WorkspaceCommandDocument::DeleteEnvironment { id } => {
-                self.store
-                    .delete_environment(&document_id(id.clone())?)
-                    .map_err(|_| {
-                        WorkspaceBridgeError::operation("environment could not be deleted")
-                    })?;
-                Ok(("environment", vec![id]))
-            }
-        }
-    }
-
-    fn reorder_children(
-        &self,
-        collection_id: &str,
-        parent_id: Option<String>,
-        items: Vec<String>,
-    ) -> Result<(), WorkspaceBridgeError> {
-        let id = document_id(collection_id.to_owned())?;
-        let parent = parent_id.map(document_id).transpose()?;
-        let mut snapshot = self
-            .store
-            .load()
-            .map_err(|_| WorkspaceBridgeError::operation("workspace could not be loaded"))?
-            .collections
-            .into_iter()
-            .find(|entry| entry.collection.id == id)
-            .ok_or_else(|| WorkspaceBridgeError::operation("collection does not exist"))?;
-        let expected: std::collections::HashSet<String> = snapshot
-            .collection
-            .groups
-            .iter()
-            .filter(|group| group.parent_id == parent)
-            .map(|group| format!("group:{}", group.id))
-            .chain(
-                snapshot
-                    .requests
-                    .iter()
-                    .filter(|request| request.group_id == parent)
-                    .map(|request| format!("request:{}", request.id)),
-            )
-            .collect();
-        let supplied: std::collections::HashSet<String> = items.iter().cloned().collect();
-        if supplied != expected || supplied.len() != items.len() {
-            return Err(WorkspaceBridgeError::operation(
-                "reorder must contain each sibling exactly once",
-            ));
-        }
-        let orders: std::collections::HashMap<String, i64> = items
-            .into_iter()
-            .enumerate()
-            .map(|(index, item)| (item, i64::try_from(index).expect("sibling count fits i64")))
-            .collect();
-        let mut changes = Vec::new();
-        let original_collection = snapshot.collection.clone();
-        for group in &mut snapshot.collection.groups {
-            if let Some(order) = orders.get(&format!("group:{}", group.id)) {
-                group.order = *order;
-            }
-        }
-        if snapshot.collection != original_collection {
-            changes.push((
-                WorkspaceDocument::Collection(original_collection),
-                WorkspaceDocument::Collection(snapshot.collection),
-            ));
-        }
-        for mut request in snapshot.requests {
-            if let Some(order) = orders.get(&format!("request:{}", request.id))
-                && request.order != *order
-            {
-                let original = request.clone();
-                request.order = *order;
-                changes.push((
-                    WorkspaceDocument::Request {
-                        collection_id: id.clone(),
-                        request: original,
-                    },
-                    WorkspaceDocument::Request {
-                        collection_id: id.clone(),
-                        request,
-                    },
-                ));
-            }
-        }
-        for (index, (_, updated)) in changes.iter().enumerate() {
-            if self.store.save(updated).is_err() {
-                for (original, _) in changes[..index].iter().rev() {
-                    self.store
-                        .save(original)
-                        .map_err(|_| WorkspaceBridgeError::operation("reorder rollback failed"))?;
-                }
-                return Err(WorkspaceBridgeError::operation(
-                    "items could not be reordered",
-                ));
-            }
-        }
-        Ok(())
-    }
-
-    fn collection(&self, id: &str) -> Result<Collection, WorkspaceBridgeError> {
-        let id = document_id(id.to_owned())?;
-        self.store
-            .load()
-            .map_err(|_| WorkspaceBridgeError::operation("workspace could not be loaded"))?
-            .collections
-            .into_iter()
-            .find(|snapshot| snapshot.collection.id == id)
-            .map(|snapshot| snapshot.collection)
-            .ok_or_else(|| WorkspaceBridgeError::operation("collection does not exist"))
-    }
-
-    fn request(
-        &self,
-        collection_id: &str,
-        request_id: &str,
-    ) -> Result<Request, WorkspaceBridgeError> {
-        let collection_id = document_id(collection_id.to_owned())?;
-        let request_id = document_id(request_id.to_owned())?;
-        self.store
-            .load()
-            .map_err(|_| WorkspaceBridgeError::operation("workspace could not be loaded"))?
-            .collections
-            .into_iter()
-            .find(|snapshot| snapshot.collection.id == collection_id)
-            .and_then(|snapshot| {
-                snapshot
-                    .requests
-                    .into_iter()
-                    .find(|request| request.id == request_id)
-            })
-            .ok_or_else(|| WorkspaceBridgeError::operation("request does not exist"))
-    }
-
-    fn save_collection_document(&self, collection: Collection) -> Result<(), WorkspaceBridgeError> {
-        self.store
-            .save(&WorkspaceDocument::Collection(collection))
-            .map(|_| ())
-            .map_err(|_| WorkspaceBridgeError::operation("collection could not be saved"))
-    }
-
-    fn git_workspace(&self) -> Result<GitWorkspace, GitBridgeError> {
-        GitWorkspace::open(self.store.root()).map_err(Into::into)
-    }
-}
-
-impl WorkspaceBridgeError {
-    fn operation(reason: &str) -> Self {
-        Self::OperationFailed {
-            reason: reason.to_owned(),
-        }
-    }
-}
-
-impl From<GitError> for GitBridgeError {
-    fn from(error: GitError) -> Self {
-        Self::OperationFailed {
-            kind: git_error_kind(error.kind).to_owned(),
-            reason: error.to_string(),
-        }
-    }
-}
-
-impl<'a> From<&'a GitStatus> for GitStatusDocument<'a> {
-    fn from(status: &'a GitStatus) -> Self {
-        Self {
-            branch: &status.branch,
-            upstream: &status.upstream,
-            ahead: status.ahead,
-            behind: status.behind,
-            revision: &status.revision,
-            changes: status.changes.iter().map(Into::into).collect(),
-            merging: status.merging,
-        }
-    }
-}
-
-impl<'a> From<&'a GitChange> for GitChangeDocument<'a> {
-    fn from(change: &'a GitChange) -> Self {
-        Self {
-            path: &change.path,
-            previous_path: &change.previous_path,
-            staged: git_delta(change.staged),
-            unstaged: git_delta(change.unstaged),
-            conflicted: change.conflicted,
-        }
-    }
-}
-
-impl<'a> From<&'a GitOperation> for GitOperationDocument<'a> {
-    fn from(operation: &'a GitOperation) -> Self {
-        Self {
-            outcome: git_operation_outcome(operation.outcome),
-            revision: &operation.revision,
-            status: GitStatusDocument::from(&operation.status),
-        }
-    }
-}
-
-fn encode_git_document(document: &impl Serialize) -> Result<String, GitBridgeError> {
-    serde_json::to_string(document).map_err(|_| GitBridgeError::OperationFailed {
-        kind: "encoding".to_owned(),
-        reason: "Git result could not be encoded".to_owned(),
-    })
-}
-
-const fn git_delta(delta: GitDelta) -> &'static str {
-    match delta {
-        GitDelta::None => "none",
-        GitDelta::Added => "added",
-        GitDelta::Modified => "modified",
-        GitDelta::Deleted => "deleted",
-        GitDelta::Renamed => "renamed",
-        GitDelta::Copied => "copied",
-        GitDelta::TypeChanged => "type_changed",
-        GitDelta::Untracked => "untracked",
-        GitDelta::Unmerged => "unmerged",
-    }
-}
-
-const fn git_operation_outcome(outcome: GitOperationOutcome) -> &'static str {
-    match outcome {
-        GitOperationOutcome::NothingToCommit => "nothing_to_commit",
-        GitOperationOutcome::Committed => "committed",
-        GitOperationOutcome::Updated => "updated",
-        GitOperationOutcome::UpToDate => "up_to_date",
-        GitOperationOutcome::Pushed => "pushed",
-        GitOperationOutcome::Conflicted => "conflicted",
-        GitOperationOutcome::MergeAborted => "merge_aborted",
-    }
-}
-
-const fn git_error_kind(kind: GitErrorKind) -> &'static str {
-    match kind {
-        GitErrorKind::GitUnavailable => "git_unavailable",
-        GitErrorKind::NotRepository => "not_repository",
-        GitErrorKind::WorkspaceNotRepositoryRoot => "workspace_not_repository_root",
-        GitErrorKind::CommandFailed => "command_failed",
-        GitErrorKind::InvalidOutput => "invalid_output",
-        GitErrorKind::InvalidCommitMessage => "invalid_commit_message",
-        GitErrorKind::IdentityMissing => "identity_missing",
-        GitErrorKind::AuthenticationRequired => "authentication_required",
-        GitErrorKind::DirtyWorkspace => "dirty_workspace",
-        GitErrorKind::MissingUpstream => "missing_upstream",
-        GitErrorKind::MissingRemote => "missing_remote",
-        GitErrorKind::DetachedHead => "detached_head",
-        GitErrorKind::TimedOut => "timed_out",
-        GitErrorKind::NoMergeInProgress => "no_merge_in_progress",
-    }
-}
-
-const fn document_problem_kind(kind: DocumentProblemKind) -> &'static str {
-    match kind {
-        DocumentProblemKind::InvalidToml => "invalid_toml",
-        DocumentProblemKind::InvalidDocument => "invalid_document",
-        DocumentProblemKind::UnsupportedSchema => "unsupported_schema",
-        DocumentProblemKind::DocumentTooLarge => "document_too_large",
-        DocumentProblemKind::Io => "io",
-    }
-}
-
-fn document_id(value: String) -> Result<DocumentId, WorkspaceBridgeError> {
-    DocumentId::new(value).map_err(|_| WorkspaceBridgeError::operation("document ID is invalid"))
-}
-
-fn parse_import(
-    format: &str,
-    source: &str,
-    file_name: Option<&str>,
-) -> Result<wirebolt_core::ParsedImport, WorkspaceBridgeError> {
-    let format = ImportFormat::parse(format)
-        .map_err(|error| WorkspaceBridgeError::operation(error.reason()))?;
-    // Import reasons are user-facing and never quote the source.
-    ImportEngine::parse_import(format, source, file_name)
-        .map_err(|error| WorkspaceBridgeError::operation(error.reason()))
-}
-
-fn request_from_document(document: SavedRequestDocument) -> Result<Request, WorkspaceBridgeError> {
-    let mut request = Request::new(
-        document_id(document.id)?,
-        document.name,
-        document.method,
-        document.url,
-    );
-    request.web_socket = document.web_socket;
-    request.note = document.note;
-    request.group_id = document.group_id.map(document_id).transpose()?;
-    request.order = document.order;
-    request.query = document.query;
-    request.headers = document.headers;
-    request.authentication = document.authentication;
-    request.body = document.body;
-    request.proxy_override = document.proxy;
-    request.transport = document.transport;
-    request.inherits_workspace_transport = document.inherits_workspace_transport;
-    Ok(request)
-}
-
-fn descendant_group_ids(groups: &[Group], root: &DocumentId) -> Vec<DocumentId> {
-    if groups.iter().all(|group| &group.id != root) {
-        return Vec::new();
-    }
-    let mut result = vec![root.clone()];
-    let mut offset = 0;
-    while offset < result.len() {
-        let parent = result[offset].clone();
-        for group in groups {
-            if group.parent_id.as_ref() == Some(&parent) && !result.contains(&group.id) {
-                result.push(group.id.clone());
-            }
-        }
-        offset += 1;
-    }
-    result
-}
-
-impl<'a> From<&'a WorkspaceSnapshot> for WorkspaceSnapshotDocument<'a> {
-    fn from(snapshot: &'a WorkspaceSnapshot) -> Self {
-        Self {
-            name: &snapshot.workspace.name,
-            proxy: &snapshot.workspace.proxy,
-            transport: &snapshot.workspace.transport,
-            collections: snapshot
-                .collections
-                .iter()
-                .map(|snapshot| CollectionSnapshotDocument {
-                    id: snapshot.collection.id.as_str(),
-                    name: &snapshot.collection.name,
-                    order: snapshot.collection.order,
-                    groups: &snapshot.collection.groups,
-                    requests: snapshot
-                        .requests
-                        .iter()
-                        .map(RequestSnapshotDocument::from)
-                        .collect(),
-                })
-                .collect(),
-            environments: snapshot
-                .environments
-                .iter()
-                .map(|environment| EnvironmentSnapshotDocument {
-                    id: environment.id.as_str(),
-                    name: &environment.name,
-                    variables: &environment.variables,
-                })
-                .collect(),
-            problems: snapshot
-                .problems
-                .iter()
-                .map(DocumentProblemDocument::from)
-                .collect(),
-        }
-    }
-}
-
-impl<'a> From<&'a DocumentProblem> for DocumentProblemDocument<'a> {
-    fn from(problem: &'a DocumentProblem) -> Self {
-        Self {
-            path: problem.path.to_string_lossy().into_owned(),
-            kind: document_problem_kind(problem.kind),
-            reason: &problem.reason,
-        }
-    }
-}
-
-impl<'a> From<&'a Request> for RequestSnapshotDocument<'a> {
-    fn from(request: &'a Request) -> Self {
-        Self {
-            id: request.id.as_str(),
-            name: &request.name,
-            group_id: request.group_id.as_ref().map(DocumentId::as_str),
-            order: request.order,
-            method: &request.method,
-            url: &request.url,
-            web_socket: request.web_socket,
-            note: &request.note,
-            query: &request.query,
-            headers: &request.headers,
-            authentication: &request.authentication,
-            body: &request.body,
-            proxy: &request.proxy_override,
-            transport: &request.transport,
-            inherits_workspace_transport: request.inherits_workspace_transport,
-        }
-    }
-}
-
 #[uniffi::export]
 #[must_use]
 pub fn core_handshake() -> CoreHandshake {
@@ -1726,7 +393,7 @@ pub extern "C" fn wirebolt_runtime_warmup() -> u8 {
 /// are captured once per engine, and pooled connections may be dead.
 #[uniffi::export]
 pub fn reset_http_engines() {
-    SHARED_HTTP_ENGINES.reset();
+    wirebolt_app::session::transport::reset_http_engines();
 }
 
 #[repr(C)]
@@ -1746,7 +413,6 @@ pub struct WireboltRunSession {
     completion: Mutex<Option<mpsc::Receiver<()>>>,
 }
 
-static SHARED_HTTP_ENGINES: LazyLock<HttpEngineCache> = LazyLock::new(HttpEngineCache::default);
 static SHARED_RUNTIME: LazyLock<Option<tokio::runtime::Runtime>> = LazyLock::new(|| {
     tokio::runtime::Builder::new_multi_thread()
         .worker_threads(2)
@@ -1755,78 +421,6 @@ static SHARED_RUNTIME: LazyLock<Option<tokio::runtime::Runtime>> = LazyLock::new
         .build()
         .ok()
 });
-
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct RunInput {
-    method: String,
-    url: String,
-    #[serde(default)]
-    query: Vec<RequestValueField>,
-    #[serde(default)]
-    headers: Vec<RequestHeader>,
-    #[serde(default)]
-    authentication: RequestAuthentication,
-    #[serde(default = "empty_body")]
-    body: RequestBody,
-    #[serde(default)]
-    variables: BTreeMap<String, ValueSource>,
-    #[serde(default)]
-    workspace_proxy: Option<ProxyMode>,
-    #[serde(default)]
-    app_proxy: Option<ProxyMode>,
-    #[serde(default)]
-    request_proxy: Option<ProxyMode>,
-    #[serde(default = "default_total_timeout_ms")]
-    total_timeout_ms: u64,
-    #[serde(default = "default_read_timeout_ms")]
-    read_timeout_ms: u64,
-    #[serde(default)]
-    max_response_bytes: Option<u64>,
-    #[serde(default = "default_decode_content")]
-    decode_content: bool,
-    #[serde(default = "default_validate_tls")]
-    validate_tls: bool,
-    #[serde(default)]
-    follow_redirects: bool,
-    #[serde(default = "default_maximum_redirects")]
-    maximum_redirects: u8,
-    #[serde(default)]
-    client_certificate_reference: Option<SecretName>,
-    #[serde(default)]
-    custom_ca_path: Option<String>,
-}
-
-const fn empty_body() -> RequestBody {
-    RequestBody::Empty
-}
-
-const fn default_total_timeout_ms() -> u64 {
-    30_000
-}
-
-const fn default_read_timeout_ms() -> u64 {
-    10_000
-}
-
-const fn default_decode_content() -> bool {
-    true
-}
-
-const fn default_validate_tls() -> bool {
-    true
-}
-const fn default_maximum_redirects() -> u8 {
-    10
-}
-const fn default_inherits_workspace_transport() -> bool {
-    true
-}
-
-/// Zero disables the deadline; the engine then arms no timer at all.
-fn timeout_from_millis(milliseconds: u64) -> Option<Duration> {
-    (milliseconds != 0).then(|| Duration::from_millis(milliseconds))
-}
 
 #[derive(Debug, Serialize)]
 struct ResponseHeadDocument<'a> {
@@ -1842,31 +436,6 @@ struct ResponseHeadDocument<'a> {
 }
 
 #[derive(Debug, Serialize)]
-struct PreparedRunSnapshotDocument {
-    method: String,
-    url: String,
-    headers: Vec<PreparedHeaderDocument>,
-    body: PreparedBodyDocument,
-    transport: TransportSettings,
-    proxy: serde_json::Value,
-}
-
-#[derive(Debug, Serialize)]
-struct PreparedHeaderDocument {
-    name: String,
-    value: String,
-    redacted: bool,
-}
-
-#[derive(Debug, Serialize)]
-struct PreparedBodyDocument {
-    byte_count: u64,
-    content_type: Option<String>,
-    text_preview: Option<String>,
-    redacted: bool,
-}
-
-#[derive(Debug, Serialize)]
 struct ResponseHeaderDocument<'a> {
     name: &'a str,
     value: std::borrow::Cow<'a, str>,
@@ -1877,30 +446,6 @@ struct RunCompleteDocument {
     bytes_received: u64,
     bytes_decoded: u64,
     total_time_ns: u64,
-}
-
-#[derive(Debug, Serialize)]
-struct RunFailureDocument {
-    kind: &'static str,
-    issues: Vec<RequestIssueDocument>,
-}
-
-#[derive(Debug, Serialize)]
-struct RequestIssueDocument {
-    path: String,
-    kind: &'static str,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    reference: Option<String>,
-}
-
-impl From<RequestIssue> for RequestIssueDocument {
-    fn from(issue: RequestIssue) -> Self {
-        Self {
-            path: issue.path,
-            kind: request_issue_kind(issue.kind),
-            reference: issue.reference,
-        }
-    }
 }
 
 /// Starts one asynchronous HTTP run.
@@ -2046,427 +591,58 @@ async fn execute_run_with_secrets<R>(
 ) where
     R: SecretResolver + Clone + Send + 'static,
 {
-    let options = RunOptions {
-        total_timeout: timeout_from_millis(input.total_timeout_ms),
-        read_timeout: timeout_from_millis(input.read_timeout_ms),
-        max_response_bytes: input.max_response_bytes,
-        decode_content: input.decode_content,
-    };
-    // Secret lookups can block on Keychain (even prompting the user) and
-    // building a client loads TLS and proxy state, so neither runs on the
-    // two async workers that stream every other response.
-    let prepared = tokio::task::spawn_blocking(move || prepare_run(input, &secrets)).await;
-    let (prepared, engine, snapshot) = match prepared {
-        Ok(Ok(prepared)) => prepared,
-        Ok(Err(failure)) => {
-            emit_failure(&callbacks, context, &failure);
-            return;
-        }
-        Err(_) => {
-            emit_failure(&callbacks, context, &RunFailureDocument::new("internal"));
-            return;
-        }
-    };
-    emit_json(callbacks.on_prepared, context, &snapshot);
-    let warnings: Vec<RequestIssueDocument> = prepared
-        .warnings()
-        .iter()
-        .cloned()
-        .map(Into::into)
-        .collect();
-    let result = engine
-        .run_observed_with_cookies(
-            prepared,
-            options,
-            &cancellation,
-            |head| emit_head(&callbacks, context, head, &warnings),
-            |chunk| {
-                let should_continue = callbacks.on_chunk.map_or(0, |callback| {
-                    callback(context as *mut c_void, chunk.as_ptr(), chunk.len())
-                });
-                if should_continue == 0 {
-                    StreamControl::Stop
-                } else {
-                    StreamControl::Continue
-                }
-            },
-            |url, headers| {
-                let values: Vec<_> = headers
-                    .iter()
-                    .map(|(name, value)| ResponseHeaderDocument {
-                        name: name.as_str(),
-                        value: String::from_utf8_lossy(value.as_bytes()),
-                    })
-                    .collect();
-                emit_json(
-                    callbacks.on_cookies,
-                    context,
-                    &serde_json::json!({"url": url.as_str(), "headers": values}),
-                );
-            },
-        )
-        .await;
-    match result {
-        Ok(run) => emit_json(
-            callbacks.on_complete,
-            context,
-            &RunCompleteDocument {
-                bytes_received: run.bytes_received,
-                bytes_decoded: run.bytes_decoded,
-                total_time_ns: duration_ns(run.total_time),
-            },
-        ),
-        Err(error) => emit_failure(
-            &callbacks,
-            context,
-            &RunFailureDocument::from_run_error(&error),
-        ),
-    }
-}
-
-/// Moves literal credentials to Keychain under per-request names. Variable
-/// references such as `{{token}}` stay literal so they keep resolving.
-fn secure_import_authentication(
-    authentication: &mut RequestAuthentication,
-    prefix: &str,
-    keychain_names: &BTreeMap<SecretName, SecretName>,
-    created: &mut Vec<SecretName>,
-) -> Result<(), WorkspaceBridgeError> {
-    let secret_name = |label: &str| {
-        SecretName::new(format!("{prefix}-{label}"))
-            .map_err(|_| WorkspaceBridgeError::operation("import credential name is invalid"))
-    };
-    let mut store = |source: &mut ValueSource, label: &str| -> Result<(), WorkspaceBridgeError> {
-        let ValueSource::Literal(material) = source else {
-            return Ok(());
-        };
-        if material.is_empty() || material.contains("{{") {
-            return Ok(());
-        }
-        let name = secret_name(label)?;
-        save_import_credential(&name, material)?;
-        created.push(name.clone());
-        *source = ValueSource::secret(name);
-        Ok(())
-    };
-    match authentication {
-        RequestAuthentication::Basic { username, password } => {
-            store(username, "username")?;
-            store(password, "password")?;
-        }
-        RequestAuthentication::Bearer { token } => store(token, "token")?,
-        RequestAuthentication::ApiKey { value, .. } => store(value, "api-key")?,
-        RequestAuthentication::Oauth2 { configuration } => {
-            configuration.client_secret_reference =
-                match keychain_names.get(&configuration.client_secret_reference) {
-                    Some(name) => name.clone(),
-                    None => secret_name("oauth-client-secret")?,
-                };
-            configuration.access_token_reference = secret_name("oauth-access-token")?;
-        }
-        RequestAuthentication::None => {}
-    }
-    Ok(())
-}
-
-fn save_import_credential(name: &SecretName, material: &str) -> Result<(), WorkspaceBridgeError> {
-    #[cfg(target_vendor = "apple")]
-    {
-        wirebolt_core::KeychainSecretStore::default()
-            .save(name, material)
-            .map_err(|_| WorkspaceBridgeError::operation("import credentials could not be saved"))
-    }
-    #[cfg(not(target_vendor = "apple"))]
-    {
-        let _ = (name, material);
-        Err(WorkspaceBridgeError::operation(
-            "credential import requires secure storage",
-        ))
-    }
-}
-
-type PreparedRun = (
-    wirebolt_core::PreparedRequest,
-    Arc<HttpEngine>,
-    PreparedRunSnapshotDocument,
-);
-
-fn prepare_run<R: SecretResolver + ?Sized>(
-    input: RunInput,
-    secrets: &R,
-) -> Result<PreparedRun, RunFailureDocument> {
-    prepare_protocol_run(input, secrets, false)
-}
-
-fn prepare_protocol_run<R: SecretResolver + ?Sized>(
-    input: RunInput,
-    secrets: &R,
-    websocket: bool,
-) -> Result<PreparedRun, RunFailureDocument> {
-    let mut request = Request::new(
-        DocumentId::new("draft").expect("static document ID"),
-        "Draft",
-        input.method,
-        input.url,
-    );
-    request.query = input.query;
-    request.headers = input.headers;
-    request.authentication = input.authentication;
-    request.body = input.body;
-    request.proxy_override = input.request_proxy;
-    request.transport = TransportSettings {
-        validate_tls: input.validate_tls,
-        follow_redirects: input.follow_redirects,
-        maximum_redirects: input.maximum_redirects.min(10),
-        total_timeout_ms: input.total_timeout_ms,
-        read_timeout_ms: input.read_timeout_ms,
-        client_certificate_reference: input.client_certificate_reference,
-        custom_ca_path: input.custom_ca_path,
-    };
-    let environment = Environment::new(
-        DocumentId::new("active").expect("static document ID"),
-        "Active".to_owned(),
-        input.variables,
-    );
-    let pipeline = RequestPipeline::new(Some(&environment), secrets);
-    let prepared = if websocket {
-        pipeline.prepare_websocket(&request)
-    } else {
-        pipeline.prepare(&request)
-    }
-    .map_err(|error| RunFailureDocument {
-        kind: "invalid_request",
-        issues: error.issues.into_iter().map(Into::into).collect(),
-    })?;
-    let proxy = ProxyPolicy::new(input.workspace_proxy)
-        .with_app_default(input.app_proxy)
-        .resolve(request.proxy_override.as_ref());
-    let config = HttpEngineConfig {
-        validate_tls: request.transport.validate_tls,
-        maximum_redirects: request
-            .transport
-            .follow_redirects
-            .then_some(request.transport.maximum_redirects),
-        ..HttpEngineConfig::default()
-    }
-    .resolve_tls(
-        request.transport.client_certificate_reference.as_ref(),
-        request.transport.custom_ca_path.as_deref(),
+    wirebolt_app::session::transport::execute(
+        input,
+        cancellation,
+        Arc::new(NativeTransportObserver { callbacks, context }),
         secrets,
     )
-    .map_err(|_| RunFailureDocument::new("tls_configuration"))?;
-    let engine = shared_http_engine(&proxy, &config, secrets)
-        .map_err(|error| RunFailureDocument::from_run_error(&error))?;
-    let snapshot = prepared_run_snapshot(&prepared, request.transport, &proxy);
-    Ok((prepared, engine, snapshot))
+    .await;
 }
-
-fn shared_http_engine<R: SecretResolver + ?Sized>(
-    proxy: &ResolvedProxy,
-    config: &HttpEngineConfig,
-    secrets: &R,
-) -> Result<Arc<HttpEngine>, RunError> {
-    SHARED_HTTP_ENGINES.engine_with_config(proxy.mode(), config, || {
-        HttpEngine::with_proxy(config, proxy, secrets)
-    })
+#[derive(Debug)]
+struct NativeTransportObserver {
+    callbacks: WireboltRunCallbacks,
+    context: usize,
 }
-
-fn prepared_run_snapshot(
-    prepared: &wirebolt_core::PreparedRequest,
-    transport: TransportSettings,
-    proxy: &ResolvedProxy,
-) -> PreparedRunSnapshotDocument {
-    let headers = if prepared.header_names_are_sensitive() {
-        vec![PreparedHeaderDocument {
-            name: "[REDACTED]".to_owned(),
-            value: "••••••••".to_owned(),
-            redacted: true,
-        }]
-    } else {
-        prepared
-            .headers()
+impl wirebolt_app::session::transport::TransportObserver for NativeTransportObserver {
+    fn prepared(&self, snapshot: &PreparedRunSnapshotDocument) {
+        emit_json(self.callbacks.on_prepared, self.context, snapshot);
+    }
+    fn head(&self, head: &RunHead, warnings: &[RequestIssueDocument]) {
+        emit_head(&self.callbacks, self.context, head, warnings);
+    }
+    fn chunk(&self, bytes: &[u8]) -> bool {
+        self.callbacks.on_chunk.is_some_and(|callback| {
+            callback(self.context as *mut c_void, bytes.as_ptr(), bytes.len()) != 0
+        })
+    }
+    fn cookies(&self, url: &str, headers: Vec<(String, String)>) {
+        let values: Vec<_> = headers
             .iter()
-            .map(|(name, value)| PreparedHeaderDocument {
-                name: name.as_str().to_owned(),
-                value: if value.is_sensitive() {
-                    "••••••••".to_owned()
-                } else {
-                    String::from_utf8_lossy(value.as_bytes()).into_owned()
-                },
-                redacted: value.is_sensitive(),
+            .map(|(name, value)| ResponseHeaderDocument {
+                name,
+                value: std::borrow::Cow::Borrowed(value),
             })
-            .collect()
-    };
-    let redacted = prepared.body_is_sensitive();
-    let text_preview = if redacted || prepared.body_is_file_backed() {
-        None
-    } else {
-        std::str::from_utf8(prepared.body())
-            .ok()
-            .map(|text| text.chars().take(32 * 1024).collect())
-    };
-    PreparedRunSnapshotDocument {
-        method: prepared.method().as_str().to_owned(),
-        url: if prepared.url_is_sensitive() {
-            "[REDACTED]".to_owned()
-        } else {
-            prepared.url().as_str().to_owned()
-        },
-        headers,
-        body: PreparedBodyDocument {
-            byte_count: prepared.body_byte_count(),
-            content_type: prepared
-                .headers()
-                .get("content-type")
-                .and_then(|value| value.to_str().ok())
-                .map(str::to_owned),
-            text_preview,
-            redacted,
-        },
-        transport,
-        proxy: serde_json::json!({
-            "configuration": match proxy.mode() {
-                ProxyMode::Direct => serde_json::json!({"mode": "direct"}),
-                ProxyMode::System => serde_json::json!({"mode": "system"}),
-                ProxyMode::Manual(_) => serde_json::json!({"mode": "manual", "routes": proxy.diagnostic().routes().iter().map(|route| serde_json::json!({
-                    "destination": route.destination(), "endpoint": route.endpoint()
-                })).collect::<Vec<_>>() }),
+            .collect();
+        emit_json(
+            self.callbacks.on_cookies,
+            self.context,
+            &serde_json::json!({"url":url,"headers":values}),
+        );
+    }
+    fn complete(&self, bytes_received: u64, bytes_decoded: u64, total_time: Duration) {
+        emit_json(
+            self.callbacks.on_complete,
+            self.context,
+            &RunCompleteDocument {
+                bytes_received,
+                bytes_decoded,
+                total_time_ns: duration_ns(total_time),
             },
-            "source": match proxy.source() {
-                wirebolt_core::ProxySource::Request => "request",
-                wirebolt_core::ProxySource::Workspace => "workspace",
-                wirebolt_core::ProxySource::AppDefault => "app_default",
-                wirebolt_core::ProxySource::SystemDefault => "system_default",
-            }
-        }),
+        );
     }
-}
-
-fn clear_manual_http_engines() {
-    SHARED_HTTP_ENGINES.clear_manual();
-}
-
-/// Pooled HTTP engines keyed by proxy mode. One lock guards every slot, so a
-/// reset is observed as a whole; clients are built outside the lock, and a
-/// build that a reset overtook serves its own run but is never pooled.
-#[derive(Debug, Default)]
-struct HttpEngineCache {
-    state: Mutex<HttpEngineCacheState>,
-}
-
-#[derive(Debug, Default)]
-struct HttpEngineCacheState {
-    /// Bumped by every reset; a build that started under an older generation
-    /// may have captured proxy or secret state the reset meant to discard.
-    generation: u64,
-    system: Option<(HttpEngineConfig, Arc<HttpEngine>)>,
-    direct: Option<(HttpEngineConfig, Arc<HttpEngine>)>,
-    /// Manual engines are keyed by proxy mode alone: the same configuration
-    /// reached through a workspace policy or a request override shares one
-    /// pool. Least recently created is evicted first.
-    manual: Vec<(ProxyMode, HttpEngineConfig, Arc<HttpEngine>)>,
-}
-
-const MAX_CACHED_MANUAL_ENGINES: usize = 8;
-
-impl HttpEngineCache {
-    #[cfg(test)]
-    fn engine(
-        &self,
-        mode: &ProxyMode,
-        build: impl FnOnce() -> Result<HttpEngine, RunError>,
-    ) -> Result<Arc<HttpEngine>, RunError> {
-        self.engine_with_config(mode, &HttpEngineConfig::default(), build)
-    }
-
-    fn engine_with_config(
-        &self,
-        mode: &ProxyMode,
-        config: &HttpEngineConfig,
-        build: impl FnOnce() -> Result<HttpEngine, RunError>,
-    ) -> Result<Arc<HttpEngine>, RunError> {
-        let generation = {
-            let state = self.lock();
-            if let Some(engine) = state.lookup(mode, config) {
-                return Ok(engine);
-            }
-            state.generation
-        };
-        let engine = Arc::new(build()?);
-        let mut state = self.lock();
-        if state.generation != generation {
-            return Ok(engine);
-        }
-        // Another run may have built the same engine meanwhile; keep the
-        // pooled one so both share its connections.
-        Ok(state.insert(mode, config.clone(), engine))
-    }
-
-    fn reset(&self) {
-        let mut state = self.lock();
-        state.generation += 1;
-        state.system = None;
-        state.direct = None;
-        state.manual.clear();
-    }
-
-    /// Manual engines embed proxy credentials, so a changed secret retires
-    /// them; direct and system pools carry nothing secret and stay.
-    fn clear_manual(&self) {
-        let mut state = self.lock();
-        state.generation += 1;
-        state.manual.clear();
-    }
-
-    fn lock(&self) -> std::sync::MutexGuard<'_, HttpEngineCacheState> {
-        self.state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-    }
-}
-
-impl HttpEngineCacheState {
-    fn lookup(&self, mode: &ProxyMode, config: &HttpEngineConfig) -> Option<Arc<HttpEngine>> {
-        match mode {
-            ProxyMode::System => self
-                .system
-                .as_ref()
-                .filter(|(stored, _)| stored == config)
-                .map(|(_, engine)| Arc::clone(engine)),
-            ProxyMode::Direct => self
-                .direct
-                .as_ref()
-                .filter(|(stored, _)| stored == config)
-                .map(|(_, engine)| Arc::clone(engine)),
-            ProxyMode::Manual(_) => self
-                .manual
-                .iter()
-                .find(|(candidate, stored, _)| candidate == mode && stored == config)
-                .map(|(_, _, engine)| Arc::clone(engine)),
-        }
-    }
-
-    fn insert(
-        &mut self,
-        mode: &ProxyMode,
-        config: HttpEngineConfig,
-        engine: Arc<HttpEngine>,
-    ) -> Arc<HttpEngine> {
-        if let Some(existing) = self.lookup(mode, &config) {
-            return existing;
-        }
-        match mode {
-            ProxyMode::System => self.system = Some((config, Arc::clone(&engine))),
-            ProxyMode::Direct => self.direct = Some((config, Arc::clone(&engine))),
-            ProxyMode::Manual(_) => {
-                if self.manual.len() == MAX_CACHED_MANUAL_ENGINES {
-                    self.manual.remove(0);
-                }
-                self.manual
-                    .push((mode.clone(), config, Arc::clone(&engine)));
-            }
-        }
-        engine
+    fn failure(&self, failure: &RunFailureDocument) {
+        emit_failure(&self.callbacks, self.context, failure);
     }
 }
 
@@ -2516,69 +692,6 @@ fn emit_json<T: Serialize>(
     callback(context as *mut c_void, json.as_ptr(), json.len());
 }
 
-impl RunFailureDocument {
-    const fn new(kind: &'static str) -> Self {
-        Self {
-            kind,
-            issues: Vec::new(),
-        }
-    }
-
-    fn from_run_error(error: &RunError) -> Self {
-        Self::new(run_error_kind(error.kind()))
-    }
-}
-
-const fn run_error_kind(kind: RunErrorKind) -> &'static str {
-    match kind {
-        RunErrorKind::Cancelled => "cancelled",
-        RunErrorKind::TotalTimeout => "total_timeout",
-        RunErrorKind::ReadTimeout => "read_timeout",
-        RunErrorKind::ConnectTimeout => "connect_timeout",
-        RunErrorKind::StreamStopped => "stream_stopped",
-        RunErrorKind::ResponseTooLarge => "response_too_large",
-        RunErrorKind::Connection => "connection",
-        RunErrorKind::Request => "request",
-        RunErrorKind::ResponseBody => "response_body",
-        RunErrorKind::Proxy => "proxy",
-        RunErrorKind::Transport => "transport",
-    }
-}
-
-const fn request_issue_kind(kind: RequestIssueKind) -> &'static str {
-    match kind {
-        RequestIssueKind::InvalidMethod => "invalid_method",
-        RequestIssueKind::InvalidUrl => "invalid_url",
-        RequestIssueKind::InvalidHeaderName => "invalid_header_name",
-        RequestIssueKind::InvalidHeaderValue => "invalid_header_value",
-        RequestIssueKind::ConflictingHeader => "conflicting_header",
-        RequestIssueKind::InvalidJson => "invalid_json",
-        RequestIssueKind::InvalidBody => "invalid_body",
-        RequestIssueKind::FileUnavailable => "file_unavailable",
-        RequestIssueKind::InvalidTemplate => "invalid_template",
-        RequestIssueKind::TemplateTooDeep => "template_too_deep",
-        RequestIssueKind::ResolvedValueTooLarge => "resolved_value_too_large",
-        RequestIssueKind::MissingVariable => "missing_variable",
-        RequestIssueKind::CyclicVariable => "cyclic_variable",
-        RequestIssueKind::MissingSecret => "missing_secret",
-    }
-}
-
-const fn http_version(version: HttpVersion) -> &'static str {
-    match version {
-        HttpVersion::Http09 => "HTTP/0.9",
-        HttpVersion::Http10 => "HTTP/1.0",
-        HttpVersion::Http11 => "HTTP/1.1",
-        HttpVersion::Http2 => "HTTP/2",
-        HttpVersion::Http3 => "HTTP/3",
-        HttpVersion::Other => "HTTP/?",
-    }
-}
-
-fn duration_ns(duration: Duration) -> u64 {
-    duration.as_nanos().try_into().unwrap_or(u64::MAX)
-}
-
 impl From<wirebolt_core::CoreHandshake> for CoreHandshake {
     fn from(value: wirebolt_core::CoreHandshake) -> Self {
         Self {
@@ -2606,6 +719,16 @@ impl From<HeaderField> for wirebolt_core::HeaderField {
             name: value.name,
             value: value.value,
         }
+    }
+}
+
+#[cfg(test)]
+impl WorkspaceBridge {
+    fn request(&self, collection_id: &str, id: &str) -> Result<Request, WorkspaceBridgeError> {
+        self.inner.request(collection_id, id)
+    }
+    fn collection(&self, id: &str) -> Result<Collection, WorkspaceBridgeError> {
+        self.inner.collection(id)
     }
 }
 

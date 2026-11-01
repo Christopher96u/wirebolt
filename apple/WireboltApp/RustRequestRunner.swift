@@ -132,9 +132,7 @@ private final class RunCallbackBox: @unchecked Sendable {
     let continuation: AsyncThrowingStream<RunEvent, any Error>.Continuation
     let runner: RustRequestRunner
     private let bufferLock = NSLock()
-    private var pendingBody = Data()
     private var emittedFirstViewport = false
-    private var flushScheduled = false
     private var terminated = false
 
     init(
@@ -150,35 +148,14 @@ private final class RunCallbackBox: @unchecked Sendable {
     func append(_ data: Data) {
         let first = bufferLock.withLock {
             guard !terminated else { return false }
-            pendingBody.append(data)
             let first = !emittedFirstViewport && !data.isEmpty
             emittedFirstViewport = emittedFirstViewport || first
-            if !flushScheduled {
-                flushScheduled = true
-                DispatchQueue.global(qos: .userInitiated).asyncAfter(deadline: .now() + .milliseconds(16)) { [weak self] in self?.flush() }
-            }
-            if pendingBody.count >= 32 * 1024 {
-                // Yield under the same lock as terminal flush: the timer and the
-                // transport callback can never publish a chunk after completion.
-                continuation.yield(.chunk(pendingBody))
-                pendingBody.removeAll(keepingCapacity: true)
-            }
+            continuation.yield(.chunk(data))
             return first
         }
         if first { PerformanceProbe.firstViewport(runID: runID.description) }
     }
-
-    func flush(terminal: Bool = false) {
-        bufferLock.withLock {
-            flushScheduled = false
-            guard !terminated else { return }
-            if !pendingBody.isEmpty {
-                continuation.yield(.chunk(pendingBody))
-                pendingBody.removeAll(keepingCapacity: !terminal)
-            }
-            if terminal { terminated = true }
-        }
-    }
+    func flush(terminal: Bool = false) { if terminal { bufferLock.withLock { terminated = true } } }
 
 }
 

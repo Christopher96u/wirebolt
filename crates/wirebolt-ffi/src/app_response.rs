@@ -381,20 +381,20 @@ pub fn app_json_tree(
 }
 #[derive(Debug, uniffi::Object)]
 pub struct AppResponseBody {
-    inner: Mutex<BodyStore>,
+    pub(crate) inner: Arc<Mutex<BodyStore>>,
 }
 #[uniffi::export]
 impl AppResponseBody {
     #[uniffi::constructor]
     pub fn new(run_id: String, directory: String) -> Result<Arc<Self>, ResponseError> {
         Ok(Arc::new(Self {
-            inner: Mutex::new(BodyStore::new(&run_id, Path::new(&directory))?),
+            inner: Arc::new(Mutex::new(BodyStore::new(&run_id, Path::new(&directory))?)),
         }))
     }
     #[uniffi::constructor]
     pub fn existing(path: String) -> Result<Arc<Self>, ResponseError> {
         Ok(Arc::new(Self {
-            inner: Mutex::new(BodyStore::existing(PathBuf::from(path))?),
+            inner: Arc::new(Mutex::new(BodyStore::existing(PathBuf::from(path))?)),
         }))
     }
     pub fn path(&self) -> String {
@@ -775,4 +775,20 @@ pub struct LineIndexChange {
 pub struct AppLineIndexEdit {
     pub index: Arc<AppLineIndex>,
     pub change: LineIndexChange,
+}
+#[uniffi::export]
+impl AppRunHistory {
+    pub fn record_typed(
+        &self,
+        entry: wirebolt_app::session::history::SessionHistoryEntry,
+        body: Arc<AppResponseBody>,
+    ) -> Result<(), ResponseError> {
+        wirebolt_app::session::history::record(&mut lock(&self.inner), entry, &lock(&body.inner))
+    }
+    pub fn list_typed(
+        &self,
+        request_id: String,
+    ) -> Vec<wirebolt_app::session::history::SessionHistoryEntry> {
+        wirebolt_app::session::history::list(&mut lock(&self.inner), &request_id)
+    }
 }

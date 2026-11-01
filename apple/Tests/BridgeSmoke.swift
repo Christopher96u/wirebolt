@@ -76,6 +76,36 @@ enum BridgeSmoke {
             fatalError("workspace open smoke failed: \(error)")
         }
 
+        await verifySessionBridge()
+
         print("bridge_smoke=passed core=\(handshake.coreVersion) stream_abi=\(streamABIVersion)")
     }
+    @MainActor
+    private static func verifySessionBridge() async {
+        let store = DocumentSessionStore()
+        let draft = RequestDraft(id: "session-smoke", name: "Session", url: "https://example.com")
+        let first = store.openPreview(draft: draft, collectionID: "fixture")
+        let replacement = store.openPreview(draft: RequestDraft(id: "replacement"), collectionID: "fixture")
+        precondition(store.session(id: first.id) == nil && store.isPreview(tabID: replacement.id))
+        replacement.draft.note = "edited"
+        precondition(store.close(.all).map(\.id) == [replacement.id], "Rust close policy must protect dirty projections")
+        let session = store.open(draft: draft, collectionID: "fixture")
+        let run = RunID()
+        session.beginRun(run)
+        await session.consume(.head(ResponseHead(status: 200, version: "HTTP/1.1", headers: [], timeToHeadersNS: 1)), runID: run)
+        await session.consume(.chunk(Data("café 🌍".utf8)), runID: run)
+        await session.consume(.complete(RunCompletion(bytesReceived: 10, totalTimeNS: 1)), runID: run)
+        precondition(session.responseText == "café 🌍" && !session.isRunning)
+        precondition(session.bodyStore != nil && session.completion?.bytesReceived == 10)
+        let stale = RunID()
+        await session.consume(.chunk(Data("late".utf8)), runID: stale)
+        precondition(session.responseText == "café 🌍", "stale native events must not mutate the Rust run")
+        store.pin(tabID: session.id)
+        let restored = DocumentSessionStore()
+        restored.restore(store.layout) { tab in
+            RequestLocation(collectionID: tab.collectionID, request: tab.requestID == draft.id ? draft : RequestDraft(id: tab.requestID))
+        }
+        precondition(restored.activeSession?.requestID == draft.id, "typed session layout must cross the bridge")
+    }
+
 }

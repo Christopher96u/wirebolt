@@ -17,6 +17,7 @@ public actor ResponseBodyStore {
         rust = try AppResponseBody(runId: runID.description, directory: directory.path)
         url = URL(fileURLWithPath: rust.path())
     }
+    init(rust: AppResponseBody) { self.rust = rust; url = URL(fileURLWithPath: rust.path()); writable = false }
     public init(existingURL: URL) throws {
         rust = try AppResponseBody.existing(path: existingURL.path); url = existingURL; writable = false
     }
@@ -89,10 +90,10 @@ public actor HistoryRepository {
         let entry = RunHistoryEntry(id: runID.description, requestID: requestID, createdAt: Date(), prepared: prepared,
             responseHead: responseHead, completion: completion, failure: failure, bodyPath: "")
         try await body.flushIngress()
-        try rust.record(entry: JSONEncoder().encode(entry), body: body.rust)
+        try rust.recordTyped(entry: entry.sessionRecord, body: body.rust)
     }
     public func list(requestID: String) -> [RunHistoryEntry] {
-        (try? JSONDecoder().decode([RunHistoryEntry].self, from: rust.list(requestId: requestID))) ?? []
+        rust.listTyped(requestId: requestID).map(RunHistoryEntry.init)
     }
     public func count(requestID: String) -> Int { Int(clamping: rust.count(requestId: requestID)) }
     public func clear(requestID: String) throws { try rust.clear(requestId: requestID) }
@@ -126,10 +127,20 @@ public actor CookieJar {
     public func delete(id: CookieSnapshot.ID) { rust.delete(id: id) }
     public func removeAll() { rust.removeAll() }
 }
-private extension CookieSnapshot {
+extension CookieSnapshot {
+    var sessionRecord: StoredCookie { StoredCookie(name: name, value: value, domain: domain, hostOnly: hostOnly, path: path, secure: secure, httpOnly: httpOnly, sameSite: sameSite, expiresAt: expiresAt?.timeIntervalSinceReferenceDate) }
     init(_ cookie: StoredCookie) {
         self.init(name: cookie.name, value: cookie.value, domain: cookie.domain, hostOnly: cookie.hostOnly,
             path: cookie.path, secure: cookie.secure, httpOnly: cookie.httpOnly, sameSite: cookie.sameSite,
             expiresAt: cookie.expiresAt.map { Date(timeIntervalSinceReferenceDate: $0) })
     }
+}
+
+extension RunHistoryEntry {
+    var sessionRecord: SessionHistoryEntry { SessionHistoryEntry(id: id, requestId: requestID, createdAt: createdAt.timeIntervalSinceReferenceDate,
+        prepared: prepared.sessionRecord, responseHead: responseHead?.sessionRecord, completion: completion?.sessionRecord,
+        failure: failure?.sessionRecord, bodyPath: bodyPath) }
+    init(_ record: SessionHistoryEntry) { self.init(id: record.id, requestID: record.requestId, createdAt: Date(timeIntervalSinceReferenceDate: record.createdAt),
+        prepared: PreparedRunSnapshot(record.prepared), responseHead: record.responseHead.map(ResponseHead.init),
+        completion: record.completion.map(RunCompletion.init), failure: record.failure.map(RunFailure.init), bodyPath: record.bodyPath) }
 }

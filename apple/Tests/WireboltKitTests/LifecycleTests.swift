@@ -209,3 +209,14 @@ private actor SaveRecorder: WorkspacePersistence {
         return WorkspaceDelta(version: UInt64(saved.count), kind: .request, affectedIDs: [])
     }
 }
+
+@Test("Stored signed layout indices preserve legacy decoding")
+@MainActor
+func signedLayoutIndicesRemainCompatible() throws {
+    let defaults = try #require(UserDefaults(suiteName: "wirebolt.signed-layout.\(UUID().uuidString)"))
+    let source = Data(#"{"groups":[{"tabs":[{"collectionID":"api","requestID":"a"}],"selectedIndex":-1,"previewIndex":-1}],"activeGroupIndex":-1}"#.utf8)
+    defaults.set(["/legacy": source], forKey: SessionLayoutStore.defaultsKey)
+    let layout = try #require(SessionLayoutStore(defaults: defaults).layout(forWorkspace: "/legacy"))
+    #expect(layout.activeGroupIndex == -1)
+    #expect(layout.groups[0].selectedIndex == -1 && layout.groups[0].previewIndex == -1)
+}

@@ -22,6 +22,7 @@ public extension RequestRunner {
 
 public protocol WorkspacePersistence: Sendable {
     func load() async throws -> WorkspaceDraft
+    func loadSession(_ application: AppWorkspaceSession) async throws -> WorkspaceDraft
     func save(request: RequestDraft, in collectionID: String) async throws
     func save(environment: EnvironmentDraft) async throws
     func saveSecret(name: String, value: String) async throws
@@ -29,6 +30,7 @@ public protocol WorkspacePersistence: Sendable {
     /// Removes a Keychain item. Deleting a missing item succeeds.
     func deleteSecret(name: String) async throws
     func apply(_ command: WorkspaceCommand) async throws -> WorkspaceDelta
+    func applySessionCommands(_ commands: [SessionWorkspaceCommand]) async -> SessionCommandBatchResult
     func previewImport(format: ImportFormat, source: String) async throws -> ImportPreview
         func commitImport(format: ImportFormat, source: String) async throws -> ImportResult
     func commitImportFile(format: ImportFormat, source: String, name: String) async throws -> ImportResult
@@ -37,10 +39,15 @@ public protocol WorkspacePersistence: Sendable {
     func exportRequest(collectionID: String, id: String) async throws -> String
     /// The workspace folder, used to key local runtime storage such as cookies.
     var location: URL? { get }
+    var sessionSecretPlatform: AppSecretPlatform { get }
 }
 
 public extension WorkspacePersistence {
+    func loadSession(_ application: AppWorkspaceSession) async throws -> WorkspaceDraft {
+        let workspace = try await load(); application.replace(workspace: workspace.domain); return workspace
+    }
     var location: URL? { nil }
+    var sessionSecretPlatform: AppSecretPlatform { AppSecretPlatform.foreign(platform: SessionSecretAdapter(persistence: self)) }
     func readSecret(name _: String) async throws -> String? { nil }
     func deleteSecret(name _: String) async throws {}
     func apply(_ command: WorkspaceCommand) async throws -> WorkspaceDelta {
@@ -54,6 +61,14 @@ public extension WorkspacePersistence {
         default:
             throw WorkspaceMutationError.unsupported
         }
+    }
+
+    func applySessionCommands(_ commands: [SessionWorkspaceCommand]) async -> SessionCommandBatchResult {
+        var completed: UInt64 = 0
+        do {
+            for command in commands { _ = try await apply(WorkspaceCommand(command)); completed += 1 }
+            return SessionCommandBatchResult(completed: completed, failureReason: nil)
+        } catch { return SessionCommandBatchResult(completed: completed, failureReason: error.localizedDescription) }
     }
 
     func previewImport(format _: ImportFormat, source _: String) async throws -> ImportPreview {
@@ -104,8 +119,11 @@ public final class WireboltModel {
     public static let previewByteLimit = DocumentSession.previewByteLimit
 
     public var workspace = WorkspaceDraft(name: "Wirebolt") {
-        didSet { sidebarSnapshot = nil; sidebarVisibleCache = nil; sidebarUnfilteredCache = nil }
+        didSet { sidebarSnapshot = nil; sidebarVisibleCache = nil; sidebarUnfilteredCache = nil; if !mirroringWorkspace { workspaceNeedsSynchronization = true } }
     }
+    @ObservationIgnored private let rustWorkspace = AppWorkspaceSession()
+    @ObservationIgnored private var mirroringWorkspace = false
+    @ObservationIgnored private var workspaceNeedsSynchronization = true
     @ObservationIgnored private var sidebarSnapshot: SidebarSnapshot?
     @ObservationIgnored private var sidebarVisibleCache: (query: String, collapsed: Set<String>, expanded: Set<String>, rows: [SidebarSnapshot.Row])?
     /// The unfiltered outline, kept apart from the last filter's rows so clearing a filter
@@ -148,7 +166,7 @@ public final class WireboltModel {
     /// Keychain names Wirebolt generated that this workspace used during this session. Those
     /// no longer referenced are deleted only when the undo stack is discarded (switching
     /// workspace, reloading after a pull, quitting), so an undone deletion still finds its value.
-    @ObservationIgnored private var observedSecretNames: Set<String> = []
+    @ObservationIgnored private let rustSecrets = AppSessionSecrets()
     /// Other workspace folders this Mac knows about (Open Recent, the built-in workspace).
     /// A Keychain item one of them still references is never deleted.
     @ObservationIgnored public var knownWorkspaceLocations: @MainActor () -> [URL] = { [] }
@@ -223,6 +241,7 @@ public final class WireboltModel {
         self.gitCollaboration = gitCollaboration
         editedSecrets = [:]
         dirtySecrets = []
+        rustSecrets.resetEditor()
         workspaceLocation = persistence.location
         // Each workspace keeps its own cookies, as a browser profile would.
         if let cookieDirectory, let location = persistence.location {
@@ -482,12 +501,7 @@ public final class WireboltModel {
     }
 
     private nonisolated static func historyViewport(_ entry: RunHistoryEntry) async -> Data {
-        await Task.detached(priority: .utility) {
-            let url = URL(fileURLWithPath: entry.bodyPath)
-            guard let reader = try? FileHandle(forReadingFrom: url) else { return Data() }
-            defer { try? reader.close() }
-            return (try? reader.read(upToCount: ResponseBodyStore.viewportByteCount)) ?? Data()
-        }.value
+        await Task.detached(priority: .utility) { sessionHistoryViewport(path: entry.bodyPath) }.value
     }
 
     /// Shows the most recent recorded response in restored tabs that have not run yet.
@@ -562,7 +576,8 @@ public final class WireboltModel {
             hasLoadedWorkspace = true
         }
         do {
-            applyLoadedWorkspace(try await persistence.load(), restoring: layout)
+            applyLoadedWorkspace(try await persistence.loadSession(rustWorkspace), restoring: layout)
+            workspaceNeedsSynchronization = false
         } catch {
             operationFailure = RunFailure(kind: "workspace", issues: [])
         }
@@ -578,13 +593,13 @@ public final class WireboltModel {
         defer { isLoadingWorkspace = false }
         do {
             await flushWorkspaceTransport()
-            let loaded = try await persistence.load()
+            let loaded = try await persistence.loadSession(rustWorkspace)
             for session in sessions.sessions.values { cancel(session) }
             sessions.removeAll()
             // The previous workspace's undo stack is discarded below, so its released
             // Keychain items can go.
             await purgeReleasedSecrets()
-            observedSecretNames = []
+            rustSecrets.clearObserved()
             configurePersistence(persistence, gitCollaboration: gitCollaboration)
             transportSave = nil
             persistedTransport = nil
@@ -596,6 +611,7 @@ public final class WireboltModel {
             gitOperation = nil
             gitFailure = nil
             applyLoadedWorkspace(loaded, restoring: layout)
+            workspaceNeedsSynchronization = false
             // Inverses recorded for the previous workspace must not touch this one.
             undoManager?.removeAllActions(withTarget: self)
             hasLoadedWorkspace = true
@@ -859,70 +875,47 @@ public final class WireboltModel {
     }
 
     public func loadSecret(_ source: ValueSource) async {
-        guard case let .secret(name) = source, editedSecrets[name] == nil,
-              let persistence else { return }
+        guard case let .secret(name) = source, editedSecrets[name] == nil, let persistence else { return }
         do {
-            let value = try await persistence.readSecret(name: name) ?? ""
+            let value = try await rustSecrets.load(name: name, platform: persistence.sessionSecretPlatform)
             if editedSecrets[name] == nil { editedSecrets[name] = value }
         } catch { operationFailure = RunFailure(kind: "keychain", issues: []) }
     }
 
     private func flushSecrets() async throws {
-        guard let persistence else {
-            if !dirtySecrets.isEmpty { throw WorkspaceMutationError.unsupported }
-            return
-        }
-        for name in dirtySecrets {
-            guard let value = editedSecrets[name] else { continue }
-            observeSecrets([name])
-            try await persistence.saveSecret(name: name, value: value)
-            if editedSecrets[name] == value { dirtySecrets.remove(name) }
-        }
-        if !dirtySecrets.isEmpty { try await flushSecrets() }
+        guard let persistence else { if !dirtySecrets.isEmpty { throw WorkspaceMutationError.unsupported }; return }
+        repeat {
+            synchronizeSecretEdits()
+            do { try await rustSecrets.flush(platform: persistence.sessionSecretPlatform) }
+            catch { mirrorSecretEdits(); throw error }
+            mirrorSecretEdits()
+        } while !dirtySecrets.isEmpty
     }
 
     private func observeSecrets(_ names: some Sequence<String>) {
-        observedSecretNames.formUnion(names.lazy.filter(CredentialReference.isOwned))
+        rustSecrets.observe(names: Array(names))
     }
 
     /// Whether quitting may have Keychain items to clean up.
-    public var hasReleasableSecrets: Bool { !observedSecretNames.isEmpty }
+    public var hasReleasableSecrets: Bool { rustSecrets.hasObserved() }
 
     /// Deletes Keychain items Wirebolt generated for requests and variables that no saved
     /// document or open tab references any more. Call only when the undo stack is being
     /// discarded; items of deletions that can still be undone must stay.
     public func purgeReleasedSecrets() async {
-        guard let persistence, !observedSecretNames.isEmpty else { return }
+        guard let persistence, rustSecrets.hasObserved() else { return }
         var inUse = workspace.secretReferences
         for session in sessions.sessions.values {
             inUse.formUnion(session.draft.secretReferences)
             if let saved = session.savedDraft { inUse.formUnion(saved.secretReferences) }
         }
-        var released = observedSecretNames.subtracting(inUse)
-        guard !released.isEmpty else { return }
-        // Clones of a repository, or copies of a workspace folder, share reference names.
         let current = workspaceLocation?.standardizedFileURL.path
         let others = Array(Set(knownWorkspaceLocations().map(\.standardizedFileURL.path)).subtracting([current].compactMap { $0 }))
-            .map { URL(fileURLWithPath: $0, isDirectory: true) }
-        if !others.isEmpty {
-            let candidates = released
-            let shared = await Task.detached(priority: .utility) {
-                WorkspaceSecretScan.referencedNames(candidates, in: others)
-            }.value
-            // Another workspace owns these too; its own session releases them later.
-            observedSecretNames.subtract(shared)
-            released.subtract(shared)
-        }
-        for name in released.sorted() {
-            do {
-                try await persistence.deleteSecret(name: name)
-                editedSecrets[name] = nil
-                dirtySecrets.remove(name)
-                observedSecretNames.remove(name)
-            } catch {
-                // Keep the name; a later purge retries. A leftover item is harmless.
-            }
-        }
+        synchronizeSecretEdits()
+        await rustSecrets.purge(inUse: Array(inUse), others: others, platform: persistence.sessionSecretPlatform)
+        let cached = rustSecrets.cached()
+        for name in editedSecrets.keys where cached[name] == nil { editedSecrets[name] = nil; dirtySecrets.remove(name) }
+        mirrorSecretEdits()
     }
 
     /// Gives a request per-request Keychain names in place of legacy shared ones, copying
@@ -939,15 +932,10 @@ public final class WireboltModel {
     /// Copies Keychain values from old to new names. Missing values stay missing.
     private func copySecrets(_ renames: [String: String]) async throws {
         guard let persistence else { throw WorkspaceMutationError.unsupported }
-        for (old, new) in renames.sorted(by: { $0.key < $1.key }) {
-            let value: String? = if dirtySecrets.contains(old) { editedSecrets[old] } else {
-                try await persistence.readSecret(name: old) ?? editedSecrets[old]
-            }
-            guard let value else { continue }
-            try await persistence.saveSecret(name: new, value: value)
-            editedSecrets[new] = value
-            observeSecrets([new])
-        }
+        synchronizeSecretEdits()
+        do { _ = try await rustSecrets.copy(renames: renames, platform: persistence.sessionSecretPlatform) }
+        catch { mirrorSecretEdits(); throw error }
+        mirrorSecretEdits()
     }
 
     /// Writes secret values straight to Keychain, for editors with their own Save button.
@@ -956,18 +944,12 @@ public final class WireboltModel {
     public func saveSecrets(_ values: [String: String]) async -> Bool {
         guard !values.isEmpty else { return true }
         guard let persistence else { return false }
+        synchronizeSecretEdits()
         do {
-            for (name, value) in values.sorted(by: { $0.key < $1.key }) {
-                observeSecrets([name])
-                try await persistence.saveSecret(name: name, value: value)
-                editedSecrets[name] = value
-                dirtySecrets.remove(name)
-            }
-            return true
-        } catch {
-            operationFailure = RunFailure(kind: "keychain", issues: [])
-            return false
-        }
+            try await rustSecrets.save(values: values, platform: persistence.sessionSecretPlatform)
+            for (name, value) in values { editedSecrets[name] = value; dirtySecrets.remove(name) }
+            mirrorSecretEdits(); return true
+        } catch { mirrorSecretEdits(); operationFailure = RunFailure(kind: "keychain", issues: []); return false }
     }
 
     public func saveSecret(name: String, value: String) async {
@@ -1403,6 +1385,11 @@ public final class WireboltModel {
         value.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current)
     }
 
+    public func deleteConsequences(_ target: SessionDeleteTarget) -> String {
+        if workspaceNeedsSynchronization { rustWorkspace.replace(workspace: workspace.domain); workspaceNeedsSynchronization = false }
+        return rustWorkspace.deleteConsequences(target: target, documents: sessions.sessions.values.map(\.tabProjection))
+    }
+
     private func closeSessions(collectionID: String, requestID: String? = nil) {
         for group in sessions.groups {
             let ids = group.tabIDs.filter { id in
@@ -1545,214 +1532,63 @@ extension WireboltModel {
     func apply(_ step: WorkspaceEditStep) async -> WorkspaceEditStep? {
         guard let persistence else { return nil }
         do {
-            switch step {
-            case let .restoreEnvironment(environment, index):
-                let previousIndex = workspace.environments.firstIndex { $0.id == environment.id }
-                let previous = previousIndex.map { workspace.environments[$0] }
-                observeSecrets(environment.secretReferences)
-                if let previous { observeSecrets(previous.secretReferences) }
-                _ = try await persistence.apply(.saveEnvironment(environment))
-                workspace.environments.removeAll { $0.id == environment.id }
-                workspace.environments.insert(environment, at: min(index, workspace.environments.count))
-                selectedEnvironmentID = environment.id == WorkspaceDraft.globalEnvironmentID ? nil : environment.id
-                if let previous, let previousIndex { return .restoreEnvironment(previous, index: previousIndex) }
-                return .removeEnvironment(id: environment.id)
-
-            case let .removeEnvironment(id):
-                guard let index = workspace.environments.firstIndex(where: { $0.id == id }) else { return nil }
-                let previous = workspace.environments[index]
-                observeSecrets(previous.secretReferences)
-                _ = try await persistence.apply(.deleteEnvironment(id: id))
-                workspace.environments.remove(at: index)
-                if selectedEnvironmentID == id { selectedEnvironmentID = nil }
-                return .restoreEnvironment(previous, index: index)
-
-            case let .restoreRequest(location):
-                guard let collection = workspace.collections.first(where: { $0.id == location.collectionID }),
-                      location.groupID.map({ id in collection.groups.contains { $0.id == id } }) ?? true
-                else { return nil }
-                _ = try await persistence.apply(.saveRequest(collectionID: location.collectionID, location: location))
-                applySavedRequest(location)
-                return .removeRequest(collectionID: location.collectionID, id: location.request.id)
-
-            case let .removeRequest(collectionID, id):
-                guard let location = workspace.location(collectionID: collectionID, requestID: id) else { return nil }
-                _ = try await persistence.apply(.deleteRequest(collectionID: collectionID, id: id))
-                if let index = workspace.collections.firstIndex(where: { $0.id == collectionID }) {
-                    workspace.collections[index].requests.removeAll { $0.request.id == id }
-                }
-                rebuildRequestSearchIndex()
-                closeSessions(collectionID: collectionID, requestID: id)
-                return .restoreRequest(location)
-
-            case let .duplicateRequest(collectionID, id, newID, name):
-                guard var copy = workspace.location(collectionID: collectionID, requestID: id) else { return nil }
-                // The copy gets its own Keychain items holding the same values, so editing
-                // or deleting either request never changes the other's credentials.
+            // Credential copies are platform effects; their naming policy is already Rust.
+            var ownAuthentication: RequestAuthentication?
+            var renames: [String: String] = [:]
+            if case let .duplicateRequest(collectionID, id, _, _) = step,
+               let source = workspace.location(collectionID: collectionID, requestID: id) {
                 try await flushSecrets()
-                let (authentication, renames) = copy.request.authentication.withOwnKeychainNames(onlyLegacy: false)
-                try await copySecrets(renames)
-                _ = try await persistence.apply(.duplicateRequest(collectionID: collectionID, id: id, newID: newID, name: name))
-                guard let index = workspace.collections.firstIndex(where: { $0.id == collectionID }) else { return nil }
-                copy.request.id = newID
-                copy.request.name = name
-                copy.request.authentication = authentication
-                copy.order = workspace.collections[index].requests.count
-                if !renames.isEmpty {
-                    // Same position the bridge gave the duplicate, now with its own names.
-                    var persisted = copy
-                    persisted.order = (workspace.location(collectionID: collectionID, requestID: id)?.order ?? 0) + 1
-                    _ = try await persistence.apply(.saveRequest(collectionID: collectionID, location: persisted))
-                }
-                workspace.collections[index].requests.append(copy)
-                rebuildRequestSearchIndex()
-                return .removeRequest(collectionID: collectionID, id: newID)
-
-            case let .restoreGroups(collectionID, groups, requests):
-                guard let root = groups.first,
-                      workspace.collections.contains(where: { $0.id == collectionID }) else { return nil }
-                for group in groups {
-                    _ = try await persistence.apply(.createGroup(collectionID: collectionID, group: group))
-                    guard let index = workspace.collections.firstIndex(where: { $0.id == collectionID }) else { return nil }
-                    workspace.collections[index].groups.append(group)
-                }
-                try await restoreRequests(requests, in: collectionID)
-                return .removeGroup(collectionID: collectionID, id: root.id)
-
-            case let .removeGroup(collectionID, id):
-                guard let collection = workspace.collections.first(where: { $0.id == collectionID }),
-                      collection.groups.contains(where: { $0.id == id }) else { return nil }
-                let descendantIDs = collection.descendantGroupIDs(of: id)
-                let removedRequests = collection.requests.filter { $0.groupID.map(descendantIDs.contains) ?? false }
-                _ = try await persistence.apply(.deleteGroup(collectionID: collectionID, id: id))
-                for location in removedRequests { closeSessions(collectionID: collectionID, requestID: location.request.id) }
-                if let index = workspace.collections.firstIndex(where: { $0.id == collectionID }) {
-                    workspace.collections[index].groups.removeAll { descendantIDs.contains($0.id) }
-                    workspace.collections[index].requests.removeAll { $0.groupID.map(descendantIDs.contains) ?? false }
-                }
-                rebuildRequestSearchIndex()
-                return .restoreGroups(collectionID: collectionID, groups: collection.subtreeGroups(of: id),
-                                      requests: removedRequests)
-
-            case let .restoreCollection(collection):
-                guard !workspace.collections.contains(where: { $0.id == collection.id }) else { return nil }
-                let empty = CollectionDraft(id: collection.id, name: collection.name, order: collection.order)
-                _ = try await persistence.apply(.createCollection(empty))
-                workspace.collections.append(empty)
-                for group in collection.subtreeGroups(of: nil) {
-                    _ = try await persistence.apply(.createGroup(collectionID: collection.id, group: group))
-                    guard let index = workspace.collections.firstIndex(where: { $0.id == collection.id }) else { return nil }
-                    workspace.collections[index].groups.append(group)
-                }
-                try await restoreRequests(collection.requests, in: collection.id)
-                return .removeCollection(id: collection.id)
-
-            case let .removeCollection(id):
-                guard let collection = workspace.collections.first(where: { $0.id == id }) else { return nil }
-                _ = try await persistence.apply(.deleteCollection(id: id))
-                workspace.collections.removeAll { $0.id == id }
-                rebuildRequestSearchIndex()
-                closeSessions(collectionID: id)
-                return .restoreCollection(collection)
-
-            case let .renameRequest(collectionID, id, name):
-                guard var location = workspace.location(collectionID: collectionID, requestID: id),
-                      location.request.name != name else { return nil }
-                let previous = location.request.name
-                location.request.name = name
-                _ = try await persistence.apply(.saveRequest(collectionID: collectionID, location: location))
-                applySavedRequest(location)
-                for session in sessions.sessions.values where session.collectionID == collectionID && session.requestID == id {
-                    session.renameSavedRequest(name)
-                }
-                return .renameRequest(collectionID: collectionID, id: id, name: previous)
-
-            case let .renameGroup(collectionID, id, name):
-                guard let collection = workspace.collections.first(where: { $0.id == collectionID }),
-                      let previous = collection.groups.first(where: { $0.id == id })?.name, previous != name
-                else { return nil }
-                _ = try await persistence.apply(.renameGroup(collectionID: collectionID, id: id, name: name))
-                if let index = workspace.collections.firstIndex(where: { $0.id == collectionID }),
-                   let groupIndex = workspace.collections[index].groups.firstIndex(where: { $0.id == id }) {
-                    workspace.collections[index].groups[groupIndex].name = name
-                }
-                return .renameGroup(collectionID: collectionID, id: id, name: previous)
-
-            case let .renameCollection(id, name):
-                guard let previous = workspace.collections.first(where: { $0.id == id })?.name, previous != name
-                else { return nil }
-                _ = try await persistence.apply(.renameCollection(id: id, name: name))
-                if let index = workspace.collections.firstIndex(where: { $0.id == id }) {
-                    workspace.collections[index].name = name
-                }
-                return .renameCollection(id: id, name: previous)
-
-            case let .moveRequest(fromCollectionID, id, toCollectionID, groupID, order):
-                guard let source = workspace.location(collectionID: fromCollectionID, requestID: id),
-                      workspace.collections.contains(where: { $0.id == toCollectionID }) else { return nil }
-                _ = try await persistence.apply(.moveRequest(fromCollectionID: fromCollectionID, requestID: id,
-                                                             toCollectionID: toCollectionID, groupID: groupID, order: order))
-                if let index = workspace.collections.firstIndex(where: { $0.id == fromCollectionID }) {
-                    workspace.collections[index].requests.removeAll { $0.request.id == id }
-                }
-                if let index = workspace.collections.firstIndex(where: { $0.id == toCollectionID }) {
-                    workspace.collections[index].requests.append(RequestLocation(
-                        collectionID: toCollectionID, groupID: groupID, order: order, request: source.request))
-                }
-                for session in sessions.sessions.values where session.collectionID == fromCollectionID && session.requestID == id {
-                    session.relocate(to: toCollectionID)
-                }
-                sessions.refreshActiveRequest()
-                rebuildRequestSearchIndex()
-                return .moveRequest(fromCollectionID: toCollectionID, id: id, toCollectionID: fromCollectionID,
-                                    groupID: source.groupID, order: source.order)
-
-            case let .moveGroup(collectionID, id, parentID, order):
-                guard let collection = workspace.collections.first(where: { $0.id == collectionID }),
-                      let group = collection.groups.first(where: { $0.id == id }) else { return nil }
-                _ = try await persistence.apply(.moveGroup(collectionID: collectionID, id: id, parentID: parentID, order: order))
-                if let index = workspace.collections.firstIndex(where: { $0.id == collectionID }),
-                   let groupIndex = workspace.collections[index].groups.firstIndex(where: { $0.id == id }) {
-                    workspace.collections[index].groups[groupIndex].parentID = parentID
-                    workspace.collections[index].groups[groupIndex].order = order
-                }
-                return .moveGroup(collectionID: collectionID, id: id, parentID: group.parentID, order: group.order)
-
-            case let .reorder(collectionID, parentID, items):
-                guard let collection = workspace.collections.first(where: { $0.id == collectionID }) else { return nil }
-                let previous = collection.orderedChildren(parentID: parentID)
-                guard items != previous, Set(items) == Set(previous) else { return nil }
-                _ = try await persistence.apply(.reorderChildren(collectionID: collectionID, parentID: parentID, items: items))
-                guard let index = workspace.collections.firstIndex(where: { $0.id == collectionID }) else { return nil }
-                let orders = Dictionary(uniqueKeysWithValues: items.enumerated().map { ($0.element, $0.offset) })
-                for i in workspace.collections[index].groups.indices {
-                    if let order = orders["group:" + workspace.collections[index].groups[i].id] {
-                        workspace.collections[index].groups[i].order = order
-                    }
-                }
-                for i in workspace.collections[index].requests.indices {
-                    if let order = orders["request:" + workspace.collections[index].requests[i].request.id] {
-                        workspace.collections[index].requests[i].order = order
-                    }
-                }
-                return .reorder(collectionID: collectionID, parentID: parentID, items: previous)
+                let own = source.request.authentication.withOwnKeychainNames(onlyLegacy: false)
+                ownAuthentication = own.0; renames = own.1; try await copySecrets(renames)
             }
-        } catch {
-            operationFailure = RunFailure(kind: "workspace", issues: [])
-            return nil
-        }
+            if workspaceNeedsSynchronization { rustWorkspace.replace(workspace: workspace.domain); workspaceNeedsSynchronization = false }
+            guard var plan = rustWorkspace.plan(selected: selectedEnvironmentID, step: step.sessionRecord) else { return nil }
+            observeSecrets(plan.observedSecrets)
+            let outcome = await persistence.applySessionCommands(plan.commands)
+            let failed = outcome.failureReason != nil
+            if failed {
+                guard let partial = rustWorkspace.partial(plan: plan, completed: outcome.completed) else {
+                    operationFailure = RunFailure(kind: "workspace", issues: []); return nil
+                }
+                plan = partial
+            }
+            if case let .duplicateRequest(collectionID, id, newID, _) = step, !renames.isEmpty,
+               let authentication = ownAuthentication, let index = plan.collections.firstIndex(where: { $0.id == collectionID }),
+               let requestIndex = plan.collections[index].requests.firstIndex(where: { $0.request.id == newID }) {
+                plan.collections[index].requests[requestIndex].request.authentication = authentication.domain
+                var persisted = RequestLocation(domain: plan.collections[index].requests[requestIndex])
+                persisted.order = (workspace.location(collectionID: collectionID, requestID: id)?.order ?? 0) + 1
+                _ = try await persistence.apply(.saveRequest(collectionID: collectionID, location: persisted))
+            }
+            rustWorkspace.commit(plan: plan)
+            mirroringWorkspace = true
+            defer { mirroringWorkspace = false }
+            workspace.collections.removeAll { plan.removedCollectionIds.contains($0.id) }
+            for collection in plan.collections {
+                let projected = CollectionDraft(domain: collection)
+                if let index = workspace.collections.firstIndex(where: { $0.id == collection.id }) {
+                    if workspace.collections[index] != projected { workspace.collections[index] = projected }
+                } else { workspace.collections.append(projected) }
+            }
+            if let environments = plan.environments { workspace.environments = environments.map(EnvironmentDraft.init(domain:)) }
+            if plan.changesEnvironmentSelection { selectedEnvironmentID = plan.selectedEnvironmentId }
+            observeSecrets(plan.observedSecrets)
+            for effect in plan.effects {
+                switch effect {
+                case let .close(collectionID, requestID): closeSessions(collectionID: collectionID, requestID: requestID)
+                case let .rename(collectionID, requestID, name):
+                    for session in sessions.sessions.values where session.collectionID == collectionID && session.requestID == requestID { session.renameSavedRequest(name) }
+                case let .relocate(collectionID, requestID, destination):
+                    for session in sessions.sessions.values where session.collectionID == collectionID && session.requestID == requestID { session.relocate(to: destination) }
+                    sessions.refreshActiveRequest()
+                }
+            }
+            rebuildRequestSearchIndex()
+            if failed { operationFailure = RunFailure(kind: "workspace", issues: []); return nil }
+            return WorkspaceEditStep(plan.inverse)
+        } catch { operationFailure = RunFailure(kind: "workspace", issues: []); return nil }
     }
 
-    /// Saves each request, then indexes once; a restored subtree can hold many requests.
-    private func restoreRequests(_ requests: [RequestLocation], in collectionID: String) async throws {
-        guard let persistence, !requests.isEmpty else { return }
-        for location in requests {
-            _ = try await persistence.apply(.saveRequest(collectionID: collectionID, location: location))
-            guard let index = workspace.collections.firstIndex(where: { $0.id == collectionID }) else { return }
-            workspace.collections[index].requests.append(location)
-        }
-        rebuildRequestSearchIndex()
-    }
 }
 
 /// Menu availability derived from the model. Values are stored and only written when
@@ -1868,35 +1704,125 @@ public extension ImportFormat {
 /// Finds Keychain reference names in workspace folders on disk without opening them as
 /// workspaces: only request and environment documents are read, as plain text.
 public enum WorkspaceSecretScan {
-    /// The names in `candidates` that any request or environment document of `workspaces`
-    /// mentions. Missing or unreadable folders and files are skipped.
     public nonisolated static func referencedNames(_ candidates: Set<String>, in workspaces: [URL]) -> Set<String> {
-        var remaining = candidates
-        var found: Set<String> = []
-        for root in workspaces {
-            for file in documentFiles(in: root) {
-                guard !remaining.isEmpty else { return found }
-                guard let text = try? String(contentsOf: file, encoding: .utf8) else { continue }
-                for name in remaining where text.contains("\"\(name)\"") || text.contains("'\(name)'") {
-                    found.insert(name)
-                }
-                remaining.subtract(found)
-            }
-        }
-        return found
+        Set(sessionScanSecrets(candidates: Array(candidates), workspaces: workspaces.map(\.path)))
     }
+}
 
-    /// `collections/<collection>/requests/*.toml` and `environments/*.toml`.
-    private nonisolated static func documentFiles(in root: URL) -> [URL] {
-        let manager = FileManager.default
-        func toml(in directory: URL) -> [URL] {
-            ((try? manager.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)) ?? [])
-                .filter { $0.pathExtension == "toml" }
+extension WorkspaceEditStep {
+    var sessionRecord: SessionWorkspaceEdit {
+        switch self {
+        case let .restoreEnvironment(value, index): .restoreEnvironment(environment: value.domain, index: UInt64(max(0, index)))
+        case let .removeEnvironment(id): .removeEnvironment(id: id)
+        case let .restoreRequest(value): .restoreRequest(location: value.domain)
+        case let .removeRequest(collection, id): .removeRequest(collectionId: collection, id: id)
+        case let .duplicateRequest(collection, id, newID, name): .duplicateRequest(collectionId: collection, id: id, newId: newID, name: name)
+        case let .restoreGroups(collection, groups, requests): .restoreGroups(collectionId: collection, groups: groups.map(\.domain), requests: requests.map(\.domain))
+        case let .removeGroup(collection, id): .removeGroup(collectionId: collection, id: id)
+        case let .restoreCollection(value): .restoreCollection(collection: value.domain)
+        case let .removeCollection(id): .removeCollection(id: id)
+        case let .renameRequest(collection, id, name): .renameRequest(collectionId: collection, id: id, name: name)
+        case let .renameGroup(collection, id, name): .renameGroup(collectionId: collection, id: id, name: name)
+        case let .renameCollection(id, name): .renameCollection(id: id, name: name)
+        case let .moveRequest(from, id, to, group, order): .moveRequest(fromCollectionId: from, id: id, toCollectionId: to, groupId: group, order: Int64(order))
+        case let .moveGroup(collection, id, parent, order): .moveGroup(collectionId: collection, id: id, parentId: parent, order: Int64(order))
+        case let .reorder(collection, parent, items): .reorder(collectionId: collection, parentId: parent, items: items)
         }
-        let collections = (try? manager.contentsOfDirectory(
-            at: root.appending(path: "collections", directoryHint: .isDirectory), includingPropertiesForKeys: nil
-        )) ?? []
-        return collections.flatMap { toml(in: $0.appending(path: "requests", directoryHint: .isDirectory)) }
-            + toml(in: root.appending(path: "environments", directoryHint: .isDirectory))
+    }
+    init(_ record: SessionWorkspaceEdit) {
+        switch record {
+        case let .restoreEnvironment(value, index): self = .restoreEnvironment(EnvironmentDraft(domain: value), index: Int(index))
+        case let .removeEnvironment(id): self = .removeEnvironment(id: id)
+        case let .restoreRequest(value): self = .restoreRequest(RequestLocation(domain: value))
+        case let .removeRequest(collection, id): self = .removeRequest(collectionID: collection, id: id)
+        case let .duplicateRequest(collection, id, newID, name): self = .duplicateRequest(collectionID: collection, id: id, newID: newID, name: name)
+        case let .restoreGroups(collection, groups, requests): self = .restoreGroups(collectionID: collection, groups: groups.map(GroupDraft.init(domain:)), requests: requests.map(RequestLocation.init(domain:)))
+        case let .removeGroup(collection, id): self = .removeGroup(collectionID: collection, id: id)
+        case let .restoreCollection(value): self = .restoreCollection(CollectionDraft(domain: value))
+        case let .removeCollection(id): self = .removeCollection(id: id)
+        case let .renameRequest(collection, id, name): self = .renameRequest(collectionID: collection, id: id, name: name)
+        case let .renameGroup(collection, id, name): self = .renameGroup(collectionID: collection, id: id, name: name)
+        case let .renameCollection(id, name): self = .renameCollection(id: id, name: name)
+        case let .moveRequest(from, id, to, group, order): self = .moveRequest(fromCollectionID: from, id: id, toCollectionID: to, groupID: group, order: Int(order))
+        case let .moveGroup(collection, id, parent, order): self = .moveGroup(collectionID: collection, id: id, parentID: parent, order: Int(order))
+        case let .reorder(collection, parent, items): self = .reorder(collectionID: collection, parentID: parent, items: items)
+        }
+    }
+}
+extension WorkspaceCommand {
+    init(_ record: SessionWorkspaceCommand) {
+        switch record {
+        case let .saveWorkspaceProxy(value): self = .saveWorkspaceProxy(value.map(ProxyDocument.init(domain:)))
+        case let .saveWorkspaceSettings(value): self = .saveWorkspaceSettings(TransportSettings(domain: value))
+        case let .renameWorkspace(name): self = .renameWorkspace(name: name)
+        case let .saveEnvironment(value): self = .saveEnvironment(EnvironmentDraft(domain: value))
+        case let .deleteEnvironment(id): self = .deleteEnvironment(id: id)
+        case let .saveRequest(value): self = .saveRequest(collectionID: value.collectionId, location: RequestLocation(domain: value))
+        case let .deleteRequest(collection, id): self = .deleteRequest(collectionID: collection, id: id)
+        case let .duplicateRequest(collection, id, newID, name): self = .duplicateRequest(collectionID: collection, id: id, newID: newID, name: name)
+        case let .createGroup(collection, group): self = .createGroup(collectionID: collection, group: GroupDraft(domain: group))
+        case let .deleteGroup(collection, id): self = .deleteGroup(collectionID: collection, id: id)
+        case let .createCollection(value): self = .createCollection(CollectionDraft(domain: value))
+        case let .deleteCollection(id): self = .deleteCollection(id: id)
+        case let .renameGroup(collection, id, name): self = .renameGroup(collectionID: collection, id: id, name: name)
+        case let .renameCollection(id, name): self = .renameCollection(id: id, name: name)
+        case let .moveRequest(from, id, to, group, order): self = .moveRequest(fromCollectionID: from, requestID: id, toCollectionID: to, groupID: group, order: Int(order))
+        case let .moveGroup(collection, id, parent, order): self = .moveGroup(collectionID: collection, id: id, parentID: parent, order: Int(order))
+        case let .reorderChildren(collection, parent, items): self = .reorderChildren(collectionID: collection, parentID: parent, items: items)
+        }
+    }
+}
+
+extension WorkspaceCommand {
+    var sessionRecord: SessionWorkspaceCommand {
+        switch self {
+        case let .saveWorkspaceProxy(value): .saveWorkspaceProxy(proxy: value?.domain)
+        case let .saveWorkspaceSettings(value): .saveWorkspaceSettings(transport: value.domain)
+        case let .renameWorkspace(name): .renameWorkspace(name: name)
+        case let .saveEnvironment(value): .saveEnvironment(environment: value.domain)
+        case let .deleteEnvironment(id): .deleteEnvironment(id: id)
+        case let .saveRequest(_, value): .saveRequest(location: value.domain)
+        case let .deleteRequest(collection, id): .deleteRequest(collectionId: collection, id: id)
+        case let .duplicateRequest(collection, id, newID, name): .duplicateRequest(collectionId: collection, id: id, newId: newID, name: name)
+        case let .createGroup(collection, group): .createGroup(collectionId: collection, group: group.domain)
+        case let .deleteGroup(collection, id): .deleteGroup(collectionId: collection, id: id)
+        case let .createCollection(value): .createCollection(collection: value.domain)
+        case let .deleteCollection(id): .deleteCollection(id: id)
+        case let .renameGroup(collection, id, name): .renameGroup(collectionId: collection, id: id, name: name)
+        case let .renameCollection(id, name): .renameCollection(id: id, name: name)
+        case let .moveRequest(from, id, to, group, order): .moveRequest(fromCollectionId: from, requestId: id, toCollectionId: to, groupId: group, order: Int64(order))
+        case let .moveGroup(collection, id, parent, order): .moveGroup(collectionId: collection, id: id, parentId: parent, order: Int64(order))
+        case let .reorderChildren(collection, parent, items): .reorderChildren(collectionId: collection, parentId: parent, items: items)
+        }
+    }
+}
+
+private final class SessionSecretAdapter: SessionSecretPlatform {
+    let persistence: any WorkspacePersistence
+    init(persistence: any WorkspacePersistence) { self.persistence = persistence }
+    func execute(operation: String, name: String, value: String?, reply: SessionSecretReply) {
+        Task {
+            do {
+                let result: String?
+                switch operation {
+                case "read": result = try await persistence.readSecret(name: name)
+                case "save": try await persistence.saveSecret(name: name, value: value ?? ""); result = nil
+                default: try await persistence.deleteSecret(name: name); result = nil
+                }
+                reply.finish(value: result, failed: false)
+            } catch { reply.finish(value: nil, failed: true) }
+        }
+    }
+}
+private extension WireboltModel {
+    func synchronizeSecretEdits() {
+        rustSecrets.editBatch(values: Dictionary(uniqueKeysWithValues: dirtySecrets.compactMap { name in editedSecrets[name].map { (name, $0) } }))
+    }
+    func mirrorSecretEdits() {
+        let dirty = Set(rustSecrets.dirty())
+        for (name, value) in rustSecrets.cached() where !dirtySecrets.contains(name) || editedSecrets[name] == value {
+            editedSecrets[name] = value
+            if !dirty.contains(name) { dirtySecrets.remove(name) }
+        }
     }
 }
