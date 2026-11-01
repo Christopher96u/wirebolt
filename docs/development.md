@@ -105,6 +105,10 @@ It also verifies final-tab dirty confirmation and reopening. Run it alone with
 `build/native-performance/workloads tab-close 20 build/native-performance/tab-close.json 5`.
 Rust policy and native adapter tests cover close scopes at 2, 20 and 100 tabs,
 blocked closes, split/preview tabs, cancellation, save/discard and undo.
+Close resolves the Rust-owned target scope first and synchronizes only changed
+targets. Rust then checks their byte-exact dirty state before fetching saved
+drafts. Native change tracking preserves composed/decomposed Unicode differences;
+the cached tab projection does not serialize unchanged drafts while closing.
 
 The full gate includes both workloads locally and skips their timings in CI.
 Launch smoke still runs in CI: it copies and signs this checkout's app under a

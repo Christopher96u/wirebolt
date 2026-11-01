@@ -4,6 +4,21 @@ import Testing
 
 @Suite("Wirebolt model")
 struct WireboltModelTests {
+    @Test("A canonically equivalent body edit sends the current UTF-8 bytes")
+    @MainActor func unicodeBodyEditReachesTransport() async throws {
+        let root = FileManager.default.temporaryDirectory.appending(path: "wirebolt-unicode-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let runner = InputCapturingRunner()
+        let model = WireboltModel(runner: runner, history: HistoryRepository(root: root),
+            cookieJar: CookieJar(storageURL: root.appending(path: "cookies.json")))
+        let session = model.sessions.open(draft: RequestDraft(id: "unicode", url: "https://example.com", body: .json(value: "e\u{301}")))
+        session.draft.body = .json(value: "é")
+        await model.send(session)
+        let input = try #require(await runner.lastInput)
+        guard case let .json(value) = input.body else { Issue.record("Missing JSON body"); return }
+        #expect(value.utf8.elementsEqual("é".utf8))
+    }
+
     @Test("History counts belong to each request and clearing invalidates sidebar history")
     @MainActor func historyCountTracksRequestsAndClearRevision() async throws {
         let root = FileManager.default.temporaryDirectory.appending(path: "wirebolt-history-\(UUID().uuidString)")

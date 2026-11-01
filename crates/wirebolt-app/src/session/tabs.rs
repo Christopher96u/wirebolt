@@ -325,19 +325,14 @@ impl SessionTabs {
             group.select(&id);
         }
     }
-    pub fn close(
-        &mut self,
-        scope: &SessionCloseScope,
-        group: Option<&str>,
-        allow_dirty: bool,
-        documents: &mut HashMap<String, SessionTabDocument>,
-    ) -> Vec<String> {
+    #[must_use]
+    pub fn close_targets(&self, scope: &SessionCloseScope, group: Option<&str>) -> Vec<String> {
         let group = group.unwrap_or(&self.active_group_id);
         let Some(index) = self.groups.iter().position(|g| g.id == group) else {
             return vec![];
         };
         let target = &self.groups[index];
-        let ids: Vec<String> = match scope {
+        match scope {
             SessionCloseScope::One { id } => vec![id.clone()],
             SessionCloseScope::Others { id } => target
                 .tab_ids
@@ -352,7 +347,20 @@ impl SessionTabs {
                 .map(|i| target.tab_ids[i + 1..].to_vec())
                 .unwrap_or_default(),
             SessionCloseScope::All => target.tab_ids.clone(),
+        }
+    }
+    pub fn close(
+        &mut self,
+        scope: &SessionCloseScope,
+        group: Option<&str>,
+        allow_dirty: bool,
+        documents: &mut HashMap<String, SessionTabDocument>,
+    ) -> Vec<String> {
+        let group = group.unwrap_or(&self.active_group_id);
+        let Some(index) = self.groups.iter().position(|g| g.id == group) else {
+            return vec![];
         };
+        let ids = self.close_targets(scope, Some(group));
         let blocked: Vec<_> = ids
             .iter()
             .filter(|id| documents.get(*id).is_some_and(|d| d.dirty))

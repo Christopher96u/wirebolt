@@ -317,6 +317,18 @@ public struct RequestDraft: Equatable, Sendable {
 }
 
 extension RequestDraft {
+    // Native String equality normalizes Unicode; the Rust wire representation
+    // preserves bytes. Only the canonically-equal case needs the codec fallback.
+    // This runs on editor mutations, never while projecting unchanged tabs.
+    func hasSameBridgeBytes(as other: RequestDraft) -> Bool {
+        guard self == other else { return false }
+        var left: [UInt8] = []
+        var right: [UInt8] = []
+        FfiConverterTypeDomainRequestDraft.write(domain, into: &left)
+        FfiConverterTypeDomainRequestDraft.write(other.domain, into: &right)
+        return left == right
+    }
+
     public var separatingURLQuery: RequestDraft {
         var result = self
         result.apply(domainSeparateUrlQuery(url: domain.url, query: domain.query))

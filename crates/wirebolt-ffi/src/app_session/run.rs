@@ -135,6 +135,9 @@ impl AppDocumentSession {
             draft_writes: self.draft_writes.load(Ordering::Relaxed),
         }
     }
+    pub fn is_dirty(&self) -> bool {
+        lock(&self.document).dirty()
+    }
     pub fn edit(&self, draft: DomainRequestDraft) {
         self.draft_writes.fetch_add(1, Ordering::Relaxed);
         lock(&self.document).edit(draft);

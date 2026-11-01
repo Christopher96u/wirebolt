@@ -27,8 +27,9 @@ public final class DocumentSession: Identifiable {
     // It is synchronized with Rust at command boundaries; equality also drives Observation.
     public var draft: RequestDraft {
         didSet {
-            if draft != oldValue { draftNeedsSynchronization = true }
-            if !isTouched, draft != savedDraft { isTouched = true }
+            if !draft.hasSameBridgeBytes(as: oldValue) { draftNeedsSynchronization = true }
+            refreshNativeDirtyState()
+            if !isTouched, isDirty { isTouched = true }
         }
     }
     public private(set) var isTouched = false
@@ -36,7 +37,11 @@ public final class DocumentSession: Identifiable {
         get { draft.note }
         set { draft.note = newValue }
     }
-    public private(set) var savedDraft: RequestDraft?
+    public private(set) var savedDraft: RequestDraft? {
+        didSet { refreshNativeDirtyState() }
+    }
+    // Native presentation cache; Rust rechecks target documents for close policy.
+    public private(set) var isDirty = false
     public private(set) var responseHead: ResponseHead?
     public private(set) var preparedRun: PreparedRunSnapshot?
     public private(set) var responseText = ""
@@ -77,10 +82,13 @@ public final class DocumentSession: Identifiable {
         self.requestID = document.requestId
         self.draft = RequestDraft(domain: document.draft)
         self.savedDraft = document.savedDraft.map(RequestDraft.init(domain:))
+        self.isDirty = rust.isDirty()
     }
 
     public var title: String { draft.name }
-    public var isDirty: Bool { savedDraft != draft }
+    private func refreshNativeDirtyState() {
+        isDirty = savedDraft.map { !draft.hasSameBridgeBytes(as: $0) } ?? true
+    }
     public var isRunning: Bool { activeRunID != nil }
     var tabProjection: SessionTabDocument {
         SessionTabDocument(
@@ -596,6 +604,11 @@ public final class DocumentSessionStore {
     func closeWorkspace(_ scope: TabCloseScope, in groupID: String?, allowDirty: Bool) -> (
         blocked: [DocumentSession], closed: [DocumentSession]
     ) {
+        // Resolve the Rust-owned scope before synchronizing any native payload.
+        // A non-target edit is irrelevant to this close command.
+        for id in rust.closeTargets(scope: scope, group: groupID) {
+            sessions[id]?.synchronizeDraft()
+        }
         let documents = sessions.values.map {
             AppCloseDocument(document: $0.rust, projection: $0.tabProjection)
         }

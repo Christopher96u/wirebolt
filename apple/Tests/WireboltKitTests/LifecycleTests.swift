@@ -222,6 +222,31 @@ func signedLayoutIndicesRemainCompatible() throws {
 }
 
 extension LifecycleTests {
+    @Test("Canonically equivalent Unicode edits keep byte-exact save and close semantics")
+    @MainActor func unicodeBytesSurviveSynchronizationSaveAndClose() async throws {
+        let persistence = SaveRecorder()
+        let model = WireboltModel(runner: LifecycleRunner(), persistence: persistence)
+        let original = RequestDraft(id: "unicode", note: "e\u{301}", body: .json(value: "e\u{301}"))
+        model.workspace.collections = [CollectionDraft(id: "api", name: "API", requests: [RequestLocation(collectionID: "api", request: original)])]
+        let session = model.sessions.open(draft: original, collectionID: "api")
+        session.draft.note = "é"
+        session.draft.body = .json(value: "é")
+        #expect(session.isDirty && session.isTouched)
+        #expect(model.closeDocuments(.one(session.id)).map(\.id) == [session.id])
+        #expect(session.rust.document().draft.note.utf8.elementsEqual("é".utf8))
+        #expect(session.draftSynchronizationCount == 1)
+        #expect(await model.saveAllDirtySessions())
+        let saved = try #require(await persistence.saved.last)
+        #expect(saved.location.request.note.utf8.elementsEqual("é".utf8))
+        #expect(!session.isDirty)
+        session.draft.note = "e\u{301}"
+        #expect(model.closeDocuments(.one(session.id)).map(\.id) == [session.id])
+        #expect(model.closeDocuments(.one(session.id), allowDirty: true).isEmpty)
+        #expect(session.draft.note.utf8.elementsEqual("é".utf8))
+        model.sessions.reopen(session)
+        #expect(!session.isDirty)
+    }
+
     @Test("Discard close transfers only its target's saved payload")
     @MainActor func dirtyCloseTrafficIgnoresUnrelatedLargeBodies() {
         let model = WireboltModel(runner: LifecycleRunner())
@@ -230,6 +255,7 @@ extension LifecycleTests {
             model.sessions.open(draft: RequestDraft(id: "large\($0)", body: .json(value: String(repeating: "x", count: 1_048_576))))
         }
         target.draft.note = "Unsynchronized target edit"
+        unrelated[0].draft.note = "Unrelated native edit"
         let tabs = [target] + unrelated
         let before = tabs.map { $0.rust.bridgeTraffic() }
         #expect(model.closeDocuments(.one(target.id), allowDirty: true).isEmpty)
@@ -237,8 +263,8 @@ extension LifecycleTests {
         for (tab, prior) in zip(tabs, before) {
             let after = tab.rust.bridgeTraffic()
             #expect(after.documentReads == prior.documentReads)
-            #expect(after.draftWrites - prior.draftWrites == (tab === target ? 1 : 0))
-            #expect(tab.draftSynchronizationCount == 0)
+            #expect(after.draftWrites - prior.draftWrites == (tab === target ? 2 : 0))
+            #expect(tab.draftSynchronizationCount == (tab === target ? 1 : 0))
         }
     }
 
@@ -295,7 +321,7 @@ extension LifecycleTests {
         #expect(model.closeDocuments(.others(tabs[0].id), allowDirty: true).isEmpty)
         #expect(tabs[count - 1].draft.note.isEmpty)
         #expect(model.sessions.lastCloseRestoredDraftCount == 1)
-        #expect(tabs.allSatisfy { $0.draftSynchronizationCount == 0 })
+        #expect(tabs.enumerated().allSatisfy { $0.element.draftSynchronizationCount == ($0.offset == count - 1 ? 1 : 0) })
         #expect(tabs[0].isRunning)
         #expect(model.closeDocuments(.all).isEmpty)
         #expect(!tabs[0].isRunning)
@@ -306,6 +332,8 @@ extension LifecycleTests {
     @MainActor func draftSynchronizationTracksCommandBoundaries() {
         let store = DocumentSessionStore()
         let session = store.open(draft: RequestDraft(id: "a", name: "A"))
+        let unchanged = session.draft
+        session.draft = unchanged
         session.synchronizeDraft()
         #expect(session.draftSynchronizationCount == 0)
         session.draft.note = "Edited"
