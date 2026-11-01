@@ -28,8 +28,8 @@ def terminate_tree(process):
             descendants.append(child)
 
     visit(process.pid)
-    targets = descendants + [process.pid]
     for sig in (signal.SIGTERM, signal.SIGKILL):
+        targets = descendants + ([process.pid] if process.poll() is None else [])
         for pid in targets:
             try:
                 os.kill(pid, sig)
@@ -98,7 +98,8 @@ def main():
             return process.wait()
         finally:
             selector.close()
-            terminate_tree(process)
+            if process.poll() is None:
+                terminate_tree(process)
 
 
 if __name__ == "__main__":
