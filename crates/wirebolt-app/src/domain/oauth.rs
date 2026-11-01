@@ -220,8 +220,8 @@ pub fn parse_token(
     if !(200..300).contains(&status) {
         return Err(DomainOAuthError::TokenEndpointRejected { status });
     }
-    let object: serde_json::Value =
-        serde_json::from_str(body).map_err(|_| DomainOAuthError::InvalidTokenResponse)?;
+    let object =
+        super::body::parse_json(body).map_err(|()| DomainOAuthError::InvalidTokenResponse)?;
     let token = object
         .get("access_token")
         .and_then(serde_json::Value::as_str)

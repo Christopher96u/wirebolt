@@ -15,50 +15,19 @@ fn expires(source: &str) -> Option<f64> {
         .expires_at
 }
 #[test]
-fn cookie_dates_use_unix_seconds_and_preserve_legacy_formats() {
-    for (source, expected) in [
-        ("Thu, 01 Jan 1970 00:00:00 GMT", 0.0),
-        ("Wed, 31 Dec 1969 23:59:59 GMT", -1.0),
-        ("Sunday, 06-Nov-50 08:49:37 GMT", -604_422_623.0),
-        ("Sun, 06 Nov 49 08:49:37 GMT", 2_519_801_377.0),
-        ("Wed, 09 Jun 2027 10:18:14 GMT", 1_812_536_294.0),
-        ("Wed, 09 Jun 2027 10:18:14 HST", 1_812_572_294.0),
-        ("Wed, 09 Jun 2027 10:18:14 AKST", 1_812_568_694.0),
-        ("Wed, 09 Jun 2027 10:18:14 AKDT", 1_812_565_094.0),
-        ("Wed, 09 Jun 2027 10:18:14 GMT+2", 1_812_529_094.0),
-        ("Wed, 09 Jun 2027 10:18:14 gmt+0200", 1_812_529_094.0),
-        ("Wednesday, 09-Jun-27 10:18:14 GMT", 1_812_536_294.0),
-        ("Wed Jun 9 10:18:14 2027", 1_812_536_294.0),
-        ("09/JUNE/2027 10:18:14 UTC", 1_812_536_294.0),
-        ("Wed, 09 Jun 2027 10:18:14 PST", 1_812_565_094.0),
-        ("Wed, 09 Jun 2027 10:18:14 MST", 1_812_561_494.0),
-        ("Wed, 09 Jun 2027 10:18:14 GMT+0200", 1_812_529_094.0),
-        ("Wed, 09 Jun 2027 10:18:14 +02:00", 1_812_529_094.0),
-        ("Wed, 09 Jun 2027 10:18:14 -0530", 1_812_556_094.0),
-        ("Tue, 29 Feb 2000 00:00:00 GMT", 951_782_400.0),
-    ] {
-        assert_eq!(expires(source), Some(expected), "{source}");
-    }
-}
-#[test]
-fn malformed_or_impossible_cookie_dates_are_ignored() {
-    for source in [
-        "",
-        "nonsense",
-        "09 Jun 2027",
-        "09 Jun 2027 24:00:00 GMT",
-        "09 Jun 2027 10:60:00 GMT",
-        "09 Jun 2027 10:00:60 GMT",
-        "00 Jun 2027 10:00:00 GMT",
-        "31 Apr 2027 10:00:00 GMT",
-        "29 Feb 1900 10:00:00 GMT",
-        "29 Feb 2027 10:00:00 GMT",
-        "09 Jun 1600 10:00:00 GMT",
-        "09 Jun 2027 10:00:00 +abc",
-        "09 Jun 2027 10:00:00 +",
-    ] {
-        assert_eq!(expires(source), None, "{source}");
-    }
+fn cookie_dates_match_the_two_foundation_formatter_patterns() {
+    // Generated with the unmodified 081c6d0 en_US_POSIX DateFormatter patterns:
+    // EEE, dd MMM yyyy HH:mm:ss zzz and EEEE, dd-MMM-yy HH:mm:ss zzz.
+    let cases: Vec<(String, Option<f64>)> =
+        serde_json::from_str(include_str!("fixtures/cookie-dates.json")).unwrap();
+    let differences: Vec<_> = cases
+        .into_iter()
+        .filter_map(|(source, expected)| {
+            let actual = expires(&source);
+            (actual != expected).then(|| format!("{source:?}: {actual:?}, expected {expected:?}"))
+        })
+        .collect();
+    assert!(differences.is_empty(), "{}", differences.join("\n"));
 }
 #[test]
 fn cookie_files_keep_the_existing_epoch_while_bridge_records_use_unix() {
@@ -203,42 +172,4 @@ fn searches_accept_a_complete_rust_engine_without_foreign_match_callbacks() {
         }]
     );
     assert_eq!(engine.0.load(Ordering::Relaxed), 2);
-}
-
-#[test]
-fn legacy_timezone_prefixes_and_unicode_whitespace_preserve_the_same_instant() {
-    for (suffix, offset) in [
-        ("GMT (comment -05:00)", 0.0),
-        ("GMT trailing +0200", 0.0),
-        ("GMT-08:30 ignored+0200", -30_600.0),
-        ("GMT +0200", 0.0),
-        ("GMT+1:30", 5400.0),
-        ("+130", 5400.0),
-        ("GMT+02:00:30", 7230.0),
-        ("+020030", 7230.0),
-        ("+02:00:30", 7230.0),
-        ("GMT+130", 46_800.0),
-        ("UTC+130", 5400.0),
-        ("UTC+0230", 9000.0),
-        ("UTC+020030", 7230.0),
-        ("GMT+020030", 7200.0),
-        ("GMT+0230", 7200.0),
-        ("+0260", 1560.0),
-        ("+2500", 10_200.0),
-        ("+013060", 786.0),
-        ("+1:03", 36_000.0),
-        ("GMT+1:03", 3780.0),
-    ] {
-        assert_eq!(
-            expires(&format!("Wed, 09 Jun 2027 10:18:14 {suffix}")),
-            Some(1_812_536_294.0 - offset),
-            "{suffix}"
-        );
-    }
-    for separator in ['\u{a0}', '\u{202f}'] {
-        assert_eq!(
-            expires(&format!("Wed, 09{separator}Jun 2027 10:18:14 GMT")),
-            Some(1_812_536_294.0)
-        );
-    }
 }

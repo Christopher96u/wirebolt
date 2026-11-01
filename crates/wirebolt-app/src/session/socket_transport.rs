@@ -30,7 +30,7 @@ use tokio::sync::mpsc::Receiver;
 use tokio_util::sync::CancellationToken;
 use wirebolt_core::{RequestBody, WebSocketConnection, WebSocketFrame};
 /// # Errors
-/// Returns the existing connection, preparation or receive error.
+/// Returns a connection, request-preparation or receive error.
 pub async fn run_websocket<R>(
     input: DomainRunInput,
     mut messages: Receiver<WebSocketFrame>,

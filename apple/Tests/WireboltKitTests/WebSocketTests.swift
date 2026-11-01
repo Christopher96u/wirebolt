@@ -31,6 +31,51 @@ struct WebSocketTests {
         }
         #expect(throws: WebSocketUIError.self) { try WebSocketBinaryEncoding.base64.decode("AA==!") }
         #expect(try WebSocketBinaryEncoding.hex.decode("").isEmpty)
+        for value in ["Zh==", "Zm9=", " aG Vs bG8=\n"] {
+            let compact = value.filter { !$0.isWhitespace }
+            #expect(try WebSocketBinaryEncoding.base64.decode(value) == Data(base64Encoded: compact))
+        }
+    }
+
+    @Test("Malformed bridge message IDs receive a usable native identity")
+    func malformedMessageIdentity() {
+        var record = SessionSocketMessage(
+            id: "invalid", timestamp: 42, data: Data("message".utf8), binary: false,
+            outgoing: true, notice: nil, control: nil, text: "message")
+        let message = WebSocketMessage(record)
+        #expect(message.data == record.data)
+        #expect(message.timestamp == Date(timeIntervalSinceReferenceDate: 42))
+        #expect(message.outgoing)
+        #expect(message.text == "message")
+        record.id = UUID().uuidString
+        #expect(WebSocketMessage(record).id == UUID(uuidString: record.id))
+    }
+
+    @Test("JSON sends match Foundation acceptance and localized failures")
+    @MainActor
+    func foundationJSONParity() async {
+        let state = WebSocketDocumentState()
+        let socket = SocketFixture()
+        state.connect(input: input, connector: SocketConnector(socket: socket))
+        socket.yield(.connected([]))
+        await eventually { state.status == .connected }
+        let values = [
+            "{\"a\":1,}", "\u{feff}[1,]", "[\"comma,}\",]", "null", "1e-400",
+            String(repeating: "[", count: 512) + "0" + String(repeating: "]", count: 512),
+            "{", "[,]", "{,}", "[1,,]", " \u{feff}{}", "1e400", "\"\\uD800\"",
+            String(repeating: "[", count: 513) + "0" + String(repeating: "]", count: 513),
+        ]
+        for value in values {
+            var failure: String?
+            do { _ = try JSONSerialization.jsonObject(with: Data(value.utf8), options: [.fragmentsAllowed]) }
+            catch { failure = error.localizedDescription }
+            let sent = socket.sent.count
+            await state.send(body: .json(value: value))
+            #expect(state.errorMessage == failure, "JSON: \(value.prefix(80))")
+            #expect(socket.sent.count == sent + (failure == nil ? 1 : 0))
+            if failure == nil { #expect(socket.sent.last?.data == Data(value.utf8)) }
+        }
+        state.disconnect()
     }
 
     @Test("Reconnect ignores events from the disconnected transport")

@@ -1,7 +1,10 @@
 //! WebSocket document lifecycle and bounded message retention.
 use crate::domain::{DomainBody, identity::unique_id};
 use crate::response::{ResponseHeaderValue, reference_time};
-use base64::{Engine, engine::general_purpose::STANDARD};
+use base64::{
+    Engine, alphabet,
+    engine::{GeneralPurpose, GeneralPurposeConfig},
+};
 use std::collections::VecDeque;
 pub const MESSAGE_BYTES: usize = 16 * 1024 * 1024;
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -188,13 +191,16 @@ impl SessionSocket {
     }
 }
 /// # Errors
-/// Returns the existing message-editor validation text.
+/// Returns a message-editor validation error for invalid Base64 or hexadecimal input.
 pub fn decode_binary(text: &str, hex: bool) -> Result<Vec<u8>, String> {
     let compact: String = text.chars().filter(|c| !c.is_whitespace()).collect();
     if !hex {
-        return STANDARD
-            .decode(compact)
-            .map_err(|_| "Enter a valid Base64 binary message.".into());
+        return GeneralPurpose::new(
+            &alphabet::STANDARD,
+            GeneralPurposeConfig::new().with_decode_allow_trailing_bits(true),
+        )
+        .decode(compact)
+        .map_err(|_| "Enter a valid Base64 binary message.".into());
     }
     let invalid = || "Enter a valid hexadecimal binary message.".to_owned();
     if !compact.len().is_multiple_of(2) || !compact.is_ascii() {
@@ -213,7 +219,7 @@ pub fn decode_binary(text: &str, hex: bool) -> Result<Vec<u8>, String> {
         .collect()
 }
 /// # Errors
-/// Returns the existing body-validation or file error.
+/// Returns a body-validation error or a file I/O error.
 pub fn message_body(body: &DomainBody) -> Result<(Vec<u8>, bool), String> {
     let result = match body {
         DomainBody::File { path, .. } => {
@@ -239,7 +245,9 @@ pub fn message_body(body: &DomainBody) -> Result<(Vec<u8>, bool), String> {
             )
         }
         DomainBody::Json { value } => {
-            serde_json::from_str::<serde_json::Value>(value).map_err(|e| e.to_string())?;
+            crate::domain::body::parse_json(value).map_err(
+                |()| "The data couldn’t be read because it isn’t in the correct format.",
+            )?;
             (value.as_bytes().to_vec(), false)
         }
         DomainBody::Text { value, .. }

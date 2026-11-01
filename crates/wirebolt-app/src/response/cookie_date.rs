@@ -1,61 +1,41 @@
-//! RFC 6265 date tokens, with the legacy formatter's 1950 two-digit-year window
-//! and named/numeric timezone extensions. All results are Unix seconds.
+//! Cookie dates accepted by the `en_US_POSIX` `EEE, dd MMM yyyy HH:mm:ss zzz`
+//! and `EEEE, dd-MMM-yy HH:mm:ss zzz` formatter patterns, in that order.
+use regex::Regex;
+use std::sync::OnceLock;
 
 pub(super) fn parse_cookie_date(value: &str) -> Option<f64> {
-    let mut time = None;
-    let mut timezone = "";
-    let mut day = None;
-    let mut month = None;
-    let mut year = None;
-    let tokens: Vec<_> = value
-        .split(|c: char| {
-            c.is_whitespace() || matches!(c, ' '..='/' | ';'..='@' | '['..='`' | '{'..='~')
-        })
-        .filter(|t| !t.is_empty())
-        .collect();
-    for token in &tokens {
-        if time.is_none()
-            && let Some(parsed) = parse_time(token)
-        {
-            let start = value.find(token)?;
-            timezone = &value[start + parsed.length..];
-            time = Some(parsed);
-            continue;
-        }
-        if day.is_none()
-            && let Some(number) = number_prefix(token, 1, 2)
-        {
-            day = Some(number);
-            continue;
-        }
-        if month.is_none()
-            && let Some(index) = [
-                "jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec",
-            ]
-            .iter()
-            .position(|m| token.get(..3).is_some_and(|s| s.eq_ignore_ascii_case(m)))
-        {
-            month = Some(i32::try_from(index).ok()? + 1);
-            continue;
-        }
-        if year.is_none() {
-            year = number_prefix(token, 2, 4);
-        }
+    static PATTERN: OnceLock<Regex> = OnceLock::new();
+    let fields = PATTERN.get_or_init(|| Regex::new(concat!(
+        r"(?ix)\A\s*(?:mon(?:day)?|tue(?:sday)?|wed(?:nesday)?|thu(?:rsday)?|fri(?:day)?|sat(?:urday)?|sun(?:day)?)",
+        r"\s*(?:,\s+|[./-][\s./-]*,?\s*|\s+)",
+        r"(?P<day>[0-9]+)(?P<day_sep>\s*(?:-\s*|[.,/][\s,./-]*)?)",
+        r"(?P<month>jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:tember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)",
+        r"(?P<month_sep>\s*(?:-\s*|[.,/][\s,./-]*)|\s+)(?P<year>[0-9]+)\s+",
+        r"(?P<hour>[0-9]+)(?:\s*[:.-]\s*|\s+)(?P<minute>[0-9]+)(?:\s*[:.-]\s*|\s+)(?P<second>[0-9]+)\s+",
+        r"(?P<zone>\S+)\x20*\z"
+    )).expect("cookie date pattern")).captures(value)?;
+    let day: i32 = fields["day"].parse().ok()?;
+    let month = [
+        "jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec",
+    ]
+    .iter()
+    .position(|name| fields["month"][..3].eq_ignore_ascii_case(name))?;
+    let month = i32::try_from(month).ok()? + 1;
+    let year_text = &fields["year"];
+    let mut year: i32 = year_text.parse().ok()?;
+    // The first pattern reads a literal year, even with fewer than four digits.
+    // Only the second pattern applies the 1950..2049 window to exactly two digits.
+    let first_pattern = !fields["day_sep"].is_empty()
+        && fields["day_sep"].chars().all(char::is_whitespace)
+        && fields["month_sep"].chars().all(char::is_whitespace);
+    if (!first_pattern || year == 0) && year_text.len() == 2 {
+        year += if year < 50 { 2000 } else { 1900 };
     }
-    let CookieTime {
-        hour,
-        minute,
-        second,
-        ..
-    } = time?;
-    let (day, month, year) = (day?, month?, year?);
-    // Preserve the original Foundation adapter's explicit 1950 window.
-    let year = match year {
-        0..=49 => year + 2000,
-        50..=99 => year + 1900,
-        _ => year,
-    };
-    let leap = year % 4 == 0 && (year % 100 != 0 || year % 400 == 0);
+    let hour: i32 = fields["hour"].parse().ok()?;
+    let minute: i32 = fields["minute"].parse().ok()?;
+    let second: i32 = fields["second"].parse().ok()?;
+    let gregorian = (year, month, day) >= (1582, 10, 15);
+    let leap = year % 4 == 0 && (!gregorian || year % 100 != 0 || year % 400 == 0);
     let days = match month {
         2 => {
             if leap {
@@ -67,110 +47,103 @@ pub(super) fn parse_cookie_date(value: &str) -> Option<f64> {
         4 | 6 | 9 | 11 => 30,
         _ => 31,
     };
-    if year < 1601 || !(1..=days).contains(&day) || hour > 23 || minute > 59 || second > 59 {
+    if !(1..=144_683).contains(&year)
+        || !(1..=days).contains(&day)
+        || hour > 23
+        || minute > 59
+        || second > 59
+    {
         return None;
     }
-    let days = days_from_civil(year, month, day);
+    let clock = hour * 3600 + minute * 60 + second;
     Some(
-        f64::from(days) * 86_400.0
-            + f64::from(hour * 3600 + minute * 60 + second - timezone_offset(timezone)?),
+        f64::from(days_from_civil(year, month, day, gregorian)) * 86_400.0
+            + f64::from(clock - timezone_offset(&fields["zone"], (year, month, day, clock))?),
     )
 }
-fn number_prefix(token: &str, min: usize, max: usize) -> Option<i32> {
-    let length = token.bytes().take_while(u8::is_ascii_digit).count();
-    (min..=max)
-        .contains(&length)
-        .then(|| token[..length].parse().ok())
-        .flatten()
+
+// Foundation's Gregorian calendar uses Julian dates before 1582-10-15.
+fn days_from_civil(year: i32, month: i32, day: i32, gregorian: bool) -> i32 {
+    let adjustment = (14 - month) / 12;
+    let year = year + 4800 - adjustment;
+    let month = month + 12 * adjustment - 3;
+    let days = day + (153 * month + 2) / 5 + 365 * year + year / 4;
+    let julian_day = if gregorian {
+        days - year / 100 + year / 400 - 32_045
+    } else {
+        days - 32_083
+    };
+    julian_day - 2_440_588
 }
-struct CookieTime {
-    hour: i32,
-    minute: i32,
-    second: i32,
-    length: usize,
-}
-fn parse_time(token: &str) -> Option<CookieTime> {
-    let mut fields = token.splitn(3, ':');
-    let hour = fields.next()?;
-    let minute = fields.next()?;
-    let second = fields.next()?;
-    if !hour.bytes().all(|b| b.is_ascii_digit()) || !minute.bytes().all(|b| b.is_ascii_digit()) {
-        return None;
-    }
-    Some(CookieTime {
-        hour: number_prefix(hour, 1, 2)?,
-        minute: number_prefix(minute, 1, 2)?,
-        second: number_prefix(second, 1, 2)?,
-        length: hour.len()
-            + minute.len()
-            + 2
-            + second.bytes().take_while(u8::is_ascii_digit).count(),
-    })
-}
-// Gregorian civil date to days since 1970-01-01; all operations fit for 1601..9999.
-fn days_from_civil(mut year: i32, month: i32, day: i32) -> i32 {
-    year -= i32::from(month <= 2);
-    let era = year.div_euclid(400);
-    let year_of_era = year - era * 400;
-    let month = month + if month > 2 { -3 } else { 9 };
-    let day_of_year = (153 * month + 2) / 5 + day - 1;
-    era * 146_097 + year_of_era * 365 + year_of_era / 4 - year_of_era / 100 + day_of_year - 719_468
-}
-// Only the timezone immediately following the recognized clock participates.
-// The legacy formatter accepts a consumed prefix and ignores trailing comments.
-fn timezone_offset(tail: &str) -> Option<i32> {
-    let tail = tail.trim_start();
-    let uppercase = tail.to_ascii_uppercase();
+
+fn timezone_offset(zone: &str, date: (i32, i32, i32, i32)) -> Option<i32> {
+    let uppercase = zone.to_ascii_uppercase();
     for prefix in ["GMT", "UTC", "UT"] {
-        if let Some(offset) = uppercase.strip_prefix(prefix) {
-            return Some(
+        if let Some(tail) = uppercase.strip_prefix(prefix) {
+            return if tail.is_empty() {
+                Some(0)
+            } else {
                 signed_offset(
-                    offset,
+                    tail,
                     if prefix == "GMT" {
                         OffsetStyle::Gmt
                     } else {
-                        OffsetStyle::Utc
+                        OffsetStyle::Universal
                     },
                 )
-                .unwrap_or(0),
-            );
+            };
         }
     }
-    if tail.starts_with(['+', '-']) {
-        return signed_offset(tail, OffsetStyle::Bare);
+    if uppercase.starts_with(['+', '-']) {
+        return signed_offset(&uppercase, OffsetStyle::Bare);
     }
-    for (zone, hours) in [
-        ("EST", -5),
-        ("CDT", -5),
-        ("EDT", -4),
-        ("AST", -4),
-        ("CST", -6),
-        ("MDT", -6),
-        ("MST", -7),
-        ("PDT", -7),
-        ("PST", -8),
-        ("AKDT", -8),
-        ("AKST", -9),
-        ("HST", -10),
-        ("CET", 1),
-        ("CEST", 2),
-        ("EET", 2),
-        ("EEST", 3),
-        ("JST", 9),
-        ("AEST", 10),
-        ("AEDT", 11),
-    ] {
-        if uppercase.starts_with(zone) {
-            return Some(hours * 3600);
+    // The formatter resolves US abbreviations through their named zones, then
+    // applies the abbreviation's standard/daylight flag, even out of season.
+    let daylight = uppercase.ends_with("DT");
+    let continental = [
+        (["EST", "EDT"], -17_762, -18_000),
+        (["CST", "CDT"], -21_036, -21_600),
+        (["MST", "MDT"], -25_196, -25_200),
+        (["PST", "PDT"], -28_378, -28_800),
+    ]
+    .into_iter()
+    .find(|(names, _, _)| names.contains(&uppercase.as_str()));
+    let standard = if let Some((_, local_mean, standard)) = continental {
+        if date < (1883, 11, 18, 43_200) {
+            local_mean
+        } else {
+            standard
         }
-    }
-    // RFC 6265 ignores other date tokens and interprets the clock in UTC.
-    Some(0)
+    } else {
+        match uppercase.as_str() {
+            "Z" => 0,
+            "AST" | "ADT" => {
+                if date < (1902, 6, 15, 864) {
+                    -15_264
+                } else {
+                    -14_400
+                }
+            }
+            "AKST" | "AKDT" => match date {
+                d if d < (1867, 10, 18, 56_012) => 54_139,
+                d if d < (1900, 8, 20, 46_661) => -32_261,
+                d if d < (1983, 10, 30, if daylight { 7200 } else { 0 }) => -28_800,
+                _ => -32_400,
+            },
+            "HST" => match date {
+                d if d < (1896, 1, 13, 43_286) => -37_886,
+                d if d < (1947, 6, 8, 9000) => -37_800,
+                _ => -36_000,
+            },
+            _ => return None,
+        }
+    };
+    Some(standard + if daylight { 3600 } else { 0 })
 }
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum OffsetStyle {
     Gmt,
-    Utc,
+    Universal,
     Bare,
 }
 fn signed_offset(source: &str, style: OffsetStyle) -> Option<i32> {
@@ -180,69 +153,38 @@ fn signed_offset(source: &str, style: OffsetStyle) -> Option<i32> {
         _ => return None,
     };
     let source = &source[1..];
-    let hour_digits = source.bytes().take_while(u8::is_ascii_digit).count();
-    if hour_digits == 0 {
+    if !source.bytes().all(|b| b.is_ascii_digit() || b == b':') {
         return None;
     }
-    if source.as_bytes().get(hour_digits) == Some(&b':') {
-        if style != OffsetStyle::Bare || hour_digits == 2 {
-            return colon_offset(source, hour_digits).map(|offset| offset * sign);
+    let (hour, minute, second) = if source.contains(':') {
+        let fields: Vec<_> = source.split(':').collect();
+        if !(2..=3).contains(&fields.len())
+            || fields[0].is_empty()
+            || fields[0].len() > 2
+            || style == OffsetStyle::Bare && fields[0].len() != 2
+            || fields[1..].iter().any(|f| f.len() != 2)
+        {
+            return None;
         }
-        // The old bare-offset fallback reads an hour prefix across punctuation.
-        let digits: String = source
-            .chars()
-            .take_while(|c| c.is_ascii_digit() || *c == ':')
-            .filter(char::is_ascii_digit)
-            .collect();
-        return hour_prefix(&digits).map(|offset| offset * 3600 * sign);
-    }
-    if style == OffsetStyle::Gmt {
-        return hour_prefix(&source[..hour_digits]).map(|offset| offset * 3600 * sign);
-    }
-    // Bare compact offsets accept H, HH, HMM, HHMM, HMMSS, or HHMMSS.
-    // Like ICU, use the longest valid consumed prefix rather than reject suffixes.
-    for length in (1..=hour_digits.min(6)).rev() {
-        let digits = &source[..length];
-        let hour_length = if length % 2 == 0 { 2 } else { 1 };
-        let hour: i32 = digits[..hour_length].parse().ok()?;
-        let minute = digits
-            .get(hour_length..hour_length + 2)
-            .map_or(Some(0), |s| s.parse().ok())?;
-        let second = digits
-            .get(hour_length + 2..hour_length + 4)
-            .map_or(Some(0), |s| s.parse().ok())?;
-        if hour <= 23 && minute <= 59 && second <= 59 {
-            return Some((hour * 3600 + minute * 60 + second) * sign);
-        }
-    }
-    None
-}
-fn hour_prefix(digits: &str) -> Option<i32> {
-    for length in (1..=digits.len().min(2)).rev() {
-        let hour = digits[..length].parse::<i32>().ok()?;
-        if hour <= 23 {
-            return Some(hour);
-        }
-    }
-    None
-}
-fn colon_offset(source: &str, hour_length: usize) -> Option<i32> {
-    let hour = hour_prefix(&source[..hour_length])?;
-    // Invalid minute/second suffixes leave the already consumed prefix intact.
-    let mut offset = hour * 3600;
-    if hour_length > 2 {
-        return Some(offset);
-    }
-    let tail = &source[hour_length + 1..];
-    let minute = tail.get(..2).and_then(|s| s.parse::<i32>().ok());
-    if let Some(minute) = minute.filter(|&m| m <= 59) {
-        offset += minute * 60;
-        if tail.as_bytes().get(2) == Some(&b':') {
-            let second = tail.get(3..5).and_then(|s| s.parse::<i32>().ok());
-            if let Some(second) = second.filter(|&s| s <= 59) {
-                offset += second;
-            }
-        }
-    }
-    Some(offset)
+        (fields[0], fields[1], fields.get(2).copied().unwrap_or("0"))
+    } else if style != OffsetStyle::Gmt && (1..=6).contains(&source.len()) {
+        let hour_length = if source.len().is_multiple_of(2) { 2 } else { 1 };
+        (
+            &source[..hour_length],
+            source.get(hour_length..hour_length + 2).unwrap_or("0"),
+            source
+                .get(hour_length + 2..)
+                .filter(|s| !s.is_empty())
+                .unwrap_or("0"),
+        )
+    } else if style == OffsetStyle::Gmt && (1..=2).contains(&source.len()) {
+        (source, "0", "0")
+    } else {
+        return None;
+    };
+    let hour: i32 = hour.parse().ok()?;
+    let minute: i32 = minute.parse().ok()?;
+    let second: i32 = second.parse().ok()?;
+    (hour <= 23 && minute <= 59 && second <= 59)
+        .then_some((hour * 3600 + minute * 60 + second) * sign)
 }

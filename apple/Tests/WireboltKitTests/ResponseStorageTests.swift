@@ -1,9 +1,66 @@
 import Foundation
+import CryptoKit
 import Testing
 @testable import WireboltKit
 
 @Suite("File-backed responses")
 struct ResponseStorageTests {
+    @Test("Cookie paths and IPv6 hosts match Foundation URL projections")
+    func foundationCookieURLs() async throws {
+        for source in ["https://h/v1/users/", "https://h/v1/users//", "https://h/v1/users%2F", "http://[::1]/v1/users/", "http://[0:0:0:0:0:0:0:1]/v1/users/", "http://[::0001]/v1/users/", "http://[::FFFF:192.0.2.1]/v1/users/"] {
+            let url = try #require(URL(string: source))
+            let jar = CookieJar()
+            let received = await jar.store(headers: [ResponseHeader(name: "Set-Cookie", value: "name=value")], requestURL: url)
+            let path = url.path
+            let parent = path.lastIndex(of: "/").map { String(path[..<$0]) }
+            #expect(received.first?.path == (parent?.isEmpty == false ? parent : "/"))
+            #expect(received.first?.domain == url.host?.lowercased())
+            await jar.store(headers: [ResponseHeader(name: "Set-Cookie", value: "scoped=value; Path=/account/")], requestURL: url)
+            let destination = try #require(URL(string: "/account/", relativeTo: url))
+            #expect(await jar.header(for: destination) == nil)
+        }
+    }
+
+    @Test("Cookie file names match standardized Foundation symlink resolution")
+    func foundationCookieFileNames() throws {
+        let root = temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let target = root.appending(path: "workspace")
+        let alias = root.appending(path: "alias")
+        try FileManager.default.createDirectory(at: target, withIntermediateDirectories: true)
+        try FileManager.default.createSymbolicLink(at: alias, withDestinationURL: target)
+        let workspaces = [URL(fileURLWithPath: "/tmp"), URL(fileURLWithPath: "/private/tmp"), URL(fileURLWithPath: "/var/tmp"), target, alias, alias.appending(path: "missing"), target.appending(path: "../workspace/")]
+        for workspace in workspaces {
+            let path = workspace.standardizedFileURL.resolvingSymlinksInPath().path
+            let hash = SHA256.hash(data: Data(path.utf8)).prefix(16).map { String(format: "%02x", $0) }.joined()
+            #expect(CookieJar.storageURL(forWorkspaceAt: workspace, in: root).lastPathComponent == "\(hash).json")
+        }
+    }
+
+    @Test("Cookie expiry fixtures and Rust parsing match the original Foundation formatters")
+    func foundationCookieDates() async throws {
+        let fixture = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+            .appending(path: "../../../crates/wirebolt-app/tests/fixtures/cookie-dates.json")
+        let rows = try #require(JSONSerialization.jsonObject(with: Data(contentsOf: fixture)) as? [[Any]])
+        let formatters = ["EEE, dd MMM yyyy HH:mm:ss zzz", "EEEE, dd-MMM-yy HH:mm:ss zzz"].map { format in
+            let formatter = DateFormatter()
+            formatter.locale = Locale(identifier: "en_US_POSIX")
+            formatter.timeZone = TimeZone(secondsFromGMT: 0)
+            formatter.dateFormat = format
+            return formatter
+        }
+        let origin = try #require(URL(string: "https://example.com/"))
+        let jar = CookieJar()
+        for row in rows {
+            let source = try #require(row[0] as? String)
+            let expected = formatters.lazy.compactMap { $0.date(from: source) }.first
+            let fixtureDate = (row[1] as? NSNumber).map { Date(timeIntervalSince1970: $0.doubleValue) }
+            #expect(expected == fixtureDate, "Fixture: \(source)")
+            let received = await jar.store(headers: [ResponseHeader(name: "Set-Cookie", value: "name=value; Expires=\(source)")], requestURL: origin)
+            #expect(received.first?.expiresAt == expected, "Cookie: \(source)")
+        }
+    }
+
     @Test("Response cookies exclude values retained from earlier hosts")
     func responseCookies() async throws {
         let jar = CookieJar()

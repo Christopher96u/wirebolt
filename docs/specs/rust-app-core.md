@@ -120,7 +120,7 @@ warmup and the core version handshake (ABI revision 5).
 | Integration area | Final ownership |
 | --- | --- |
 | `wirebolt-app::response` Markdown | A platform parser trait supplies semantic runs. macOS uses Foundation's full Markdown interpretation; Rust assembles block separators/list prefixes and owns retention/accounting. Native differential tests compare exact attributed text and unfinished-code-block newlines with Foundation rendering. `wirebolt-app` has no Foundation dependency. |
-| `wirebolt-app::response` regex and cookie dates | Search goes through a `RegexEngine` trait with a portable Rust default; on macOS the bridge (`wirebolt-ffi`, Apple-only) injects the ICU engine so the existing dialect is unchanged. Cookie dates are parsed in Rust (RFC 6265 plus the legacy forms Foundation accepted) as Unix seconds; Swift converts to `Date` at the boundary. `wirebolt-app` itself has no Apple dependency. |
+| `wirebolt-app::response` regex and cookie dates | Search goes through a `RegexEngine` trait with a portable Rust default; on macOS the bridge (`wirebolt-ffi`, Apple-only) injects the ICU engine so the existing dialect is unchanged. Cookie dates are parsed in Rust using the acceptance rules of Foundation's `en_US_POSIX` formatter patterns `EEE, dd MMM yyyy HH:mm:ss zzz` and `EEEE, dd-MMM-yy HH:mm:ss zzz`, in that order, including their punctuation, whitespace, year and timezone leniency. Results are Unix seconds; Swift converts to `Date` at the boundary. `wirebolt-app` itself has no Apple dependency. |
 
 App views and platform adapters retain their established formatting and native
 responsibilities. Rust owns portable application policy; Swift retains native

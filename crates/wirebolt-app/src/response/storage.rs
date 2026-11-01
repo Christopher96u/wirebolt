@@ -419,12 +419,13 @@ impl ResponseCookieJar {
         let Ok(url) = Url::parse(request_url) else {
             return vec![];
         };
+        let host = cookie_host(&url, request_url);
         let mut received = Vec::new();
         for header in headers
             .iter()
             .filter(|h| h.name.eq_ignore_ascii_case("set-cookie"))
         {
-            if let Some(cookie) = parse_cookie(&header.value, &url, now) {
+            if let Some(cookie) = parse_cookie(&header.value, &url, &host, now) {
                 self.cookies().retain(|c| c.id() != cookie.id());
                 if cookie.expires_at.is_none_or(|t| t > now) {
                     self.cookies().push(cookie.clone());
@@ -440,7 +441,7 @@ impl ResponseCookieJar {
     pub fn header(&mut self, request_url: &str, now: f64) -> Option<String> {
         self.expire(now);
         let url = Url::parse(request_url).ok()?;
-        let host = url.host_str().unwrap_or_default().to_lowercase();
+        let host = cookie_host(&url, request_url);
         let decoded_path = decoded_url_path(&url);
         let path = if decoded_path.is_empty() {
             "/"
@@ -496,9 +497,7 @@ impl ResponseCookieJar {
 }
 #[must_use]
 pub fn cookie_storage_path(workspace: &Path, directory: &Path) -> PathBuf {
-    let path = workspace
-        .canonicalize()
-        .unwrap_or_else(|_| workspace.to_owned());
+    let path = resolved_workspace_path(workspace);
     let digest = Sha256::digest(path.to_string_lossy().as_bytes());
     let mut hex = String::with_capacity(32);
     for byte in &digest[..16] {
@@ -507,19 +506,49 @@ pub fn cookie_storage_path(workspace: &Path, directory: &Path) -> PathBuf {
     }
     directory.join(format!("{hex}.json"))
 }
+fn resolved_workspace_path(workspace: &Path) -> PathBuf {
+    use std::path::Component;
+    let absolute = if workspace.is_absolute() {
+        workspace.to_owned()
+    } else {
+        std::env::current_dir().unwrap_or_default().join(workspace)
+    };
+    let mut standardized = PathBuf::new();
+    for component in absolute.components() {
+        match component {
+            Component::ParentDir => {
+                standardized.pop();
+            }
+            Component::CurDir => (),
+            other => standardized.push(other),
+        }
+    }
+    let Ok(resolved) = standardized.canonicalize() else {
+        return standardized;
+    };
+    // Foundation uses the public /tmp, /var and /etc aliases after resolving
+    // existing paths. An unresolved path keeps its standardized spelling.
+    if let Ok(relative) = resolved.strip_prefix("/private") {
+        let public = Path::new("/").join(relative);
+        if public.canonicalize().ok().as_ref() == Some(&resolved) {
+            return public;
+        }
+    }
+    resolved
+}
 fn path_matches(request: &str, cookie: &str) -> bool {
     request.starts_with(cookie)
         && (request.len() == cookie.len()
             || cookie.ends_with('/')
             || request.as_bytes().get(cookie.len()) == Some(&b'/'))
 }
-fn parse_cookie(source: &str, url: &Url, now: f64) -> Option<StoredCookie> {
+fn parse_cookie(source: &str, url: &Url, host: &str, now: f64) -> Option<StoredCookie> {
     let mut segments = source.split(';').map(str::trim).filter(|s| !s.is_empty());
     let (name, value) = segments.next()?.split_once('=')?;
     let mut cookie = StoredCookie {
         name: name.into(),
         value: value.into(),
-        domain: url.host_str().unwrap_or_default().to_lowercase(),
+        domain: host.into(),
         host_only: true,
         path: decoded_url_path(url)
             .rsplit_once('/')
@@ -557,15 +586,40 @@ fn parse_cookie(source: &str, url: &Url, now: f64) -> Option<StoredCookie> {
             _ => (),
         }
     }
-    let host = url.host_str().unwrap_or_default().to_lowercase();
     (cookie.host_only || host == cookie.domain || host.ends_with(&format!(".{}", cookie.domain)))
         .then_some(cookie)
 }
 
 fn decoded_url_path(url: &Url) -> String {
-    percent_encoding::percent_decode_str(url.path())
-        .decode_utf8_lossy()
-        .into_owned()
+    let decoded = percent_encoding::percent_decode_str(url.path()).decode_utf8_lossy();
+    // URL.path removes trailing separators, including percent-encoded ones,
+    // while retaining the root slash.
+    let trimmed = decoded.trim_end_matches('/');
+    if trimmed.is_empty() && decoded.starts_with('/') {
+        "/".into()
+    } else {
+        trimmed.into()
+    }
+}
+fn cookie_host(url: &Url, source: &str) -> String {
+    // Foundation preserves the spelling of IPv6 addresses instead of compressing
+    // them. Cookie files and host-only matching use that unbracketed spelling.
+    let ipv6 = if matches!(url.host(), Some(url::Host::Ipv6(_))) {
+        source.split_once("://").and_then(|(_, rest)| {
+            let authority = rest.split(['/', '?', '#']).next()?;
+            let host = authority.rsplit('@').next()?;
+            host.strip_prefix('[')?
+                .split_once(']')
+                .map(|(host, _)| host)
+        })
+    } else {
+        None
+    };
+    ipv6.or_else(|| url.host_str())
+        .unwrap_or_default()
+        .trim_start_matches('[')
+        .trim_end_matches(']')
+        .to_lowercase()
 }
 
 mod legacy_cookie_expiry {
