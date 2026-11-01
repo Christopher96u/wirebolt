@@ -1,175 +1,115 @@
 import CoreText
 import Foundation
 
+/// Native font identity and metrics; Rust owns wrapping policy and byte mapping.
 public struct CodeTextWrapping: Hashable, Sendable {
     public let fontName: String
     public let fontSize: Double
     public let width: Double
-
     public init(fontName: String, fontSize: Double, width: Double) {
-        self.fontName = fontName
-        self.fontSize = fontSize
-        self.width = max(1, width)
+        self.fontName = fontName; self.fontSize = fontSize; self.width = max(1, width)
     }
-
-    /// A layout keyed by whole columns, so pixel-level resizes inside one column
-    /// reuse the same wrap index. A quarter-column of slack keeps the column count
-    /// stable against floating-point rounding; it stays inside the editor's margin.
     public init(fontName: String, fontSize: Double, columns: Int) {
-        let advance = Self.advance(fontName: fontName, fontSize: fontSize)
-        self.init(fontName: fontName, fontSize: fontSize, width: (Double(max(1, columns)) + 0.25) * advance)
+        self.init(fontName: fontName, fontSize: fontSize, width: (Double(max(1, columns)) + 0.25) * Self.advance(fontName: fontName, fontSize: fontSize))
     }
-
     public static func advance(fontName: String, fontSize: Double) -> Double {
-        Metrics(CodeTextWrapping(fontName: fontName, fontSize: fontSize, width: 1)).advance
+        let font = CTFontCreateWithName(fontName as CFString, fontSize, nil)
+        return CTLineGetTypographicBounds(CTLineCreateWithAttributedString(NSAttributedString(string: " ",
+            attributes: [NSAttributedString.Key(kCTFontAttributeName as String): font])), nil, nil, nil)
     }
-
-    private static let breakAfter = Set(" \t})]?|/&.,;¢°′″‰℃、。｡､￠，．：；？！％・･ゝゞヽヾーァィゥェォッャュョヮヵヶぁぃぅぇぉっゃゅょゎゕゖㇰㇱㇲㇳㇴㇵㇶㇷㇸㇹㇺㇻㇼㇽㇾㇿ々〻ｧｨｩｪｫｬｭｮｯｰ”〉》」』】〕）］｝｣".utf16)
-    private static let breakBefore = Set("([{‘“〈《「『【〔（［｛｢£¥＄￡￥+＋".utf16)
-
+    var rust: WrapLayout { WrapLayout(fontName: fontName, fontSize: fontSize, width: width, advance: Self.advance(fontName: fontName, fontSize: fontSize)) }
     public static func breakLength(in source: NSString, start: Int, fitting: Int) -> Int {
-        guard start < source.length, fitting > 0 else { return 0 }
-        guard start + fitting < source.length else { return fitting }
-        let firstContent = (start..<source.length).first { source.character(at: $0) != 32 && source.character(at: $0) != 9 } ?? source.length
-        for end in stride(from: start + fitting, through: start + 1, by: -1) {
-            if end > firstContent && (breakAfter.contains(source.character(at: end - 1)) || breakBefore.contains(source.character(at: end))),
-                source.rangeOfComposedCharacterSequence(at: end).location == end {
-                return end - start
-            }
-        }
-        return fitting
+        CodeWrapBreaks(source as String).length(start: start, fitting: fitting)
     }
+}
 
-    struct Metrics {
-        let font: CTFont
-        let advance: Double
-
-        init(_ layout: CodeTextWrapping) {
-            font = CTFontCreateWithName(layout.fontName as CFString, layout.fontSize, nil)
-            advance = CTLineGetTypographicBounds(CTLineCreateWithAttributedString(NSAttributedString(
-                string: " ", attributes: [NSAttributedString.Key(kCTFontAttributeName as String): font])), nil, nil, nil)
-        }
+/// A batch of Rust-produced break coordinates for a TextKit shaping paragraph.
+/// Native layout can consult the snapshot without crossing the bridge per row.
+struct CodeWrapBreaks {
+    private let snapshot: WrapBreakSnapshot
+    init(_ text: String) { snapshot = appWrapBreaks(text: text) }
+    func length(start: Int, fitting: Int, limit: Int? = nil) -> Int {
+        let length = min(Int(clamping: snapshot.length), limit ?? Int.max)
+        guard start < length, fitting > 0 else { return 0 }
+        guard start + fitting < length else { return fitting }
+        let end = Int(clamping: snapshot.previous[start + fitting])
+        return end > Int(clamping: snapshot.nextContent[start]) ? end - start : fitting
     }
+}
 
-    private final class ShapingWindow {
-        let source: NSString
-        let attributes: [NSAttributedString.Key: Any]
-        let windowLength: Int
-        var range = NSRange(location: 0, length: 0)
-        var typesetter: CTTypesetter?
-        init(source: NSString, attributes: [NSAttributedString.Key: Any], windowLength: Int) {
-            self.source = source; self.attributes = attributes; self.windowLength = windowLength
+/// CoreText is the only platform dependency of the Rust response index. Each call
+/// measures a bounded batch of paragraphs, never an individual viewport row.
+final class NativeTextShaper: AppTextShaper {
+    func measure(requests: [ShapingRequest], layout: WrapLayout) -> [ShapingMetrics] {
+        let font = CTFontCreateWithName(layout.fontName as CFString, layout.fontSize, nil)
+        var interval = layout.advance * 4
+        let paragraph = withUnsafePointer(to: &interval) { pointer in
+            var setting = CTParagraphStyleSetting(spec: .defaultTabInterval, valueSize: MemoryLayout<Double>.size, value: pointer)
+            return CTParagraphStyleCreate(&setting, 1)
         }
-        func prepare(from start: Int, length: Int = 0) -> CTTypesetter {
-            if typesetter == nil || start < range.location || NSMaxRange(range) < min(source.length, start + max(windowLength / 2, length)) {
-                range = source.rangeOfComposedCharacterSequences(for: NSRange(location: start, length: min(source.length - start, max(windowLength, length))))
-                typesetter = CTTypesetterCreateWithAttributedStringAndOptions(NSAttributedString(string: source.substring(with: range), attributes: attributes),
-                    [kCTTypesetterOptionAllowUnboundedLayout: true] as CFDictionary)
+        let attributes: [NSAttributedString.Key: Any] = [NSAttributedString.Key(kCTFontAttributeName as String): font,
+            NSAttributedString.Key(kCTParagraphStyleAttributeName as String): paragraph]
+        var groupWidths: [String: [Double]] = [:]
+        return requests.map { request in
+            let source = request.text as NSString
+            let typesetter = CTTypesetterCreateWithAttributedStringAndOptions(NSAttributedString(string: request.text, attributes: attributes),
+                [kCTTypesetterOptionAllowUnboundedLayout: true] as CFDictionary)!
+            let line = CTTypesetterCreateLine(typesetter, CFRange(location: 0, length: source.length))
+            var widths = [Double](repeating: 0, count: max(0, request.boundaries.count - 1))
+            var glyphStarts = [Bool](repeating: false, count: source.length + 1)
+            glyphStarts[0] = true; glyphStarts[source.length] = true
+            var clusterAt = [Int](repeating: 0, count: source.length + 1)
+            for cluster in 0..<max(0, request.boundaries.count - 1) {
+                let start = Int(clamping: request.boundaries[cluster])
+                let end = Int(clamping: request.boundaries[cluster + 1])
+                for offset in start..<end { clusterAt[offset] = cluster }
             }
-            return typesetter!
-        }
-        func fitting(from start: Int, width: Double) -> Int {
-            let typesetter = prepare(from: start)
-            return max(1, CTTypesetterSuggestClusterBreak(typesetter, start - range.location, width))
-        }
-        func width(of requested: NSRange) -> Double {
-            let typesetter = prepare(from: requested.location, length: requested.length)
-            let line = CTTypesetterCreateLine(typesetter, CFRange(location: requested.location - range.location, length: requested.length))
-            return CTLineGetTypographicBounds(line, nil, nil, nil)
-        }
-    }
-
-    struct Paragraph {
-        let source: NSString
-        let byteOffsets: [Int]
-        let advance: Double
-        let indentation: Double
-        private let shaper: ShapingWindow?
-        let layout: CodeTextWrapping
-
-        init(bytes: Data, layout: CodeTextWrapping, metrics: Metrics? = nil) {
-            self.layout = layout
-            // Preserve byte positions even when malformed UTF-8 becomes a replacement character.
-            let raw = Array(bytes)
-            var units: [UInt16] = []
-            var offsets = [0]
-            var cursor = 0
-            while cursor < raw.count {
-                let start = cursor, first = raw[cursor]
-                var scalar: UInt32 = UInt32(first)
-                var length = 1
-                if first >= 0x80 {
-                    let expected = (0xC2...0xDF).contains(first) ? 2 : (0xE0...0xEF).contains(first) ? 3 : (0xF0...0xF4).contains(first) ? 4 : 0
-                    scalar = expected == 2 ? UInt32(first & 0x1F) : expected == 3 ? UInt32(first & 0x0F) : UInt32(first & 0x07)
-                    var valid = expected > 0
-                    if expected > 1 {
-                        for index in 1..<expected {
-                            guard start + index < raw.count else { valid = false; break }
-                            let byte = raw[start + index]
-                            guard (0x80...0xBF).contains(byte), !(index == 1 && (
-                                first == 0xE0 && byte < 0xA0 || first == 0xED && byte > 0x9F ||
-                                first == 0xF0 && byte < 0x90 || first == 0xF4 && byte > 0x8F)) else { valid = false; break }
-                            scalar = scalar << 6 | UInt32(byte & 0x3F)
-                            length += 1
-                        }
-                    }
-                    if !valid { scalar = 0xFFFD }
-                }
-                cursor += length
-                if scalar > 0xFFFF {
-                    let value = scalar - 0x10000
-                    units.append(UInt16(0xD800 + (value >> 10)))
-                    offsets.append(start)
-                    units.append(UInt16(0xDC00 + (value & 0x3FF)))
-                } else { units.append(UInt16(scalar)) }
-                offsets.append(cursor)
-            }
-            if units.last == 13 { units.removeLast(); offsets.removeLast() }
-            source = NSString(characters: units, length: units.count)
-            byteOffsets = offsets
-            let metrics = metrics ?? Metrics(layout)
-            let attributes: [NSAttributedString.Key: Any] = [NSAttributedString.Key(kCTFontAttributeName as String): metrics.font]
-            advance = metrics.advance
-            var columns = 0
-            for unit in units {
-                if unit == 32 { columns += 1 }
-                else if unit == 9 { columns += 4 - columns % 4 }
-                else { break }
-            }
-            indentation = min(Double(columns) * advance, max(0, layout.width - advance))
-            if units.allSatisfy({ (32...126).contains($0) }) { shaper = nil }
-            else {
-                var interval = advance * 4
-                let paragraph = withUnsafePointer(to: &interval) { pointer in
-                    var setting = CTParagraphStyleSetting(spec: .defaultTabInterval, valueSize: MemoryLayout<Double>.size, value: pointer)
-                    return CTParagraphStyleCreate(&setting, 1)
-                }
-                var styled = attributes
-                styled[NSAttributedString.Key(kCTParagraphStyleAttributeName as String)] = paragraph
-                shaper = ShapingWindow(source: source, attributes: styled, windowLength: max(2048, Int(min(32768, layout.width / max(1, advance) * 8))))
-            }
-        }
-
-        func next(from start: Int, indent: Double) -> NSRange {
-            let available = max(1, layout.width - indent)
-            let fit = shaper.map { $0.fitting(from: start, width: available) }
-                ?? min(source.length - start, max(1, Int(available / max(1, advance))))
-            var count = min(source.length - start, CodeTextWrapping.breakLength(in: source, start: start, fitting: fit))
-            // TextKit hangs trailing whitespace on the preceding visual line.
-            // Keep those original bytes there instead of introducing an indent.
-            if (start..<(start + count)).contains(where: { source.character(at: $0) != 32 && source.character(at: $0) != 9 }) {
-                while start + count < source.length && (source.character(at: start + count) == 32 || source.character(at: start + count) == 9) {
-                    count += 1
+            clusterAt[source.length] = widths.count
+            for rawRun in CTLineGetGlyphRuns(line) as NSArray {
+                let run = rawRun as! CTRun
+                let count = CTRunGetGlyphCount(run)
+                var indices = [CFIndex](repeating: 0, count: count)
+                var advances = [CGSize](repeating: .zero, count: count)
+                CTRunGetStringIndices(run, CFRange(location: 0, length: 0), &indices)
+                CTRunGetAdvances(run, CFRange(location: 0, length: 0), &advances)
+                for glyph in 0..<count {
+                    let offset = indices[glyph]
+                    guard offset >= 0 && offset <= source.length else { continue }
+                    glyphStarts[offset] = true
+                    let cluster = clusterAt[offset]
+                    if cluster < widths.count { widths[cluster] += advances[glyph].width }
                 }
             }
-            return NSRange(location: start, length: count)
-        }
-
-        func columns(in range: NSRange) -> Int {
-            guard let shaper else { return range.length }
-            return Int(ceil(shaper.width(of: range) / max(1, advance)))
+            var groups: [ShapingGroup] = []
+            var previous = 0
+            for end in glyphStarts.indices.dropFirst() where glyphStarts[end] {
+                let start = previous; previous = end
+                let first = clusterAt[start]
+                let last = clusterAt[end]
+                // CoreText can omit long runs of control characters. Never
+                // allocate a quadratic table for those non-glyph spans.
+                guard first < last, last - first > 1, last - first <= 32,
+                      request.boundaries[first] == UInt64(start), request.boundaries[last] == UInt64(end) else { continue }
+                let key = source.substring(with: NSRange(location: start, length: end - start))
+                let stride = last - first + 1
+                let measured: [Double]
+                if let cached = groupWidths[key] { measured = cached }
+                else {
+                    var values = [Double](repeating: 0, count: stride * stride)
+                    for lower in 0..<(stride - 1) { for upper in (lower + 1)..<stride {
+                        let location = Int(clamping: request.boundaries[first + lower])
+                        let end = Int(clamping: request.boundaries[first + upper])
+                        let partial = CTTypesetterCreateLine(typesetter, CFRange(location: location, length: end - location))
+                        values[lower * stride + upper] = CTLineGetTypographicBounds(partial, nil, nil, nil)
+                    } }
+                    measured = values; groupWidths[key] = values
+                }
+                groups.append(ShapingGroup(first: UInt64(first), count: UInt64(last - first), widths: measured))
+            }
+            return ShapingMetrics(advances: widths, groups: groups)
         }
     }
+
 }
 
 /// Shows spaces as middle dots for "Show Invisible Characters" in views that draw text
@@ -179,23 +119,11 @@ public enum InvisibleSpaces {
     public static let marker = "\u{00B7}"
 
     /// Runs of consecutive spaces, in UTF-16 offsets.
-    public static func runs(in text: NSString) -> [NSRange] {
-        var runs: [NSRange] = []
-        var location = 0
-        while location < text.length {
-            let found = text.range(of: " ", options: .literal, range: NSRange(location: location, length: text.length - location))
-            guard found.location != NSNotFound else { break }
-            var end = NSMaxRange(found)
-            while end < text.length, text.character(at: end) == 0x20 { end += 1 }
-            runs.append(NSRange(location: found.location, length: end - found.location))
-            location = end
-        }
-        return runs
-    }
+    public static func runs(in text: NSString) -> [NSRange] { appSpaceRuns(text: text as String).map(\.nsRange) }
 
     /// Replaces every space with the marker and applies `attributes` to the markers.
-    public static func marking(_ source: NSAttributedString, attributes: [NSAttributedString.Key: Any]) -> NSAttributedString {
-        let runs = runs(in: source.string as NSString)
+    public static func marking(_ source: NSAttributedString, runs suppliedRuns: [NSRange]? = nil, attributes: [NSAttributedString.Key: Any]) -> NSAttributedString {
+        let runs = suppliedRuns ?? runs(in: source.string as NSString)
         guard !runs.isEmpty else { return source }
         let marked = NSMutableAttributedString(attributedString: source)
         for run in runs {

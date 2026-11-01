@@ -332,7 +332,7 @@ struct NativeCodeEditor: NSViewRepresentable {
                 let source = projection.text
                 findTask = Task { [weak self, weak view, weak state] in
                     do {
-                        let worker = Task.detached(priority: .userInitiated) { try query.matches(in: source, range: scope) }
+                        let worker = responseTask(priority: .userInitiated) { try query.matches(in: source, range: scope) }
                         let ranges = try await withTaskCancellationHandler { try await worker.value } onCancel: { worker.cancel() }
                         try Task.checkCancellation()
                         guard let self, let view, let state else { return }
@@ -498,7 +498,7 @@ struct NativeCodeEditor: NSViewRepresentable {
             let source = projection.source
             let syntax = language.folding
             foldTask = Task { [weak self, weak scroll] in
-                let worker = Task.detached(priority: .userInitiated) { CodeProjection(source: source, syntax: syntax) }
+                let worker = responseTask(priority: .userInitiated) { CodeProjection(source: source, syntax: syntax) }
                 let result = await withTaskCancellationHandler { await worker.value } onCancel: { worker.cancel() }
                 guard !Task.isCancelled, let self, let scroll, self.foldRevision == revision else { return }
                 self.projection = result
@@ -734,7 +734,7 @@ private final class CodeLayoutManager: NSLayoutManager {
 
     override func processEditing(for textStorage: NSTextStorage, edited editMask: NSTextStorageEditActions,
         range newCharRange: NSRange, changeInLength delta: Int, invalidatedRange invalidatedCharRange: NSRange) {
-        for container in textContainers { (container as? CodeTextContainer)?.invalidateParagraph() }
+        for container in textContainers { (container as? CodeTextContainer)?.invalidateParagraph(textChanged: editMask.contains(.editedCharacters)) }
         invisibleMarkers.removeAll()
         super.processEditing(for: textStorage, edited: editMask, range: newCharRange,
             changeInLength: delta, invalidatedRange: invalidatedCharRange)
@@ -935,8 +935,9 @@ private final class CodeLineRuler: NSRulerView {
         let foldLines = Set(folding ? projection.folds.map(\.line) : [])
         var line = 0
         let displayStarts = projection.collapsed.isEmpty ? starts : TextLineIndex(projection.text).starts
-        lines = displayStarts.map { offset in
-            let original = projection.collapsed.isEmpty ? offset : projection.sourceOffset(offset)
+        let originals = projection.collapsed.isEmpty ? displayStarts : projection.sourceOffsets(displayStarts)
+        lines = displayStarts.enumerated().map { lineIndex, offset in
+            let original = originals[lineIndex]
             while line + 1 < starts.count && starts[line + 1] <= original { line += 1 }
             return (offset, line, foldLines.contains(line))
         }
@@ -1018,7 +1019,22 @@ final class CodeTextContainer: NSTextContainer {
     private var fontMetrics: (font: NSFont, advance: Double)?
     private var maximumAdvances: [NSFont: Double] = [:]
 
-    func invalidateParagraph() { paragraph = nil }
+    private var breakWindow: (range: NSRange, breaks: CodeWrapBreaks)?
+    func invalidateParagraph(textChanged: Bool) {
+        paragraph = nil
+        if textChanged { breakWindow = nil }
+    }
+    private func breakLength(source: NSString, paragraph: NSRange, start: Int, fitting: Int) -> Int {
+        if breakWindow == nil || paragraph.location < breakWindow!.range.location || NSMaxRange(paragraph) > NSMaxRange(breakWindow!.range) {
+            let location = max(0, paragraph.location - 8192)
+            let end = min(source.length, max(NSMaxRange(paragraph), location + 32768))
+            let range = source.rangeOfComposedCharacterSequences(for: NSRange(location: location, length: end - location))
+            breakWindow = (range, CodeWrapBreaks(source.substring(with: range)))
+        }
+        let window = breakWindow!
+        let origin = paragraph.location - window.range.location
+        return window.breaks.length(start: origin + start, fitting: fitting, limit: origin + paragraph.length)
+    }
 
     override var isSimpleRectangularTextContainer: Bool { true }
 
@@ -1088,7 +1104,7 @@ final class CodeTextContainer: NSTextContainer {
             fit = max(1, CTTypesetterSuggestClusterBreak(typesetter, start, available))
         }
         guard start + fit < text.length else { return rect }
-        let count = CodeTextWrapping.breakLength(in: text, start: start, fitting: fit)
+        let count = breakLength(source: storage.mutableString, paragraph: paragraph.range, start: start, fitting: fit)
         let width: Double
         if let typesetter {
             let line = CTTypesetterCreateLine(typesetter, CFRange(location: start, length: count))

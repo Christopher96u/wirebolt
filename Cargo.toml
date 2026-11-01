@@ -14,33 +14,42 @@ edition = "2024"
 rust-version = "1.98"
 
 [workspace.dependencies]
+async-trait = "=0.1.89"
 base64 = "=0.22.1"
 brotli-decompressor = "=5.0.3"
 bytes = "=1.12.1"
 criterion = { version = "=0.8.2", default-features = false, features = ["async_tokio", "cargo_bench_support"] }
 flate2 = "=1.1.10"
+futures-util = { version = "=0.3.34", features = ["sink"] }
+getrandom = "=0.4.3"
 http = "=1.5.0"
 http-body = "=1.1.0"
 http-body-util = "=0.1.5"
-futures-util = { version = "=0.3.34", features = ["sink"] }
 hyper = { version = "=1.11.1", features = ["http1", "http2", "server"] }
 hyper-util = { version = "=0.1.20", features = ["tokio"] }
+idna = "=1.1.0"
 percent-encoding = "=2.3.2"
+pulldown-cmark = { version = "=0.13.6", default-features = false }
+regex = "=1.13.1"
 reqwest = { version = "=0.13.4", default-features = false, features = ["cookies", "http2", "rustls", "socks", "stream", "system-proxy"] }
 security-framework = "=3.7.0"
 security-framework-sys = "=2.17.0"
 serde = { version = "=1.0.229", features = ["derive"] }
 serde_json = "=1.0.151"
+sha2 = "=0.11.1"
 tempfile = "=3.27.0"
 tokio = { version = "=1.53.1", features = ["io-util", "macros", "net", "rt-multi-thread", "time"] }
 tokio-tungstenite = { version = "=0.30.0", default-features = false, features = ["handshake"] }
 tokio-util = { version = "=0.7.19", features = ["io", "rt"] }
 toml = "=1.1.4"
+unicode-casefold = "=0.2.0"
+unicode-normalization = "=0.1.24"
+unicode-segmentation = "=1.13.3"
 uniffi = "=0.32.0"
 url = "=2.5.8"
-yaml-rust2 = { version = "=0.13.0", default-features = false }
 wirebolt-app = { path = "crates/wirebolt-app" }
 wirebolt-core = { path = "crates/wirebolt-core" }
+yaml-rust2 = { version = "=0.13.0", default-features = false }
 zstd = "=0.13.3"
 
 [workspace.lints.rust]

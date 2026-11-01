@@ -48,3 +48,14 @@ struct TextLineIndexTests {
         }
     }
 }
+
+extension TextLineIndexTests {
+    @Test func copiedFacadesKeepIndependentLineSnapshots() {
+        let original = TextLineIndex("one\ntwo\n")
+        var edited = original
+        edited.replace(NSRange(location: 0, length: 0), with: "x\n")
+        #expect(original.starts == [0, 4, 8])
+        #expect(edited.starts == [0, 2, 6, 10])
+        #expect(original.length == 8 && edited.length == 10)
+    }
+}

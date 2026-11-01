@@ -52,3 +52,13 @@ struct JSONNodeOrderTests {
         #expect(root.children?.last?.type == "Truncated", "siblings after the limit are summarised too")
     }
 }
+
+extension JSONNodeOrderTests {
+    @Test func fileTreeKeepsBOMOrderAndSurrogateRepair() throws {
+        let url = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: url) }
+        try (Data([0xEF, 0xBB, 0xBF]) + Data(#"{"z":1,"a":2,"z":3}"#.utf8)).write(to: url)
+        #expect(JSONNode.makeRoot(from: url).first?.children?.map(\.key) == ["z", "a", "z"])
+        #expect(JSONNode.makeRoot(from: #"["\ud800\ud83d\ude80"]"#).first?.children?.first?.value == "�🚀")
+    }
+}

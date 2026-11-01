@@ -38,7 +38,7 @@ For a focused change:
 ./scripts/test.sh
 ```
 
-Generated bindings live under `apple/Generated` and are produced by the scripts. Do not hand-edit them. The Swift package now links the Rust domain bridge: run `./scripts/generate-bindings.sh` before invoking `swift test --package-path apple` directly. `./scripts/test.sh` does this automatically.
+Generated bindings live under `apple/Generated` and are produced by the scripts. Do not hand-edit them. The Swift package compiles the generated bindings into `WireboltKit` and links the Rust bridge: run `./scripts/generate-bindings.sh` before invoking `swift test --package-path apple` directly. `./scripts/test.sh` does this automatically. Response search and cookie date parsing use ICU's portable C APIs and link the system ICU library (`-licucore`) to preserve the existing regular-expression dialect and date formats.
 
 ## Performance
 
@@ -60,8 +60,9 @@ Native workloads cover request and tab selection, large responses, resizing, ren
 | --- | --- |
 | `crates/wirebolt-core` | Workspace persistence, import/export, request preparation and transport |
 | `crates/wirebolt-app/src/domain` | Typed editable records, draft/variable editing, cURL exports, proxy forms and probe state, sidebar indexes, theme tokens and OAuth 2 protocol logic |
-| `crates/wirebolt-ffi` | Typed application-domain bridge, platform foreign traits and streaming interface |
-| `apple/Sources/WireboltKit` | Native observation facades, typed record projections, sessions, storage and Apple platform adapters |
+| `crates/wirebolt-app/src/response` | File-backed response bodies, sparse indexes, search, folding, wrapping policy, JSON/Markdown parsing, history and cookies |
+| `crates/wirebolt-ffi` | Swift-facing bridge: typed domain and response objects, platform foreign traits and the streaming interface |
+| `apple/Sources/WireboltKit` | Native observation facades, typed record projections, sessions and Apple platform adapters |
 | `apple/WireboltApp` | Native interface and app adapters |
 | `apple/Tests` | Swift tests and bridge smoke validation |
 | `apple/Benchmarks` | Native performance workloads |

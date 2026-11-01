@@ -64,3 +64,17 @@ struct MarkdownPreviewTests {
         #expect(try await cache.render("```\nunclosed code").text.string.contains("unclosed code"))
     }
 }
+
+extension MarkdownPreviewTests {
+    @Test func preservesRulesHTMLTablesAndInlineCode() async throws {
+        let cache = MarkdownPreviewCache()
+        for (source, expected) in [
+            ("---", "⸻"), ("before\n\n---\n\nafter", "before\n⸻\nafter"),
+            ("<b>bold</b>", "<b>bold</b>"), ("<div>\nhello\n</div>", "<div>\nhello\n</div>\n"),
+            ("| a | b |\n| - | - |\n| x | y |", "a\nb\nx\ny"),
+        ] { #expect(try await cache.render(source).text.string == expected) }
+        let code = try await cache.render("one `code` two")
+        let range = (code.text.string as NSString).range(of: "code")
+        #expect(code.text.attribute(.backgroundColor, at: range.location, effectiveRange: nil) != nil)
+    }
+}

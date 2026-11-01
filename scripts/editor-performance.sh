@@ -3,6 +3,7 @@ set -euo pipefail
 
 repo_dir="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$repo_dir"
+scripts/generate-bindings.sh
 mkdir -p build
 
 swiftc \
@@ -30,6 +31,7 @@ swiftc \
   apple/WireboltApp/WireboltTheme.swift \
   apple/Benchmarks/EditorWorkloads.swift \
   -Xcc -fmodule-map-file=apple/Generated/wirebolt_ffiFFI.modulemap \
+  -licucore \
   target/release/libwirebolt_ffi.a \
   -framework Security \
   -framework SystemConfiguration \

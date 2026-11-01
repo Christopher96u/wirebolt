@@ -953,10 +953,9 @@ private struct JSONResponseTree: View {
             .task(id: url) {
                 isParsing = true
                 let url = url, preview = preview
-                let parse = Task.detached(priority: .userInitiated) {
-                    let data = try url.map { try Data(contentsOf: $0, options: .mappedIfSafe) } ?? preview
+                let parse = responseTask(priority: .userInitiated) {
                     try Task.checkCancellation()
-                    return JSONNode.makeRoot(from: data)
+                    return url.map { JSONNode.makeRoot(from: $0) } ?? JSONNode.makeRoot(from: preview)
                 }
                 let result = try? await withTaskCancellationHandler { try await parse.value } onCancel: { parse.cancel() }
                 guard !Task.isCancelled else { return }

@@ -104,3 +104,44 @@ struct ResponseStorageTests {
             .appending(path: "wirebolt-tests-\(UUID().uuidString)", directoryHint: .isDirectory)
     }
 }
+
+extension ResponseStorageTests {
+    @Test func batchedTransportIngressIsVisibleAtDisplayAndReadBoundaries() async throws {
+        let store = try ResponseBodyStore(runID: RunID())
+        for _ in 0..<100 { try await store.append(Data("café 🚀".utf8)) }
+        let expected = String(repeating: "café 🚀", count: 100)
+        #expect(await store.size() == UInt64(expected.utf8.count))
+        #expect(await store.progress().text == expected)
+        try await store.append(Data("tail".utf8))
+        #expect(try await store.viewport() == Data((expected + "tail").utf8))
+        try await store.finish()
+        await #expect(throws: (any Error).self) { try await store.append(Data()) }
+    }
+}
+
+extension ResponseStorageTests {
+    @Test func cookiePathsDecodeURLsAndIgnoreEmptyAttributes() async throws {
+        let jar = CookieJar()
+        let origin = try #require(URL(string: "https://api.example.com/caf%C3%A9/login"))
+        let cookies = await jar.store(headers: [ResponseHeader(name: "Set-Cookie", value: "name=value; Domain=; Path=")], requestURL: origin)
+        #expect(cookies.first?.path == "/café")
+        #expect(cookies.first?.hostOnly == true)
+        let destination = try #require(URL(string: "https://api.example.com/caf%C3%A9/me"))
+        #expect(await jar.header(for: destination) == "name=value")
+    }
+}
+
+extension ResponseStorageTests {
+    @Test func cookieDatesKeepLegacyFormatsAndPreEpochExpiry() async throws {
+        let jar = CookieJar()
+        let origin = try #require(URL(string: "https://example.com/"))
+        for (source, seconds) in [
+            ("Wed, 31 Dec 1969 23:59:59 GMT", -1.0),
+            ("Sunday, 06-Nov-50 08:49:37 GMT", -604_422_623.0),
+            ("Wed, 09 Jun 2027 10:18:14 PST", 1_812_565_094.0),
+        ] {
+            let received = await jar.store(headers: [ResponseHeader(name: "Set-Cookie", value: "name=value; Expires=\(source)")], requestURL: origin)
+            #expect(received.first?.expiresAt == Date(timeIntervalSince1970: seconds))
+        }
+    }
+}
