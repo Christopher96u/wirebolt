@@ -95,11 +95,14 @@ async fn independent_runs_cancellation_and_late_events_stay_scoped() {
     sb.await.unwrap();
     assert!(ta.cancelled.load(Ordering::Relaxed));
     assert!(!tb.cancelled.load(Ordering::Relaxed));
-    assert_eq!(lock(&ra).snapshot().failure.unwrap().kind, "cancelled");
+    assert_eq!(
+        lock(&ra).snapshot().failure.unwrap().kind,
+        crate::response::ResponseFailureKind::Cancelled
+    );
     assert_eq!(lock(&ra).snapshot().bytes, 0);
     assert_eq!(lock(&rb).snapshot().text, "kept");
-    assert_eq!(state.history_count("a"), 0);
-    assert_eq!(state.history_count("b"), 1);
+    assert_eq!(state.history_count("a").unwrap(), 0);
+    assert_eq!(state.history_count("b").unwrap(), 1);
 }
 #[tokio::test]
 async fn running_document_does_not_start_twice() {
@@ -169,10 +172,13 @@ async fn resolution_failures_preserve_issue_details_and_skip_history() {
         ))
         .await;
     let failure = lock(&run).snapshot().failure.unwrap();
-    assert_eq!(failure.kind, "invalid_request");
+    assert_eq!(
+        failure.kind,
+        crate::response::ResponseFailureKind::InvalidRequest
+    );
     assert_eq!(failure.issues[0].kind, "missing_variable");
     assert!(lock(&transport.inputs).is_empty());
-    assert_eq!(state.history_count("a"), 0);
+    assert_eq!(state.history_count("a").unwrap(), 0);
 }
 #[tokio::test]
 async fn redirect_cookies_keep_response_origin_and_survive_failure() {
@@ -180,7 +186,9 @@ async fn redirect_cookies_keep_response_origin_and_survive_failure() {
     let state = state(root.path());
     let run = Arc::new(Mutex::new(DocumentRun::default()));
     let transport = Arc::new(Transport {
-        failure: Some(SessionFailure::new("connection")),
+        failure: Some(SessionFailure::new(
+            crate::response::ResponseFailureKind::Connection,
+        )),
         cookies: vec![
             (
                 "https://original.example/start".into(),
@@ -225,7 +233,10 @@ async fn redirect_cookies_keep_response_origin_and_survive_failure() {
             .is_none()
     );
     assert_eq!(lock(&run).snapshot().cookies.len(), 2);
-    assert_eq!(lock(&run).snapshot().failure.unwrap().kind, "connection");
+    assert_eq!(
+        lock(&run).snapshot().failure.unwrap().kind,
+        crate::response::ResponseFailureKind::Connection
+    );
     assert_eq!(state.snapshot().cookie_revision, 2);
 }
 #[tokio::test]

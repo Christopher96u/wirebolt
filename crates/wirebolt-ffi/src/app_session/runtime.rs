@@ -139,15 +139,21 @@ impl RuntimeTransport for AppRuntimeTransport {
                     sender: Mutex::new(Some(sender)),
                 }),
             );
-            receiver
-                .await
-                .unwrap_or_else(|_| Err(SessionFailure::new("bridge")))
+            receiver.await.unwrap_or_else(|_| {
+                Err(SessionFailure::new(
+                    wirebolt_app::response::ResponseFailureKind::Bridge,
+                ))
+            })
         } else {
             tokio::task::spawn_blocking(move || {
                 app_runtime::resolve_values(values, variables, &runtime_secrets())
             })
             .await
-            .unwrap_or_else(|_| Err(SessionFailure::new("invalid_request")))
+            .unwrap_or_else(|_| {
+                Err(SessionFailure::new(
+                    wirebolt_app::response::ResponseFailureKind::InvalidRequest,
+                ))
+            })
         }
     }
     async fn execute(
@@ -285,21 +291,44 @@ impl AppSessionRuntime {
             })
             .await
     }
-    pub async fn history_entries(&self, id: String) -> Vec<SessionHistoryEntry> {
+    pub async fn history_entries(
+        &self,
+        id: String,
+    ) -> Result<Vec<SessionHistoryEntry>, wirebolt_app::response::ResponseError> {
         let state = self.state.clone();
         tokio::task::spawn_blocking(move || state.history_entries(&id))
             .await
-            .unwrap_or_default()
+            .unwrap_or_else(|error| {
+                Err(wirebolt_app::response::ResponseError::Io {
+                    reason: error.to_string(),
+                })
+            })
     }
-    pub async fn history_count(&self, id: String) -> u64 {
+    pub async fn history_count(
+        &self,
+        id: String,
+    ) -> Result<u64, wirebolt_app::response::ResponseError> {
         let state = self.state.clone();
         tokio::task::spawn_blocking(move || state.history_count(&id))
             .await
-            .unwrap_or_default()
+            .unwrap_or_else(|error| {
+                Err(wirebolt_app::response::ResponseError::Io {
+                    reason: error.to_string(),
+                })
+            })
     }
-    pub async fn load_history(&self, id: String) {
+    pub async fn load_history(
+        &self,
+        id: String,
+    ) -> Result<(), wirebolt_app::response::ResponseError> {
         let state = self.state.clone();
-        let _ = tokio::task::spawn_blocking(move || state.load_history(&id)).await;
+        tokio::task::spawn_blocking(move || state.load_history(&id))
+            .await
+            .unwrap_or_else(|error| {
+                Err(wirebolt_app::response::ResponseError::Io {
+                    reason: error.to_string(),
+                })
+            })
     }
     pub async fn clear_history(&self, id: String) {
         let state = self.state.clone();

@@ -3,19 +3,19 @@
 #![allow(clippy::needless_pass_by_value)]
 use std::{
     path::{Path, PathBuf},
-    sync::{Arc, Mutex, MutexGuard},
+    sync::{Arc, Mutex},
 };
 use wirebolt_app::response::{
     BodyProgress, BodyStore, CodeDocument, CodeSyntax, FailureCategory,
     FailureIssue as CoreFailureIssue, FailureMessage, Fold, IndexOptions, IndexedMatch,
     JsonDocument, JsonNodeKind, JsonTreeNode, LineIndex, LineIndexChange, MarkdownCache,
     MarkdownCacheStats, MarkdownDocument, MarkdownRun, MarkdownStyle, ResponseCancellation,
-    ResponseCookieJar, ResponseError, ResponseHeaderValue, ResponseTextRange, RunHistory,
-    SearchPosition, SearchQuery, ShapingGroup, ShapingMetrics, ShapingRequest, StoredCookie,
-    TextIndex, TextIndexCache, TextRow, TextShaper, WrapBreakIndex, WrapBreakSnapshot, WrapLayout,
-    completion_summary, cookie_storage_path, describe_issue, failure_host, failure_message,
-    format_duration, format_elapsed, json_tree, json_tree_file, reason_phrase, sentence,
-    space_runs, status_line, unix_time, uses_text_index,
+    ResponseCookieJar, ResponseError, ResponseFailureKind, ResponseHeaderValue, ResponseTextRange,
+    RunHistory, SearchPosition, SearchQuery, ShapingGroup, ShapingMetrics, ShapingRequest,
+    StoredCookie, TextIndex, TextIndexCache, TextRow, TextShaper, WrapBreakIndex,
+    WrapBreakSnapshot, WrapLayout, completion_summary, cookie_storage_path, describe_issue,
+    failure_host, failure_message, format_duration, format_elapsed, json_tree, json_tree_file,
+    reason_phrase, sentence, space_runs, status_line, unix_time, uses_text_index,
 };
 
 #[uniffi::remote(Error)]
@@ -204,11 +204,7 @@ pub struct WrapBreakSnapshot {
     pub length: u64,
 }
 
-pub(crate) fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
-    mutex
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-}
+pub(crate) use wirebolt_app::lock;
 #[derive(Debug, uniffi::Object)]
 pub struct AppResponseCancellation {
     inner: Arc<ResponseCancellation>,
@@ -460,10 +456,13 @@ impl AppRunHistory {
         })?;
         lock(&self.inner).record(entry, &lock(&body.inner))
     }
-    pub fn list(&self, request_id: String) -> Vec<u8> {
-        serde_json::to_vec(&lock(&self.inner).list(&request_id)).expect("history JSON values")
+    pub fn list(&self, request_id: String) -> Result<Vec<u8>, ResponseError> {
+        let entries = lock(&self.inner).list(&request_id)?;
+        serde_json::to_vec(&entries).map_err(|error| ResponseError::Io {
+            reason: error.to_string(),
+        })
     }
-    pub fn count(&self, request_id: String) -> u64 {
+    pub fn count(&self, request_id: String) -> Result<u64, ResponseError> {
         lock(&self.inner).count(&request_id)
     }
     pub fn clear(&self, request_id: String) -> Result<(), ResponseError> {
@@ -541,7 +540,7 @@ pub fn app_failure_message(
     host: Option<String>,
 ) -> FailureMessage {
     failure_message(
-        kind.as_str(),
+        &kind,
         &issues.into_iter().map(Into::into).collect::<Vec<_>>(),
         host.as_deref(),
     )
@@ -740,7 +739,7 @@ pub fn app_response_badge(
 ) -> Option<ResponseBadge> {
     ResponseBadge::new(
         status,
-        failure.as_ref().map(ResponseFailureKind::as_str),
+        failure.as_ref(),
         &issues.into_iter().map(Into::into).collect::<Vec<_>>(),
         host.as_deref(),
     )
@@ -795,13 +794,13 @@ impl AppRunHistory {
         entry: wirebolt_app::session::history::SessionHistoryEntry,
         body: Arc<AppResponseBody>,
     ) -> Result<(), ResponseError> {
-        wirebolt_app::session::history::record(&mut lock(&self.inner), entry, &lock(&body.inner))
+        lock(&self.inner).record(entry, &lock(&body.inner))
     }
     pub fn list_typed(
         &self,
         request_id: String,
-    ) -> Vec<wirebolt_app::session::history::SessionHistoryEntry> {
-        wirebolt_app::session::history::list(&mut lock(&self.inner), &request_id)
+    ) -> Result<Vec<wirebolt_app::session::history::SessionHistoryEntry>, ResponseError> {
+        lock(&self.inner).list(&request_id)
     }
 }
 
@@ -1161,7 +1160,7 @@ pub enum JsonNodeKind {
     Truncated,
 }
 
-#[derive(Debug, uniffi::Enum)]
+#[uniffi::remote(Enum)]
 pub enum ResponseFailureKind {
     Cancelled,
     Connection,
@@ -1184,35 +1183,10 @@ pub enum ResponseFailureKind {
     UnresolvedValue,
     Internal,
     Bridge,
+    Storage,
+    Export,
+    Workspace,
     Other { code: String },
-}
-impl ResponseFailureKind {
-    fn as_str(&self) -> &str {
-        match self {
-            Self::Cancelled => "cancelled",
-            Self::Connection => "connection",
-            Self::ConnectTimeout => "connect_timeout",
-            Self::Timeout => "timeout",
-            Self::TotalTimeout => "total_timeout",
-            Self::ReadTimeout => "read_timeout",
-            Self::Tls => "tls",
-            Self::TlsConfiguration => "tls_configuration",
-            Self::Proxy => "proxy",
-            Self::ProxyConfiguration => "proxy_configuration",
-            Self::Keychain => "keychain",
-            Self::Request => "request",
-            Self::ResponseBody => "response_body",
-            Self::ResponseTooLarge => "response_too_large",
-            Self::StreamStopped => "stream_stopped",
-            Self::Transport => "transport",
-            Self::InvalidRequest => "invalid_request",
-            Self::InvalidInput => "invalid_input",
-            Self::UnresolvedValue => "unresolved_value",
-            Self::Internal => "internal",
-            Self::Bridge => "bridge",
-            Self::Other { code } => code,
-        }
-    }
 }
 
 #[derive(Debug, uniffi::Enum)]

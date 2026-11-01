@@ -53,9 +53,17 @@ fn previous_response_stays_visible_until_new_head() {
 fn failure_before_head_replaces_previous_response() {
     let (directory, mut run) = completed();
     run.begin("next", directory.path());
-    run.finish("next", Some(SessionFailure::new("connection")));
+    run.finish(
+        "next",
+        Some(SessionFailure::new(
+            crate::response::ResponseFailureKind::Connection,
+        )),
+    );
     let s = run.snapshot();
-    assert_eq!(s.failure.unwrap().kind, "connection");
+    assert_eq!(
+        s.failure.unwrap().kind,
+        crate::response::ResponseFailureKind::Connection
+    );
     assert!(s.head.is_none() && s.text.is_empty() && run.body().is_some());
     assert!(!s.awaiting_head && s.started_at.is_none());
 }
@@ -65,7 +73,10 @@ fn cancellation_before_head_presents_cancelled_run_and_rejects_late_head() {
     run.begin("next", directory.path());
     run.cancel("next");
     run.consume("next", head(200));
-    assert_eq!(run.snapshot().failure.unwrap().kind, "cancelled");
+    assert_eq!(
+        run.snapshot().failure.unwrap().kind,
+        crate::response::ResponseFailureKind::Cancelled
+    );
     assert!(run.snapshot().head.is_none() && run.snapshot().text.is_empty());
 }
 fn cookie() -> StoredCookie {
@@ -147,7 +158,10 @@ fn cancellation_retains_partial_file_and_rejects_old_generation() {
     run.cancel("run");
     run.append_batch("run", &[b"late".to_vec()], Instant::now());
     assert_eq!(run.snapshot().text, "partial");
-    assert_eq!(run.snapshot().failure.unwrap().kind, "cancelled");
+    assert_eq!(
+        run.snapshot().failure.unwrap().kind,
+        crate::response::ResponseFailureKind::Cancelled
+    );
     assert_eq!(
         lock(&run.body().unwrap()).viewport(0, 100).unwrap(),
         b"partial"
@@ -178,7 +192,10 @@ fn storage_failure_ends_run_without_accepting_completion() {
     lock(&run.body().unwrap()).finish().unwrap();
     run.append_batch("run", &[b"lost".to_vec()], Instant::now());
     run.consume("run", complete(999));
-    assert_eq!(run.snapshot().failure.unwrap().kind, "storage");
+    assert_eq!(
+        run.snapshot().failure.unwrap().kind,
+        crate::response::ResponseFailureKind::Storage
+    );
     assert!(run.snapshot().completion.is_none());
 }
 #[test]
@@ -239,13 +256,16 @@ fn shared_transport_projection_preserves_redaction_proxy_source_and_timing() {
         (42, 3_000_000)
     );
     let failure = SessionFailure::from(&RunFailureDocument {
-        kind: "invalid_request",
+        kind: crate::response::ResponseFailureKind::InvalidRequest,
         issues: vec![RequestIssueDocument {
             path: "url".into(),
             kind: "missing_secret",
             reference: Some("api.token".into()),
         }],
     });
-    assert_eq!(failure.kind, "invalid_request");
+    assert_eq!(
+        failure.kind,
+        crate::response::ResponseFailureKind::InvalidRequest
+    );
     assert_eq!(failure.issues[0].reference.as_deref(), Some("api.token"));
 }

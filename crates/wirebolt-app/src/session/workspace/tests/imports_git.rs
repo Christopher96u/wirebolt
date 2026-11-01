@@ -9,10 +9,10 @@ fn status() -> WorkspaceGitStatus {
         merging: false,
     }
 }
-fn operation(outcome: &str) -> WorkspaceReply {
+fn operation(outcome: WorkspaceGitOutcome) -> WorkspaceReply {
     WorkspaceReply::GitOperation {
         operation: WorkspaceGitOperation {
-            outcome: serde_json::from_str(&format!("\"{outcome}\"")).unwrap(),
+            outcome,
             revision: Some("abc".into()),
             status: status(),
         },
@@ -94,8 +94,8 @@ fn import_detection_includes_commented_curl_and_known_formats() {
         ("txt", "hello", None),
     ] {
         assert_eq!(
-            crate::domain::imports::detect(ext, source).as_deref(),
-            expected
+            crate::domain::imports::detect(ext, source),
+            expected.map(|value| wirebolt_core::ImportFormat::parse(value).unwrap())
         );
     }
 }
@@ -124,7 +124,7 @@ async fn successful_import_publishes_summary_and_selects_created_environment_and
         .import(
             WorkspaceImport {
                 source: "{}".into(),
-                format: "postman_v2".into(),
+                format: wirebolt_core::ImportFormat::PostmanV2,
                 name: Some("shop".into()),
                 display_name: Some("shop.json".into()),
                 selected: None,
@@ -159,7 +159,9 @@ async fn failed_import_and_paste_report_reason_without_summary() {
     ] {
         lock(&h.store.replies).push_back(WorkspaceReply::Failed {
             failure: WorkspaceFailure {
-                kind: "import".into(),
+                kind: crate::session::workspace::io::WorkspaceFailureKind::Other {
+                    code: "import".into(),
+                },
                 reason: "The HAR file has no HTTP requests to import.".into(),
                 localized: true,
             },
@@ -170,7 +172,7 @@ async fn failed_import_and_paste_report_reason_without_summary() {
                 .import(
                     WorkspaceImport {
                         source: "{}".into(),
-                        format: "har".into(),
+                        format: wirebolt_core::ImportFormat::Har,
                         name: None,
                         display_name: name,
                         selected: None,
@@ -211,7 +213,7 @@ async fn import_keeps_existing_environment_and_existing_tabs_selection_policy() 
         .import(
             WorkspaceImport {
                 source: "{}".into(),
-                format: "har".into(),
+                format: wirebolt_core::ImportFormat::Har,
                 name: None,
                 display_name: None,
                 selected: Some("keep".into()),
@@ -227,44 +229,97 @@ async fn import_keeps_existing_environment_and_existing_tabs_selection_policy() 
 #[test]
 fn git_file_status_words_preserve_all_cases() {
     for (staged, unstaged, conflict, expected) in [
-        ("none", "untracked", false, "New"),
-        ("added", "modified", false, "New"),
-        ("modified", "none", false, "Modified"),
-        ("none", "deleted", false, "Deleted"),
-        ("renamed", "none", false, "Renamed"),
-        ("renamed", "modified", false, "Renamed"),
-        ("unmerged", "unmerged", false, "Conflict"),
-        ("modified", "modified", true, "Conflict"),
+        (
+            wirebolt_core::GitDelta::None,
+            wirebolt_core::GitDelta::Untracked,
+            false,
+            "New",
+        ),
+        (
+            wirebolt_core::GitDelta::Added,
+            wirebolt_core::GitDelta::Modified,
+            false,
+            "New",
+        ),
+        (
+            wirebolt_core::GitDelta::Modified,
+            wirebolt_core::GitDelta::None,
+            false,
+            "Modified",
+        ),
+        (
+            wirebolt_core::GitDelta::None,
+            wirebolt_core::GitDelta::Deleted,
+            false,
+            "Deleted",
+        ),
+        (
+            wirebolt_core::GitDelta::Renamed,
+            wirebolt_core::GitDelta::None,
+            false,
+            "Renamed",
+        ),
+        (
+            wirebolt_core::GitDelta::Renamed,
+            wirebolt_core::GitDelta::Modified,
+            false,
+            "Renamed",
+        ),
+        (
+            wirebolt_core::GitDelta::Unmerged,
+            wirebolt_core::GitDelta::Unmerged,
+            false,
+            "Conflict",
+        ),
+        (
+            wirebolt_core::GitDelta::Modified,
+            wirebolt_core::GitDelta::Modified,
+            true,
+            "Conflict",
+        ),
     ] {
         assert_eq!(
-            crate::domain::request::git_change_kind(staged, unstaged, conflict),
+            crate::domain::request::git_change_kind(staged, unstaged, conflict).title(),
             expected
         );
     }
 }
 #[test]
-fn git_merge_status_defaults_and_merge_abort_document_decode() {
-    let older: WorkspaceGitStatus = serde_json::from_str(
-        r#"{"branch":"main","upstream":null,"ahead":0,"behind":0,"changes":[]}"#,
-    )
-    .unwrap();
-    assert!(!older.merging);
-    let merging:WorkspaceGitStatus=serde_json::from_str(r#"{"branch":"main","upstream":"origin/main","ahead":1,"behind":1,"merging":true,"changes":[{"path":"wirebolt.toml","previous_path":null,"staged":"unmerged","unstaged":"unmerged","conflicted":true},{"path":"environments/dev.toml","previous_path":null,"staged":"modified","unstaged":"none","conflicted":false}]}"#).unwrap();
-    assert!(merging.merging);
+fn git_status_and_operation_projection_preserve_merges() {
+    let core = wirebolt_core::GitStatus {
+        branch: Some("main".into()),
+        upstream: Some("origin/main".into()),
+        ahead: 1,
+        behind: 1,
+        revision: Some("abc".into()),
+        merging: true,
+        changes: vec![wirebolt_core::GitChange {
+            path: "wirebolt.toml".into(),
+            previous_path: Some("old.toml".into()),
+            staged: wirebolt_core::GitDelta::Unmerged,
+            unstaged: wirebolt_core::GitDelta::Unmerged,
+            conflicted: true,
+        }],
+    };
+    let projected = WorkspaceGitStatus::from(core.clone());
+    assert!(projected.merging);
     assert_eq!(
-        merging
-            .changes
-            .iter()
-            .filter(|c| c.conflicted)
-            .map(|c| c.path.as_str())
-            .collect::<Vec<_>>(),
-        ["wirebolt.toml"]
+        projected.changes[0].previous_path.as_deref(),
+        Some("old.toml")
     );
-    let aborted:WorkspaceGitOperation=serde_json::from_str(r#"{"outcome":"merge_aborted","revision":"abc","status":{"branch":"main","upstream":null,"ahead":0,"behind":0,"changes":[],"merging":false}}"#).unwrap();
     assert_eq!(
-        aborted.outcome,
-        super::super::io::WorkspaceGitOutcome::MergeAborted
+        projected.changes[0].staged,
+        wirebolt_core::GitDelta::Unmerged
     );
+    assert!(projected.changes[0].conflicted);
+    let aborted = WorkspaceGitOperation::from(wirebolt_core::GitOperation {
+        outcome: wirebolt_core::GitOperationOutcome::MergeAborted,
+        revision: Some("abc".into()),
+        status: core,
+    });
+    assert_eq!(aborted.outcome, WorkspaceGitOutcome::MergeAborted);
+    assert_eq!(aborted.status, projected);
+    assert_eq!(aborted.revision.as_deref(), Some("abc"));
 }
 #[tokio::test]
 async fn abort_reloads_and_initialize_clears_previous_operation() {
@@ -272,7 +327,7 @@ async fn abort_reloads_and_initialize_clears_previous_operation() {
     let mut w = nested();
     w.name = "Reloaded".into();
     lock(&h.store.replies).extend([
-        operation("merge_aborted"),
+        operation(WorkspaceGitOutcome::MergeAborted),
         WorkspaceReply::Loaded { workspace: w },
         WorkspaceReply::GitStatus {
             status: WorkspaceGitStatus {
@@ -307,7 +362,7 @@ async fn unsupported_git_recovery_preserves_error_kind() {
     h.ops.git(WorkspaceGitAction::Abort, &h.store, None).await;
     assert_eq!(
         h.ops.presentation().git_failure.unwrap().kind,
-        "unsupported"
+        crate::session::workspace::io::WorkspaceFailureKind::Unsupported
     );
 }
 #[tokio::test]
@@ -319,23 +374,20 @@ async fn git_runs_only_when_requested_and_pull_reloads_only_updated_outcome() {
             WorkspaceGitAction::Commit {
                 message: "Save".into(),
             },
-            "committed",
+            WorkspaceGitOutcome::Committed,
         ),
-        (WorkspaceGitAction::Push, "pushed"),
-        (WorkspaceGitAction::Pull, "up_to_date"),
+        (WorkspaceGitAction::Push, WorkspaceGitOutcome::Pushed),
+        (WorkspaceGitAction::Pull, WorkspaceGitOutcome::UpToDate),
     ] {
         lock(&h.store.replies).push_back(operation(outcome));
         assert!(h.ops.begin_git(true, action.clone(), false));
         assert!(h.ops.git(action, &h.store, Some(&h.store)).await.is_none());
-        assert_eq!(
-            h.ops.presentation().git_operation.unwrap().outcome,
-            serde_json::from_str::<WorkspaceGitOutcome>(&format!("\"{outcome}\"")).unwrap()
-        );
+        assert_eq!(h.ops.presentation().git_operation.unwrap().outcome, outcome);
     }
     let mut w = nested();
     w.name = "Updated".into();
     lock(&h.store.replies).extend([
-        operation("updated"),
+        operation(WorkspaceGitOutcome::Updated),
         WorkspaceReply::Loaded { workspace: w },
     ]);
     assert!(h.ops.begin_git(true, WorkspaceGitAction::Pull, false));
@@ -366,7 +418,7 @@ fn pulling_refuses_unsaved_edits_and_unconfigured_git_has_exact_guidance() {
 #[tokio::test]
 async fn git_reload_failure_reports_distinct_failure_and_finishes_busy_state() {
     let h = Harness::new(nested());
-    lock(&h.store.replies).push_back(operation("updated"));
+    lock(&h.store.replies).push_back(operation(WorkspaceGitOutcome::Updated));
     assert!(h.ops.begin_git(true, WorkspaceGitAction::Pull, false));
     assert!(!h.ops.begin_git(true, WorkspaceGitAction::Status, false));
     h.ops
@@ -374,7 +426,10 @@ async fn git_reload_failure_reports_distinct_failure_and_finishes_busy_state() {
         .await;
     let p = h.ops.presentation();
     assert!(!p.git_busy);
-    assert_eq!(p.git_failure.unwrap().kind, "workspace_reload");
+    assert_eq!(
+        p.git_failure.unwrap().kind,
+        crate::session::workspace::io::WorkspaceFailureKind::WorkspaceReload
+    );
 }
 #[tokio::test]
 async fn workspace_rename_trims_persists_once_and_rejects_empty_names() {
@@ -429,16 +484,23 @@ fn push_availability_and_repository_guidance_preserve_cases() {
 #[test]
 fn repository_problems_recognize_only_guidance_kinds() {
     assert_eq!(
-        repository_problem("not_repository"),
+        repository_problem(&crate::session::workspace::io::WorkspaceFailureKind::NotRepository),
         Some(WorkspaceRepositoryProblem::NotRepository)
     );
     assert_eq!(
-        repository_problem("workspace_not_repository_root"),
+        repository_problem(
+            &crate::session::workspace::io::WorkspaceFailureKind::WorkspaceNotRepositoryRoot
+        ),
         Some(WorkspaceRepositoryProblem::NotRepositoryRoot)
     );
     assert_eq!(
-        repository_problem("git_unavailable"),
+        repository_problem(&crate::session::workspace::io::WorkspaceFailureKind::GitUnavailable),
         Some(WorkspaceRepositoryProblem::GitUnavailable)
     );
-    assert_eq!(repository_problem("authentication_required"), None);
+    assert_eq!(
+        repository_problem(
+            &crate::session::workspace::io::WorkspaceFailureKind::AuthenticationRequired
+        ),
+        None
+    );
 }

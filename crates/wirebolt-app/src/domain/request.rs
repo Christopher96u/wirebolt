@@ -508,24 +508,55 @@ pub fn import_environment_line(names: &[String], localized_list: &str) -> Option
         )),
     }
 }
-#[must_use]
-pub fn git_change_kind(staged: &str, unstaged: &str, conflicted: bool) -> String {
-    let d = [staged, unstaged];
-    if conflicted || d.contains(&"unmerged") {
-        return "Conflict".into();
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DomainGitChangeKind {
+    New,
+    Modified,
+    Deleted,
+    Renamed,
+    Copied,
+    TypeChanged,
+    Conflicted,
+}
+impl DomainGitChangeKind {
+    #[must_use]
+    pub fn title(self) -> String {
+        match self {
+            Self::New => "New",
+            Self::Modified => "Modified",
+            Self::Deleted => "Deleted",
+            Self::Renamed => "Renamed",
+            Self::Copied => "Copied",
+            Self::TypeChanged => "Type Changed",
+            Self::Conflicted => "Conflict",
+        }
+        .into()
     }
-    for (deltas, label) in [
-        (&["added", "untracked"][..], "New"),
-        (&["deleted"][..], "Deleted"),
-        (&["renamed"][..], "Renamed"),
-        (&["copied"][..], "Copied"),
-        (&["type_changed"][..], "Type Changed"),
+}
+#[must_use]
+pub fn git_change_kind(
+    staged: wirebolt_core::GitDelta,
+    unstaged: wirebolt_core::GitDelta,
+    conflicted: bool,
+) -> DomainGitChangeKind {
+    use DomainGitChangeKind as K;
+    use wirebolt_core::GitDelta as D;
+    let deltas = [staged, unstaged];
+    if conflicted || deltas.contains(&D::Unmerged) {
+        return K::Conflicted;
+    }
+    for (choices, kind) in [
+        (&[D::Added, D::Untracked][..], K::New),
+        (&[D::Deleted][..], K::Deleted),
+        (&[D::Renamed][..], K::Renamed),
+        (&[D::Copied][..], K::Copied),
+        (&[D::TypeChanged][..], K::TypeChanged),
     ] {
-        if d.iter().any(|d| deltas.contains(d)) {
-            return label.into();
+        if deltas.iter().any(|delta| choices.contains(delta)) {
+            return kind;
         }
     }
-    "Modified".into()
+    K::Modified
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum PushAvailability {

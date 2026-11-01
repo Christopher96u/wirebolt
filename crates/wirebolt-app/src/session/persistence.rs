@@ -1,6 +1,10 @@
 //! Workspace storage, import/export and Git orchestration. Platform credentials
 //! enter through a trait; all workspace operations call wirebolt-core directly.
-use serde::{Deserialize, Serialize};
+use super::workspace::io::{
+    WorkspaceFailureKind, WorkspaceGitChange, WorkspaceGitOperation, WorkspaceGitStatus,
+    WorkspaceImportSummary, WorkspaceImportedEnvironment,
+};
+use serde::Serialize;
 use std::{
     collections::{BTreeMap, HashMap},
     error::Error,
@@ -12,11 +16,9 @@ use std::{
     },
 };
 use wirebolt_core::{
-    Collection, DocumentId, DocumentProblem, DocumentProblemKind, Environment, EnvironmentVariable,
-    GitChange, GitDelta, GitError, GitErrorKind, GitOperation, GitOperationOutcome, GitStatus,
-    GitWorkspace, Group, ImportEngine, ImportFormat, ProxyMode, Request, RequestAuthentication,
-    RequestBody, RequestHeader, RequestValueField, SecretName, TransportSettings, ValueSource,
-    Workspace, WorkspaceDocument, WorkspaceSnapshot, WorkspaceStore,
+    Collection, DocumentId, Environment, GitChange, GitError, GitErrorKind, GitOperation,
+    GitStatus, GitWorkspace, Group, ImportEngine, ImportFormat, Request, RequestAuthentication,
+    SecretName, ValueSource, Workspace, WorkspaceDocument, WorkspaceStore,
 };
 pub trait WorkspaceSecrets: fmt::Debug + Send + Sync {
     /// # Errors
@@ -28,12 +30,6 @@ pub trait WorkspaceSecrets: fmt::Debug + Send + Sync {
     /// # Errors
     /// Returns a storage error if credentials cannot be deleted.
     fn remove(&self, name: &str) -> Result<(), WorkspaceError>;
-}
-const fn empty_body() -> RequestBody {
-    RequestBody::Empty
-}
-const fn default_inherits_workspace_transport() -> bool {
-    true
 }
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum WorkspaceError {
@@ -52,7 +48,10 @@ impl Error for WorkspaceError {}
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum WorkspaceGitError {
-    OperationFailed { kind: String, reason: String },
+    OperationFailed {
+        kind: WorkspaceFailureKind,
+        reason: String,
+    },
 }
 
 impl fmt::Display for WorkspaceGitError {
@@ -72,214 +71,7 @@ pub struct SessionPersistence {
     version: AtomicU64,
 }
 
-#[derive(Debug, Serialize)]
-struct WorkspaceSnapshotDocument<'a> {
-    name: &'a str,
-    proxy: &'a Option<ProxyMode>,
-    transport: &'a TransportSettings,
-    collections: Vec<CollectionSnapshotDocument<'a>>,
-    environments: Vec<EnvironmentSnapshotDocument<'a>>,
-    problems: Vec<DocumentProblemDocument<'a>>,
-}
-
-#[derive(Debug, Serialize)]
-struct CollectionSnapshotDocument<'a> {
-    id: &'a str,
-    name: &'a str,
-    order: i64,
-    groups: &'a [Group],
-    requests: Vec<RequestSnapshotDocument<'a>>,
-}
-
-#[derive(Debug, Serialize)]
-struct RequestSnapshotDocument<'a> {
-    id: &'a str,
-    name: &'a str,
-    group_id: Option<&'a str>,
-    order: i64,
-    method: &'a str,
-    url: &'a str,
-    web_socket: bool,
-    note: &'a str,
-    query: &'a [RequestValueField],
-    headers: &'a [RequestHeader],
-    authentication: &'a RequestAuthentication,
-    body: &'a RequestBody,
-    proxy: &'a Option<ProxyMode>,
-    transport: &'a TransportSettings,
-    inherits_workspace_transport: bool,
-}
-
-#[derive(Debug, Serialize)]
-struct EnvironmentSnapshotDocument<'a> {
-    id: &'a str,
-    name: &'a str,
-    variables: &'a [EnvironmentVariable],
-}
-
-#[derive(Debug, Serialize)]
-struct DocumentProblemDocument<'a> {
-    path: String,
-    kind: &'static str,
-    reason: &'a str,
-}
-
-#[derive(Debug, Serialize)]
-struct GitStatusDocument<'a> {
-    branch: &'a Option<String>,
-    upstream: &'a Option<String>,
-    ahead: u64,
-    behind: u64,
-    revision: &'a Option<String>,
-    changes: Vec<GitChangeDocument<'a>>,
-    merging: bool,
-}
-
-#[derive(Debug, Serialize)]
-struct GitChangeDocument<'a> {
-    path: &'a str,
-    previous_path: &'a Option<String>,
-    staged: &'static str,
-    unstaged: &'static str,
-    conflicted: bool,
-}
-
-#[derive(Debug, Serialize)]
-struct GitOperationDocument<'a> {
-    outcome: &'static str,
-    revision: &'a Option<String>,
-    status: GitStatusDocument<'a>,
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
-struct SavedRequestDocument {
-    id: String,
-    name: String,
-    #[serde(default)]
-    group_id: Option<String>,
-    #[serde(default)]
-    order: i64,
-    method: String,
-    url: String,
-    #[serde(default)]
-    web_socket: bool,
-    #[serde(default)]
-    note: String,
-    #[serde(default)]
-    query: Vec<RequestValueField>,
-    #[serde(default)]
-    headers: Vec<RequestHeader>,
-    #[serde(default)]
-    authentication: RequestAuthentication,
-    #[serde(default = "empty_body")]
-    body: RequestBody,
-    #[serde(default)]
-    proxy: Option<ProxyMode>,
-    #[serde(default)]
-    transport: TransportSettings,
-    #[serde(default = "default_inherits_workspace_transport")]
-    inherits_workspace_transport: bool,
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
-struct SavedEnvironmentDocument {
-    id: String,
-    name: String,
-    #[serde(default)]
-    variables: Vec<EnvironmentVariable>,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields, rename_all = "snake_case", tag = "kind")]
-enum WorkspaceCommandDocument {
-    SaveWorkspaceProxy {
-        proxy: Option<ProxyMode>,
-    },
-    SaveWorkspaceSettings {
-        transport: TransportSettings,
-    },
-    RenameWorkspace {
-        name: String,
-    },
-    CreateCollection {
-        id: String,
-        name: String,
-        order: i64,
-    },
-    RenameCollection {
-        id: String,
-        name: String,
-    },
-    DeleteCollection {
-        id: String,
-    },
-    CreateGroup {
-        collection_id: String,
-        group: SavedGroupDocument,
-    },
-    RenameGroup {
-        collection_id: String,
-        id: String,
-        name: String,
-    },
-    DeleteGroup {
-        collection_id: String,
-        id: String,
-    },
-    ReorderChildren {
-        collection_id: String,
-        parent_id: Option<String>,
-        items: Vec<String>,
-    },
-    MoveGroup {
-        collection_id: String,
-        id: String,
-        parent_id: Option<String>,
-        order: i64,
-    },
-    SaveRequest {
-        collection_id: String,
-        request: Box<SavedRequestDocument>,
-    },
-    DeleteRequest {
-        collection_id: String,
-        id: String,
-    },
-    DuplicateRequest {
-        collection_id: String,
-        id: String,
-        new_id: String,
-        name: String,
-    },
-    MoveRequest {
-        from_collection_id: String,
-        request_id: String,
-        to_collection_id: String,
-        group_id: Option<String>,
-        order: i64,
-    },
-    SaveEnvironment {
-        environment: SavedEnvironmentDocument,
-    },
-    DeleteEnvironment {
-        id: String,
-    },
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct SavedGroupDocument {
-    id: String,
-    name: String,
-    #[serde(default)]
-    parent_id: Option<String>,
-    #[serde(default)]
-    order: i64,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SessionWorkspaceNodeKind {
     Workspace,
@@ -288,55 +80,33 @@ pub enum SessionWorkspaceNodeKind {
     Request,
     Environment,
 }
-#[derive(Debug, Serialize)]
-struct WorkspaceDeltaDocument {
-    version: u64,
-    kind: SessionWorkspaceNodeKind,
-    affected_ids: Vec<String>,
+/// A committed import and its versioned workspace change.
+#[derive(Debug)]
+pub struct ImportCommit {
+    pub delta: SessionWorkspaceDelta,
+    pub summary: WorkspaceImportSummary,
 }
-
-/// What an import creates, shown before and after committing it.
-#[derive(Debug, Serialize)]
-struct ImportSummaryDocument {
-    /// The first collection's name, kept for the preview's single-collection shape.
-    collection_name: String,
-    collection_names: Vec<String>,
-    request_count: usize,
-    group_count: usize,
-    environments: Vec<ImportedEnvironmentDocument>,
-    warnings: Vec<String>,
-}
-
-#[derive(Debug, Serialize)]
-struct ImportedEnvironmentDocument {
-    /// Empty in a preview, where nothing has been created yet.
-    id: String,
-    name: String,
-}
-
-impl ImportSummaryDocument {
+impl WorkspaceImportSummary {
     fn new(imported: &wirebolt_core::ParsedImport) -> Self {
         let collections = &imported.workspace.collections;
-        let collection_names: Vec<String> = collections
-            .iter()
-            .map(|collection| collection.name.clone())
-            .collect();
         Self {
-            collection_name: collection_names.first().cloned().unwrap_or_default(),
-            collection_names,
+            collection_names: collections
+                .iter()
+                .map(|collection| collection.name.clone())
+                .collect(),
             request_count: collections
                 .iter()
-                .map(|collection| collection.requests.len())
+                .map(|collection| collection.requests.len() as u64)
                 .sum(),
             group_count: collections
                 .iter()
-                .map(|collection| collection.groups.len())
+                .map(|collection| collection.groups.len() as u64)
                 .sum(),
             environments: imported
                 .workspace
                 .environments
                 .iter()
-                .map(|environment| ImportedEnvironmentDocument {
+                .map(|environment| WorkspaceImportedEnvironment {
                     id: String::new(),
                     name: environment.name.clone(),
                 })
@@ -344,14 +114,6 @@ impl ImportSummaryDocument {
             warnings: imported.warnings().map(str::to_owned).collect(),
         }
     }
-}
-
-/// A committed import: the workspace delta plus its summary for the app.
-#[derive(Debug, Serialize)]
-struct ImportCommitDocument {
-    #[serde(flatten)]
-    delta: WorkspaceDeltaDocument,
-    summary: ImportSummaryDocument,
 }
 
 impl SessionPersistence {
@@ -384,20 +146,6 @@ impl SessionPersistence {
             secrets,
             version: AtomicU64::new(0),
         }))
-    }
-
-    /// Returns one stable JSON snapshot without exposing filesystem layout.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`WorkspaceError`] when the workspace cannot be loaded.
-    pub fn snapshot_json(&self) -> Result<String, WorkspaceError> {
-        let snapshot = self
-            .store
-            .load()
-            .map_err(|_| WorkspaceError::operation("workspace could not be loaded"))?;
-        serde_json::to_string(&WorkspaceSnapshotDocument::from(&snapshot))
-            .map_err(|_| WorkspaceError::operation("workspace snapshot could not be encoded"))
     }
 
     /// Exports the complete saved workspace with secret references intact.
@@ -461,75 +209,6 @@ impl SessionPersistence {
             .map_err(|_| WorkspaceError::operation("collection could not be saved"))
     }
 
-    /// Creates or updates one request from a bridge JSON document.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`WorkspaceError`] for invalid input or storage failures.
-    pub fn save_request(
-        &self,
-        collection_id: String,
-        request_json: &str,
-    ) -> Result<(), WorkspaceError> {
-        let collection_id = document_id(collection_id)?;
-        let document: SavedRequestDocument = serde_json::from_str(request_json)
-            .map_err(|_| WorkspaceError::operation("request document is invalid"))?;
-        let request = request_from_document(document)?;
-        self.store
-            .save(&WorkspaceDocument::Request {
-                collection_id,
-                request,
-            })
-            .map(|_| ())
-            .map_err(|_| WorkspaceError::operation("request could not be saved"))
-    }
-
-    /// Creates or updates one environment from a bridge JSON document.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`WorkspaceError`] for invalid input or storage failures.
-    pub fn save_environment(&self, environment_json: &str) -> Result<(), WorkspaceError> {
-        let document: SavedEnvironmentDocument = serde_json::from_str(environment_json)
-            .map_err(|_| WorkspaceError::operation("environment document is invalid"))?;
-        let environment =
-            Environment::from_rows(document_id(document.id)?, document.name, document.variables);
-        self.store
-            .save(&WorkspaceDocument::Environment(environment))
-            .map(|_| ())
-            .map_err(|_| WorkspaceError::operation("environment could not be saved"))
-    }
-
-    /// Applies one versioned workspace mutation and returns a compact delta.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`WorkspaceError`] when the command is malformed, references
-    /// a missing document, creates a group cycle, or cannot be persisted.
-    pub fn apply_workspace_command(&self, command_json: &str) -> Result<String, WorkspaceError> {
-        let command: WorkspaceCommandDocument = serde_json::from_str(command_json)
-            .map_err(|_| WorkspaceError::operation("workspace command is invalid"))?;
-        let (kind, affected_ids) = self.apply_workspace_command_document(command)?;
-        let delta = WorkspaceDeltaDocument {
-            version: self.version.fetch_add(1, Ordering::Relaxed) + 1,
-            kind,
-            affected_ids,
-        };
-        serde_json::to_string(&delta)
-            .map_err(|_| WorkspaceError::operation("workspace delta could not be encoded"))
-    }
-
-    /// Parses an import fully and returns its metadata without mutating storage.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`WorkspaceError`] for unsupported formats or invalid source.
-    pub fn preview_import(&self, format: &str, source: &str) -> Result<String, WorkspaceError> {
-        let imported = parse_import(format, source, None)?;
-        serde_json::to_string(&ImportSummaryDocument::new(&imported))
-            .map_err(|_| WorkspaceError::operation("import preview could not be encoded"))
-    }
-
     /// Commits a fully parsed import: its collections, environments and
     /// Keychain credentials, or none of them.
     ///
@@ -540,7 +219,11 @@ impl SessionPersistence {
     ///
     /// Returns [`WorkspaceError`] with the import's user-facing reason
     /// for parse failures, or a storage failure.
-    pub fn commit_import(&self, format: &str, source: &str) -> Result<String, WorkspaceError> {
+    pub fn commit_import(
+        &self,
+        format: ImportFormat,
+        source: &str,
+    ) -> Result<ImportCommit, WorkspaceError> {
         self.commit_imported(parse_import(format, source, None)?)
     }
 
@@ -552,10 +235,10 @@ impl SessionPersistence {
     /// for invalid source, or a storage failure.
     pub fn commit_import_file(
         &self,
-        format: &str,
+        format: ImportFormat,
         source: &str,
         name: &str,
-    ) -> Result<String, WorkspaceError> {
+    ) -> Result<ImportCommit, WorkspaceError> {
         self.commit_imported(parse_import(format, source, Some(name))?)
     }
 
@@ -593,9 +276,9 @@ impl SessionPersistence {
     ///
     /// Returns [`WorkspaceGitError`] when this workspace is not a repository or
     /// Git cannot inspect it.
-    pub fn git_status_json(&self) -> Result<String, WorkspaceGitError> {
+    pub fn git_status(&self) -> Result<WorkspaceGitStatus, WorkspaceGitError> {
         let status = self.git_workspace()?.status()?;
-        encode_git_document(&GitStatusDocument::from(&status))
+        Ok(status.into())
     }
 
     /// Pulls the configured upstream explicitly and leaves conflicts intact.
@@ -603,9 +286,9 @@ impl SessionPersistence {
     /// # Errors
     ///
     /// Returns [`WorkspaceGitError`] when Git rejects or cannot run the pull.
-    pub fn git_pull_json(&self) -> Result<String, WorkspaceGitError> {
+    pub fn git_pull(&self) -> Result<WorkspaceGitOperation, WorkspaceGitError> {
         let operation = self.git_workspace()?.pull()?;
-        encode_git_document(&GitOperationDocument::from(&operation))
+        Ok(operation.into())
     }
 
     /// Commits only Wirebolt-managed workspace documents.
@@ -614,9 +297,9 @@ impl SessionPersistence {
     ///
     /// Returns [`WorkspaceGitError`] for invalid messages, missing Git identity,
     /// or another failed Git operation.
-    pub fn git_commit_json(&self, message: &str) -> Result<String, WorkspaceGitError> {
+    pub fn git_commit(&self, message: &str) -> Result<WorkspaceGitOperation, WorkspaceGitError> {
         let operation = self.git_workspace()?.commit(message)?;
-        encode_git_document(&GitOperationDocument::from(&operation))
+        Ok(operation.into())
     }
 
     /// Pushes the current branch using the user's Git credentials.
@@ -625,9 +308,9 @@ impl SessionPersistence {
     ///
     /// Returns [`WorkspaceGitError`] when the repository has no usable branch or
     /// remote, authentication fails, or the update is rejected.
-    pub fn git_push_json(&self) -> Result<String, WorkspaceGitError> {
+    pub fn git_push(&self) -> Result<WorkspaceGitOperation, WorkspaceGitError> {
         let operation = self.git_workspace()?.push()?;
-        encode_git_document(&GitOperationDocument::from(&operation))
+        Ok(operation.into())
     }
 
     /// Aborts the merge left behind by a conflicted pull.
@@ -635,9 +318,9 @@ impl SessionPersistence {
     /// # Errors
     ///
     /// Returns [`WorkspaceGitError`] when no merge is in progress or Git cannot abort it.
-    pub fn git_abort_merge_json(&self) -> Result<String, WorkspaceGitError> {
+    pub fn git_abort_merge(&self) -> Result<WorkspaceGitOperation, WorkspaceGitError> {
         let operation = self.git_workspace()?.abort_merge()?;
-        encode_git_document(&GitOperationDocument::from(&operation))
+        Ok(operation.into())
     }
 
     /// Makes the workspace folder the root of a new Git repository and
@@ -647,9 +330,9 @@ impl SessionPersistence {
     ///
     /// Returns [`WorkspaceGitError`] when the workspace is inside another
     /// repository or Git cannot initialize it.
-    pub fn git_initialize_json(&self) -> Result<String, WorkspaceGitError> {
+    pub fn git_initialize(&self) -> Result<WorkspaceGitStatus, WorkspaceGitError> {
         let status = GitWorkspace::initialize(self.store.root())?.status()?;
-        encode_git_document(&GitStatusDocument::from(&status))
+        Ok(status.into())
     }
 }
 
@@ -658,14 +341,14 @@ impl SessionPersistence {
     fn commit_imported(
         &self,
         imported: wirebolt_core::ParsedImport,
-    ) -> Result<String, WorkspaceError> {
+    ) -> Result<ImportCommit, WorkspaceError> {
         let sequence = self.version.load(Ordering::Relaxed) + 1;
         let timestamp = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map_err(|_| WorkspaceError::operation("import identifier could not be created"))?
             .as_nanos();
         let prefix = format!("import-{timestamp:x}-{:x}-{sequence:x}", std::process::id());
-        let mut summary = ImportSummaryDocument::new(&imported);
+        let mut summary = WorkspaceImportSummary::new(&imported);
         let mut created = CreatedImport::default();
         if let Err(error) = self.save_imported(&prefix, imported, &mut created) {
             for id in &created.collections {
@@ -683,7 +366,7 @@ impl SessionPersistence {
             environment.id = id.to_string();
         }
 
-        let delta = WorkspaceDeltaDocument {
+        let delta = SessionWorkspaceDelta {
             version: self.version.fetch_add(1, Ordering::Relaxed) + 1,
             kind: SessionWorkspaceNodeKind::Collection,
             affected_ids: created
@@ -692,8 +375,7 @@ impl SessionPersistence {
                 .map(ToString::to_string)
                 .collect(),
         };
-        serde_json::to_string(&ImportCommitDocument { delta, summary })
-            .map_err(|_| WorkspaceError::operation("import delta could not be encoded"))
+        Ok(ImportCommit { delta, summary })
     }
 
     fn save_imported(
@@ -846,18 +528,18 @@ impl SessionPersistence {
         clippy::too_many_lines,
         reason = "the command router keeps each transactional mutation and its affected IDs in one exhaustive match"
     )]
-    fn apply_workspace_command_document(
+    fn apply_command(
         &self,
-        command: WorkspaceCommandDocument,
+        command: super::workspace::SessionWorkspaceCommand,
     ) -> Result<(SessionWorkspaceNodeKind, Vec<String>), WorkspaceError> {
         match command {
-            WorkspaceCommandDocument::SaveWorkspaceProxy { proxy } => {
+            super::workspace::SessionWorkspaceCommand::SaveWorkspaceProxy { proxy } => {
                 let mut workspace = self
                     .store
                     .load()
                     .map_err(|_| WorkspaceError::operation("workspace could not be loaded"))?
                     .workspace;
-                workspace.proxy = proxy;
+                workspace.proxy = proxy.map(proxy_to_core).transpose()?;
                 self.store
                     .save(&WorkspaceDocument::Workspace(workspace))
                     .map_err(|_| WorkspaceError::operation("workspace proxy could not be saved"))?;
@@ -866,13 +548,13 @@ impl SessionPersistence {
                     vec!["proxy".to_owned()],
                 ))
             }
-            WorkspaceCommandDocument::SaveWorkspaceSettings { transport } => {
+            super::workspace::SessionWorkspaceCommand::SaveWorkspaceSettings { transport } => {
                 let mut workspace = self
                     .store
                     .load()
                     .map_err(|_| WorkspaceError::operation("workspace could not be loaded"))?
                     .workspace;
-                workspace.transport = transport;
+                workspace.transport = transport_to_core(transport)?;
                 self.store
                     .save(&WorkspaceDocument::Workspace(workspace))
                     .map_err(|_| {
@@ -883,7 +565,7 @@ impl SessionPersistence {
                     vec!["transport".to_owned()],
                 ))
             }
-            WorkspaceCommandDocument::RenameWorkspace { name } => {
+            super::workspace::SessionWorkspaceCommand::RenameWorkspace { name } => {
                 let name = name.trim();
                 if name.is_empty() {
                     return Err(WorkspaceError::operation(
@@ -901,7 +583,10 @@ impl SessionPersistence {
                     .map_err(|_| WorkspaceError::operation("workspace could not be renamed"))?;
                 Ok((SessionWorkspaceNodeKind::Workspace, vec!["name".to_owned()]))
             }
-            WorkspaceCommandDocument::CreateCollection { id, name, order } => {
+            super::workspace::SessionWorkspaceCommand::CreateCollection { collection } => {
+                let crate::domain::DomainCollection {
+                    id, name, order, ..
+                } = collection;
                 let mut collection = Collection::new(document_id(id.clone())?, name);
                 collection.order = order;
                 self.store
@@ -909,7 +594,7 @@ impl SessionPersistence {
                     .map_err(|_| WorkspaceError::operation("collection could not be created"))?;
                 Ok((SessionWorkspaceNodeKind::Collection, vec![id]))
             }
-            WorkspaceCommandDocument::RenameCollection { id, name } => {
+            super::workspace::SessionWorkspaceCommand::RenameCollection { id, name } => {
                 let mut collection = self.collection(&id)?;
                 collection.name = name;
                 self.store
@@ -917,13 +602,13 @@ impl SessionPersistence {
                     .map_err(|_| WorkspaceError::operation("collection could not be renamed"))?;
                 Ok((SessionWorkspaceNodeKind::Collection, vec![id]))
             }
-            WorkspaceCommandDocument::DeleteCollection { id } => {
+            super::workspace::SessionWorkspaceCommand::DeleteCollection { id } => {
                 self.store
                     .delete_collection(&document_id(id.clone())?)
                     .map_err(|_| WorkspaceError::operation("collection could not be deleted"))?;
                 Ok((SessionWorkspaceNodeKind::Collection, vec![id]))
             }
-            WorkspaceCommandDocument::CreateGroup {
+            super::workspace::SessionWorkspaceCommand::CreateGroup {
                 collection_id,
                 group,
             } => {
@@ -954,7 +639,7 @@ impl SessionPersistence {
                     vec![collection_id, group.id],
                 ))
             }
-            WorkspaceCommandDocument::RenameGroup {
+            super::workspace::SessionWorkspaceCommand::RenameGroup {
                 collection_id,
                 id,
                 name,
@@ -970,7 +655,7 @@ impl SessionPersistence {
                 self.save_collection_document(collection)?;
                 Ok((SessionWorkspaceNodeKind::Group, vec![collection_id, id]))
             }
-            WorkspaceCommandDocument::DeleteGroup { collection_id, id } => {
+            super::workspace::SessionWorkspaceCommand::DeleteGroup { collection_id, id } => {
                 let mut collection = self.collection(&collection_id)?;
                 let group_id = document_id(id.clone())?;
                 let descendants = descendant_group_ids(&collection.groups, &group_id);
@@ -1006,7 +691,7 @@ impl SessionPersistence {
                 self.save_collection_document(collection)?;
                 Ok((SessionWorkspaceNodeKind::Group, vec![collection_id, id]))
             }
-            WorkspaceCommandDocument::ReorderChildren {
+            super::workspace::SessionWorkspaceCommand::ReorderChildren {
                 collection_id,
                 parent_id,
                 items,
@@ -1014,7 +699,7 @@ impl SessionPersistence {
                 self.reorder_children(&collection_id, parent_id, items)?;
                 Ok((SessionWorkspaceNodeKind::Collection, vec![collection_id]))
             }
-            WorkspaceCommandDocument::MoveGroup {
+            super::workspace::SessionWorkspaceCommand::MoveGroup {
                 collection_id,
                 id,
                 parent_id,
@@ -1048,12 +733,10 @@ impl SessionPersistence {
                 self.save_collection_document(collection)?;
                 Ok((SessionWorkspaceNodeKind::Group, vec![collection_id, id]))
             }
-            WorkspaceCommandDocument::SaveRequest {
-                collection_id,
-                request,
-            } => {
-                let id = request.id.clone();
-                let request = request_from_document(*request)?;
+            super::workspace::SessionWorkspaceCommand::SaveRequest { location } => {
+                let collection_id = location.collection_id.clone();
+                let id = location.request.id.clone();
+                let request = saved_request(location)?;
                 self.store
                     .save(&WorkspaceDocument::Request {
                         collection_id: document_id(collection_id.clone())?,
@@ -1062,7 +745,7 @@ impl SessionPersistence {
                     .map_err(|_| WorkspaceError::operation("request could not be saved"))?;
                 Ok((SessionWorkspaceNodeKind::Request, vec![collection_id, id]))
             }
-            WorkspaceCommandDocument::DeleteRequest { collection_id, id } => {
+            super::workspace::SessionWorkspaceCommand::DeleteRequest { collection_id, id } => {
                 self.store
                     .delete_request(
                         &document_id(collection_id.clone())?,
@@ -1071,7 +754,7 @@ impl SessionPersistence {
                     .map_err(|_| WorkspaceError::operation("request could not be deleted"))?;
                 Ok((SessionWorkspaceNodeKind::Request, vec![collection_id, id]))
             }
-            WorkspaceCommandDocument::DuplicateRequest {
+            super::workspace::SessionWorkspaceCommand::DuplicateRequest {
                 collection_id,
                 id,
                 new_id,
@@ -1093,7 +776,7 @@ impl SessionPersistence {
                     vec![collection_id, id, new_id],
                 ))
             }
-            WorkspaceCommandDocument::MoveRequest {
+            super::workspace::SessionWorkspaceCommand::MoveRequest {
                 from_collection_id,
                 request_id,
                 to_collection_id,
@@ -1125,19 +808,23 @@ impl SessionPersistence {
                     vec![from_collection_id, to_collection_id, request_id],
                 ))
             }
-            WorkspaceCommandDocument::SaveEnvironment { environment } => {
+            super::workspace::SessionWorkspaceCommand::SaveEnvironment { environment } => {
                 let id = environment.id.clone();
                 let environment = Environment::from_rows(
                     document_id(environment.id)?,
                     environment.name,
-                    environment.variables,
+                    environment
+                        .variables
+                        .into_iter()
+                        .map(variable_to_core)
+                        .collect::<Result<_, _>>()?,
                 );
                 self.store
                     .save(&WorkspaceDocument::Environment(environment))
                     .map_err(|_| WorkspaceError::operation("environment could not be saved"))?;
                 Ok((SessionWorkspaceNodeKind::Environment, vec![id]))
             }
-            WorkspaceCommandDocument::DeleteEnvironment { id } => {
+            super::workspace::SessionWorkspaceCommand::DeleteEnvironment { id } => {
                 self.store
                     .delete_environment(&document_id(id.clone())?)
                     .map_err(|_| WorkspaceError::operation("environment could not be deleted"))?;
@@ -1293,107 +980,62 @@ impl WorkspaceError {
 impl From<GitError> for WorkspaceGitError {
     fn from(error: GitError) -> Self {
         Self::OperationFailed {
-            kind: git_error_kind(error.kind).to_owned(),
+            kind: git_error_kind(error.kind),
             reason: error.to_string(),
         }
     }
 }
 
-impl<'a> From<&'a GitStatus> for GitStatusDocument<'a> {
-    fn from(status: &'a GitStatus) -> Self {
+impl From<GitStatus> for WorkspaceGitStatus {
+    fn from(status: GitStatus) -> Self {
         Self {
-            branch: &status.branch,
-            upstream: &status.upstream,
+            branch: status.branch,
+            upstream: status.upstream,
             ahead: status.ahead,
             behind: status.behind,
-            revision: &status.revision,
-            changes: status.changes.iter().map(Into::into).collect(),
+            changes: status.changes.into_iter().map(Into::into).collect(),
             merging: status.merging,
         }
     }
 }
-
-impl<'a> From<&'a GitChange> for GitChangeDocument<'a> {
-    fn from(change: &'a GitChange) -> Self {
+impl From<GitChange> for WorkspaceGitChange {
+    fn from(change: GitChange) -> Self {
         Self {
-            path: &change.path,
-            previous_path: &change.previous_path,
-            staged: git_delta(change.staged),
-            unstaged: git_delta(change.unstaged),
+            path: change.path,
+            previous_path: change.previous_path,
+            staged: change.staged,
+            unstaged: change.unstaged,
             conflicted: change.conflicted,
         }
     }
 }
-
-impl<'a> From<&'a GitOperation> for GitOperationDocument<'a> {
-    fn from(operation: &'a GitOperation) -> Self {
+impl From<GitOperation> for WorkspaceGitOperation {
+    fn from(operation: GitOperation) -> Self {
         Self {
-            outcome: git_operation_outcome(operation.outcome),
-            revision: &operation.revision,
-            status: GitStatusDocument::from(&operation.status),
+            outcome: operation.outcome,
+            revision: operation.revision,
+            status: operation.status.into(),
         }
     }
 }
-
-fn encode_git_document(document: &impl Serialize) -> Result<String, WorkspaceGitError> {
-    serde_json::to_string(document).map_err(|_| WorkspaceGitError::OperationFailed {
-        kind: "encoding".to_owned(),
-        reason: "Git result could not be encoded".to_owned(),
-    })
-}
-
-const fn git_delta(delta: GitDelta) -> &'static str {
-    match delta {
-        GitDelta::None => "none",
-        GitDelta::Added => "added",
-        GitDelta::Modified => "modified",
-        GitDelta::Deleted => "deleted",
-        GitDelta::Renamed => "renamed",
-        GitDelta::Copied => "copied",
-        GitDelta::TypeChanged => "type_changed",
-        GitDelta::Untracked => "untracked",
-        GitDelta::Unmerged => "unmerged",
-    }
-}
-
-const fn git_operation_outcome(outcome: GitOperationOutcome) -> &'static str {
-    match outcome {
-        GitOperationOutcome::NothingToCommit => "nothing_to_commit",
-        GitOperationOutcome::Committed => "committed",
-        GitOperationOutcome::Updated => "updated",
-        GitOperationOutcome::UpToDate => "up_to_date",
-        GitOperationOutcome::Pushed => "pushed",
-        GitOperationOutcome::Conflicted => "conflicted",
-        GitOperationOutcome::MergeAborted => "merge_aborted",
-    }
-}
-
-const fn git_error_kind(kind: GitErrorKind) -> &'static str {
+const fn git_error_kind(kind: GitErrorKind) -> WorkspaceFailureKind {
     match kind {
-        GitErrorKind::GitUnavailable => "git_unavailable",
-        GitErrorKind::NotRepository => "not_repository",
-        GitErrorKind::WorkspaceNotRepositoryRoot => "workspace_not_repository_root",
-        GitErrorKind::CommandFailed => "command_failed",
-        GitErrorKind::InvalidOutput => "invalid_output",
-        GitErrorKind::InvalidCommitMessage => "invalid_commit_message",
-        GitErrorKind::IdentityMissing => "identity_missing",
-        GitErrorKind::AuthenticationRequired => "authentication_required",
-        GitErrorKind::DirtyWorkspace => "dirty_workspace",
-        GitErrorKind::MissingUpstream => "missing_upstream",
-        GitErrorKind::MissingRemote => "missing_remote",
-        GitErrorKind::DetachedHead => "detached_head",
-        GitErrorKind::TimedOut => "timed_out",
-        GitErrorKind::NoMergeInProgress => "no_merge_in_progress",
-    }
-}
-
-const fn document_problem_kind(kind: DocumentProblemKind) -> &'static str {
-    match kind {
-        DocumentProblemKind::InvalidToml => "invalid_toml",
-        DocumentProblemKind::InvalidDocument => "invalid_document",
-        DocumentProblemKind::UnsupportedSchema => "unsupported_schema",
-        DocumentProblemKind::DocumentTooLarge => "document_too_large",
-        DocumentProblemKind::Io => "io",
+        GitErrorKind::GitUnavailable => WorkspaceFailureKind::GitUnavailable,
+        GitErrorKind::NotRepository => WorkspaceFailureKind::NotRepository,
+        GitErrorKind::WorkspaceNotRepositoryRoot => {
+            WorkspaceFailureKind::WorkspaceNotRepositoryRoot
+        }
+        GitErrorKind::CommandFailed => WorkspaceFailureKind::CommandFailed,
+        GitErrorKind::InvalidOutput => WorkspaceFailureKind::InvalidOutput,
+        GitErrorKind::InvalidCommitMessage => WorkspaceFailureKind::InvalidCommitMessage,
+        GitErrorKind::IdentityMissing => WorkspaceFailureKind::IdentityMissing,
+        GitErrorKind::AuthenticationRequired => WorkspaceFailureKind::AuthenticationRequired,
+        GitErrorKind::DirtyWorkspace => WorkspaceFailureKind::DirtyWorkspace,
+        GitErrorKind::MissingUpstream => WorkspaceFailureKind::MissingUpstream,
+        GitErrorKind::MissingRemote => WorkspaceFailureKind::MissingRemote,
+        GitErrorKind::DetachedHead => WorkspaceFailureKind::DetachedHead,
+        GitErrorKind::TimedOut => WorkspaceFailureKind::TimedOut,
+        GitErrorKind::NoMergeInProgress => WorkspaceFailureKind::NoMergeInProgress,
     }
 }
 
@@ -1402,36 +1044,13 @@ fn document_id(value: String) -> Result<DocumentId, WorkspaceError> {
 }
 
 fn parse_import(
-    format: &str,
+    format: ImportFormat,
     source: &str,
     file_name: Option<&str>,
 ) -> Result<wirebolt_core::ParsedImport, WorkspaceError> {
-    let format =
-        ImportFormat::parse(format).map_err(|error| WorkspaceError::operation(error.reason()))?;
     // Import reasons are user-facing and never quote the source.
     ImportEngine::parse_import(format, source, file_name)
         .map_err(|error| WorkspaceError::operation(error.reason()))
-}
-
-fn request_from_document(document: SavedRequestDocument) -> Result<Request, WorkspaceError> {
-    let mut request = Request::new(
-        document_id(document.id)?,
-        document.name,
-        document.method,
-        document.url,
-    );
-    request.web_socket = document.web_socket;
-    request.note = document.note;
-    request.group_id = document.group_id.map(document_id).transpose()?;
-    request.order = document.order;
-    request.query = document.query;
-    request.headers = document.headers;
-    request.authentication = document.authentication;
-    request.body = document.body;
-    request.proxy_override = document.proxy;
-    request.transport = document.transport;
-    request.inherits_workspace_transport = document.inherits_workspace_transport;
-    Ok(request)
 }
 
 fn descendant_group_ids(groups: &[Group], root: &DocumentId) -> Vec<DocumentId> {
@@ -1450,77 +1069,6 @@ fn descendant_group_ids(groups: &[Group], root: &DocumentId) -> Vec<DocumentId> 
         offset += 1;
     }
     result
-}
-
-impl<'a> From<&'a WorkspaceSnapshot> for WorkspaceSnapshotDocument<'a> {
-    fn from(snapshot: &'a WorkspaceSnapshot) -> Self {
-        Self {
-            name: &snapshot.workspace.name,
-            proxy: &snapshot.workspace.proxy,
-            transport: &snapshot.workspace.transport,
-            collections: snapshot
-                .collections
-                .iter()
-                .map(|snapshot| CollectionSnapshotDocument {
-                    id: snapshot.collection.id.as_str(),
-                    name: &snapshot.collection.name,
-                    order: snapshot.collection.order,
-                    groups: &snapshot.collection.groups,
-                    requests: snapshot
-                        .requests
-                        .iter()
-                        .map(RequestSnapshotDocument::from)
-                        .collect(),
-                })
-                .collect(),
-            environments: snapshot
-                .environments
-                .iter()
-                .map(|environment| EnvironmentSnapshotDocument {
-                    id: environment.id.as_str(),
-                    name: &environment.name,
-                    variables: &environment.variables,
-                })
-                .collect(),
-            problems: snapshot
-                .problems
-                .iter()
-                .map(DocumentProblemDocument::from)
-                .collect(),
-        }
-    }
-}
-
-impl<'a> From<&'a DocumentProblem> for DocumentProblemDocument<'a> {
-    fn from(problem: &'a DocumentProblem) -> Self {
-        Self {
-            path: problem.path.to_string_lossy().into_owned(),
-            kind: document_problem_kind(problem.kind),
-            reason: &problem.reason,
-        }
-    }
-}
-
-impl<'a> From<&'a Request> for RequestSnapshotDocument<'a> {
-    fn from(request: &'a Request) -> Self {
-        Self {
-            id: request.id.as_str(),
-            name: &request.name,
-            group_id: request.group_id.as_ref().map(DocumentId::as_str),
-            order: request.order,
-            method: &request.method,
-            url: &request.url,
-            web_socket: request.web_socket,
-            note: &request.note,
-            query: &request.query,
-            headers: &request.headers,
-            authentication: &request.authentication,
-            body: &request.body,
-            proxy: &request.proxy_override,
-            transport: &request.transport,
-            inherits_workspace_transport: request.inherits_workspace_transport,
-        }
-    }
 }
 
 fn secure_import_authentication(
@@ -1588,95 +1136,7 @@ impl SessionPersistence {
         &self,
         command: super::workspace::SessionWorkspaceCommand,
     ) -> Result<SessionWorkspaceDelta, WorkspaceError> {
-        use super::workspace::SessionWorkspaceCommand as C;
-        use WorkspaceCommandDocument as D;
-        let command = match command {
-            C::SaveWorkspaceProxy { proxy } => D::SaveWorkspaceProxy {
-                proxy: proxy.map(proxy_to_core).transpose()?,
-            },
-            C::SaveWorkspaceSettings { transport } => D::SaveWorkspaceSettings {
-                transport: transport_to_core(transport)?,
-            },
-            C::RenameWorkspace { name } => D::RenameWorkspace { name },
-            C::SaveEnvironment { environment } => D::SaveEnvironment {
-                environment: saved_environment(environment)?,
-            },
-            C::DeleteEnvironment { id } => D::DeleteEnvironment { id },
-            C::SaveRequest { location } => D::SaveRequest {
-                collection_id: location.collection_id.clone(),
-                request: Box::new(saved_request(location)?),
-            },
-            C::DeleteRequest { collection_id, id } => D::DeleteRequest { collection_id, id },
-            C::DuplicateRequest {
-                collection_id,
-                id,
-                new_id,
-                name,
-            } => D::DuplicateRequest {
-                collection_id,
-                id,
-                new_id,
-                name,
-            },
-            C::CreateGroup {
-                collection_id,
-                group,
-            } => D::CreateGroup {
-                collection_id,
-                group: saved_group(group),
-            },
-            C::DeleteGroup { collection_id, id } => D::DeleteGroup { collection_id, id },
-            C::CreateCollection { collection } => D::CreateCollection {
-                id: collection.id,
-                name: collection.name,
-                order: collection.order,
-            },
-            C::DeleteCollection { id } => D::DeleteCollection { id },
-            C::RenameGroup {
-                collection_id,
-                id,
-                name,
-            } => D::RenameGroup {
-                collection_id,
-                id,
-                name,
-            },
-            C::RenameCollection { id, name } => D::RenameCollection { id, name },
-            C::MoveRequest {
-                from_collection_id,
-                request_id,
-                to_collection_id,
-                group_id,
-                order,
-            } => D::MoveRequest {
-                from_collection_id,
-                request_id,
-                to_collection_id,
-                group_id,
-                order,
-            },
-            C::MoveGroup {
-                collection_id,
-                id,
-                parent_id,
-                order,
-            } => D::MoveGroup {
-                collection_id,
-                id,
-                parent_id,
-                order,
-            },
-            C::ReorderChildren {
-                collection_id,
-                parent_id,
-                items,
-            } => D::ReorderChildren {
-                collection_id,
-                parent_id,
-                items,
-            },
-        };
-        let (kind, affected_ids) = self.apply_workspace_command_document(command)?;
+        let (kind, affected_ids) = self.apply_command(command)?;
         Ok(SessionWorkspaceDelta {
             version: self.version.fetch_add(1, Ordering::Relaxed) + 1,
             kind,
@@ -1777,58 +1237,27 @@ impl SessionPersistence {
     }
 }
 
-fn saved_request(
-    location: crate::domain::DomainLocation,
-) -> Result<SavedRequestDocument, WorkspaceError> {
+fn saved_request(location: crate::domain::DomainLocation) -> Result<Request, WorkspaceError> {
     let r = location.request;
-    let mut request = SavedRequestDocument {
-        id: r.id,
-        name: r.name,
-        group_id: None,
-        order: 0,
-        method: r.method,
-        url: r.url,
-        web_socket: r.web_socket,
-        note: r.note,
-        query: r
-            .query
-            .into_iter()
-            .map(field_to_core)
-            .collect::<Result<_, _>>()?,
-        headers: r
-            .headers
-            .into_iter()
-            .map(header_to_core)
-            .collect::<Result<_, _>>()?,
-        authentication: auth_to_core(r.authentication)?,
-        body: body_to_core(r.body)?,
-        proxy: r.proxy.map(proxy_to_core).transpose()?,
-        transport: transport_to_core(r.transport)?,
-        inherits_workspace_transport: r.inherits_workspace_transport,
-    };
-    request.group_id = location.group_id;
+    let mut request = Request::new(document_id(r.id)?, r.name, r.method, r.url);
+    request.group_id = location.group_id.map(document_id).transpose()?;
     request.order = location.order;
+    request.web_socket = r.web_socket;
+    request.note = r.note;
+    request.query = r
+        .query
+        .into_iter()
+        .map(field_to_core)
+        .collect::<Result<_, _>>()?;
+    request.headers = r
+        .headers
+        .into_iter()
+        .map(header_to_core)
+        .collect::<Result<_, _>>()?;
+    request.authentication = auth_to_core(r.authentication)?;
+    request.body = body_to_core(r.body)?;
+    request.proxy_override = r.proxy.map(proxy_to_core).transpose()?;
+    request.transport = transport_to_core(r.transport)?;
+    request.inherits_workspace_transport = r.inherits_workspace_transport;
     Ok(request)
-}
-
-fn saved_environment(
-    e: crate::domain::DomainEnvironment,
-) -> Result<SavedEnvironmentDocument, WorkspaceError> {
-    Ok(SavedEnvironmentDocument {
-        id: e.id,
-        name: e.name,
-        variables: e
-            .variables
-            .into_iter()
-            .map(variable_to_core)
-            .collect::<Result<_, _>>()?,
-    })
-}
-fn saved_group(g: crate::domain::DomainGroup) -> SavedGroupDocument {
-    SavedGroupDocument {
-        id: g.id,
-        name: g.name,
-        parent_id: g.parent_id,
-        order: g.order,
-    }
 }

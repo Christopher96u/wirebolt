@@ -82,8 +82,8 @@ async fn failed_save_all_stops_and_reports_failure_after_successful_prefix() {
     assert!(!results[1].succeeded);
     assert_eq!(lock(&h.store.commands).len(), 1);
     assert_eq!(
-        h.ops.presentation().operation_failure.as_deref(),
-        Some("workspace")
+        h.ops.presentation().operation_failure,
+        Some(crate::response::ResponseFailureKind::Workspace)
     );
 }
 #[test]

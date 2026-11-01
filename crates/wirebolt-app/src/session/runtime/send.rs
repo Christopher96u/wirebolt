@@ -166,7 +166,9 @@ impl RuntimeRuns {
         }
         if credentials.flush().await.is_err() {
             self.remove(&document_id, &id);
-            return Some(SessionFailure::new("keychain"));
+            return Some(SessionFailure::new(
+                crate::response::ResponseFailureKind::Keychain,
+            ));
         }
         let Ok(latest) = observer.prepare().await else {
             self.remove(&document_id, &id);
@@ -326,7 +328,9 @@ impl RunObserver {
         self.capture(&run);
     }
     pub fn abandon(&self) {
-        self.finish(Some(SessionFailure::new("cancelled")));
+        self.finish(Some(SessionFailure::new(
+            crate::response::ResponseFailureKind::Cancelled,
+        )));
         lock(&self.terminal).take();
     }
     pub fn finish(&self, failure: Option<SessionFailure>) {
@@ -351,7 +355,9 @@ impl TransportObserver for RunObserver {
         if let Ok(snapshot) = SessionPrepared::try_from(snapshot) {
             self.event(SessionRunEvent::Prepared { snapshot });
         } else {
-            self.finish(Some(SessionFailure::new("bridge")));
+            self.finish(Some(SessionFailure::new(
+                crate::response::ResponseFailureKind::Bridge,
+            )));
         }
     }
     fn head(&self, head: &wirebolt_core::RunHead, _: &[RequestIssueDocument]) {

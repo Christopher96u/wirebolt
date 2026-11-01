@@ -3,20 +3,24 @@ use std::path::Path;
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum WorkspaceImportFile {
     Bruno,
-    Document { source: String, format: String },
-    Failure { message: String },
+    Document {
+        source: String,
+        format: wirebolt_core::ImportFormat,
+    },
+    Failure {
+        message: String,
+    },
 }
 #[must_use]
-pub fn display_name(format: &str) -> String {
+pub fn display_name(format: wirebolt_core::ImportFormat) -> String {
     match format {
-        "curl" => "cURL",
-        "har" => "HAR",
-        "legacy_workspace_v1" => "Wirebolt JSON",
-        "postman_v2" => "Postman Collection v2",
-        "insomnia" => "Insomnia",
-        "bruno" => "Bruno collection",
-        "bruno_folder" => "Bruno collection folder",
-        _ => "",
+        wirebolt_core::ImportFormat::Curl => "cURL",
+        wirebolt_core::ImportFormat::Har => "HAR",
+        wirebolt_core::ImportFormat::LegacyWorkspaceV1 => "Wirebolt JSON",
+        wirebolt_core::ImportFormat::PostmanV2 => "Postman Collection v2",
+        wirebolt_core::ImportFormat::Insomnia => "Insomnia",
+        wirebolt_core::ImportFormat::Bruno => "Bruno collection",
+        wirebolt_core::ImportFormat::BrunoFolder => "Bruno collection folder",
     }
     .into()
 }
@@ -43,7 +47,11 @@ pub fn unrecognized(name: &str, contents: &str, formats: &str) -> String {
     format!("“{name}” isn’t a format Wirebolt can import. Supported formats: {formats}.")
 }
 #[must_use]
-pub fn read_import(path: &Path, preferred: Option<String>, formats: &str) -> WorkspaceImportFile {
+pub fn read_import(
+    path: &Path,
+    preferred: Option<wirebolt_core::ImportFormat>,
+    formats: &str,
+) -> WorkspaceImportFile {
     let name = path.file_name().unwrap_or_default().to_string_lossy();
     let extension = path.extension().unwrap_or_default().to_string_lossy();
     if path.is_dir() || extension.eq_ignore_ascii_case("bru") {

@@ -266,8 +266,8 @@ async fn failed_undo_reports_error_and_invalidates_every_token() {
     *lock(&h.store.fail_at) = Some(1);
     let (_, reverse) = h.undo(result.undo.unwrap()).await;
     assert_eq!(
-        h.ops.presentation().operation_failure.as_deref(),
-        Some("workspace")
+        h.ops.presentation().operation_failure,
+        Some(crate::response::ResponseFailureKind::Workspace)
     );
     assert!(h.ops.reverse_token(reverse.token).is_none());
     assert_eq!(h.workspace.snapshot().collections[0].requests.len(), 2);

@@ -1,4 +1,13 @@
 //! Proxy editor policy and isolated connection-test messages.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DomainProxySource {
+    Request,
+    Workspace,
+    AppDefault,
+    SystemDefault,
+}
+
 use super::models::{
     DomainProxy, DomainProxyCredentials, DomainProxyRoute, DomainRequestDraft, DomainTransport,
 };
@@ -79,11 +88,11 @@ pub fn resolve(
     request: Option<DomainProxy>,
     workspace: Option<DomainProxy>,
     app: DomainProxy,
-) -> (DomainProxy, String) {
+) -> (DomainProxy, DomainProxySource) {
     request
-        .map(|p| (p, "request".into()))
-        .or_else(|| workspace.map(|p| (p, "workspace".into())))
-        .unwrap_or((app, "app_default".into()))
+        .map(|p| (p, DomainProxySource::Request))
+        .or_else(|| workspace.map(|p| (p, DomainProxySource::Workspace)))
+        .unwrap_or((app, DomainProxySource::AppDefault))
 }
 #[must_use]
 pub fn summary(proxy: &DomainProxy, url: Option<&str>) -> String {
@@ -404,16 +413,18 @@ pub fn form_secrets(input: &ProxyFormInput) -> std::collections::HashMap<String,
     secrets
 }
 #[must_use]
-pub fn needs_indicator(configuration: &DomainProxy, source: &str) -> bool {
-    validate(configuration).is_err() || source == "request" || source == "workspace"
+pub fn needs_indicator(configuration: &DomainProxy, source: DomainProxySource) -> bool {
+    validate(configuration).is_err()
+        || source == DomainProxySource::Request
+        || source == DomainProxySource::Workspace
 }
 #[must_use]
-pub fn scope_title(scope: &str) -> String {
+pub fn scope_title(scope: DomainProxySource) -> String {
     match scope {
-        "workspace" => "Workspace",
-        "request" => "Request",
-        "system_default" => "System default",
-        _ => "App default",
+        DomainProxySource::Workspace => "Workspace",
+        DomainProxySource::Request => "Request",
+        DomainProxySource::SystemDefault => "System default",
+        DomainProxySource::AppDefault => "App default",
     }
     .into()
 }

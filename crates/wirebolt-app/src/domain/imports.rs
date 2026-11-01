@@ -1,14 +1,15 @@
 //! Collection-source recognition and bounded Bruno filesystem bundles.
 use serde::Serialize;
 use std::{fs, path::Path};
+pub use wirebolt_core::ImportFormat;
 #[must_use]
 pub fn detect_collection(
     extension: &str,
     contents: &str,
     root: Option<&serde_json::Value>,
-) -> Option<String> {
+) -> Option<ImportFormat> {
     if extension.eq_ignore_ascii_case("bru") {
-        return Some("bruno_folder".into());
+        return Some(ImportFormat::BrunoFolder);
     }
     let Some(root) = root else {
         return contents
@@ -26,13 +27,13 @@ pub fn detect_collection(
                 .iter()
                 .any(|p| l.starts_with(p))
             })
-            .then(|| "insomnia".into());
+            .then_some(ImportFormat::Insomnia);
     };
     if root.get("__export_format").is_some()
         && (root.get("resources").is_some()
             || root.get("_type").and_then(serde_json::Value::as_str) == Some("export"))
     {
-        return Some("insomnia".into());
+        return Some(ImportFormat::Insomnia);
     }
     if root
         .get("version")
@@ -41,12 +42,12 @@ pub fn detect_collection(
         && root.get("name").is_some_and(serde_json::Value::is_string)
         && root.get("items").is_some_and(serde_json::Value::is_array)
     {
-        return Some("bruno".into());
+        return Some(ImportFormat::Bruno);
     }
     None
 }
 #[must_use]
-pub fn detect(extension: &str, contents: &str) -> Option<String> {
+pub fn detect(extension: &str, contents: &str) -> Option<ImportFormat> {
     let trimmed = contents.trim();
     let command = trimmed
         .lines()
@@ -54,7 +55,7 @@ pub fn detect(extension: &str, contents: &str) -> Option<String> {
         .find(|l| !l.is_empty() && !l.starts_with('#'))
         .unwrap_or_default();
     if command.starts_with("curl ") || command.starts_with("curl\t") {
-        return Some("curl".into());
+        return Some(ImportFormat::Curl);
     }
     let root: Option<serde_json::Value> = serde_json::from_str(trimmed)
         .ok()
@@ -67,20 +68,23 @@ pub fn detect(extension: &str, contents: &str) -> Option<String> {
         .and_then(|l| l.get("entries"))
         .is_some_and(serde_json::Value::is_array)
     {
-        return Some("har".into());
+        return Some(ImportFormat::Har);
     }
     if root.get("info").is_some_and(|i| {
         i.is_object() && (i.get("schema").is_some() || i.get("_postman_id").is_some())
     }) {
-        return Some("postman_v2".into());
+        return Some(ImportFormat::PostmanV2);
     }
     if root.get("version").and_then(serde_json::Value::as_i64) == Some(1)
         && root.get("nodes").is_some_and(serde_json::Value::is_array)
     {
-        return Some("legacy_workspace_v1".into());
+        return Some(ImportFormat::LegacyWorkspaceV1);
     }
-    detect_collection(extension, trimmed, Some(&root))
-        .or_else(|| extension.eq_ignore_ascii_case("har").then(|| "har".into()))
+    detect_collection(extension, trimmed, Some(&root)).or_else(|| {
+        extension
+            .eq_ignore_ascii_case("har")
+            .then_some(ImportFormat::Har)
+    })
 }
 #[must_use]
 pub fn is_bruno_collection(path: &Path) -> bool {

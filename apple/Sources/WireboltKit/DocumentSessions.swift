@@ -258,7 +258,7 @@ extension RunFailure {
 extension PreparedRunSnapshot {
     var sessionRecord: SessionPrepared {
         SessionPrepared(
-            proxy: proxy.map { SessionProxy(configuration: $0.configuration.domain, source: $0.source.sessionRecord) },
+            proxy: proxy.map { SessionProxy(configuration: $0.configuration.domain, source: $0.source) },
             method: method, url: url, headers: headers.map { SessionPreparedHeader(name: $0.name, value: $0.value, redacted: $0.redacted) },
             body: SessionPreparedBody(
                 byteCount: body.byteCount, contentType: body.contentType, textPreview: body.textPreview, redacted: body.redacted),
@@ -269,7 +269,7 @@ extension PreparedRunSnapshot {
             proxy: record.proxy.map {
                 EffectiveProxy(
                     configuration: ProxyDocument(domain: $0.configuration),
-                    source: EffectiveProxy.Source($0.source))
+                    source: $0.source)
             },
             method: record.method, url: record.url,
             headers: record.headers.map { PreparedHeaderSnapshot(name: $0.name, value: $0.value, redacted: $0.redacted) },
@@ -699,25 +699,6 @@ extension TabCloseScope {
         case .others(let id): self = .others(id)
         case .rightOf(let id): self = .rightOf(id)
         case .all: self = .all
-        }
-    }
-}
-
-extension EffectiveProxy.Source {
-    var sessionRecord: SessionProxySource {
-        switch self {
-        case .request: .request
-        case .workspace: .workspace
-        case .appDefault: .appDefault
-        case .systemDefault: .systemDefault
-        }
-    }
-    init(_ source: SessionProxySource) {
-        self = switch source {
-        case .request: .request
-        case .workspace: .workspace
-        case .appDefault: .appDefault
-        case .systemDefault: .systemDefault
         }
     }
 }

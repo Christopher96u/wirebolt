@@ -85,7 +85,10 @@ pub enum WorkspaceBridgeError {
 }
 #[uniffi::remote(Error)]
 pub enum GitBridgeError {
-    OperationFailed { kind: String, reason: String },
+    OperationFailed {
+        kind: wirebolt_app::session::workspace::io::WorkspaceFailureKind,
+        reason: String,
+    },
 }
 #[derive(Debug, uniffi::Object)]
 pub struct WorkspaceBridge {
@@ -244,7 +247,7 @@ pub fn resolve_request_values(
         .resolve_values(&values)
         .map_err(|error| {
             let failure = RunFailureDocument {
-                kind: "invalid_request",
+                kind: wirebolt_app::response::ResponseFailureKind::InvalidRequest,
                 issues: error.issues.into_iter().map(Into::into).collect(),
             };
             RequestPreparationError::InvalidRequest {
@@ -353,92 +356,6 @@ impl WorkspaceBridge {
     pub fn save_collection(&self, id: String, name: String) -> Result<(), WorkspaceBridgeError> {
         self.inner.save_collection(id, name)
     }
-    /// # Errors
-    /// Returns the application operation error.
-    pub fn save_request(
-        &self,
-        collection_id: String,
-        request_json: &str,
-    ) -> Result<(), WorkspaceBridgeError> {
-        self.inner.save_request(collection_id, request_json)
-    }
-    /// # Errors
-    /// Returns the application operation error.
-    pub fn save_environment(&self, environment_json: &str) -> Result<(), WorkspaceBridgeError> {
-        self.inner.save_environment(environment_json)
-    }
-    /// # Errors
-    /// Returns the application operation error.
-    pub fn apply_workspace_command(
-        &self,
-        command_json: &str,
-    ) -> Result<String, WorkspaceBridgeError> {
-        self.inner.apply_workspace_command(command_json)
-    }
-    /// # Errors
-    /// Returns the application operation error.
-    pub fn preview_import(
-        &self,
-        format: &str,
-        source: &str,
-    ) -> Result<String, WorkspaceBridgeError> {
-        self.inner.preview_import(format, source)
-    }
-    /// # Errors
-    /// Returns the application operation error.
-    pub fn commit_import(
-        &self,
-        format: &str,
-        source: &str,
-    ) -> Result<String, WorkspaceBridgeError> {
-        self.inner.commit_import(format, source)
-    }
-    /// # Errors
-    /// Returns the application operation error.
-    pub fn commit_import_file(
-        &self,
-        format: &str,
-        source: &str,
-        name: &str,
-    ) -> Result<String, WorkspaceBridgeError> {
-        self.inner.commit_import_file(format, source, name)
-    }
-    /// # Errors
-    /// Returns the application operation error.
-    pub fn git_status_json(&self) -> Result<String, GitBridgeError> {
-        self.inner.git_status_json()
-    }
-    /// # Errors
-    /// Returns the application operation error.
-    pub fn git_pull_json(&self) -> Result<String, GitBridgeError> {
-        self.inner.git_pull_json()
-    }
-    /// # Errors
-    /// Returns the application operation error.
-    pub fn git_commit_json(&self, message: &str) -> Result<String, GitBridgeError> {
-        self.inner.git_commit_json(message)
-    }
-    /// # Errors
-    /// Returns the application operation error.
-    pub fn git_push_json(&self) -> Result<String, GitBridgeError> {
-        self.inner.git_push_json()
-    }
-    /// # Errors
-    /// Returns the application operation error.
-    pub fn git_abort_merge_json(&self) -> Result<String, GitBridgeError> {
-        self.inner.git_abort_merge_json()
-    }
-    /// # Errors
-    /// Returns the application operation error.
-    pub fn git_initialize_json(&self) -> Result<String, GitBridgeError> {
-        self.inner.git_initialize_json()
-    }
-    /// # Errors
-    /// Returns the application operation error.
-    fn snapshot_document(&self) -> Result<String, WorkspaceBridgeError> {
-        self.inner.snapshot_json()
-    }
-
     fn request(&self, collection_id: &str, id: &str) -> Result<Request, WorkspaceBridgeError> {
         self.inner.request(collection_id, id)
     }
@@ -594,6 +511,52 @@ mod tests {
         time::Duration,
     };
 
+    use wirebolt_app::{
+        domain::{DomainCollection, DomainGroup, DomainLocation, DomainRequestDraft},
+        session::{
+            persistence::ImportCommit,
+            workspace::{SessionWorkspaceCommand as C, io::WorkspaceFailureKind as WK},
+        },
+    };
+    use wirebolt_core::ImportFormat;
+    fn collection_command(id: &str, name: &str) -> C {
+        C::CreateCollection {
+            collection: DomainCollection {
+                id: id.into(),
+                name: name.into(),
+                order: 0,
+                groups: vec![],
+                requests: vec![],
+            },
+        }
+    }
+    fn group_command(collection_id: &str, id: &str, name: &str) -> C {
+        C::CreateGroup {
+            collection_id: collection_id.into(),
+            group: DomainGroup {
+                id: id.into(),
+                name: name.into(),
+                parent_id: None,
+                order: 0,
+            },
+        }
+    }
+    fn request_command(id: &str, name: &str, group: Option<&str>, order: i64) -> C {
+        C::SaveRequest {
+            location: DomainLocation {
+                collection_id: "api".into(),
+                group_id: group.map(str::to_owned),
+                order,
+                request: DomainRequestDraft {
+                    id: id.into(),
+                    name: name.into(),
+                    url: format!("https://example.com/{id}"),
+                    ..Default::default()
+                },
+            },
+        }
+    }
+
     #[test]
     fn reorder_mixed_siblings_persists_and_rejects_incomplete_or_foreign_items() {
         let directory = tempfile::tempdir().unwrap();
@@ -601,17 +564,26 @@ mod tests {
         let path = directory.path().to_string_lossy().into_owned();
         let bridge = WorkspaceBridge::open_or_create(path.clone(), "Reorder".into()).unwrap();
         for command in [
-            serde_json::json!({"kind":"create_collection","id":"api","name":"API","order":0}),
-            serde_json::json!({"kind":"create_group","collection_id":"api","group":{"id":"folder","name":"Folder","order":0}}),
-            serde_json::json!({"kind":"save_request","collection_id":"api","request":{"id":"a","name":"A","order":0,"method":"GET","url":"https://example.com/a","body":{"kind":"empty"}}}),
-            serde_json::json!({"kind":"save_request","collection_id":"api","request":{"id":"b","name":"B","order":99,"method":"GET","url":"https://example.com/b","body":{"kind":"empty"}}}),
-            serde_json::json!({"kind":"save_request","collection_id":"api","request":{"id":"nested","name":"Nested","group_id":"folder","order":42,"method":"GET","url":"https://example.com/nested","body":{"kind":"empty"}}}),
+            collection_command("api", "API"),
+            group_command("api", "folder", "Folder"),
+            request_command("a", "A", None, 0),
+            request_command("b", "B", None, 99),
+            request_command("nested", "Nested", Some("folder"), 42),
         ] {
-            bridge
-                .apply_workspace_command(&command.to_string())
-                .unwrap();
+            bridge.inner.apply_session_command(command).unwrap();
         }
-        bridge.apply_workspace_command(&serde_json::json!({"kind":"reorder_children","collection_id":"api","items":["request:b","group:folder","request:a"]}).to_string()).unwrap();
+        bridge
+            .inner
+            .apply_session_command(C::ReorderChildren {
+                collection_id: "api".into(),
+                parent_id: None,
+                items: vec![
+                    "request:b".into(),
+                    "group:folder".into(),
+                    "request:a".into(),
+                ],
+            })
+            .unwrap();
         let reopened = WorkspaceBridge::open_or_create(path, "Reorder".into()).unwrap();
         assert_eq!(reopened.request("api", "b").unwrap().order, 0);
         assert_eq!(reopened.collection("api").unwrap().groups[0].order, 1);
@@ -621,15 +593,24 @@ mod tests {
             reopened.request("api", "b").unwrap().url,
             "https://example.com/b"
         );
-        let before = reopened.snapshot_document().unwrap();
+        let before = reopened.inner.domain_snapshot().unwrap();
         for invalid in [
             vec!["request:a"],
             vec!["request:a", "request:a", "group:folder"],
             vec!["request:a", "request:nested", "group:folder"],
             vec!["request:a", "request:missing", "group:folder"],
         ] {
-            assert!(reopened.apply_workspace_command(&serde_json::json!({"kind":"reorder_children","collection_id":"api","items":invalid}).to_string()).is_err());
-            assert_eq!(reopened.snapshot_document().unwrap(), before);
+            assert!(
+                reopened
+                    .inner
+                    .apply_session_command(C::ReorderChildren {
+                        collection_id: "api".into(),
+                        parent_id: None,
+                        items: invalid.into_iter().map(str::to_owned).collect()
+                    })
+                    .is_err()
+            );
+            assert_eq!(reopened.inner.domain_snapshot().unwrap(), before);
         }
     }
 
@@ -719,13 +700,11 @@ mod tests {
             "Target".into(),
         )
         .unwrap();
-        let delta: serde_json::Value = serde_json::from_str(
-            &bridge
-                .commit_import_file("legacy_workspace_v1", &exported, "source-export")
-                .unwrap(),
-        )
-        .unwrap();
-        assert_eq!(delta["affected_ids"].as_array().unwrap().len(), 2);
+        let delta = bridge
+            .inner
+            .commit_import_file(ImportFormat::LegacyWorkspaceV1, &exported, "source-export")
+            .unwrap();
+        assert_eq!(delta.delta.affected_ids.len(), 2);
 
         let snapshot = target.load().unwrap();
         let mut collections: Vec<_> = snapshot
@@ -772,24 +751,24 @@ mod tests {
         workspace.transport.total_timeout_ms = 123;
         WorkspaceStore::create(directory.path(), &workspace).unwrap();
         let bridge = WorkspaceBridge::open_or_create(path.clone(), "Proxy fixture".into()).unwrap();
-        let proxy = serde_json::json!({"mode":"manual","routes":[{"destination":"all","endpoint":"http://localhost:8080"}]});
+        let proxy = serde_json::json!({"mode":"manual","routes":[{"destination":"all","endpoint":"http://localhost:8080/"}]});
         bridge
-            .apply_workspace_command(
-                &serde_json::json!({"kind":"save_workspace_proxy","proxy":proxy}).to_string(),
-            )
+            .inner
+            .apply_session_command(C::SaveWorkspaceProxy {
+                proxy: Some(serde_json::from_value(proxy.clone()).unwrap()),
+            })
             .unwrap();
         let reopened = WorkspaceBridge::open_or_create(path, "Proxy fixture".into()).unwrap();
-        let snapshot: serde_json::Value =
-            serde_json::from_str(&reopened.snapshot_document().unwrap()).unwrap();
-        assert_eq!(snapshot["proxy"]["mode"], "manual");
-        assert_eq!(snapshot["transport"]["total_timeout_ms"], 123);
+        let snapshot = reopened.inner.domain_snapshot().unwrap();
+        assert_eq!(snapshot.proxy, Some(serde_json::from_value(proxy).unwrap()));
+        assert_eq!(snapshot.transport.total_timeout_ms, 123);
         reopened
-            .apply_workspace_command(r#"{"kind":"save_workspace_proxy","proxy":null}"#)
+            .inner
+            .apply_session_command(C::SaveWorkspaceProxy { proxy: None })
             .unwrap();
-        let reset: serde_json::Value =
-            serde_json::from_str(&reopened.snapshot_document().unwrap()).unwrap();
-        assert!(reset["proxy"].is_null());
-        assert_eq!(reset["transport"]["total_timeout_ms"], 123);
+        let reset = reopened.inner.domain_snapshot().unwrap();
+        assert!(reset.proxy.is_none());
+        assert_eq!(reset.transport.total_timeout_ms, 123);
     }
 
     #[test]
@@ -885,37 +864,35 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().to_string_lossy().into_owned();
         let first = WorkspaceBridge::open_or_create(path.clone(), "Fixture".into()).unwrap();
-        let first_delta: serde_json::Value = serde_json::from_str(
-            &first
-                .commit_import("curl", "curl 'https://example.com/first'")
-                .unwrap(),
-        )
-        .unwrap();
+        let first_delta = first
+            .inner
+            .commit_import(ImportFormat::Curl, "curl 'https://example.com/first'")
+            .unwrap();
         drop(first);
         let reopened = WorkspaceBridge::open_or_create(path, "Fixture".into()).unwrap();
-        let second_delta: serde_json::Value = serde_json::from_str(
-            &reopened
-                .commit_import("curl", "curl 'https://example.com/second'")
-                .unwrap(),
-        )
-        .unwrap();
-        assert_ne!(first_delta["affected_ids"], second_delta["affected_ids"]);
-        let snapshot: serde_json::Value =
-            serde_json::from_str(&reopened.snapshot_document().unwrap()).unwrap();
-        assert_eq!(snapshot["collections"].as_array().unwrap().len(), 2);
-        let serialized = snapshot.to_string();
+        let second_delta = reopened
+            .inner
+            .commit_import(ImportFormat::Curl, "curl 'https://example.com/second'")
+            .unwrap();
+        assert_ne!(
+            first_delta.delta.affected_ids,
+            second_delta.delta.affected_ids
+        );
+        let snapshot = reopened.inner.domain_snapshot().unwrap();
+        assert_eq!(snapshot.collections.len(), 2);
+        let serialized = serde_json::to_string(&snapshot).unwrap();
         assert!(serialized.contains("https://example.com/first"));
         assert!(serialized.contains("https://example.com/second"));
         assert!(
             reopened
-                .commit_import("legacy_workspace_v1", r#"{"version":2,"nodes":[]}"#)
+                .inner
+                .commit_import(
+                    ImportFormat::LegacyWorkspaceV1,
+                    r#"{"version":2,"nodes":[]}"#
+                )
                 .is_err()
         );
-        assert_eq!(
-            serde_json::from_str::<serde_json::Value>(&reopened.snapshot_document().unwrap())
-                .unwrap(),
-            snapshot
-        );
+        assert_eq!(reopened.inner.domain_snapshot().unwrap(), snapshot);
     }
 
     #[test]
@@ -937,30 +914,37 @@ mod tests {
             {"name": "token", "value": "", "enabled": true, "secret": true}
           ]}]
         }"#;
-        let committed: serde_json::Value =
-            serde_json::from_str(&bridge.commit_import_file("bruno", source, "Demo").unwrap())
-                .unwrap();
-        let summary = &committed["summary"];
-        assert_eq!(summary["collection_names"], serde_json::json!(["Demo"]));
-        assert_eq!(summary["environments"][0]["name"], "Demo \u{2013} Local");
+        let committed = bridge
+            .inner
+            .commit_import_file(ImportFormat::Bruno, source, "Demo")
+            .unwrap();
+        let summary = &committed.summary;
+        assert_eq!(summary.collection_names, ["Demo"]);
+        assert_eq!(summary.environments[0].name, "Demo \u{2013} Local");
         assert!(
-            summary["warnings"]
-                .as_array()
-                .unwrap()
+            summary
+                .warnings
                 .iter()
-                .any(|warning| warning.as_str().unwrap().contains("secret values"))
+                .any(|warning| warning.contains("secret values"))
         );
-        let snapshot: serde_json::Value =
-            serde_json::from_str(&bridge.snapshot_document().unwrap()).unwrap();
-        let serialized = snapshot["environments"].to_string();
+        let snapshot = bridge.inner.domain_snapshot().unwrap();
+        let serialized = serde_json::to_string(&snapshot.environments).unwrap();
         assert!(serialized.contains("http://127.0.0.1:18990"));
         assert!(serialized.contains("demo.local.token"));
         // A templated credential stays a variable reference instead of a Keychain copy.
-        assert!(snapshot["collections"].to_string().contains("{{token}}"));
-        assert!(bridge.commit_import_file("bruno", "{}", "Broken").is_err());
-        let after: serde_json::Value =
-            serde_json::from_str(&bridge.snapshot_document().unwrap()).unwrap();
-        assert_eq!(after["environments"], snapshot["environments"]);
+        assert!(
+            serde_json::to_string(&snapshot.collections)
+                .unwrap()
+                .contains("{{token}}")
+        );
+        assert!(
+            bridge
+                .inner
+                .commit_import_file(ImportFormat::Bruno, "{}", "Broken")
+                .is_err()
+        );
+        let after = bridge.inner.domain_snapshot().unwrap();
+        assert_eq!(after.environments, snapshot.environments);
     }
 
     #[test]
@@ -980,30 +964,30 @@ mod tests {
           ]}]
         }"#;
 
-        let committed: serde_json::Value = serde_json::from_str(
-            &bridge
-                .commit_import_file("postman_v2", source, "demo")
-                .unwrap(),
-        )
-        .unwrap();
+        let committed = bridge
+            .inner
+            .commit_import_file(ImportFormat::PostmanV2, source, "demo")
+            .unwrap();
 
-        let summary = &committed["summary"];
-        assert_eq!(summary["collection_names"], serde_json::json!(["Demo"]));
-        assert_eq!(summary["request_count"], 1);
-        assert_eq!(summary["group_count"], 1);
-        assert_eq!(summary["environments"][0]["name"], "Demo");
+        let summary = &committed.summary;
+        assert_eq!(summary.collection_names, ["Demo"]);
+        assert_eq!(summary.request_count, 1);
+        assert_eq!(summary.group_count, 1);
+        assert_eq!(summary.environments[0].name, "Demo");
+        assert!(summary.warnings[0].contains("Scripts aren't supported"));
+        let environment_id = summary.environments[0].id.as_str();
+        let snapshot = bridge.inner.domain_snapshot().unwrap();
         assert!(
-            summary["warnings"][0]
-                .as_str()
+            serde_json::to_string(&snapshot)
                 .unwrap()
-                .contains("Scripts aren't supported")
+                .contains(environment_id)
         );
-        let environment_id = summary["environments"][0]["id"].as_str().unwrap();
-        let snapshot: serde_json::Value =
-            serde_json::from_str(&bridge.snapshot_document().unwrap()).unwrap();
-        assert!(snapshot.to_string().contains(environment_id));
-        assert!(snapshot.to_string().contains("https://api.example.test"));
-        assert_eq!(committed["affected_ids"].as_array().unwrap().len(), 1);
+        assert!(
+            serde_json::to_string(&snapshot)
+                .unwrap()
+                .contains("https://api.example.test")
+        );
+        assert_eq!(committed.delta.affected_ids.len(), 1);
     }
 
     #[test]
@@ -1016,16 +1000,19 @@ mod tests {
         .unwrap();
 
         bridge
-            .commit_import("curl", "curl -k -L \\\n  https://api.example.test/items")
+            .inner
+            .commit_import(
+                ImportFormat::Curl,
+                "curl -k -L \\\n  https://api.example.test/items",
+            )
             .unwrap();
 
-        let snapshot: serde_json::Value =
-            serde_json::from_str(&bridge.snapshot_document().unwrap()).unwrap();
-        let request = &snapshot["collections"][0]["requests"][0];
-        assert_eq!(request["url"], "https://api.example.test/items");
-        assert_eq!(request["inherits_workspace_transport"], false);
-        assert_eq!(request["transport"]["validate_tls"], false);
-        assert_eq!(request["transport"]["follow_redirects"], true);
+        let snapshot = bridge.inner.domain_snapshot().unwrap();
+        let request = &snapshot.collections[0].requests[0].request;
+        assert_eq!(request.url, "https://api.example.test/items");
+        assert!(!request.inherits_workspace_transport);
+        assert!(!request.transport.validate_tls);
+        assert!(request.transport.follow_redirects);
     }
 
     #[test]
@@ -1036,23 +1023,22 @@ mod tests {
             "Fixture".into(),
         )
         .unwrap();
-        let before = bridge.snapshot_document().unwrap();
-        let reason = |result: Result<String, WorkspaceBridgeError>| match result {
+        let before = bridge.inner.domain_snapshot().unwrap();
+        let reason = |result: Result<ImportCommit, WorkspaceBridgeError>| match result {
             Err(WorkspaceBridgeError::OperationFailed { reason }) => reason,
             Ok(_) => panic!("import must fail"),
         };
 
         assert!(
-            reason(bridge.commit_import_file(
-                "postman_v2",
+            reason(bridge.inner.commit_import_file(
+                ImportFormat::PostmanV2,
                 r#"{"openapi": "3.1.0", "info": {"title": "Pets"}, "paths": {}}"#,
                 "pets"
             ))
             .contains("OpenAPI")
         );
-        assert!(reason(bridge.commit_import("har", "{}")).contains("HAR"));
-        assert!(reason(bridge.commit_import("yaml", "a: b")).contains("isn't supported"));
-        assert_eq!(bridge.snapshot_document().unwrap(), before);
+        assert!(reason(bridge.inner.commit_import(ImportFormat::Har, "{}")).contains("HAR"));
+        assert_eq!(bridge.inner.domain_snapshot().unwrap(), before);
     }
 
     #[test]
@@ -1146,25 +1132,20 @@ mod tests {
         bridge
             .save_collection("api".to_owned(), "API".to_owned())
             .expect("save collection");
+        let C::SaveRequest { mut location } = request_command("health", "Health", None, 0) else {
+            unreachable!()
+        };
+        location.request.url = "{{endpoint}}".into();
+        location.request.web_socket = true;
+        location.request.note = "café 東京 🚀".into();
+        location.request.authentication = wirebolt_app::domain::DomainAuthentication::Bearer {
+            token: wirebolt_app::domain::DomainValueSource::Secret {
+                secret: "api.token".into(),
+            },
+        };
         bridge
-            .save_request(
-                "api".to_owned(),
-                serde_json::json!({
-                    "id": "health",
-                    "name": "Health",
-                    "method": "GET",
-                    "url": "{{endpoint}}",
-                    "web_socket": true,
-                    "note": "café 東京 🚀",
-                    "authentication": {
-                        "kind": "bearer",
-                        "token": { "secret": "api.token" }
-                    },
-                    "body": { "kind": "empty" }
-                })
-                .to_string()
-                .as_str(),
-            )
+            .inner
+            .apply_session_command(C::SaveRequest { location })
             .expect("save request");
         std::fs::write(
             temporary.path().join("environments/broken.toml"),
@@ -1172,15 +1153,12 @@ mod tests {
         )
         .expect("write conflicted environment");
 
-        let snapshot = bridge.snapshot_document().expect("workspace snapshot");
-        let document: serde_json::Value = serde_json::from_str(&snapshot).expect("snapshot JSON");
+        let snapshot = bridge.inner.domain_snapshot().expect("workspace snapshot");
+        let document = &snapshot;
 
+        assert!(document.collections[0].requests[0].request.web_socket);
         assert_eq!(
-            document["collections"][0]["requests"][0]["web_socket"],
-            true
-        );
-        assert_eq!(
-            document["collections"][0]["requests"][0]["note"],
+            document.collections[0].requests[0].request.note,
             "café 東京 🚀"
         );
         let reopened = WorkspaceBridge::open_or_create(
@@ -1188,27 +1166,41 @@ mod tests {
             "Demo".to_owned(),
         )
         .expect("reopen");
-        let restored: serde_json::Value =
-            serde_json::from_str(&reopened.snapshot_document().unwrap()).unwrap();
+        let restored = reopened.inner.domain_snapshot().unwrap();
+        assert!(restored.collections[0].requests[0].request.web_socket);
         assert_eq!(
-            restored["collections"][0]["requests"][0]["web_socket"],
-            true
-        );
-        assert_eq!(
-            restored["collections"][0]["requests"][0]["note"],
+            restored.collections[0].requests[0].request.note,
             "café 東京 🚀"
         );
-        assert_eq!(document["name"], "Demo");
-        assert_eq!(document["proxy"]["mode"], "direct");
-        assert_eq!(document["collections"][0]["id"], "api");
-        assert_eq!(document["collections"][0]["requests"][0]["id"], "health");
+        assert_eq!(document.name, "Demo");
         assert_eq!(
-            document["collections"][0]["requests"][0]["authentication"]["token"]["secret"],
-            "api.token"
+            document.proxy,
+            Some(wirebolt_app::domain::DomainProxy::Direct)
         );
-        assert_eq!(document["problems"][0]["path"], "environments/broken.toml");
-        assert_eq!(document["problems"][0]["kind"], "invalid_toml");
-        assert!(!snapshot.contains("secret-value"));
+        assert_eq!(document.collections[0].id, "api");
+        assert_eq!(document.collections[0].requests[0].request.id, "health");
+        assert_eq!(
+            document.collections[0].requests[0].request.authentication,
+            wirebolt_app::domain::DomainAuthentication::Bearer {
+                token: wirebolt_app::domain::DomainValueSource::Secret {
+                    secret: "api.token".into()
+                }
+            }
+        );
+        let problems = bridge.inner.store.load().unwrap().problems;
+        assert_eq!(
+            problems[0].path,
+            std::path::PathBuf::from("environments/broken.toml")
+        );
+        assert_eq!(
+            problems[0].kind,
+            wirebolt_core::DocumentProblemKind::InvalidToml
+        );
+        assert!(
+            !serde_json::to_string(&snapshot)
+                .unwrap()
+                .contains("secret-value")
+        );
         let request_export = bridge
             .export_request_json("api", "health")
             .expect("export request");
@@ -1233,69 +1225,36 @@ mod tests {
         )
         .expect("workspace bridge");
 
-        let collection_delta = bridge
-            .apply_workspace_command(
-                &serde_json::json!({
-                    "kind": "create_collection",
-                    "id": "api",
-                    "name": "API",
-                    "order": 0
-                })
-                .to_string(),
-            )
+        let first = bridge
+            .inner
+            .apply_session_command(collection_command("api", "API"))
             .expect("create collection");
-        let group_delta = bridge
-            .apply_workspace_command(
-                &serde_json::json!({
-                    "kind": "create_group",
-                    "collection_id": "api",
-                    "group": {
-                        "id": "auth",
-                        "name": "Authentication",
-                        "parent_id": null,
-                        "order": 0
-                    }
-                })
-                .to_string(),
-            )
+        let second = bridge
+            .inner
+            .apply_session_command(group_command("api", "auth", "Authentication"))
             .expect("create group");
+        let C::SaveRequest { mut location } = request_command("login", "Login", Some("auth"), 0)
+        else {
+            unreachable!()
+        };
+        location.request.method = "POST".into();
         bridge
-            .apply_workspace_command(
-                &serde_json::json!({
-                    "kind": "save_request",
-                    "collection_id": "api",
-                    "request": {
-                        "id": "login",
-                        "name": "Login",
-                        "group_id": "auth",
-                        "order": 0,
-                        "method": "POST",
-                        "url": "https://example.com/login",
-                        "body": { "kind": "empty" }
-                    }
-                })
-                .to_string(),
-            )
+            .inner
+            .apply_session_command(C::SaveRequest { location })
             .expect("save grouped request");
+        assert_eq!(first.version, 1);
+        assert_eq!(second.version, 2);
 
-        let first: serde_json::Value =
-            serde_json::from_str(&collection_delta).expect("collection delta");
-        let second: serde_json::Value = serde_json::from_str(&group_delta).expect("group delta");
-        assert_eq!(first["version"], 1);
-        assert_eq!(second["version"], 2);
-
-        let snapshot: serde_json::Value =
-            serde_json::from_str(&bridge.snapshot_document().expect("workspace snapshot"))
-                .expect("snapshot JSON");
-        assert_eq!(snapshot["collections"][0]["groups"][0]["id"], "auth");
+        let snapshot = bridge.inner.domain_snapshot().expect("workspace snapshot");
+        assert_eq!(snapshot.collections[0].groups[0].id, "auth");
         assert_eq!(
-            snapshot["collections"][0]["requests"][0]["group_id"],
-            "auth"
+            snapshot.collections[0].requests[0].group_id.as_deref(),
+            Some("auth")
         );
     }
 
     #[test]
-    fn workspace_bridge_exposes_git_operations_as_stable_json() {
+    fn workspace_bridge_exposes_typed_git_operations() {
         let temporary = tempfile::tempdir().expect("temporary workspace");
         WorkspaceStore::create(temporary.path(), &Workspace::new("Demo"))
             .expect("create workspace");
@@ -1319,30 +1278,29 @@ mod tests {
             assert!(output.status.success());
         }
 
-        let before: serde_json::Value =
-            serde_json::from_str(&bridge.git_status_json().expect("Git status JSON"))
-                .expect("decode Git status");
-        assert_eq!(before["branch"], "main");
-        assert_eq!(before["revision"], serde_json::Value::Null);
-        assert_eq!(before["changes"][0]["path"], "wirebolt.toml");
-        assert_eq!(before["changes"][0]["unstaged"], "untracked");
-
-        let operation: serde_json::Value = serde_json::from_str(
-            &bridge
-                .git_commit_json("initial workspace")
-                .expect("Git commit JSON"),
-        )
-        .expect("decode Git operation");
-        assert_eq!(operation["outcome"], "committed");
-        assert!(operation["revision"].is_string());
-        assert_eq!(operation["status"]["changes"], serde_json::json!([]));
-        assert_eq!(operation["status"]["merging"], false);
-
-        let Err(GitBridgeError::OperationFailed { kind, .. }) = bridge.git_abort_merge_json()
+        let before = bridge.inner.git_status().expect("Git status");
+        assert_eq!(before.branch.as_deref(), Some("main"));
+        assert_eq!(before.changes[0].path, "wirebolt.toml");
+        assert_eq!(
+            before.changes[0].unstaged,
+            wirebolt_core::GitDelta::Untracked
+        );
+        let operation = bridge
+            .inner
+            .git_commit("initial workspace")
+            .expect("Git commit");
+        assert_eq!(
+            operation.outcome,
+            wirebolt_app::session::workspace::io::WorkspaceGitOutcome::Committed
+        );
+        assert!(operation.revision.is_some());
+        assert!(operation.status.changes.is_empty());
+        assert!(!operation.status.merging);
+        let Err(GitBridgeError::OperationFailed { kind, .. }) = bridge.inner.git_abort_merge()
         else {
-            panic!("aborting without a merge must fail");
+            panic!("aborting without a merge must fail")
         };
-        assert_eq!(kind, "no_merge_in_progress");
+        assert_eq!(kind, WK::NoMergeInProgress);
     }
 
     #[test]
@@ -1354,19 +1312,15 @@ mod tests {
             "Payments API".to_owned(),
         )
         .expect("workspace bridge");
-        let Err(GitBridgeError::OperationFailed { kind, .. }) = bridge.git_status_json() else {
+        let Err(GitBridgeError::OperationFailed { kind, .. }) = bridge.inner.git_status() else {
             panic!("a new workspace folder is not a repository");
         };
-        assert_eq!(kind, "not_repository");
+        assert_eq!(kind, WK::NotRepository);
 
-        let status: serde_json::Value =
-            serde_json::from_str(&bridge.git_initialize_json().expect("initialize Git"))
-                .expect("decode Git status");
-
-        assert_eq!(status["revision"], serde_json::Value::Null);
-        assert_eq!(status["merging"], false);
+        let status = bridge.inner.git_initialize().expect("initialize Git");
+        assert!(!status.merging);
         assert!(root.join(".git").exists());
-        assert!(bridge.git_status_json().is_ok());
+        assert!(bridge.inner.git_status().is_ok());
     }
 
     #[test]
@@ -1376,28 +1330,26 @@ mod tests {
         let bridge = WorkspaceBridge::open_or_create(path.clone(), "Checkout".into())
             .expect("workspace bridge");
 
-        let delta: serde_json::Value = serde_json::from_str(
-            &bridge
-                .apply_workspace_command(
-                    &serde_json::json!({"kind":"rename_workspace","name":"  Checkout Team  "})
-                        .to_string(),
-                )
-                .expect("rename workspace"),
-        )
-        .expect("delta JSON");
-        assert_eq!(delta["kind"], "workspace");
+        let delta = bridge
+            .inner
+            .apply_session_command(C::RenameWorkspace {
+                name: "  Checkout Team  ".into(),
+            })
+            .expect("rename workspace");
+        assert_eq!(
+            delta.kind,
+            wirebolt_app::session::persistence::SessionWorkspaceNodeKind::Workspace
+        );
         assert!(
             bridge
-                .apply_workspace_command(
-                    &serde_json::json!({"kind":"rename_workspace","name":"   "}).to_string()
-                )
+                .inner
+                .apply_session_command(C::RenameWorkspace { name: "   ".into() })
                 .is_err()
         );
 
         let reopened = WorkspaceBridge::open_or_create(path, "Ignored".into()).expect("reopen");
-        let snapshot: serde_json::Value =
-            serde_json::from_str(&reopened.snapshot_document().expect("snapshot")).expect("JSON");
-        assert_eq!(snapshot["name"], "Checkout Team");
+        let snapshot = reopened.inner.domain_snapshot().expect("snapshot");
+        assert_eq!(snapshot.name, "Checkout Team");
     }
 
     /// Each test owns its cache, so resets in one test cannot race lookups

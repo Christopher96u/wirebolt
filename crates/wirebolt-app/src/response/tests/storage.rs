@@ -39,21 +39,50 @@ fn history_survives_recreation_and_evicts_past_quota() {
         let mut store = BodyStore::new(&format!("run-{index}"), root.path()).unwrap();
         store.append(format!("run {index}").as_bytes()).unwrap();
         store.finish().unwrap();
-        history.record(HistoryEntry{id:format!("run-{index}"),request_id:"health".into(),created_at:f64::from(index),prepared:serde_json::json!({"method":"GET","url":"https://example.com","headers":[],"body":{"byte_count":0,"content_type":null,"text_preview":null,"redacted":false},"transport":{}}),response_head:None,completion:Some(serde_json::json!({"bytes_received":index,"total_time_ns":1})),failure:None,body_path:String::new()},&store).unwrap();
+        history
+            .record(
+                HistoryEntry {
+                    id: format!("run-{index}"),
+                    request_id: "health".into(),
+                    created_at: f64::from(index),
+                    prepared: crate::session::run::SessionPrepared {
+                        proxy: None,
+                        method: "GET".into(),
+                        url: "https://example.com".into(),
+                        headers: vec![],
+                        body: crate::session::run::SessionPreparedBody {
+                            byte_count: 0,
+                            content_type: None,
+                            text_preview: None,
+                            redacted: false,
+                        },
+                        transport: crate::domain::DomainTransport::default(),
+                    },
+                    response_head: None,
+                    completion: Some(crate::session::run::SessionCompletion {
+                        bytes_received: u64::try_from(index).unwrap(),
+                        total_time_ns: 1,
+                    }),
+                    failure: None,
+                    body_path: String::new(),
+                },
+                &store,
+            )
+            .unwrap();
         store.remove();
     }
     let mut reloaded = RunHistory::new(root.path().into());
-    let entries = reloaded.list("health");
+    let entries = reloaded.list("health").unwrap();
     assert_eq!(entries.len(), 100);
-    assert_eq!(reloaded.count("health"), 100);
-    assert_eq!(reloaded.count("missing"), 0);
+    assert_eq!(reloaded.count("health").unwrap(), 100);
+    assert_eq!(reloaded.count("missing").unwrap(), 0);
     assert!(
         entries
             .iter()
             .all(|e| std::path::Path::new(&e.body_path).exists())
     );
     reloaded.clear("health").unwrap();
-    assert_eq!(reloaded.count("health"), 0);
+    assert_eq!(reloaded.count("health").unwrap(), 0);
 }
 #[test]
 fn cookies_honor_host_path_tls_expiry_and_persistence() {
@@ -125,7 +154,7 @@ fn cookie_domain_delete_and_dates() {
 
 #[test]
 fn history_keeps_legacy_acronyms_and_omits_absent_optional_fields() {
-    let source=br#"{"id":"run","requestID":"health","createdAt":42,"prepared":{"method":"GET"},"bodyPath":"/runtime/body"}"#;
+    let source=br#"{"id":"run","requestID":"health","createdAt":42,"prepared":{"proxy":null,"method":"GET","url":"https://example.com","headers":[],"body":{"byte_count":0,"content_type":null,"text_preview":null,"redacted":false},"transport":{"validate_tls":true,"follow_redirects":true,"maximum_redirects":10,"total_timeout_ms":0,"read_timeout_ms":0,"client_certificate_reference":null,"custom_ca_path":null}},"bodyPath":"/runtime/body"}"#;
     let entry: HistoryEntry = serde_json::from_slice(source).unwrap();
     let encoded = serde_json::to_value(entry).unwrap();
     assert_eq!(encoded["requestID"], "health");
@@ -169,4 +198,46 @@ fn cookie_dates_preserve_pre_epoch_expiry_two_digit_years_and_named_timezones() 
         0.0,
     );
     assert!(jar.all(0.0).is_empty());
+}
+
+#[test]
+fn corrupt_history_reports_errors_and_never_overwrites_the_index() {
+    let root = tempfile::tempdir().unwrap();
+    let index = root.path().join("index.json");
+    let original = br#"[{"id":"broken","requestID":"health","prepared":false}]"#;
+    std::fs::write(&index, original).unwrap();
+    let mut history = RunHistory::new(root.path().into());
+    assert!(history.list("health").is_err());
+    assert!(history.count("health").is_err());
+    assert!(history.clear("health").is_err());
+    assert_eq!(std::fs::read(&index).unwrap(), original);
+    std::fs::write(&index, b"[]").unwrap();
+    assert!(history.list("health").unwrap().is_empty());
+}
+
+#[test]
+fn history_preserves_typed_failures_and_unknown_legacy_codes() {
+    let source = r#"{"id":"run","requestID":"health","createdAt":42,"prepared":{"proxy":null,"method":"GET","url":"https://example.com","headers":[],"body":{"byte_count":0,"content_type":null,"text_preview":null,"redacted":false},"transport":{"validate_tls":true,"follow_redirects":true,"maximum_redirects":10,"total_timeout_ms":0,"read_timeout_ms":0,"client_certificate_reference":null,"custom_ca_path":null}},"failure":{"kind":"future_failure","issues":[]},"bodyPath":"/runtime/body"}"#;
+    let entry: HistoryEntry = serde_json::from_str(source).unwrap();
+    assert_eq!(
+        entry.failure.as_ref().unwrap().kind,
+        ResponseFailureKind::Other {
+            code: "future_failure".into()
+        }
+    );
+    let encoded = serde_json::to_value(&entry).unwrap();
+    assert_eq!(encoded["failure"]["kind"], "future_failure");
+    assert_eq!(
+        serde_json::from_value::<HistoryEntry>(encoded).unwrap(),
+        entry
+    );
+    for (code, expected) in [
+        ("cancelled", ResponseFailureKind::Cancelled),
+        ("tls_configuration", ResponseFailureKind::TlsConfiguration),
+        ("storage", ResponseFailureKind::Storage),
+    ] {
+        let kind: ResponseFailureKind = serde_json::from_value(serde_json::json!(code)).unwrap();
+        assert_eq!(kind, expected);
+        assert_eq!(serde_json::to_value(kind).unwrap(), code);
+    }
 }

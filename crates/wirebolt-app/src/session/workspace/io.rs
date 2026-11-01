@@ -8,9 +8,98 @@ use crate::{
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(from = "String", into = "String")]
+pub enum WorkspaceFailureKind {
+    Workspace,
+    Bridge,
+    InvalidBridgeResponse,
+    UnsavedRequest,
+    Unsupported,
+    WorkspaceReload,
+    NotConfigured,
+    GitUnavailable,
+    NotRepository,
+    WorkspaceNotRepositoryRoot,
+    CommandFailed,
+    InvalidOutput,
+    InvalidCommitMessage,
+    IdentityMissing,
+    AuthenticationRequired,
+    DirtyWorkspace,
+    MissingUpstream,
+    MissingRemote,
+    DetachedHead,
+    TimedOut,
+    NoMergeInProgress,
+    Other { code: String },
+}
+impl WorkspaceFailureKind {
+    #[must_use]
+    pub fn code(&self) -> &str {
+        match self {
+            Self::Workspace => "workspace",
+            Self::Bridge => "bridge",
+            Self::InvalidBridgeResponse => "invalid_bridge_response",
+            Self::UnsavedRequest => "unsaved_request",
+            Self::Unsupported => "unsupported",
+            Self::WorkspaceReload => "workspace_reload",
+            Self::NotConfigured => "not_configured",
+            Self::GitUnavailable => "git_unavailable",
+            Self::NotRepository => "not_repository",
+            Self::WorkspaceNotRepositoryRoot => "workspace_not_repository_root",
+            Self::CommandFailed => "command_failed",
+            Self::InvalidOutput => "invalid_output",
+            Self::InvalidCommitMessage => "invalid_commit_message",
+            Self::IdentityMissing => "identity_missing",
+            Self::AuthenticationRequired => "authentication_required",
+            Self::DirtyWorkspace => "dirty_workspace",
+            Self::MissingUpstream => "missing_upstream",
+            Self::MissingRemote => "missing_remote",
+            Self::DetachedHead => "detached_head",
+            Self::TimedOut => "timed_out",
+            Self::NoMergeInProgress => "no_merge_in_progress",
+            Self::Other { code } => code,
+        }
+    }
+}
+impl From<String> for WorkspaceFailureKind {
+    fn from(code: String) -> Self {
+        match code.as_str() {
+            "workspace" => Self::Workspace,
+            "bridge" => Self::Bridge,
+            "invalid_bridge_response" => Self::InvalidBridgeResponse,
+            "unsaved_request" => Self::UnsavedRequest,
+            "unsupported" => Self::Unsupported,
+            "workspace_reload" => Self::WorkspaceReload,
+            "not_configured" => Self::NotConfigured,
+            "git_unavailable" => Self::GitUnavailable,
+            "not_repository" => Self::NotRepository,
+            "workspace_not_repository_root" => Self::WorkspaceNotRepositoryRoot,
+            "command_failed" => Self::CommandFailed,
+            "invalid_output" => Self::InvalidOutput,
+            "invalid_commit_message" => Self::InvalidCommitMessage,
+            "identity_missing" => Self::IdentityMissing,
+            "authentication_required" => Self::AuthenticationRequired,
+            "dirty_workspace" => Self::DirtyWorkspace,
+            "missing_upstream" => Self::MissingUpstream,
+            "missing_remote" => Self::MissingRemote,
+            "detached_head" => Self::DetachedHead,
+            "timed_out" => Self::TimedOut,
+            "no_merge_in_progress" => Self::NoMergeInProgress,
+            _ => Self::Other { code },
+        }
+    }
+}
+impl From<WorkspaceFailureKind> for String {
+    fn from(kind: WorkspaceFailureKind) -> Self {
+        kind.code().to_owned()
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WorkspaceFailure {
-    pub kind: String,
+    pub kind: WorkspaceFailureKind,
     pub reason: String,
     pub localized: bool,
 }
@@ -18,7 +107,7 @@ impl WorkspaceFailure {
     #[must_use]
     pub fn workspace() -> Self {
         Self {
-            kind: "workspace".into(),
+            kind: WorkspaceFailureKind::Workspace,
             reason: String::new(),
             localized: false,
         }
@@ -39,31 +128,9 @@ pub struct WorkspaceImportSummary {
     #[serde(default)]
     pub warnings: Vec<String>,
 }
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum WorkspaceGitDelta {
-    None,
-    Added,
-    Modified,
-    Deleted,
-    Renamed,
-    Copied,
-    TypeChanged,
-    Untracked,
-    Unmerged,
-}
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum WorkspaceGitOutcome {
-    NothingToCommit,
-    Committed,
-    Updated,
-    UpToDate,
-    Pushed,
-    Conflicted,
-    MergeAborted,
-}
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub use wirebolt_core::GitDelta as WorkspaceGitDelta;
+pub use wirebolt_core::GitOperationOutcome as WorkspaceGitOutcome;
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct WorkspaceGitChange {
     pub path: String,
     pub previous_path: Option<String>,
@@ -71,17 +138,16 @@ pub struct WorkspaceGitChange {
     pub unstaged: WorkspaceGitDelta,
     pub conflicted: bool,
 }
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct WorkspaceGitStatus {
     pub branch: Option<String>,
     pub upstream: Option<String>,
     pub ahead: u64,
     pub behind: u64,
     pub changes: Vec<WorkspaceGitChange>,
-    #[serde(default)]
     pub merging: bool,
 }
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct WorkspaceGitOperation {
     pub outcome: WorkspaceGitOutcome,
     pub revision: Option<String>,
@@ -109,7 +175,7 @@ pub enum WorkspaceIO {
         commands: Vec<SessionWorkspaceCommand>,
     },
     Import {
-        format: String,
+        format: wirebolt_core::ImportFormat,
         source: String,
         name: Option<String>,
     },
@@ -146,28 +212,19 @@ fn workspace_result<T>(
         Ok(value) => map(value),
         Err(error) => WorkspaceReply::Failed {
             failure: WorkspaceFailure {
-                kind: "workspace".into(),
+                kind: WorkspaceFailureKind::Workspace,
                 reason: error.to_string(),
                 localized: true,
             },
         },
     }
 }
-fn decode_git<T: serde::de::DeserializeOwned>(
-    result: Result<String, super::super::persistence::WorkspaceGitError>,
+fn git_result<T>(
+    result: Result<T, super::super::persistence::WorkspaceGitError>,
     map: impl FnOnce(T) -> WorkspaceReply,
 ) -> WorkspaceReply {
     match result {
-        Ok(json) => match serde_json::from_str(&json) {
-            Ok(value) => map(value),
-            Err(_) => WorkspaceReply::Failed {
-                failure: WorkspaceFailure {
-                    kind: "invalid_bridge_response".into(),
-                    reason: "Git returned an invalid response.".into(),
-                    localized: true,
-                },
-            },
-        },
+        Ok(value) => map(value),
         Err(super::super::persistence::WorkspaceGitError::OperationFailed { kind, reason }) => {
             WorkspaceReply::Failed {
                 failure: WorkspaceFailure {
@@ -196,22 +253,11 @@ impl SessionPersistence {
                 name,
             } => {
                 let result = name.map_or_else(
-                    || self.commit_import(&format, &source),
-                    |name| self.commit_import_file(&format, &source, &name),
+                    || self.commit_import(format, &source),
+                    |name| self.commit_import_file(format, &source, &name),
                 );
-                workspace_result(result, |json| {
-                    #[derive(Deserialize)]
-                    struct Commit {
-                        summary: WorkspaceImportSummary,
-                    }
-                    match serde_json::from_str::<Commit>(&json) {
-                        Ok(value) => WorkspaceReply::Imported {
-                            summary: value.summary,
-                        },
-                        Err(_) => WorkspaceReply::Failed {
-                            failure: WorkspaceFailure::workspace(),
-                        },
-                    }
+                workspace_result(result, |commit| WorkspaceReply::Imported {
+                    summary: commit.summary,
                 })
             }
             WorkspaceIO::Export { target } => workspace_result(
@@ -225,26 +271,26 @@ impl SessionPersistence {
                 |content| WorkspaceReply::Exported { content },
             ),
             WorkspaceIO::Git { action } => match action {
-                WorkspaceGitAction::Status => decode_git(self.git_status_json(), |status| {
+                WorkspaceGitAction::Status => git_result(self.git_status(), |status| {
                     WorkspaceReply::GitStatus { status }
                 }),
-                WorkspaceGitAction::Initialize => {
-                    decode_git(self.git_initialize_json(), |status| {
-                        WorkspaceReply::GitStatus { status }
+                WorkspaceGitAction::Initialize => git_result(self.git_initialize(), |status| {
+                    WorkspaceReply::GitStatus { status }
+                }),
+                WorkspaceGitAction::Pull => git_result(self.git_pull(), |operation| {
+                    WorkspaceReply::GitOperation { operation }
+                }),
+                WorkspaceGitAction::Commit { message } => {
+                    git_result(self.git_commit(&message), |operation| {
+                        WorkspaceReply::GitOperation { operation }
                     })
                 }
-                action => decode_git(
-                    match action {
-                        WorkspaceGitAction::Pull => self.git_pull_json(),
-                        WorkspaceGitAction::Commit { message } => self.git_commit_json(&message),
-                        WorkspaceGitAction::Push => self.git_push_json(),
-                        WorkspaceGitAction::Abort => self.git_abort_merge_json(),
-                        WorkspaceGitAction::Status | WorkspaceGitAction::Initialize => {
-                            unreachable!()
-                        }
-                    },
-                    |operation| WorkspaceReply::GitOperation { operation },
-                ),
+                WorkspaceGitAction::Push => git_result(self.git_push(), |operation| {
+                    WorkspaceReply::GitOperation { operation }
+                }),
+                WorkspaceGitAction::Abort => git_result(self.git_abort_merge(), |operation| {
+                    WorkspaceReply::GitOperation { operation }
+                }),
             },
         }
     }

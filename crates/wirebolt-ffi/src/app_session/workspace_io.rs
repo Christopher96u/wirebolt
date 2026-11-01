@@ -12,7 +12,7 @@ use super::{
 };
 #[uniffi::remote(Record)]
 pub struct WorkspaceFailure {
-    pub kind: String,
+    pub kind: wirebolt_app::session::workspace::io::WorkspaceFailureKind,
     pub reason: String,
     pub localized: bool,
 }
@@ -82,7 +82,7 @@ pub enum WorkspaceIO {
         commands: Vec<SessionWorkspaceCommand>,
     },
     Import {
-        format: String,
+        format: crate::app_domain::DomainImportFormat,
         source: String,
         name: Option<String>,
     },
@@ -201,7 +201,7 @@ pub fn session_git_change_kind(
     staged: WorkspaceGitDelta,
     unstaged: WorkspaceGitDelta,
     conflicted: bool,
-) -> String {
+) -> crate::app_domain::DomainGitChangeKind {
     wirebolt_app::session::workspace::presentation::git_change_kind(staged, unstaged, conflicted)
 }
 #[uniffi::export]
@@ -234,4 +234,31 @@ pub enum WorkspaceGitOutcome {
     Pushed,
     Conflicted,
     MergeAborted,
+}
+
+use wirebolt_app::session::workspace::io::WorkspaceFailureKind;
+#[uniffi::remote(Enum)]
+pub enum WorkspaceFailureKind {
+    Workspace,
+    Bridge,
+    InvalidBridgeResponse,
+    UnsavedRequest,
+    Unsupported,
+    WorkspaceReload,
+    NotConfigured,
+    GitUnavailable,
+    NotRepository,
+    WorkspaceNotRepositoryRoot,
+    CommandFailed,
+    InvalidOutput,
+    InvalidCommitMessage,
+    IdentityMissing,
+    AuthenticationRequired,
+    DirtyWorkspace,
+    MissingUpstream,
+    MissingRemote,
+    DetachedHead,
+    TimedOut,
+    NoMergeInProgress,
+    Other { code: String },
 }

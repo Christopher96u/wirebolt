@@ -5,6 +5,7 @@
 )]
 use crate::{WorkspaceBridge, app_response::lock};
 use std::{collections::HashMap, sync::Arc};
+pub(crate) use wirebolt_app::domain::request::DomainGitChangeKind;
 use wirebolt_app::domain::theme::{DensityTokens, GeometryTokens};
 use wirebolt_app::domain::{
     self,
@@ -18,8 +19,14 @@ use wirebolt_app::domain::{
         DomainProxy, DomainProxyCredentials, DomainProxyRoute, DomainRequestDraft, DomainTransport,
         DomainValueSource, DomainVariable, DomainWorkspace,
     },
-    oauth::{DomainNetworkFailure, DomainOAuthError, DomainOAuthPlatform, DomainTokenReceipt},
-    proxy::{ConnectionProbe, ProbeState, ProxyFormInput, ProxyFormMode, ProxyRouteInput},
+    oauth::{
+        DomainNetworkFailure, DomainOAuthError, DomainOAuthPlatform, DomainOAuthProxy,
+        DomainTokenReceipt,
+    },
+    proxy::{
+        ConnectionProbe, DomainProxySource, ProbeState, ProxyFormInput, ProxyFormMode,
+        ProxyRouteInput,
+    },
     sidebar::{
         DomainSidebarCollection, DomainSidebarRequest, SidebarIndex, SidebarOutcome, SidebarRow,
     },
@@ -30,6 +37,9 @@ use wirebolt_app::domain::{
     variables::{CatalogEntry, OpenTemplateReference, TemplateReference, TemplateSegment},
 };
 use wirebolt_app::response::FailureCategory;
+#[cfg(test)]
+use wirebolt_core::GitDelta as WorkspaceGitDelta;
+pub(crate) use wirebolt_core::ImportFormat as DomainImportFormat;
 
 #[uniffi::remote(Record)]
 pub struct ProxyRouteInput {
@@ -209,6 +219,12 @@ pub struct DomainProxyRoute {
 pub struct DomainProxyCredentials {
     pub username: String,
     pub password: String,
+}
+
+#[uniffi::remote(Enum)]
+pub enum DomainOAuthProxy {
+    Direct,
+    Proxy { endpoint: String },
 }
 
 #[uniffi::remote(Enum)]
@@ -406,6 +422,7 @@ pub struct DomainTokenReceipt {
 /// Native services start a browser hop and complete its Rust-owned result once.
 #[uniffi::export(with_foreign)]
 pub trait OAuthPlatform: Send + Sync {
+    fn system_proxies(&self, url: String) -> Vec<DomainOAuthProxy>;
     fn authorize(&self, url: String, callback_scheme: String, completion: Arc<OAuthAuthorization>);
     fn read_secret(&self, name: String) -> Option<String>;
 }
@@ -430,6 +447,9 @@ impl OAuthAuthorization {
 struct PlatformAdapter(Arc<dyn OAuthPlatform>);
 #[async_trait::async_trait]
 impl DomainOAuthPlatform for PlatformAdapter {
+    fn system_proxies(&self, url: &str) -> Vec<DomainOAuthProxy> {
+        self.0.system_proxies(url.to_owned())
+    }
     async fn authorize(
         &self,
         url: String,
@@ -748,7 +768,7 @@ pub fn domain_resolve_proxy(
         let (configuration, source) = domain::proxy::resolve(request, workspace, app);
         ResolvedDomainProxy {
             configuration,
-            source: DomainProxySource::from_name(&source),
+            source,
         }
     }
 }
@@ -922,7 +942,7 @@ pub fn domain_curl_proxy_arguments(
 #[uniffi::export]
 #[must_use]
 pub fn domain_detect_import(extension: String, contents: String) -> Option<DomainImportFormat> {
-    domain::imports::detect(&extension, &contents).map(|name| DomainImportFormat::from_name(&name))
+    domain::imports::detect(&extension, &contents)
 }
 
 #[uniffi::export]
@@ -940,7 +960,6 @@ pub fn domain_detect_collection(
             .and_then(|s| serde_json::from_str::<serde_json::Value>(s).ok())
             .as_ref(),
     )
-    .map(|name| DomainImportFormat::from_name(&name))
 }
 
 #[uniffi::export]
@@ -1122,7 +1141,7 @@ pub fn domain_active_count(fields: Vec<DomainField>) -> u64 {
 #[uniffi::export]
 #[must_use]
 pub fn domain_proxy_needs_indicator(configuration: DomainProxy, source: DomainProxySource) -> bool {
-    domain::proxy::needs_indicator(&configuration, source.as_str())
+    domain::proxy::needs_indicator(&configuration, source)
 }
 #[uniffi::export]
 #[must_use]
@@ -1148,19 +1167,6 @@ pub fn domain_import_environment_line(
     localized_list: String,
 ) -> Option<String> {
     domain::request::import_environment_line(&names, &localized_list)
-}
-#[uniffi::export]
-#[must_use]
-pub fn domain_git_change_kind(
-    staged: DomainGitDelta,
-    unstaged: DomainGitDelta,
-    conflicted: bool,
-) -> DomainGitChangeKind {
-    DomainGitChangeKind::from_name(&domain::request::git_change_kind(
-        staged.as_str(),
-        unstaged.as_str(),
-        conflicted,
-    ))
 }
 #[uniffi::export]
 #[must_use]
@@ -1274,7 +1280,34 @@ mod tests {
         bridge
             .save_collection("collection".into(), "Collection".into())
             .unwrap();
-        bridge.save_request("collection".into(), r#"{"id":"request","name":"Request","method":"QUERY","url":"https://example.invalid","headers":[{"id":"header-id","name":"Authorization","value":{"secret":"fixture.token"},"enabled":true,"sensitive":true}],"body":{"kind":"empty"}}"#).unwrap();
+        bridge
+            .inner
+            .apply_session_command(
+                wirebolt_app::session::workspace::SessionWorkspaceCommand::SaveRequest {
+                    location: wirebolt_app::domain::DomainLocation {
+                        collection_id: "collection".into(),
+                        group_id: None,
+                        order: 0,
+                        request: DomainRequestDraft {
+                            id: "request".into(),
+                            name: "Request".into(),
+                            method: "QUERY".into(),
+                            url: "https://example.invalid".into(),
+                            headers: vec![DomainField {
+                                id: "header-id".into(),
+                                name: "Authorization".into(),
+                                value: DomainValueSource::Secret {
+                                    secret: "fixture.token".into(),
+                                },
+                                enabled: true,
+                                sensitive: true,
+                            }],
+                            ..Default::default()
+                        },
+                    },
+                },
+            )
+            .unwrap();
         let workspace = bridge.domain_snapshot().unwrap();
         assert_eq!(workspace.name, "Fixture");
         let draft = &workspace.collections[0].requests[0].request;
@@ -1292,6 +1325,9 @@ mod tests {
     }
     struct Browser;
     impl OAuthPlatform for Browser {
+        fn system_proxies(&self, _: String) -> Vec<DomainOAuthProxy> {
+            vec![DomainOAuthProxy::Direct]
+        }
         fn authorize(&self, _url: String, _scheme: String, completion: Arc<OAuthAuthorization>) {
             completion.complete(
                 Some("wirebolt://oauth/callback?state=s&code=first".into()),
@@ -1415,7 +1451,7 @@ pub fn domain_effective_transport(
 #[uniffi::export]
 #[must_use]
 pub fn domain_proxy_scope_title(scope: DomainProxySource) -> String {
-    domain::proxy::scope_title(scope.as_str())
+    domain::proxy::scope_title(scope)
 }
 #[uniffi::export]
 #[must_use]
@@ -1501,7 +1537,7 @@ pub fn domain_body_can_format(kind: DomainBodyKind) -> bool {
     domain::body::kind_can_format(kind)
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, uniffi::Enum)]
+#[uniffi::remote(Enum)]
 pub enum DomainImportFormat {
     Curl,
     Har,
@@ -1511,77 +1547,14 @@ pub enum DomainImportFormat {
     Bruno,
     BrunoFolder,
 }
-impl DomainImportFormat {
-    fn from_name(value: &str) -> Self {
-        match value {
-            "curl" => Self::Curl,
-            "har" => Self::Har,
-            "legacy_workspace_v1" => Self::LegacyWorkspaceV1,
-            "postman_v2" => Self::PostmanV2,
-            "insomnia" => Self::Insomnia,
-            "bruno" => Self::Bruno,
-            "bruno_folder" => Self::BrunoFolder,
-            _ => unreachable!("application enum identifier"),
-        }
-    }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, uniffi::Enum)]
+#[uniffi::remote(Enum)]
 pub enum DomainProxySource {
     Request,
     Workspace,
     AppDefault,
     SystemDefault,
 }
-impl DomainProxySource {
-    fn from_name(value: &str) -> Self {
-        match value {
-            "request" => Self::Request,
-            "workspace" => Self::Workspace,
-            "app_default" => Self::AppDefault,
-            "system_default" => Self::SystemDefault,
-            _ => unreachable!("application enum identifier"),
-        }
-    }
-    fn as_str(self) -> &'static str {
-        match self {
-            Self::Request => "request",
-            Self::Workspace => "workspace",
-            Self::AppDefault => "app_default",
-            Self::SystemDefault => "system_default",
-        }
-    }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, uniffi::Enum)]
-pub enum DomainGitDelta {
-    None,
-    Added,
-    Modified,
-    Deleted,
-    Renamed,
-    Copied,
-    TypeChanged,
-    Untracked,
-    Unmerged,
-}
-impl DomainGitDelta {
-    fn as_str(self) -> &'static str {
-        match self {
-            Self::None => "none",
-            Self::Added => "added",
-            Self::Modified => "modified",
-            Self::Deleted => "deleted",
-            Self::Renamed => "renamed",
-            Self::Copied => "copied",
-            Self::TypeChanged => "type_changed",
-            Self::Untracked => "untracked",
-            Self::Unmerged => "unmerged",
-        }
-    }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, uniffi::Enum)]
+#[uniffi::remote(Enum)]
 pub enum DomainGitChangeKind {
     New,
     Modified,
@@ -1591,19 +1564,9 @@ pub enum DomainGitChangeKind {
     TypeChanged,
     Conflicted,
 }
-impl DomainGitChangeKind {
-    fn from_name(value: &str) -> Self {
-        match value {
-            "New" => Self::New,
-            "Modified" => Self::Modified,
-            "Deleted" => Self::Deleted,
-            "Renamed" => Self::Renamed,
-            "Copied" => Self::Copied,
-            "Type Changed" => Self::TypeChanged,
-            "Conflict" => Self::Conflicted,
-            _ => unreachable!("application enum identifier"),
-        }
-    }
+#[uniffi::export]
+pub fn domain_git_change_title(kind: DomainGitChangeKind) -> String {
+    kind.title()
 }
 
 #[uniffi::remote(Enum)]
@@ -1708,29 +1671,29 @@ mod choice_tests {
     #[test]
     fn git_choices_and_conflict_precedence_keep_their_labels() {
         for (delta, expected) in [
-            (DomainGitDelta::None, DomainGitChangeKind::Modified),
-            (DomainGitDelta::Modified, DomainGitChangeKind::Modified),
-            (DomainGitDelta::Added, DomainGitChangeKind::New),
-            (DomainGitDelta::Untracked, DomainGitChangeKind::New),
-            (DomainGitDelta::Deleted, DomainGitChangeKind::Deleted),
-            (DomainGitDelta::Renamed, DomainGitChangeKind::Renamed),
-            (DomainGitDelta::Copied, DomainGitChangeKind::Copied),
+            (WorkspaceGitDelta::None, DomainGitChangeKind::Modified),
+            (WorkspaceGitDelta::Modified, DomainGitChangeKind::Modified),
+            (WorkspaceGitDelta::Added, DomainGitChangeKind::New),
+            (WorkspaceGitDelta::Untracked, DomainGitChangeKind::New),
+            (WorkspaceGitDelta::Deleted, DomainGitChangeKind::Deleted),
+            (WorkspaceGitDelta::Renamed, DomainGitChangeKind::Renamed),
+            (WorkspaceGitDelta::Copied, DomainGitChangeKind::Copied),
             (
-                DomainGitDelta::TypeChanged,
+                WorkspaceGitDelta::TypeChanged,
                 DomainGitChangeKind::TypeChanged,
             ),
-            (DomainGitDelta::Unmerged, DomainGitChangeKind::Conflicted),
+            (WorkspaceGitDelta::Unmerged, DomainGitChangeKind::Conflicted),
         ] {
             assert_eq!(
-                domain_git_change_kind(delta, DomainGitDelta::None, false),
+                crate::app_session::session_git_change_kind(delta, WorkspaceGitDelta::None, false),
                 expected
             );
             assert_eq!(
-                domain_git_change_kind(DomainGitDelta::None, delta, false),
+                crate::app_session::session_git_change_kind(WorkspaceGitDelta::None, delta, false),
                 expected
             );
             assert_eq!(
-                domain_git_change_kind(delta, DomainGitDelta::None, true),
+                crate::app_session::session_git_change_kind(delta, WorkspaceGitDelta::None, true),
                 DomainGitChangeKind::Conflicted
             );
         }

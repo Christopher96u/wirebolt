@@ -192,7 +192,7 @@ struct WireboltModelTests {
         model.workspace.collections = [collection]
         await model.reorderSidebar("request|api|b", relativeTo: "request:a", after: false, collectionID: "api", parentID: nil)
         #expect(model.workspace.collections == [collection])
-        #expect(model.operationFailure?.kind == "workspace")
+        #expect(model.operationFailure?.kind == .workspace)
     }
 
     @Test("New global requests persist at the workspace root and contextual requests keep their folder")
@@ -314,7 +314,7 @@ struct WireboltModelTests {
     @MainActor
     func reportsFailure() async {
         let issue = RequestIssue(path: "url", kind: "invalid_url", reference: nil)
-        let model = WireboltModel(runner: StubRunner(failure: RunFailure(kind: "invalid_request", issues: [issue])))
+        let model = WireboltModel(runner: StubRunner(failure: RunFailure(kind: .invalidRequest, issues: [issue])))
 
         await model.send()
 
@@ -481,12 +481,11 @@ struct WireboltModelTests {
         #expect(String(decoding: data, as: UTF8.self).contains("secret material") == false)
     }
 
-    @Test("decodes the stable Git bridge document")
-    func decodesGitBridgeDocument() throws {
-        let data = Data(#"{"branch":"main","upstream":"origin/main","ahead":1,"behind":2,"changes":[{"path":"wirebolt.toml","previous_path":null,"staged":"type_changed","unstaged":"none","conflicted":false}]}"#.utf8)
-
-        let status = try decodeDomain(GitStatusSnapshot.self, from: data)
-
+    @Test("projects typed Git status and deltas")
+    func projectsGitStatus() {
+        let status = GitStatusSnapshot(WorkspaceGitStatus(
+            branch: "main", upstream: "origin/main", ahead: 1, behind: 2,
+            changes: [WorkspaceGitChange(path: "wirebolt.toml", previousPath: nil, staged: .typeChanged, unstaged: .none, conflicted: false)], merging: false))
         #expect(status.branch == "main")
         #expect(status.ahead == 1)
         #expect(status.behind == 2)
@@ -535,7 +534,7 @@ struct WireboltModelTests {
         await model.pullGit()
 
         #expect(await collaboration.calls == [])
-        #expect(model.gitFailure?.kind == "unsaved_request")
+        #expect(model.gitFailure?.kind == .unsavedRequest)
     }
 
     @Test("reloads workspace after a successful pull")
@@ -662,7 +661,7 @@ struct WireboltModelTests {
         #expect(model.closeDocuments(.all, allowDirty: true).isEmpty)
         await task.value
         #expect(!session.isRunning)
-        #expect(session.failure?.kind == "cancelled")
+        #expect(session.failure?.kind == .cancelled)
         #expect(!session.isDirty)
         #expect(model.sessions.activeSession == nil)
     }
@@ -819,7 +818,7 @@ struct WireboltModelTests {
         session.cancel(runID: run)
         await session.consume(.chunk(Data("late".utf8)), runID: run)
         #expect(!session.isRunning)
-        #expect(session.failure?.kind == "cancelled")
+        #expect(session.failure?.kind == .cancelled)
         #expect(session.responseBytes == 0)
     }
 
@@ -1116,7 +1115,7 @@ private actor MutationRecorder: WorkspacePersistence {
     func saveSecret(name _: String, value _: String) async throws {}
 
     func apply(_ command: SessionWorkspaceCommand) async throws -> WorkspaceDelta {
-        if fails { throw RunFailure(kind: "workspace", issues: []) }
+        if fails { throw RunFailure(kind: .workspace, issues: []) }
         commands.append(command)
         return WorkspaceDelta(
             version: UInt64(commands.count),
@@ -1166,7 +1165,7 @@ private extension GitStatusSnapshot {
 }
 
 private struct UnreadableWorkspace: WorkspacePersistence {
-    func load() async throws -> WorkspaceDraft { throw RunFailure(kind: "workspace", issues: []) }
+    func load() async throws -> WorkspaceDraft { throw RunFailure(kind: .workspace, issues: []) }
     func save(request: RequestDraft, in collectionID: String) async throws {}
     func save(environment: EnvironmentDraft) async throws {}
     func saveSecret(name: String, value: String) async throws {}
@@ -1200,8 +1199,6 @@ func encodeDomain(_ value: RequestBody) throws -> Data { try sessionEncodeBody(v
 func decodeDomain(_: ProxyDocument.Type, from data: Data) throws -> ProxyDocument { ProxyDocument(domain: try sessionDecodeProxy(data: data)) }
 func decodeDomain(_: EnvironmentDraft.Type, from data: Data) throws -> EnvironmentDraft { EnvironmentDraft(domain: try sessionDecodeEnvironment(data: data)) }
 func decodeDomain(_: RequestBody.Type, from data: Data) throws -> RequestBody { RequestBody(domain: try sessionDecodeBody(data: data)) }
-func decodeDomain(_: GitStatusSnapshot.Type, from data: Data) throws -> GitStatusSnapshot { GitStatusSnapshot(try sessionDecodeGitStatus(data: data)) }
-func decodeDomain(_: GitOperationSnapshot.Type, from data: Data) throws -> GitOperationSnapshot { GitOperationSnapshot(try sessionDecodeGitOperation(data: data)) }
 
 @Test("Default typed persistence preserves collection-qualified request identity")
 func defaultPersistenceDeltaKeepsLocationIdentity() async throws {

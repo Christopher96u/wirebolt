@@ -1,11 +1,12 @@
 //! OAuth 2 protocol computation; only browser presentation and Keychain cross a foreign trait.
+mod transport;
 use super::models::{DomainOAuthConfiguration, DomainOAuthGrant};
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use sha2::{Digest, Sha256};
 use std::{
     collections::BTreeMap,
     sync::Arc,
-    time::{Duration, SystemTime, UNIX_EPOCH},
+    time::{SystemTime, UNIX_EPOCH},
 };
 use url::Url;
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -46,8 +47,19 @@ impl std::fmt::Display for DomainOAuthError {
     }
 }
 impl std::error::Error for DomainOAuthError {}
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum DomainOAuthProxy {
+    Direct,
+    Proxy { endpoint: String },
+}
 #[async_trait::async_trait]
 pub trait DomainOAuthPlatform: Send + Sync {
+    /// Resolves only platform system settings, including destination bypass rules.
+    /// Environment proxy variables are deliberately outside OAuth's transport policy.
+    fn system_proxies(&self, _url: &str) -> Vec<DomainOAuthProxy> {
+        vec![DomainOAuthProxy::Direct]
+    }
+
     async fn authorize(
         &self,
         url: String,
@@ -259,21 +271,7 @@ pub async fn acquire(
             ]);
         }
     }
-    let client = reqwest::Client::builder()
-        .connect_timeout(Duration::from_secs(30))
-        .read_timeout(Duration::from_secs(30))
-        .timeout(Duration::from_hours(168))
-        .redirect(reqwest::redirect::Policy::limited(20))
-        .cookie_store(true)
-        .build()
-        .map_err(|_| DomainOAuthError::InvalidTokenResponse)?;
-    let response = client
-        .post(token_url)
-        .header("Content-Type", "application/x-www-form-urlencoded")
-        .body(encode_form(&form))
-        .send()
-        .await
-        .map_err(|error| network_error(&error))?;
+    let response = transport::exchange(token_url, &encode_form(&form), platform.as_ref()).await?;
     let status = response.status().as_u16();
     let body = response
         .bytes()

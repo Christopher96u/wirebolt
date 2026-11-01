@@ -1,3 +1,101 @@
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(from = "String", into = "String")]
+pub enum ResponseFailureKind {
+    Cancelled,
+    Connection,
+    ConnectTimeout,
+    Timeout,
+    TotalTimeout,
+    ReadTimeout,
+    Tls,
+    TlsConfiguration,
+    Proxy,
+    ProxyConfiguration,
+    Keychain,
+    Request,
+    ResponseBody,
+    ResponseTooLarge,
+    StreamStopped,
+    Transport,
+    InvalidRequest,
+    InvalidInput,
+    UnresolvedValue,
+    Internal,
+    Bridge,
+    Storage,
+    Export,
+    Workspace,
+    Other { code: String },
+}
+impl ResponseFailureKind {
+    #[must_use]
+    pub fn code(&self) -> &str {
+        match self {
+            Self::Cancelled => "cancelled",
+            Self::Connection => "connection",
+            Self::ConnectTimeout => "connect_timeout",
+            Self::Timeout => "timeout",
+            Self::TotalTimeout => "total_timeout",
+            Self::ReadTimeout => "read_timeout",
+            Self::Tls => "tls",
+            Self::TlsConfiguration => "tls_configuration",
+            Self::Proxy => "proxy",
+            Self::ProxyConfiguration => "proxy_configuration",
+            Self::Keychain => "keychain",
+            Self::Request => "request",
+            Self::ResponseBody => "response_body",
+            Self::ResponseTooLarge => "response_too_large",
+            Self::StreamStopped => "stream_stopped",
+            Self::Transport => "transport",
+            Self::InvalidRequest => "invalid_request",
+            Self::InvalidInput => "invalid_input",
+            Self::UnresolvedValue => "unresolved_value",
+            Self::Internal => "internal",
+            Self::Bridge => "bridge",
+            Self::Storage => "storage",
+            Self::Export => "export",
+            Self::Workspace => "workspace",
+            Self::Other { code } => code,
+        }
+    }
+}
+impl From<String> for ResponseFailureKind {
+    fn from(code: String) -> Self {
+        match code.as_str() {
+            "cancelled" => Self::Cancelled,
+            "connection" => Self::Connection,
+            "connect_timeout" => Self::ConnectTimeout,
+            "timeout" => Self::Timeout,
+            "total_timeout" => Self::TotalTimeout,
+            "read_timeout" => Self::ReadTimeout,
+            "tls" => Self::Tls,
+            "tls_configuration" => Self::TlsConfiguration,
+            "proxy" => Self::Proxy,
+            "proxy_configuration" => Self::ProxyConfiguration,
+            "keychain" => Self::Keychain,
+            "request" => Self::Request,
+            "response_body" => Self::ResponseBody,
+            "response_too_large" => Self::ResponseTooLarge,
+            "stream_stopped" => Self::StreamStopped,
+            "transport" => Self::Transport,
+            "invalid_request" => Self::InvalidRequest,
+            "invalid_input" => Self::InvalidInput,
+            "unresolved_value" => Self::UnresolvedValue,
+            "internal" => Self::Internal,
+            "bridge" => Self::Bridge,
+            "storage" => Self::Storage,
+            "export" => Self::Export,
+            "workspace" => Self::Workspace,
+            _ => Self::Other { code },
+        }
+    }
+}
+impl From<ResponseFailureKind> for String {
+    fn from(kind: ResponseFailureKind) -> Self {
+        kind.code().to_owned()
+    }
+}
+
 use url::Url;
 
 #[must_use]
@@ -161,28 +259,32 @@ pub struct FailureMessage {
     pub suggests_network_settings: bool,
 }
 #[must_use]
-pub fn failure_message(kind: &str, issues: &[FailureIssue], host: Option<&str>) -> FailureMessage {
+pub fn failure_message(
+    kind: &ResponseFailureKind,
+    issues: &[FailureIssue],
+    host: Option<&str>,
+) -> FailureMessage {
     use FailureCategory as C;
     let to = host.map_or_else(String::new, |h| format!(" to {h}"));
     let at = host.map_or_else(String::new, |h| format!(" at {h}"));
     let (category, title, message) = match kind {
-        "cancelled" => (C::Cancelled, "Request Cancelled".into(), "The request was cancelled before the response finished.".into()),
-        "connection" => (C::Connection, format!("Couldn’t Connect{to}"), "The connection failed before the server responded. Check that the server is running and that the address, port, proxy and TLS settings are correct.".into()),
-        "connect_timeout" | "timeout" => (C::Timeout, format!("Connection{to} Timed Out"), "The server didn’t accept the connection in time. Check the address and your network or proxy settings.".into()),
-        "total_timeout" => (C::Timeout, format!("Request{to} Timed Out"), "The response didn’t finish within the total timeout. Increase the timeout in Settings or try again.".into()),
-        "read_timeout" => (C::Timeout, format!("Server{at} Stopped Responding"), "No data arrived within the read timeout. Increase the timeout in Settings or try again.".into()),
-        "tls" => (C::Tls, "TLS Verification Failed".into(), "The server’s certificate couldn’t be verified. Check the certificate and trust settings.".into()),
-        "tls_configuration" => (C::Tls, "TLS Settings Couldn’t Be Loaded".into(), "The client certificate or custom CA for this request couldn’t be loaded. Check the TLS settings.".into()),
-        "proxy" | "proxy_configuration" => (C::Proxy, "Proxy Unavailable".into(), "The proxy for this request couldn’t be set up. Check the proxy address, port and credentials.".into()),
-        "keychain" => (C::Secrets, "Secrets Unavailable".into(), "Wirebolt couldn’t read secrets from the Keychain. Unlock the Keychain and try again.".into()),
-        "request" => (C::InvalidRequest, "Couldn’t Send the Request".into(), "The request failed while it was being sent. Check the body and any attached file.".into()),
-        "response_body" => (C::Response, "Couldn’t Read the Response".into(), "The response body couldn’t be received or decoded.".into()),
-        "response_too_large" => (C::Response, "Response Too Large".into(), "The response exceeded the maximum size Wirebolt stores.".into()),
-        "stream_stopped" => (C::Response, "Response Stopped".into(), "Receiving the response was stopped before it finished.".into()),
-        "transport" => (C::Connection, format!("Request{to} Failed"), "The HTTP connection failed while the request was in progress. Try again.".into()),
-        "invalid_request" | "invalid_input" | "unresolved_value" => (C::InvalidRequest, "Invalid Request".into(), issues.first().map_or_else(|| "Check the URL, headers and body, then try again.".into(), describe_issue)),
-        "internal" | "bridge" => (C::InternalError, "Request Failed".into(), "Wirebolt couldn’t run the request. Try again.".into()),
-        _ => (C::InternalError, "Request Failed".into(), sentence(kind)),
+        ResponseFailureKind::Cancelled => (C::Cancelled, "Request Cancelled".into(), "The request was cancelled before the response finished.".into()),
+        ResponseFailureKind::Connection => (C::Connection, format!("Couldn’t Connect{to}"), "The connection failed before the server responded. Check that the server is running and that the address, port, proxy and TLS settings are correct.".into()),
+        ResponseFailureKind::ConnectTimeout | ResponseFailureKind::Timeout => (C::Timeout, format!("Connection{to} Timed Out"), "The server didn’t accept the connection in time. Check the address and your network or proxy settings.".into()),
+        ResponseFailureKind::TotalTimeout => (C::Timeout, format!("Request{to} Timed Out"), "The response didn’t finish within the total timeout. Increase the timeout in Settings or try again.".into()),
+        ResponseFailureKind::ReadTimeout => (C::Timeout, format!("Server{at} Stopped Responding"), "No data arrived within the read timeout. Increase the timeout in Settings or try again.".into()),
+        ResponseFailureKind::Tls => (C::Tls, "TLS Verification Failed".into(), "The server’s certificate couldn’t be verified. Check the certificate and trust settings.".into()),
+        ResponseFailureKind::TlsConfiguration => (C::Tls, "TLS Settings Couldn’t Be Loaded".into(), "The client certificate or custom CA for this request couldn’t be loaded. Check the TLS settings.".into()),
+        ResponseFailureKind::Proxy | ResponseFailureKind::ProxyConfiguration => (C::Proxy, "Proxy Unavailable".into(), "The proxy for this request couldn’t be set up. Check the proxy address, port and credentials.".into()),
+        ResponseFailureKind::Keychain => (C::Secrets, "Secrets Unavailable".into(), "Wirebolt couldn’t read secrets from the Keychain. Unlock the Keychain and try again.".into()),
+        ResponseFailureKind::Request => (C::InvalidRequest, "Couldn’t Send the Request".into(), "The request failed while it was being sent. Check the body and any attached file.".into()),
+        ResponseFailureKind::ResponseBody => (C::Response, "Couldn’t Read the Response".into(), "The response body couldn’t be received or decoded.".into()),
+        ResponseFailureKind::ResponseTooLarge => (C::Response, "Response Too Large".into(), "The response exceeded the maximum size Wirebolt stores.".into()),
+        ResponseFailureKind::StreamStopped => (C::Response, "Response Stopped".into(), "Receiving the response was stopped before it finished.".into()),
+        ResponseFailureKind::Transport => (C::Connection, format!("Request{to} Failed"), "The HTTP connection failed while the request was in progress. Try again.".into()),
+        ResponseFailureKind::InvalidRequest | ResponseFailureKind::InvalidInput | ResponseFailureKind::UnresolvedValue => (C::InvalidRequest, "Invalid Request".into(), issues.first().map_or_else(|| "Check the URL, headers and body, then try again.".into(), describe_issue)),
+        ResponseFailureKind::Internal | ResponseFailureKind::Bridge => (C::InternalError, "Request Failed".into(), "Wirebolt couldn’t run the request. Try again.".into()),
+        _ => (C::InternalError, "Request Failed".into(), sentence(kind.code())),
     };
     let system_image = match category {
         C::Cancelled => "xmark.circle",
@@ -309,12 +411,12 @@ impl ResponseBadge {
     #[must_use]
     pub fn new(
         status: Option<u16>,
-        failure: Option<&str>,
+        failure: Option<&ResponseFailureKind>,
         issues: &[FailureIssue],
         host: Option<&str>,
     ) -> Option<Self> {
         if let Some(kind) = failure {
-            Some(if kind == "cancelled" {
+            Some(if *kind == ResponseFailureKind::Cancelled {
                 Self::Cancelled
             } else {
                 Self::Failed {

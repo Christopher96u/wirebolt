@@ -732,18 +732,7 @@ public struct WorkspaceDelta: Equatable, Sendable {
 
 }
 
-public enum ImportFormat: String, CaseIterable, Sendable {
-    case curl
-    case har
-    case legacyWorkspaceV1 = "legacy_workspace_v1"
-    case postmanV2 = "postman_v2"
-    /// Insomnia v4 export (JSON or YAML) or v5 YAML collection.
-    case insomnia
-    /// Bruno "Export collection" JSON.
-    case bruno
-    /// A Bruno collection folder or `.bru` file, bundled by `BrunoCollectionSource`.
-    case brunoFolder = "bruno_folder"
-}
+public typealias ImportFormat = DomainImportFormat
 
 /// What an import created and everything it could not carry over exactly.
 public struct ImportSummary: Equatable, Identifiable, Sendable {
@@ -905,14 +894,9 @@ public struct GitChangeSnapshot: Equatable, Identifiable, Sendable {
 }
 
 /// A readable summary of one changed file, combining its staged and unstaged deltas.
-public enum GitChangeKind: String, Equatable, Sendable {
-    case new = "New"
-    case modified = "Modified"
-    case deleted = "Deleted"
-    case renamed = "Renamed"
-    case copied = "Copied"
-    case typeChanged = "Type Changed"
-    case conflicted = "Conflict"
+public typealias GitChangeKind = DomainGitChangeKind
+extension GitChangeKind {
+    public var rawValue: String { domainGitChangeTitle(kind: self) }
 }
 
 /// What the Push button can do for the current status.
@@ -937,7 +921,7 @@ extension GitStatusSnapshot {
 
 extension GitChangeSnapshot {
     public var kind: GitChangeKind {
-        GitChangeKind(rawValue: sessionGitChangeKind(staged: staged, unstaged: unstaged, conflicted: conflicted))!
+        sessionGitChangeKind(staged: staged, unstaged: unstaged, conflicted: conflicted)
     }
 }
 
@@ -993,7 +977,7 @@ public enum GitRepositoryProblem: Equatable, Sendable {
     case notRepositoryRoot
     case gitUnavailable
 
-    public init?(kind: String) {
+    public init?(kind: WorkspaceFailureKind) {
         switch workspaceRepositoryProblem(kind: kind) {
         case .notRepository: self = .notRepository
         case .notRepositoryRoot: self = .notRepositoryRoot
@@ -1004,10 +988,10 @@ public enum GitRepositoryProblem: Equatable, Sendable {
 }
 
 public struct GitFailure: Error, Equatable, Sendable {
-    public let kind: String
+    public let kind: WorkspaceFailureKind
     public let reason: String
 
-    public init(kind: String, reason: String) {
+    public init(kind: WorkspaceFailureKind, reason: String) {
         self.kind = kind
         self.reason = reason
     }
@@ -1040,7 +1024,7 @@ public struct RequestIssue: Equatable, Sendable {
 }
 
 public struct RunFailure: Error, Equatable, Sendable {
-    public let kind: String
+    public let kind: ResponseFailureKind
     public let issues: [RequestIssue]
 }
 
@@ -1347,63 +1331,6 @@ private final class NativeBodyKeyOrdering: AppBodyKeyOrdering, Sendable {
         keys.sorted {
             $0.compare($1, options: [.numeric, .caseInsensitive, .forcedOrdering], locale: NSLocale.system)
                 == .orderedAscending
-        }
-    }
-}
-
-extension ImportFormat {
-    init(domain: DomainImportFormat) {
-        self = switch domain {
-        case .curl: .curl
-        case .har: .har
-        case .legacyWorkspaceV1: .legacyWorkspaceV1
-        case .postmanV2: .postmanV2
-        case .insomnia: .insomnia
-        case .bruno: .bruno
-        case .brunoFolder: .brunoFolder
-        }
-    }
-}
-
-extension GitDeltaSnapshot {
-    init(domain: DomainGitDelta) {
-        self = switch domain {
-        case .none: .none
-        case .added: .added
-        case .modified: .modified
-        case .deleted: .deleted
-        case .renamed: .renamed
-        case .copied: .copied
-        case .typeChanged: .typeChanged
-        case .untracked: .untracked
-        case .unmerged: .unmerged
-        }
-    }
-    var domain: DomainGitDelta {
-        switch self {
-        case .none: .none
-        case .added: .added
-        case .modified: .modified
-        case .deleted: .deleted
-        case .renamed: .renamed
-        case .copied: .copied
-        case .typeChanged: .typeChanged
-        case .untracked: .untracked
-        case .unmerged: .unmerged
-        }
-    }
-}
-
-extension GitChangeKind {
-    init(domain: DomainGitChangeKind) {
-        self = switch domain {
-        case .new: .new
-        case .modified: .modified
-        case .deleted: .deleted
-        case .renamed: .renamed
-        case .copied: .copied
-        case .typeChanged: .typeChanged
-        case .conflicted: .conflicted
         }
     }
 }

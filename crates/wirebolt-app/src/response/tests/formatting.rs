@@ -69,7 +69,11 @@ fn every_failure_kind_has_specific_copy() {
         "keychain",
         "unresolved_value",
     ] {
-        let message = failure_message(kind, &[], Some("127.0.0.1:18880"));
+        let message = failure_message(
+            &ResponseFailureKind::from(kind.to_owned()),
+            &[],
+            Some("127.0.0.1:18880"),
+        );
         assert!(!message.title.is_empty() && !message.message.is_empty());
         assert!(!message.title.contains('_') && !message.message.contains('_'));
         assert!(!message.title.contains("Tls"));
@@ -78,14 +82,30 @@ fn every_failure_kind_has_specific_copy() {
 #[test]
 fn connection_names_host_and_offers_network_settings() {
     let host = failure_host(Some("http://127.0.0.1:18880/echo"));
-    let message = failure_message("connection", &[], host.as_deref());
+    let message = failure_message(
+        &ResponseFailureKind::from("connection".to_owned()),
+        &[],
+        host.as_deref(),
+    );
     assert_eq!(message.title, "Couldn’t Connect to 127.0.0.1:18880");
     assert!(message.suggests_network_settings);
     assert_eq!(
-        failure_message("tls_configuration", &[], None).category,
+        failure_message(
+            &ResponseFailureKind::from("tls_configuration".to_owned()),
+            &[],
+            None
+        )
+        .category,
         FailureCategory::Tls
     );
-    assert!(!failure_message("cancelled", &[], None).suggests_network_settings);
+    assert!(
+        !failure_message(
+            &ResponseFailureKind::from("cancelled".to_owned()),
+            &[],
+            None
+        )
+        .suggests_network_settings
+    );
 }
 #[test]
 fn hosts_require_concrete_absolute_urls() {
@@ -105,11 +125,21 @@ fn issues_and_unknown_kinds_are_sentences() {
         reference: Some("base".into()),
     };
     assert_eq!(
-        failure_message("invalid_request", &[issue], None).message,
+        failure_message(
+            &ResponseFailureKind::from("invalid_request".to_owned()),
+            &[issue],
+            None
+        )
+        .message,
         "The variable “base” isn’t defined in the active environment. (url)"
     );
     assert_eq!(
-        failure_message("workspace_reload", &[], None).message,
+        failure_message(
+            &ResponseFailureKind::from("workspace_reload".to_owned()),
+            &[],
+            None
+        )
+        .message,
         "Workspace reload."
     );
     assert_eq!(
@@ -128,8 +158,13 @@ fn run_outcome_badges() {
     let status = ResponseBadge::new(Some(404), None, &[], None).unwrap();
     assert_eq!(status, ResponseBadge::Status { status: 404 });
     assert_eq!(status.label(), "404 Not Found");
-    let refused =
-        ResponseBadge::new(None, Some("connection"), &[], Some("127.0.0.1:18880")).unwrap();
+    let refused = ResponseBadge::new(
+        None,
+        Some(&ResponseFailureKind::Connection),
+        &[],
+        Some("127.0.0.1:18880"),
+    )
+    .unwrap();
     assert_eq!(
         refused,
         ResponseBadge::Failed {
@@ -138,7 +173,8 @@ fn run_outcome_badges() {
     );
     assert_eq!(refused.label(), "Failed");
     assert_eq!(refused.detail(), "Couldn’t Connect to 127.0.0.1:18880");
-    let cancelled = ResponseBadge::new(Some(200), Some("cancelled"), &[], None).unwrap();
+    let cancelled =
+        ResponseBadge::new(Some(200), Some(&ResponseFailureKind::Cancelled), &[], None).unwrap();
     assert_eq!(cancelled, ResponseBadge::Cancelled);
     assert_eq!(cancelled.label(), "Cancelled");
 }

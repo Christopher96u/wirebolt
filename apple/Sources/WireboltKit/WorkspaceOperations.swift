@@ -17,7 +17,7 @@ final class WorkspacePlatformAdapter: WorkspaceIoPlatform {
                 let reason = (error as? LocalizedError)?.errorDescription
                 reply.complete(
                     reply: .failed(
-                        failure: WorkspaceFailure(kind: "bridge", reason: reason ?? error.localizedDescription, localized: reason != nil)))
+                        failure: WorkspaceFailure(kind: .bridge, reason: reason ?? error.localizedDescription, localized: reason != nil)))
             }
         }
     }
@@ -36,7 +36,6 @@ final class WorkspacePlatformAdapter: WorkspaceIoPlatform {
             return .commands(result: await persistence.applySessionCommands(commands))
         case .import(let format, let source, let name):
             let persistence = try requiredPersistence()
-            guard let format = ImportFormat(rawValue: format) else { throw WorkspaceMutationError.unsupported }
             let result =
                 if let name { try await persistence.commitImportFile(format: format, source: source, name: name) } else {
                     try await persistence.commitImport(format: format, source: source)

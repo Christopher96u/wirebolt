@@ -126,10 +126,10 @@ public actor HistoryRepository {
         try await body.flushIngress()
         try rust.recordTyped(entry: entry.sessionRecord, body: body.rust)
     }
-    public func list(requestID: String) -> [RunHistoryEntry] {
-        rust.listTyped(requestId: requestID).map(RunHistoryEntry.init)
+    public func list(requestID: String) throws -> [RunHistoryEntry] {
+        try rust.listTyped(requestId: requestID).map(RunHistoryEntry.init)
     }
-    public func count(requestID: String) -> Int { Int(clamping: rust.count(requestId: requestID)) }
+    public func count(requestID: String) throws -> Int { Int(clamping: try rust.count(requestId: requestID)) }
     public func clear(requestID: String) throws { try rust.clear(requestId: requestID) }
 }
 

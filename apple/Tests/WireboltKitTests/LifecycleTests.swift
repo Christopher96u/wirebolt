@@ -168,7 +168,7 @@ struct LifecycleTests {
         await writer.store(headers: [ResponseHeader(name: "Set-Cookie", value: "id=1; Max-Age=3600")], requestURL: URL(string: "https://example.com")!)
         let reader = CookieJar(storageURL: cookies)
         #expect(await reader.header(for: URL(string: "https://example.com/")!) == "id=1")
-        #expect(await HistoryRepository(root: root.appending(path: "missing")).list(requestID: "a").isEmpty)
+        #expect(try await HistoryRepository(root: root.appending(path: "missing")).list(requestID: "a").isEmpty)
     }
 
     @MainActor private func settle() async {
@@ -204,7 +204,7 @@ private actor SaveRecorder: WorkspacePersistence {
     func saveSecret(name _: String, value _: String) async throws {}
 
     func apply(_ command: SessionWorkspaceCommand) async throws -> WorkspaceDelta {
-        if fails { throw RunFailure(kind: "workspace", issues: []) }
+        if fails { throw RunFailure(kind: .workspace, issues: []) }
         if case let .saveRequest(location) = command { saved.append((location.collectionId, RequestLocation(domain: location))) }
         return WorkspaceDelta(version: UInt64(saved.count), kind: .request, affectedIDs: [])
     }

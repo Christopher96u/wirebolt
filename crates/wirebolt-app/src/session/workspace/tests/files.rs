@@ -21,7 +21,7 @@ fn external_file_routing_detects_contents_before_preferred_format_and_reports_re
     let path = dir.path().join("request.txt");
     std::fs::write(&path, "curl https://example.com").unwrap();
     assert!(
-        matches!(read_import(&path,Some("har".into()),"formats"),WorkspaceImportFile::Document{format,..} if format=="curl")
+        matches!(read_import(&path,Some(wirebolt_core::ImportFormat::Har),"formats"),WorkspaceImportFile::Document{format,..} if format==wirebolt_core::ImportFormat::Curl)
     );
     assert!(
         matches!(read_import(&dir.path().join("missing"),None,"formats"),WorkspaceImportFile::Failure{message} if message.contains("couldn’t be read"))
@@ -33,7 +33,7 @@ fn external_file_routing_detects_contents_before_preferred_format_and_reports_re
         WorkspaceImportFile::Failure { .. }
     ));
     assert!(
-        matches!(read_import(&unknown,Some("har".into()),"formats"),WorkspaceImportFile::Document{format,..} if format=="har")
+        matches!(read_import(&unknown,Some(wirebolt_core::ImportFormat::Har),"formats"),WorkspaceImportFile::Document{format,..} if format==wirebolt_core::ImportFormat::Har)
     );
 }
 #[test]
@@ -122,7 +122,7 @@ fn native_workspace_io_executes_typed_load_commands_import_export_and_git() {
         matches!(reply,WorkspaceReply::Commands{result} if result.completed==1 && result.failure_reason.is_none())
     );
     let reply = store.workspace_io(WorkspaceIO::Import {
-        format: "curl".into(),
+        format: wirebolt_core::ImportFormat::Curl,
         source: "curl https://example.com".into(),
         name: Some("shop".into()),
     });

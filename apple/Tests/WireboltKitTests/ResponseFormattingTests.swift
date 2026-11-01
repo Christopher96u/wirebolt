@@ -48,12 +48,12 @@ struct ResponseFormattingTests {
 
 @Suite("Run failure messages")
 struct RunFailureMessageTests {
-    static let kinds = ["cancelled", "total_timeout", "read_timeout", "connect_timeout", "stream_stopped", "response_too_large",
-        "connection", "request", "response_body", "proxy", "transport", "tls_configuration", "invalid_request", "invalid_input",
-        "internal", "bridge", "keychain", "unresolved_value"]
+    static let kinds: [ResponseFailureKind] = [.cancelled, .totalTimeout, .readTimeout, .connectTimeout, .streamStopped, .responseTooLarge,
+        .connection, .request, .responseBody, .proxy, .transport, .tlsConfiguration, .invalidRequest, .invalidInput,
+        .internal, .bridge, .keychain, .unresolvedValue]
 
     @Test("Every bridge failure kind has specific copy", arguments: kinds)
-    func everyKindIsMapped(kind: String) {
+    func everyKindIsMapped(kind: ResponseFailureKind) {
         let message = RunFailureMessage(RunFailure(kind: kind, issues: []), host: "127.0.0.1:18880")
         #expect(!message.title.isEmpty && !message.message.isEmpty)
         #expect(!message.title.contains("_") && !message.message.contains("_"))
@@ -62,11 +62,11 @@ struct RunFailureMessageTests {
 
     @Test("Connection failures name the host and offer network settings")
     func connection() {
-        let message = RunFailureMessage(RunFailure(kind: "connection", issues: []), host: RunFailureMessage.host(from: "http://127.0.0.1:18880/echo"))
+        let message = RunFailureMessage(RunFailure(kind: .connection, issues: []), host: RunFailureMessage.host(from: "http://127.0.0.1:18880/echo"))
         #expect(message.title == "Couldn’t Connect to 127.0.0.1:18880")
         #expect(message.suggestsNetworkSettings)
-        #expect(RunFailureMessage(RunFailure(kind: "tls_configuration", issues: [])).category == .tls)
-        #expect(!RunFailureMessage(RunFailure(kind: "cancelled", issues: [])).suggestsNetworkSettings)
+        #expect(RunFailureMessage(RunFailure(kind: .tlsConfiguration, issues: [])).category == .tls)
+        #expect(!RunFailureMessage(RunFailure(kind: .cancelled, issues: [])).suggestsNetworkSettings)
     }
 
     @Test("Hosts are only derived from concrete absolute URLs")
@@ -80,9 +80,9 @@ struct RunFailureMessageTests {
     @Test("Request issues and unknown kinds read as sentences")
     func issues() {
         let issue = RequestIssue(path: "url", kind: "missing_variable", reference: "base")
-        let message = RunFailureMessage(RunFailure(kind: "invalid_request", issues: [issue]))
+        let message = RunFailureMessage(RunFailure(kind: .invalidRequest, issues: [issue]))
         #expect(message.message == "The variable “base” isn’t defined in the active environment. (url)")
-        #expect(RunFailureMessage(RunFailure(kind: "workspace_reload", issues: [])).message == "Workspace reload.")
+        #expect(RunFailureMessage(RunFailure(kind: .other(code: "workspace_reload"), issues: [])).message == "Workspace reload.")
     }
 
     @Test("The URL bar shows failures and cancellations instead of an empty status slot")
@@ -91,13 +91,13 @@ struct RunFailureMessageTests {
         #expect(RunOutcomeBadge(status: 404, failure: nil) == .status(404))
         #expect(RunOutcomeBadge(status: 404, failure: nil)?.label == "404 Not Found")
 
-        let refused = RunOutcomeBadge(status: nil, failure: RunFailure(kind: "connection", issues: []), host: "127.0.0.1:18880")
+        let refused = RunOutcomeBadge(status: nil, failure: RunFailure(kind: .connection, issues: []), host: "127.0.0.1:18880")
         #expect(refused == .failed(title: "Couldn’t Connect to 127.0.0.1:18880"))
         #expect(refused?.label == "Failed")
         #expect(refused?.detail == "Couldn’t Connect to 127.0.0.1:18880")
 
         // Cancelling after the head arrived reports the cancellation, not the partial status.
-        let cancelled = RunOutcomeBadge(status: 200, failure: RunFailure(kind: "cancelled", issues: []))
+        let cancelled = RunOutcomeBadge(status: 200, failure: RunFailure(kind: .cancelled, issues: []))
         #expect(cancelled == .cancelled)
         #expect(cancelled?.label == "Cancelled")
     }

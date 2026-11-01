@@ -227,7 +227,7 @@ struct WorkspaceUndoTests {
         await model.deleteRequest(collectionID: "api", requestID: "root")
         await persistence.setFails(true)
         await undo(model, undoManager)
-        #expect(model.operationFailure?.kind == "workspace")
+        #expect(model.operationFailure?.kind == .workspace)
         #expect(!undoManager.canUndo && !undoManager.canRedo)
         #expect(model.workspace.location(collectionID: "api", requestID: "root") == nil)
     }
@@ -262,7 +262,7 @@ private actor UndoRecorder: WorkspacePersistence {
     func saveSecret(name _: String, value _: String) async throws {}
 
     func apply(_ command: SessionWorkspaceCommand) async throws -> WorkspaceDelta {
-        if fails { throw RunFailure(kind: "workspace", issues: []) }
+        if fails { throw RunFailure(kind: .workspace, issues: []) }
         commands.append(command)
         return WorkspaceDelta(version: UInt64(commands.count), kind: .collection, affectedIDs: [])
     }

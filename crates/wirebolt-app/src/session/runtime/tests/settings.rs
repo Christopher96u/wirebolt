@@ -222,7 +222,10 @@ async fn curl_missing_secret_preserves_validation_failure() {
     )
     .await
     .unwrap_err();
-    assert_eq!(error.kind, "invalid_request");
+    assert_eq!(
+        error.kind,
+        crate::response::ResponseFailureKind::InvalidRequest
+    );
     assert_eq!(error.issues[0].kind, "missing_secret");
 }
 #[tokio::test]

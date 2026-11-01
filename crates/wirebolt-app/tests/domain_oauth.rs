@@ -161,8 +161,34 @@ fn existing_authorization_query_keeps_literal_plus_flags_and_duplicates() {
     assert!(url.contains("tenant=a+b&flag&key=one&key=two&response_type=code"));
 }
 
+fn read_request(stream: &mut std::net::TcpStream) -> String {
+    use std::io::Read as _;
+    let mut bytes = vec![];
+    let mut buffer = [0_u8; 1024];
+    loop {
+        let count = stream.read(&mut buffer).unwrap();
+        assert_ne!(count, 0);
+        bytes.extend_from_slice(&buffer[..count]);
+        if let Some(head) = bytes.windows(4).position(|s| s == b"\r\n\r\n") {
+            let headers = String::from_utf8_lossy(&bytes[..head]);
+            let length: usize = headers
+                .lines()
+                .find_map(|l| {
+                    l.split_once(':')
+                        .filter(|(k, _)| k.eq_ignore_ascii_case("content-length"))
+                        .map(|(_, v)| v.trim().parse().unwrap())
+                })
+                .unwrap_or(0);
+            if bytes.len() >= head + 4 + length {
+                break;
+            }
+        }
+    }
+    String::from_utf8(bytes).unwrap()
+}
+
 fn token_server() -> (String, std::thread::JoinHandle<String>) {
-    use std::io::{Read as _, Write as _};
+    use std::io::Write as _;
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let address = listener.local_addr().unwrap();
     let worker = std::thread::spawn(move || {
@@ -170,39 +196,37 @@ fn token_server() -> (String, std::thread::JoinHandle<String>) {
         stream
             .set_read_timeout(Some(std::time::Duration::from_secs(5)))
             .unwrap();
-        let mut bytes = vec![];
-        let mut buffer = [0_u8; 1024];
-        loop {
-            let count = stream.read(&mut buffer).unwrap();
-            assert_ne!(count, 0);
-            bytes.extend_from_slice(&buffer[..count]);
-            if let Some(head) = bytes.windows(4).position(|s| s == b"\r\n\r\n") {
-                let headers = String::from_utf8_lossy(&bytes[..head]);
-                let length: usize = headers
-                    .lines()
-                    .find_map(|l| {
-                        l.split_once(':')
-                            .filter(|(k, _)| k.eq_ignore_ascii_case("content-length"))
-                            .map(|(_, v)| v.trim().parse().unwrap())
-                    })
-                    .unwrap();
-                if bytes.len() >= head + 4 + length {
-                    break;
-                }
-            }
-        }
+        let request = read_request(&mut stream);
         let body = r#"{"access_token":"fixture-token","expires_in":60,"scope":"read"}"#;
         write!(stream,"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",body.len()).unwrap();
-        String::from_utf8(bytes).unwrap()
+        request
     });
     (format!("http://{address}/token"), worker)
 }
 #[derive(Default)]
 struct Platform {
+    proxy: Option<String>,
+    candidates: Option<Vec<DomainOAuthProxy>>,
+    proxy_urls: std::sync::Mutex<Vec<String>>,
     challenge: std::sync::Mutex<String>,
 }
 #[async_trait::async_trait]
 impl DomainOAuthPlatform for Platform {
+    fn system_proxies(&self, url: &str) -> Vec<DomainOAuthProxy> {
+        self.proxy_urls.lock().unwrap().push(url.into());
+        if let Some(candidates) = &self.candidates {
+            return candidates.clone();
+        }
+        if url::Url::parse(url).unwrap().port() == Some(9) {
+            self.proxy
+                .clone()
+                .map(|endpoint| DomainOAuthProxy::Proxy { endpoint })
+                .into_iter()
+                .collect()
+        } else {
+            vec![DomainOAuthProxy::Direct]
+        }
+    }
     async fn authorize(
         &self,
         address: String,
@@ -283,4 +307,251 @@ async fn pkce_exchange_uses_browser_code_and_the_original_verifier() {
         *platform.challenge.lock().unwrap()
     );
     assert!(!form.contains_key("client_secret"));
+}
+
+#[test]
+fn oauth_ignores_environment_proxy_variables() {
+    const CHILD: &str = "WIREBOLT_OAUTH_PROXY_TEST_CHILD";
+    if std::env::var_os(CHILD).is_some() {
+        let (endpoint, server) = token_server();
+        let mut c = configuration();
+        c.grant = DomainOAuthGrant::ClientCredentials;
+        c.token_url = endpoint;
+        c.client_id = "client".into();
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let receipt = runtime.block_on(async {
+            tokio::time::timeout(
+                std::time::Duration::from_secs(5),
+                acquire(c, Arc::new(Platform::default())),
+            )
+            .await
+            .unwrap()
+            .unwrap()
+        });
+        assert_eq!(receipt.token, "fixture-token");
+        assert!(server.join().unwrap().starts_with("POST /token "));
+        return;
+    }
+    // Isolate environment changes in a child process so concurrent tests remain safe.
+    let trap = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    trap.set_nonblocking(true).unwrap();
+    let proxy = format!("http://{}", trap.local_addr().unwrap());
+    let mut command = std::process::Command::new(std::env::current_exe().unwrap());
+    command.args([
+        "--exact",
+        "oauth_ignores_environment_proxy_variables",
+        "--nocapture",
+    ]);
+    command.env(CHILD, "1");
+    for name in [
+        "HTTP_PROXY",
+        "http_proxy",
+        "HTTPS_PROXY",
+        "https_proxy",
+        "ALL_PROXY",
+        "all_proxy",
+    ] {
+        command.env(name, &proxy);
+    }
+    command
+        .env("NO_PROXY", "")
+        .env("no_proxy", "")
+        .env_remove("REQUEST_METHOD");
+    let output = command.output().unwrap();
+    assert!(
+        output.status.success(),
+        "{}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        trap.accept().unwrap_err().kind(),
+        std::io::ErrorKind::WouldBlock
+    );
+}
+
+#[tokio::test]
+async fn oauth_resolves_system_proxy_and_bypass_again_after_redirect() {
+    use std::io::{Read as _, Write as _};
+    let (endpoint, destination) = token_server();
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let proxy = format!("http://{}", listener.local_addr().unwrap());
+    let redirect = std::thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        stream
+            .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+            .unwrap();
+        let mut bytes = [0; 4096];
+        let size = stream.read(&mut bytes).unwrap();
+        assert!(
+            String::from_utf8_lossy(&bytes[..size])
+                .starts_with("POST http://localhost:9/start?route=proxy ")
+        );
+        write!(stream, "HTTP/1.1 307 Temporary Redirect\r\nLocation: {endpoint}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").unwrap();
+    });
+    let platform = Arc::new(Platform {
+        proxy: Some(proxy),
+        ..Default::default()
+    });
+    let mut c = configuration();
+    c.grant = DomainOAuthGrant::ClientCredentials;
+    c.client_id = "client".into();
+    c.token_url = "http://localhost:9/start?route=proxy".into();
+    let receipt = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        acquire(c, platform.clone()),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert_eq!(receipt.token, "fixture-token");
+    redirect.join().unwrap();
+    assert!(destination.join().unwrap().starts_with("POST /token "));
+    let resolved = platform.proxy_urls.lock().unwrap();
+    assert!(
+        resolved
+            .iter()
+            .any(|url| url::Url::parse(url).unwrap().port() == Some(9))
+    );
+    assert!(resolved.iter().any(|url| url.ends_with("/token")));
+}
+
+#[tokio::test]
+async fn oauth_tries_ordered_system_proxy_and_explicit_direct_fallbacks() {
+    for direct in [false, true] {
+        let (endpoint, destination) = token_server();
+        let unavailable = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let unavailable_proxy = format!("http://{}", unavailable.local_addr().unwrap());
+        drop(unavailable);
+        let fallback = if direct {
+            DomainOAuthProxy::Direct
+        } else {
+            DomainOAuthProxy::Proxy {
+                endpoint: url::Url::parse(&endpoint)
+                    .unwrap()
+                    .origin()
+                    .ascii_serialization(),
+            }
+        };
+        let platform = Arc::new(Platform {
+            candidates: Some(vec![
+                DomainOAuthProxy::Proxy {
+                    endpoint: unavailable_proxy,
+                },
+                fallback,
+            ]),
+            ..Default::default()
+        });
+        let mut c = configuration();
+        c.grant = DomainOAuthGrant::ClientCredentials;
+        c.client_id = "client".into();
+        c.token_url = if direct {
+            endpoint
+        } else {
+            "http://localhost:9/token?route=proxy".into()
+        };
+        let receipt = tokio::time::timeout(std::time::Duration::from_secs(5), acquire(c, platform))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(receipt.token, "fixture-token");
+        assert!(destination.join().unwrap().starts_with(if direct {
+            "POST /token "
+        } else {
+            "POST http://localhost:9/token?route=proxy "
+        }));
+    }
+}
+
+#[tokio::test]
+async fn oauth_does_not_add_a_direct_fallback_to_system_proxy_settings() {
+    let destination = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    destination.set_nonblocking(true).unwrap();
+    let unavailable = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let proxy = format!("http://{}", unavailable.local_addr().unwrap());
+    drop(unavailable);
+    let platform = Arc::new(Platform {
+        candidates: Some(vec![DomainOAuthProxy::Proxy { endpoint: proxy }]),
+        ..Default::default()
+    });
+    let mut c = configuration();
+    c.grant = DomainOAuthGrant::ClientCredentials;
+    c.client_id = "client".into();
+    c.token_url = format!("http://{}/token", destination.local_addr().unwrap());
+    assert!(matches!(
+        acquire(c, platform).await,
+        Err(DomainOAuthError::TransportFailure { .. })
+    ));
+    assert_eq!(
+        destination.accept().unwrap_err().kind(),
+        std::io::ErrorKind::WouldBlock
+    );
+}
+
+#[tokio::test]
+async fn oauth_redirects_preserve_methods_cookies_and_full_destination_urls() {
+    use std::io::Write as _;
+    for status in [301, 302, 303, 307, 308] {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            stream
+                .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+                .unwrap();
+            let first = read_request(&mut stream);
+            write!(stream, "HTTP/1.1 {status} Redirect\r\nLocation: /token?redirected=1\r\nSet-Cookie: session=fixture; Path=/\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").unwrap();
+            drop(stream);
+            let (mut stream, _) = listener.accept().unwrap();
+            stream
+                .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+                .unwrap();
+            let second = read_request(&mut stream);
+            let body = r#"{"access_token":"redirected"}"#;
+            write!(
+                stream,
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            )
+            .unwrap();
+            (first, second)
+        });
+        let platform = Arc::new(Platform::default());
+        let mut c = configuration();
+        c.grant = DomainOAuthGrant::ClientCredentials;
+        c.client_id = "client".into();
+        c.token_url = format!("http://{address}/start?initial=1");
+        let receipt = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            acquire(c, platform.clone()),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert_eq!(receipt.token, "redirected");
+        let (first, second) = server.join().unwrap();
+        assert!(first.starts_with("POST /start?initial=1 "));
+        assert!(
+            second
+                .to_lowercase()
+                .contains("cookie: session=fixture\r\n")
+        );
+        if status <= 303 {
+            assert!(second.starts_with("GET /token?redirected=1 "));
+            assert!(!second.contains("client_secret="));
+        } else {
+            assert!(second.starts_with("POST /token?redirected=1 "));
+            assert_eq!(
+                second.split_once("\r\n\r\n").unwrap().1,
+                first.split_once("\r\n\r\n").unwrap().1
+            );
+        }
+        assert_eq!(
+            *platform.proxy_urls.lock().unwrap(),
+            [
+                format!("http://{address}/start?initial=1"),
+                format!("http://{address}/token?redirected=1")
+            ]
+        );
+    }
 }

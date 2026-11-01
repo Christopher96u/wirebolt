@@ -1,6 +1,7 @@
 use super::{
     Arc, IndexOptions, ResponseCancellation, ResponseResult, TextIndex, TextShaper, fs, size,
 };
+use crate::lock;
 use crate::response::ResponseError;
 use std::{
     collections::VecDeque,
@@ -53,10 +54,7 @@ impl TextIndexCache {
             size: metadata.len(),
             modified: metadata.modified().ok(),
         };
-        let mut state = self
-            .state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut state = lock(&self.state);
         if let Some(position) = state.entries.iter().position(|(k, _)| *k == key)
             && let Some(entry) = state.entries.remove(position)
         {
@@ -70,10 +68,7 @@ impl TextIndexCache {
             && let Some(flight) = state.flights.iter().find(|f| f.key == key).cloned()
         {
             drop(state);
-            let mut result = flight
-                .result
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let mut result = lock(&flight.result);
             loop {
                 cancellation.check()?;
                 if let Some(completed) = &*result {
@@ -106,10 +101,7 @@ impl TextIndexCache {
             cancellation,
         )
         .map(Arc::new);
-        let mut state = self
-            .state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut state = lock(&self.state);
         if let Ok(index) = &result
             && !first_viewport
             && self.capacity > 0
@@ -121,10 +113,7 @@ impl TextIndexCache {
                 state.entries.pop_front();
             }
         }
-        *flight
-            .result
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(result.clone());
+        *lock(&flight.result) = Some(result.clone());
         flight.ready.notify_all();
         state.flights.retain(|f| !Arc::ptr_eq(f, &flight));
         drop(state);

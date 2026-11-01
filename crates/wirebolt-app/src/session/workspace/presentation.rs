@@ -54,19 +54,8 @@ pub fn git_change_kind(
     staged: WorkspaceGitDelta,
     unstaged: WorkspaceGitDelta,
     conflicted: bool,
-) -> String {
-    let name = |delta| match delta {
-        WorkspaceGitDelta::None => "none",
-        WorkspaceGitDelta::Added => "added",
-        WorkspaceGitDelta::Modified => "modified",
-        WorkspaceGitDelta::Deleted => "deleted",
-        WorkspaceGitDelta::Renamed => "renamed",
-        WorkspaceGitDelta::Copied => "copied",
-        WorkspaceGitDelta::TypeChanged => "type_changed",
-        WorkspaceGitDelta::Untracked => "untracked",
-        WorkspaceGitDelta::Unmerged => "unmerged",
-    };
-    crate::domain::request::git_change_kind(name(staged), name(unstaged), conflicted)
+) -> crate::domain::request::DomainGitChangeKind {
+    crate::domain::request::git_change_kind(staged, unstaged, conflicted)
 }
 #[must_use]
 pub fn git_operation_label(outcome: WorkspaceGitOutcome) -> String {
