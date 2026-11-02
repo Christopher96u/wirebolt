@@ -20,7 +20,7 @@
 
 ## Known boundaries
 
-There is no general secret-management screen, no exposed proxy host-exclusion editor, and no promise that other clients understand Wirebolt's advanced-auth export extensions. OAuth compatibility depends on provider configuration. Published packages are ad-hoc signed and currently Apple Silicon only.
+There is no general secret-management screen or exposed proxy host-exclusion editor. OAuth compatibility depends on provider configuration. Published packages are ad-hoc signed and currently Apple Silicon only.
 
 These guides document supported behavior; they are not a claim that every external proxy, identity provider or server configuration has been tested.
 

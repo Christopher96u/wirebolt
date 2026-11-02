@@ -30,6 +30,8 @@ The acquired access token is stored in Keychain for this request and sent as a B
 
 Provider requirements vary. A configured form does not guarantee compatibility with every identity provider. If token acquisition fails, check the provider's redirect registration, grant permissions, scopes and endpoint response. Avoid posting tokens or authorization codes in issue reports.
 
-## Export compatibility
+## Sharing credentials
 
-Wirebolt JSON preserves API key and OAuth configuration in Wirebolt-specific metadata. Reimport through the Wirebolt format to retain it. Other clients may not interpret these extensions; credential values remain in Keychain. [Import and export](import-export.md) explains the boundary.
+Workspace files contain credential reference names. Configure the referenced
+Keychain items on each Mac. **Copy cURL** reads those items at command execution;
+it does not put their values on the clipboard.

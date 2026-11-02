@@ -7,7 +7,7 @@ Changes under **Unreleased** are on `main` but not in a published build yet. Dow
 ### Added
 
 - **QUERY** method (RFC 10008) in the method menu, with its own color.
-- **Clear All History…** in Settings → Privacy removes all saved and unassigned legacy history.
+- **Clear All History…** in Settings → Privacy removes all saved history.
 - Custom themes from two colors and VS Code theme imports, with a live preview, checked contrast, and rename/delete controls (Settings → Appearance).
 - Black, Paper and Ember themes with checked contrast, Compact and Comfortable density, and Increase Contrast support (Settings → Appearance).
 - Settings open in the workspace window (**⌘,**); Esc or **⌘W** closes them.
@@ -15,6 +15,8 @@ Changes under **Unreleased** are on `main` but not in a published build yet. Dow
 - **Save and Close** when closing a tab with unsaved edits.
 
 ### Changed
+
+- Older Wirebolt workspaces, history and preferences are not migrated; the legacy Wirebolt v1 import and export are removed.
 
 - Environments save as you edit, with undo and redo for names, variables and secrets. Globals appears once, and long names and values stay on one line. Browsing the inspector leaves the active environment unchanged; **Use for Requests** switches it explicitly.
 - Find in large responses is faster and uses less memory; closing tabs no longer copies every open request.
@@ -41,10 +43,10 @@ Changes under **Unreleased** are on `main` but not in a published build yet. Dow
 - Cookies keep directory scope and encoded path separators when choosing which requests receive them.
 - Saving while deleting or moving a request could recreate stale files. Save now runs in order with workspace edits and refuses a target moved or deleted inside the app; saving recreates a request file removed externally.
 - Malformed, newer-version and oversized workspace files disappeared from the sidebar without explanation. Open now keeps readable requests and shows a dismissible notice naming skipped files.
-- Requests with the same ID shared history across collections. History now follows collection and request IDs through moves, saves and workspace folder renames or relocation. Copies of a workspace share history, as in rc.1. Legacy entries are migrated when a request ID is unique in the open workspace; ambiguous entries remain available under Unassigned Legacy History. A request's **Clear History** also clears its unassigned legacy entries. History files remain readable by rc.1.
-- A damaged history index is backed up and reported once, then recording and clearing history continue with a fresh index.
+- Requests with the same ID shared history across collections. History now follows collection and request IDs through moves, saves and workspace folder renames or relocation.
+- A damaged history index is reported once, then recording and clearing history continue with a fresh index.
 - Clearing history or evicting old entries made a restored response unreadable. Displayed responses now keep their own temporary body until the last viewer releases it, using APFS cloning where available; crash leftovers are cleaned on the next launch.
-- Moving an imported request could overwrite another request. New imports have unique IDs; moves with a legacy ID collision are refused so both requests and their undo state survive.
+- Moving an imported request could overwrite another request. New imports have unique IDs; moves with a ID collision are refused so both requests and their undo state survive.
 - Deleting a collection also deleted attachments and other files that Undo could not restore. It now removes only readable Wirebolt documents and leaves other files in place.
 - Malformed Insomnia folder IDs could crash import. Invalid parent links, cycles and hierarchies deeper than 128 levels now report an error.
 - A failed response export deleted the previous destination. Export now replaces it only after the body has been copied successfully, respects normal file permissions and retains the destination's permissions and supported extended attributes.
@@ -59,11 +61,11 @@ Changes under **Unreleased** are on `main` but not in a published build yet. Dow
 
 ## 1.0.0-rc.1
 
-First release candidate for Wirebolt 1.0. It collects everything since 0.1.0-beta.2 and is the first build published from this repository; Homebrew users of the old `christopher96u/tap` need to [switch taps](https://github.com/Christopher96u/wirebolt/blob/main/docs/installation.md#migrate-from-the-beta-tap).
+First release candidate for Wirebolt 1.0. It collects everything since 0.1.0-beta.2 and is the first build published from this repository.
 
 ### Breaking changes
 
-- The bundle identifier is now `io.github.christopher96u.wirebolt`. Preferences, the remembered workspace and Keychain items stored under `local.wirebolt.app` are not migrated: reopen the workspace and re-enter stored credentials.
+- The bundle identifier is now `io.github.christopher96u.wirebolt`.
 - Wirebolt runs one workspace window. **⌘N** creates a request; File → New Window is gone.
 - Deleting a request or an empty folder happens immediately and can be undone with **⌘Z**. Wirebolt asks first only when a deletion also removes other items or discards unsaved edits.
 - Environment and workspace settings sheets use **Cancel** and **Save** (Return). Esc cancels and asks before discarding edits; closing no longer saves.

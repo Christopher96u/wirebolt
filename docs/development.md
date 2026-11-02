@@ -52,8 +52,11 @@ output in `build/bridge-smoke.log`.
 
 Generated bindings live under `apple/Generated` and are produced by the scripts. Do not hand-edit them. The Swift package compiles the generated bindings into `WireboltKit` and links the Rust bridge: run `./scripts/generate-bindings.sh` before invoking `swift test --package-path apple` directly. `./scripts/test.sh` does this automatically. Response search accepts a Rust regex-engine trait: `wirebolt-app` provides a portable default, and the Apple-only `wirebolt-ffi` adapter injects system ICU (`-licucore`) to preserve the native dialect; cookie dates parse in pure Rust to Unix seconds, with native `Date` conversion in Swift.
 
+Only the current workspace schema is supported; other versions are rejected with
+an unsupported-version diagnostic.
+
 The Rust session suite covers storage conversions, typed secret/Git operations,
-presentation migrations and cancellation. Bridge smoke checks exercise typed
+presentation policy and cancellation. Bridge smoke checks exercise typed
 transport events and workspace commands. Swift adapter tests compare the Notes
 preview with Foundation's full Markdown renderer, including complete attributed
 text and cache costs, across headings, inline styles, code, nested/ordered/task
@@ -83,38 +86,21 @@ available. Save and workspace replacement use the same guard as mutations and
 Undo; a queued stale save of a request moved or deleted inside the app fails.
 Saving a request file removed externally recreates it at its last known location.
 
-## History compatibility
+## History storage
 
-The local history `index.json` remains a JSON array compatible with rc.1's Swift
-`RunHistoryEntry` decoder. New entries add optional `identity` fields (collection
-ID and request ID); rc.1 ignores these keys. Namespace fields written by development
-builds are ignored on read. The short-lived version 2 envelope is accepted on read,
-but every write uses an array. Damaged arrays and damaged or unsupported envelopes
-are backed up as `index.json.backup` (or a distinct `index.json.backup-*` file if
-occupied) and reported once. After a successful backup, recording and clearing
-continue with a fresh empty index. Backups are never deleted. A failed backup or an
-unreadable index remains an error and the original index stays unchanged.
+The local history `index.json` contains an `entries` array. Every entry requires
+an identity with collection ID and request ID. Unsupported or malformed indexes
+are reported once; recording and clearing then use a fresh index. Unreadable
+indexes remain errors. Index writes use atomic replacement.
 
 History follows collection and request IDs, independently of the workspace folder's
 name or location. Re-cloning a workspace retains history; copies with the same IDs
-share history, as in rc.1. New imports receive unique request IDs. Requests without
+share history. New imports receive unique request IDs. Requests without
 a collection use an empty collection ID, stable across launches. Their first save,
 moves and Undo relocate scoped entries within the serialized Rust workspace
 operation and redirect in-flight completions to the saved collection. Replacement
 loads reconcile redirects; late completions for requests absent from the open
 workspace do not change its history presentation.
-
-At workspace load, a requestID-only entry is attributed to the complete identity
-when that ID matches exactly one request in the loaded workspace, then persisted.
-For example, if only collection `api` contains `health`, its legacy entries become
-`api/health`, reappear in History and sidebar activity, and can restore
-the last response at launch. Loading a copied workspace may attribute legacy
-entries to the copy, preserving the visibility users had before scoped history.
-IDs present in several collections remain reachable under **History → Unassigned
-Legacy History**. Unmatched entries stay stored for a future matching workspace.
-The request's **Clear History** also removes its unassigned legacy ID matches;
-**Settings → Privacy → Clear All History** removes all scoped and legacy entries.
-All entries count toward retention quotas. No identity is inferred from a URL.
 
 Restored responses own temporary body copies independently of history retention.
 Copies are made on workers into paths that do not exist, allowing APFS cloning.
@@ -256,12 +242,11 @@ up to **1 MiB**. It maps editor, sidebar, list, input, button, diagnostic and to
 scope colors, composites alpha colors over the canvas, and derives missing
 tokens. Parent `include` files are reported in the preview and are not resolved.
 
-Rust persists up to **64** custom palettes in version 1 of
+Rust persists up to **64** custom palettes in version 2 of
 `~/Library/Application Support/Wirebolt/custom-themes.json`, outside the workspace.
 The existing `interfaceAppearance` preference holds the selected built-in name or
-custom ID. Saving uses an atomic replacement. A corrupt or unsupported old file
-falls back to built-ins and is preserved as a `custom-themes.corrupt-<id>.json`
-backup on the next explicit save. A newer version stays unchanged and read-only.
+custom ID. Saving uses an atomic replacement. A corrupt file reports a notice and uses built-in themes until a new theme is saved.
+Unsupported versions stay unchanged and read-only.
 Deleting the active custom theme returns to **Follow System**.
 
 `custom_themes.rs` tests contrast, method separation, JSONC fixtures and storage

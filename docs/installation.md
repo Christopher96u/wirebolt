@@ -35,18 +35,6 @@ brew untap christopher96u/wirebolt
 
 Add `--zap` to the uninstall command to also delete preferences, history and cookies. Workspace folders are always kept.
 
-### Migrate from the beta tap
-
-Betas were installed from `christopher96u/tap`, which no longer receives updates. Switch once:
-
-```sh
-brew uninstall --cask wirebolt && brew untap christopher96u/tap
-brew tap christopher96u/wirebolt https://github.com/Christopher96u/wirebolt
-brew install --cask christopher96u/wirebolt/wirebolt
-```
-
-Workspace folders are not affected.
-
 ## Direct download
 
 1. Open [Wirebolt releases](https://github.com/Christopher96u/wirebolt/releases).
