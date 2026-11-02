@@ -325,6 +325,13 @@ fn custom_borders_are_neutral_and_follow_final_surfaces() {
     for preview in previews {
         for increased in [false, true] {
             let resolved = custom::resolve(preview.tokens.clone(), increased);
+            for control in [
+                resolved.definition.send_background,
+                resolved.definition.send_foreground,
+            ] {
+                assert_eq!(control.red, control.green, "{control:?}");
+                assert_eq!(control.green, control.blue, "{control:?}");
+            }
             for border in [
                 resolved.definition.hairline,
                 resolved.definition.card_border,

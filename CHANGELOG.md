@@ -33,7 +33,7 @@ Changes under **Unreleased** are on `main` but not in a published build yet. Dow
 - Large multipart file uploads stream from disk instead of loading the complete upload into memory before Send. Bodies up to 64 KiB can still be resent on redirects.
 - Bulk Edit accepts pasted CRLF and CR line endings in headers, query parameters and form fields without adding carriage returns to values.
 - XML and HTML payloads stay unchanged by Format, which is now disabled for these types because inserted whitespace can change their content.
-- OAuth sign-in preserves literal plus signs and preserves valueless URL parameters, and uses form encoding for authorization parameters and callbacks (spaces encode as `+`, as required by RFC 6749).
+- OAuth sign-in preserves literal plus signs and valueless URL parameters, and uses form encoding for authorization parameters and callbacks (spaces encode as `+`, as required by RFC 6749).
 - **Copy cURL** now encodes query parameters the same way as Send, including literal plus signs, punctuation and Unicode.
 - Query and form fields marked sensitive are redacted in Sent Request and History while their values are still sent.
 - Cookie expiry now gives valid `Max-Age` precedence over `Expires`, regardless of attribute order, and ignores invalid expiry attributes.

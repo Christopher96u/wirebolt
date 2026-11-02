@@ -18,8 +18,7 @@ Use variables in request fields with double braces:
 
 Outside editing, the URL shows each reference as a chip with just the variable name, red when no active environment defines it; click the URL to edit the raw `{{name}}` text. Global variables apply across environments. The selected environment overrides matching Global keys. A disabled row is omitted from resolution. If a variable fails to resolve, check spelling, enabled state and the selected environment before sending again.
 
-Selecting an environment in the inspector finishes the current edit and chooses the environment requests use. Globals always appears once, at the top. Use an environment’s context menu to rename or delete it. Long names and values use one line; hover or focus a field to read the full text.
-
+Selecting an environment in the inspector finishes the current edit and chooses what you edit next. Use **Use for Requests** or the composer’s environment picker to change the active environment. Globals always appears once, at the top. Use an environment’s context menu to rename or delete it. Long names and values use one line; hover or focus a field to read the full text.
 
 ## Credentials and secret references
 

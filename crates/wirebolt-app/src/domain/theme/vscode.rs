@@ -134,8 +134,6 @@ fn map_colors(
         ("sideBar.foreground", &mut tokens.secondary),
         ("descriptionForeground", &mut tokens.muted),
         ("editorLineNumber.foreground", &mut tokens.line_number),
-        ("button.background", &mut tokens.send_background),
-        ("button.foreground", &mut tokens.send_foreground),
         ("editorWarning.foreground", &mut tokens.warning),
         ("editorError.foreground", &mut tokens.error),
         ("testing.iconPassed", &mut tokens.success),

@@ -43,8 +43,8 @@ pub fn derive(background: RgbColor, accent: RgbColor) -> ThemePreview {
     tokens.muted = mix(background, text, 0.65);
     tokens.dim = mix(background, text, 0.5);
     tokens.line_number = tokens.dim;
-    tokens.send_background = accent;
-    tokens.send_foreground = text;
+    tokens.send_background = neutral_action(dark);
+    tokens.send_foreground = best_text(tokens.send_background);
     tokens.variable_background = mix(background, accent, 0.1);
     tokens.variable_foreground = accent;
     // Small hue rotation harmonizes with the accent without reversing semantic meanings.
@@ -110,6 +110,12 @@ pub fn validate(tokens: &ThemeTokens) -> Result<(), String> {
 pub fn checked(mut tokens: ThemeTokens, increased: bool) -> (ThemeTokens, Vec<String>) {
     let dark = tokens.preset != DomainThemePreset::Paper;
     let mut notices = Vec::new();
+    let action = neutral_action(dark);
+    if tokens.send_background != action {
+        tokens.send_background = action;
+        notices.push("Action color made neutral to match other controls.".into());
+    }
+    tokens.send_foreground = best_text(action);
     for (name, value) in [
         ("Window background", &mut tokens.window),
         ("Sidebar background", &mut tokens.sidebar),
@@ -267,6 +273,10 @@ fn text_surfaces(tokens: &ThemeTokens) -> [RgbColor; 7] {
         tokens.overlay,
         tokens.variable_background,
     ]
+}
+
+fn neutral_action(dark: bool) -> RgbColor {
+    RgbColor::hex(if dark { 0x00d4_d4d4 } else { 0x003f_3f3f })
 }
 
 fn best_text(background: RgbColor) -> RgbColor {
