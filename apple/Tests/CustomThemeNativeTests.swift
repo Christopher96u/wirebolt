@@ -61,8 +61,14 @@ import SwiftUI
         }
         await settle(host)
     }
-    private static func capture(_ host: NSView, directory: URL?, name: String) throws {
+    private static func capture(_ host: NSView, directory: URL?, name: String, isDark: Bool) throws {
         guard let directory else { return }
+        // The app delegate aligns AppKit with the chosen theme. This isolated
+        // capture host has no app delegate, so mirror that platform adaptation.
+        let appearance = NSAppearance(named: isDark ? .darkAqua : .aqua)
+        host.window?.appearance = appearance
+        host.appearance = appearance
+        flush(host)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         guard let bitmap = host.bitmapImageRepForCachingDisplay(in: host.bounds) else { fatalError("Could not capture Appearance") }
         host.cacheDisplay(in: host.bounds, to: bitmap)
@@ -89,7 +95,7 @@ import SwiftUI
         check(elements(host).contains { $0.name == "Harbour theme" }, "Custom themes must be in the picker")
         await press("Harbour theme", window: window)
         check(defaults.string(forKey: "interfaceAppearance") == custom.id && store.resolved.customID == custom.id)
-        try capture(host, directory: screenshots, name: "01-two-colour-appearance")
+        try capture(host, directory: screenshots, name: "01-two-colour-appearance", isDark: store.resolved.isDark)
 
         await press("Custom theme from 2 colors", window: window)
         guard let sheet = window.attachedSheet, let sheetHost = sheet.contentView else { fatalError("Missing custom theme preview sheet: \(NSApp.windows.map { $0.title }); page \(elements(host).map(\.name))") }
@@ -97,7 +103,7 @@ import SwiftUI
         guard elements(sheetHost).contains(where: { $0.name == "Theme live preview" }) else { fatalError("Missing live preview: \(elements(sheetHost).map(\.name))") }
         guard elements(sheetHost).contains(where: { $0.name == "Background" }) else { fatalError("Missing Background: \(elements(sheetHost).map(\.name))") }
         guard elements(sheetHost).contains(where: { $0.name == "Accent" }) else { fatalError("Missing Accent: \(elements(sheetHost).map(\.name))") }
-        try capture(sheetHost, directory: screenshots, name: "03-live-preview")
+        try capture(sheetHost, directory: screenshots, name: "03-live-preview", isDark: store.resolved.isDark)
         await press("Save Theme", window: sheet)
         await settle(host)
         check(store.customThemes.count == 2, "The preview must save into the picker")
@@ -128,14 +134,14 @@ import SwiftUI
         await settle(host)
         await press("Linen theme", window: window)
         check(store.resolved.customID == importedTheme.id && !store.resolved.isDark)
-        try capture(host, directory: screenshots, name: "02-imported-appearance")
+        try capture(host, directory: screenshots, name: "02-imported-appearance", isDark: store.resolved.isDark)
         let invalid = root.appending(path: "invalid.json")
         try Data("{bad input".utf8).write(to: invalid)
         let invalidPreview = await store.importTheme(from: invalid)
         check(invalidPreview == nil)
         await settle(host)
         check(elements(host).contains { $0.name.contains("Invalid VS Code theme") }, "Import errors must be visible on Appearance")
-        try capture(host, directory: screenshots, name: "04-import-error")
+        try capture(host, directory: screenshots, name: "04-import-error", isDark: store.resolved.isDark)
         print("custom_theme_picker_select_preview_save_delete_import_errors=passed")
     }
 }
