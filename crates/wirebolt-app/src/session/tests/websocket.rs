@@ -263,3 +263,16 @@ fn composer_edits_keep_the_kind_and_encoding() {
         SessionMessageKind::File
     );
 }
+
+#[test]
+fn message_text_formats_complete_large_payloads_in_text_and_hex() {
+    use crate::session::websocket::message_text;
+    let mut data = vec![b'x'; 65_536];
+    data.extend_from_slice(b"END");
+    assert_eq!(message_text(&data, false).as_bytes(), data);
+    let hex = message_text(&data, true);
+    assert_eq!(hex.len(), data.len() * 3 - 1);
+    assert!(hex.ends_with("45 4E 44"));
+    assert_eq!(message_text(&[0, 15, 16, 255], true), "00 0F 10 FF");
+    assert!(message_text(&[], true).is_empty());
+}

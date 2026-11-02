@@ -2266,7 +2266,7 @@ private struct RequestWorkspace: View {
     }
 }
 
-private struct WebSocketRequestWorkspace: View {
+struct WebSocketRequestWorkspace: View {
     @Bindable var model: WireboltModel
     @Bindable var interface: DocumentPresentationState
     @Bindable var session: DocumentSession
@@ -2398,7 +2398,7 @@ private struct WebSocketRequestWorkspace: View {
     }
 }
 
-private struct RequestURLBar: View {
+struct RequestURLBar: View {
     @Bindable var model: WireboltModel
     @Bindable var interface: WorkspaceUIState
     @Bindable var session: DocumentSession
@@ -2868,8 +2868,13 @@ private struct WebSocketResponseView: View {
             .ghostMenuStyle().menuIndicator(.hidden).labelStyle(.iconOnly).fixedSize()
             .help("View Options")
             Button("Copy Message", systemImage: "doc.on.doc") {
-                NSPasteboard.general.clearContents()
-                NSPasteboard.general.setString(selected?.copyText(hex: hex) ?? "", forType: .string)
+                guard let selected else { return }
+                let hex = hex
+                Task {
+                    let text = await Task.detached(priority: .userInitiated) { selected.copyText(hex: hex) }.value
+                    NSPasteboard.general.clearContents()
+                    NSPasteboard.general.setString(text, forType: .string)
+                }
             }
             .labelStyle(.iconOnly).buttonStyle(.borderless)
             .disabled(selected == nil).help("Copy Selected Message")
@@ -2885,7 +2890,7 @@ private struct WebSocketResponseView: View {
         guard let selected else { return "" }
         if !hex && selected.data.count <= DocumentSession.previewByteLimit { return selected.text }
         let data = selected.data.prefix(DocumentSession.previewByteLimit)
-        return hex ? data.map { String(format: "%02X", $0) }.joined(separator: " ") : String(decoding: data, as: UTF8.self)
+        return sessionSocketMessageText(data: Data(data), hex: hex)
     }
     private static func icon(for message: WebSocketMessage) -> (symbol: String, color: Color, label: String) {
         switch message.notice {

@@ -174,3 +174,9 @@ pub fn session_socket_message_limit() -> u64 {
 pub fn session_socket_message_bytes() -> u64 {
     wirebolt_app::session::websocket::MESSAGE_BYTES as u64
 }
+
+#[uniffi::export]
+#[must_use]
+pub fn session_socket_message_text(data: Vec<u8>, hex: bool) -> String {
+    wirebolt_app::session::websocket::message_text(&data, hex)
+}

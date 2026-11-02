@@ -59,7 +59,7 @@ public struct WebSocketMessage: Identifiable, Sendable {
 
     /// The clipboard uses the retained message, independently of the viewport limit.
     public func copyText(hex: Bool) -> String {
-        hex ? data.map { String(format: "%02X", $0) }.joined(separator: " ") : text
+        hex ? sessionSocketMessageText(data: data, hex: true) : text
     }
 
     public func matches(_ query: String) -> Bool {
