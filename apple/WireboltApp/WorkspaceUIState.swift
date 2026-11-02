@@ -187,6 +187,11 @@ final class WorkspaceUIState {
         var importFormat: ImportFormat = .postmanV2
     var focusURLTrigger = 0
     var pendingURLFocusID: String?
+    func focusRequestSearch() {
+        columnVisibility = .all
+        focusSearchTrigger += 1
+    }
+
     var focusSearchTrigger = 0
     /// Moves keyboard focus into the active editor group's response content.
     var focusResponseTrigger = 0

@@ -1,6 +1,7 @@
 import AppKit
 import Foundation
 import Observation
+import SwiftUI
 
 // Called only by temporary instrumented compiler inputs, including the generated
 // draft writer. Keep this accounting entirely out of shipping types.
@@ -30,6 +31,8 @@ enum DraftWorkProbe {
 }
 
 @main @MainActor enum NativeAdapterTests {
+    static func print(_ message: String) { FileHandle.standardOutput.write(Data((message + "\n").utf8)) }
+
     static func typingAssignmentsAvoidDraftWork() {
         let body = String(repeating: "x", count: 1_048_576)
         let draft = RequestDraft(id: "typing", body: .json(value: body))
@@ -94,7 +97,75 @@ enum DraftWorkProbe {
         let captureDirectory = ProcessInfo.processInfo.environment["WIREBOLT_NATIVE_CAPTURE_DIRECTORY"].map { URL(fileURLWithPath: $0) }
         try await CustomThemeNativeTests.run(root: root, defaults: defaults, screenshots: captureDirectory)
         try await EnvironmentInspectorTests.run(root: root, defaults: defaults, screenshots: captureDirectory)
+        try await auditNavigationAndSettings(root: root, defaults: defaults, screenshots: captureDirectory)
         typingAssignmentsAvoidDraftWork()
         lastTabDirtyConfirmAndReopen(root: root, defaults: defaults)
     }
 }
+
+
+extension NativeAdapterTests {
+    static func auditModel(root: URL, defaults: UserDefaults) -> WireboltModel {
+        WireboltModel(runner: FixtureRunner(), persistence: FixtureWorkspaceStore(),
+            history: HistoryRepository(root: root.appending(path: "audit-history")),
+            cookieJar: CookieJar(storageURL: root.appending(path: "audit-cookies")), cookieDirectory: root,
+            proxyPreferences: ProxyPreferences(defaults: defaults))
+    }
+
+    static func auditNavigationAndSettings(root: URL, defaults: UserDefaults, screenshots: URL?) async throws {
+        let restoreAccessibility = NativeTestSupport.enableAccessibility()
+        defer { restoreAccessibility() }
+        let model = auditModel(root: root, defaults: defaults)
+        let request = RequestDraft(id: "audit-request", name: "Fixture request", url: "https://example.invalid/")
+        model.workspace.collections = [CollectionDraft(id: "audit", name: "Fixture collection", requests: [RequestLocation(collectionID: "audit", request: request)])]
+        _ = model.sessions.open(draft: request, collectionID: "audit")
+        let interface = WorkspaceUIState(defaults: defaults)
+        interface.synchronizeSelection(model: model)
+        interface.columnVisibility = .detailOnly
+        let (window, host) = await NativeTestSupport.mount(ContentView(model: model, interface: interface, loadsWorkspace: false), defaults: defaults)
+        interface.focusRequestSearch()
+        await NativeTestSupport.settle(host)
+        precondition(interface.columnVisibility == .all)
+        let field = EnvironmentInspectorTests.fields(host).first { $0.placeholderString == "Search" }!
+        precondition(field.currentEditor() === window.firstResponder, "Filter reveals and focuses the previously unmounted search field")
+        let sidebar = NativeTestSupport.elements(host)
+        precondition(!sidebar.contains { $0.role == "AXButton" && ["Filter Requests", "Network Settings"].contains($0.name) })
+        window.close()
+        print("filterRequestsRevealsSidebarAndFocusesSearch: passed")
+        print("sidebarOmitsRedundantFilterAndNetworkControls: passed")
+
+        model.settingsTab = "general"
+        model.isShowingAppSettings = true
+        let (settingsWindow, settingsHost) = await NativeTestSupport.mount(WireboltSettingsView(model: model), defaults: defaults, height: 1050)
+        defer { settingsWindow.close() }
+        let general = NativeTestSupport.elements(settingsHost)
+        precondition(general.contains { $0.name == "History" } && general.contains { $0.name == "Clear All History…" })
+        precondition(!general.contains { ["Privacy", "Privacy Policy", "Analytics", "Crash reports"].contains($0.name) })
+        if let screenshots { try NativeTestSupport.capture(settingsHost, directory: screenshots, name: "audit-settings-general-history") }
+        print("generalShowsHistoryWithoutPrivacyPage: passed")
+        let search = EnvironmentInspectorTests.fields(settingsHost).first { $0.accessibilityLabel() == "Search settings" }!
+        EnvironmentInspectorTests.replace(search, with: "history", window: settingsWindow)
+        await NativeTestSupport.settle(settingsHost)
+        precondition(NativeTestSupport.elements(settingsHost).contains { $0.role == "AXButton" && $0.name == "General" })
+        EnvironmentInspectorTests.replace(search, with: "privacy", window: settingsWindow)
+        await NativeTestSupport.settle(settingsHost)
+        precondition(!NativeTestSupport.elements(settingsHost).contains { $0.role == "AXButton" && $0.name == "Privacy" })
+        EnvironmentInspectorTests.replace(search, with: "", window: settingsWindow)
+        model.settingsTab = "keyboard"
+        await NativeTestSupport.settle(settingsHost)
+        precondition(!NativeTestSupport.elements(settingsHost).contains { $0.name == "New tab" || $0.name == "⌘T" })
+        print("keyboardListsSingleNewRequestCommand: passed")
+        model.settingsTab = "appearance"
+        await NativeTestSupport.settle(settingsHost)
+        let appearance = NativeTestSupport.elements(settingsHost)
+        precondition(!appearance.contains { ["Canvas & variables", "Contrast"].contains($0.name) })
+        precondition(appearance.contains { $0.name == "Follow System" } && appearance.contains { $0.name == "Custom theme from 2 colors" })
+        if let screenshots { try NativeTestSupport.capture(settingsHost, directory: screenshots, name: "audit-settings-appearance") }
+        print("appearanceOmitsDiagnosticRows: passed")
+    }
+}
+
+
+
+
+

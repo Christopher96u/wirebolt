@@ -2,7 +2,7 @@ import AppKit
 import SwiftUI
 
 private enum SettingsSection: String, CaseIterable, Identifiable {
-    case general, appearance, network, keyboard, privacy
+    case general, appearance, network, keyboard
     var id: String { rawValue }
     var title: String { rawValue.capitalized }
     var symbol: String {
@@ -11,16 +11,14 @@ private enum SettingsSection: String, CaseIterable, Identifiable {
         case .appearance: "paintpalette"
         case .network: "network"
         case .keyboard: "keyboard"
-        case .privacy: "checkmark.shield"
         }
     }
     var keywords: String {
         switch self {
-        case .general: "workspace folder editor word wrap invisible characters scroll beyond"
+        case .general: "workspace folder editor word wrap invisible characters scroll beyond history clear responses"
         case .appearance: "theme black paper ember colors canvas accent density font reduce motion"
         case .network: "proxy connection manual system direct authentication credentials routes"
         case .keyboard: "shortcuts keybindings commands navigation"
-        case .privacy: "analytics crash reports data keychain policy"
         }
     }
 }
@@ -84,7 +82,6 @@ struct WireboltSettingsView: View {
                 case .general: GeneralSettingsPage(model: model, openWorkspaceSettings: openWorkspaceSettings)
                 case .appearance: AppearanceSettingsView()
                 case .keyboard: KeyboardSettingsPage()
-                case .privacy: PrivacySettingsPage(model: model)
                 case .network: EmptyView()
                 }
             }

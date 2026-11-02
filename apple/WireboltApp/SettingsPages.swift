@@ -4,6 +4,7 @@ import SwiftUI
 struct GeneralSettingsPage: View {
     @Bindable var model: WireboltModel
     let openWorkspaceSettings: () -> Void
+    @State private var clearingHistory = false
     @AppStorage("editor.wordWrap") private var wraps = true
     @AppStorage("editor.showInvisibles") private var invisibles = false
     @AppStorage("editor.scrollBeyondLastLine") private var beyond = true
@@ -12,7 +13,7 @@ struct GeneralSettingsPage: View {
         SettingsPage(title: "General", subtitle: "Workspace and editing preferences.") {
             SettingsCard {
                 SettingsRow(title: "Workspace", detail: model.workspace.name, last: model.workspaceLocation == nil) {
-                    Button("Workspace settings", action: openWorkspaceSettings)
+                    Button("Workspace Settings", action: openWorkspaceSettings)
                 }
                 if let location = model.workspaceLocation {
                     SettingsRow(title: "Workspace folder", detail: location.path, last: true) {
@@ -31,6 +32,20 @@ struct GeneralSettingsPage: View {
                     Toggle("Scroll beyond the last line", isOn: $beyond).labelsHidden().toggleStyle(.wireboltSwitch)
                 }
             }
+            VStack(alignment: .leading, spacing: WireboltTheme.Spacing.large) {
+                Text("History").foregroundStyle(WireboltTheme.muted)
+                SettingsCard {
+                    SettingsRow(title: "Response history", detail: "Clear stored responses from every workspace.", last: true) {
+                        Button("Clear All History…", role: .destructive) { clearingHistory = true }
+                    }
+                }
+            }
+        }
+        .alert("Clear All History?", isPresented: $clearingHistory) {
+            Button("Cancel", role: .cancel) {}
+            Button("Clear All", role: .destructive) { Task { await model.clearAllHistory() } }
+        } message: {
+            Text("This removes stored responses from every workspace.")
         }
     }
 }
@@ -43,7 +58,7 @@ struct KeyboardSettingsPage: View {
     }
     @Environment(\.wireboltTheme) private var theme
     private let groups = [
-        ShortcutGroup(title: "Requests", shortcuts: [("New request", "⌘N"), ("New tab", "⌘T"),
+        ShortcutGroup(title: "Requests", shortcuts: [("New request", "⌘N"),
             ("Save request", "⌘S"), ("Send request or message", "⌘↩"), ("Cancel request", "⌘."),
             ("Connect or disconnect WebSocket", "⌃⌘↩"), ("Edit URL", "⌘L"), ("Add key", "⇧⌘K")]),
         ShortcutGroup(title: "Navigation", shortcuts: [("Focus sidebar", "⌘0"), ("Focus response", "⌥⌘0"),
@@ -72,56 +87,6 @@ struct KeyboardSettingsPage: View {
                     }
                 }
             }
-        }
-    }
-}
-
-struct PrivacySettingsPage: View {
-    @Bindable var model: WireboltModel
-    @State private var clearingHistory = false
-    @State private var showingPolicy = false
-    @Environment(\.wireboltTheme) private var theme
-
-    var body: some View {
-        SettingsPage(title: "Privacy", subtitle: "Your workspace stays under your control.") {
-            SettingsCard {
-                SettingsRow(title: "Analytics", detail: "Wirebolt does not automatically collect usage analytics or identifiers.") {
-                    Label("Not collected", systemImage: "checkmark.shield").foregroundStyle(theme.definition.success.color)
-                }
-                SettingsRow(title: "Crash reports", detail: "You choose which diagnostics to share when reporting a problem.") {
-                    Text("Not uploaded automatically").foregroundStyle(theme.muted.color)
-                }
-                SettingsRow(title: "Local data", detail: "Requests and environments stay in your workspace. Secrets stay in this Mac’s Keychain.") {
-                    Image(systemName: "lock").foregroundStyle(theme.muted.color).accessibilityHidden(true)
-                }
-                SettingsRow(title: "Response history", detail: "Clear stored responses from every workspace.") {
-                    Button("Clear All History…", role: .destructive) { clearingHistory = true }
-                }
-                SettingsRow(title: "Privacy policy", detail: "How Wirebolt handles your workspace and connections.", last: true) {
-                    Button("Privacy Policy") { showingPolicy = true }
-                }
-            }
-        }
-        .alert("Clear All History?", isPresented: $clearingHistory) {
-            Button("Clear All History", role: .destructive) { Task { await model.clearAllHistory() } }
-            Button("Cancel", role: .cancel) {}
-        } message: {
-            Text("All stored response history will be deleted. Responses already open in tabs stay available.")
-        }
-        .sheet(isPresented: $showingPolicy) {
-            VStack(alignment: .leading, spacing: WireboltTheme.Spacing.xLarge) {
-                Text("Privacy Policy").font(WireboltTheme.Typography.title)
-                Text("Wirebolt stores your workspace on this Mac. It does not automatically send analytics, identifiers, crash reports or diagnostics.")
-                Text("Requests connect to the addresses you choose and may use your configured proxy. Sign-in and Git sync connect to their services when you use those features.")
-                Text("You control which workspace files or diagnostic details you share with others.")
-                HStack { Spacer(); Button("Done") { showingPolicy = false }.keyboardShortcut(.defaultAction).tint(WireboltTheme.controlAccent) }
-            }
-            .font(.system(size: theme.typography.settingsLabel))
-            .controlSize(.large)
-            .padding(WireboltTheme.Spacing.section)
-            .frame(width: 520)
-            .background(theme.definition.overlay.color)
-            .onExitCommand { showingPolicy = false }
         }
     }
 }

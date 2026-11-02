@@ -199,9 +199,6 @@ struct WireboltCommands: Commands {
                 .disabled(noWorkspace)
             Button("New WebSocket Request") { interface.makeNewRequest(model: model, kind: .webSocket) }
                 .disabled(noWorkspace)
-            Button("New Tab") { interface.makeNewRequest(model: model, rename: false) }
-                .keyboardShortcut("t", modifiers: .command)
-                .disabled(noWorkspace)
             Button("New Folder") { interface.makeNewFolder(model: model) }
                 .keyboardShortcut("n", modifiers: [.command, .option])
                 .disabled(noWorkspace)
@@ -250,7 +247,7 @@ struct WireboltCommands: Commands {
         ToolbarCommands()
         CommandGroup(after: .toolbar) {
             Divider()
-            Button("Filter Requests") { interface.focusSearchTrigger += 1 }
+            Button("Filter Requests") { interface.focusRequestSearch() }
                 .keyboardShortcut("f", modifiers: [.command, .shift]).disabled(noWorkspace)
             Divider()
             Button(interface.columnVisibility == .detailOnly ? "Show Sidebar" : "Hide Sidebar") {

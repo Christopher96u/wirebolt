@@ -9,7 +9,6 @@
 | Action | Shortcut |
 | --- | --- |
 | New request | ⌘N |
-| New tab (untitled request) | ⌘T |
 | New folder | ⌥⌘N |
 | New collection | ⇧⌘N |
 | Open workspace | ⌘O |

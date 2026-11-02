@@ -578,7 +578,10 @@ private struct WorkspaceSidebar: View {
             if showsMaterial { SidebarFooter(model: model) }
         }
         .background(WireboltTheme.sidebarBackground)
-        .onChange(of: interface.focusSearchTrigger) {
+        .task(id: interface.focusSearchTrigger) {
+            guard interface.focusSearchTrigger > 0 else { return }
+            await Task.yield()
+            guard !Task.isCancelled else { return }
             filterIsFocused = true
         }
 
@@ -1593,8 +1596,6 @@ private struct SidebarSearchRow: View {
             TextField("Search", text: $interface.sidebarFilter)
                 .textFieldStyle(.plain).focused(filterIsFocused)
                 .help("Filter Requests (⇧⌘F)")
-            Button("Filter Requests", systemImage: "line.3.horizontal.decrease") { filterIsFocused.wrappedValue = true }
-                .labelStyle(.iconOnly).buttonStyle(GhostIconStyle())
             Button("New Folder", systemImage: "folder.badge.plus") { interface.makeNewFolder(model: model) }
                 .labelStyle(.iconOnly).buttonStyle(GhostIconStyle())
             Button("New Request", systemImage: "square.and.pencil") { interface.makeNewRequest(model: model) }
@@ -1675,7 +1676,6 @@ private struct SidebarFooter: View {
             Button("Settings", systemImage: "gearshape") { presentAppSettings(model) }
             Button("Git Collaboration", systemImage: "arrow.triangle.branch") { model.isShowingGitCollaboration = true }
             Button("Cookies", systemImage: "circle.hexagongrid") { openWindow(id: CookiesView.windowID) }
-            Button("Network Settings", systemImage: "chart.bar") { model.isShowingWorkspaceSettings = true }
             Spacer(minLength: 0)
         }
         .labelStyle(.iconOnly).buttonStyle(GhostIconStyle())
