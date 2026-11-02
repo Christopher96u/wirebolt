@@ -34,8 +34,6 @@ pub enum ImportFormat {
     Insomnia,
     /// Bruno "Export collection" JSON document.
     Bruno,
-    /// A Bruno collection folder, bundled by [`ImportEngine::bruno_folder_source`].
-    BrunoFolder,
 }
 
 impl ImportFormat {
@@ -51,7 +49,6 @@ impl ImportFormat {
             "postman_v2" => Ok(Self::PostmanV2),
             "insomnia" => Ok(Self::Insomnia),
             "bruno" => Ok(Self::Bruno),
-            "bruno_folder" => Ok(Self::BrunoFolder),
             _ => Err(ImportError::new("This import format isn't supported.")),
         }
     }
@@ -303,7 +300,6 @@ impl ImportEngine {
             ImportFormat::PostmanV2 => postman::parse(source),
             ImportFormat::Insomnia => insomnia::parse(source, file_name),
             ImportFormat::Bruno => bruno::parse_export(source),
-            ImportFormat::BrunoFolder => bruno::parse_folder(source, file_name),
         };
         result.map_err(|error| unsupported_document(source).unwrap_or(error))
     }
@@ -338,14 +334,6 @@ impl ImportEngine {
     /// Returns [`ImportError`] without including source contents.
     pub fn parse(format: ImportFormat, source: &str) -> Result<ImportedCollection, ImportError> {
         first_collection(Self::parse_import(format, source, None)?)
-    }
-
-    /// Bundles the text files of a Bruno collection folder into the source
-    /// accepted by [`ImportFormat::BrunoFolder`]. `files` holds paths relative
-    /// to `root` (using `/`) with their UTF-8 contents.
-    #[must_use]
-    pub fn bruno_folder_source(root: &str, files: &[(String, String)]) -> String {
-        bruno::folder_source(root, files)
     }
 }
 

@@ -19,7 +19,7 @@ fn collection_exports_keep_all_existing_importers() {
             r#"{"name":"Library","version":"1","items":[],"environments":[]}"#,
             "bruno",
         ),
-        ("bru", "meta {\n name: Ping\n}\n", "bruno_folder"),
+        ("bru", "meta {\n name: Ping\n}\n", "bruno"),
         (
             "json",
             r#"{"info":{"_postman_id":"x"},"item":[]}"#,
@@ -74,20 +74,6 @@ fn bruno_folders_bundle_only_supported_files_in_order() {
         ]
     );
     let typed = wirebolt_core::ImportEngine::parse_bruno_folder(&bundle, Some("Fallback")).unwrap();
-    let legacy = wirebolt_core::ImportEngine::parse_import(
-        ImportFormat::BrunoFolder,
-        &wirebolt_core::ImportEngine::bruno_folder_source(
-            &bundle.root,
-            &bundle
-                .files
-                .iter()
-                .map(|file| (file.path.clone(), file.contents.clone()))
-                .collect::<Vec<_>>(),
-        ),
-        Some("Fallback"),
-    )
-    .unwrap();
-    assert_eq!(format!("{typed:?}"), format!("{legacy:?}"));
     assert_eq!(typed.workspace.collections[0].name, "Library");
     assert_eq!(typed.workspace.collections[0].requests.len(), 1);
     assert_eq!(typed.workspace.environments.len(), 1);

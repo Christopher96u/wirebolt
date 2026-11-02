@@ -457,7 +457,20 @@ fn insomnia_rejects_other_documents_with_a_reason() {
 
 // MARK: - Bruno folder
 
-fn bruno_folder_source(root: &Path) -> String {
+fn bruno_bundle(root: &str, files: &[(String, String)]) -> wirebolt_core::BrunoFolderBundle {
+    wirebolt_core::BrunoFolderBundle {
+        root: root.into(),
+        files: files
+            .iter()
+            .map(|(path, contents)| wirebolt_core::BrunoSourceFile {
+                path: path.clone(),
+                contents: contents.clone(),
+            })
+            .collect(),
+    }
+}
+
+fn bruno_folder_bundle(root: &Path) -> wirebolt_core::BrunoFolderBundle {
     fn collect(root: &Path, directory: &Path, files: &mut Vec<(String, String)>) {
         let mut entries = std::fs::read_dir(directory)
             .expect("read directory")
@@ -478,18 +491,14 @@ fn bruno_folder_source(root: &Path) -> String {
     }
     let mut files = Vec::new();
     collect(root, root, &mut files);
-    ImportEngine::bruno_folder_source("/Users/demo/Library API", &files)
+    bruno_bundle("/Users/demo/Library API", &files)
 }
 
 fn bruno_folder() -> ImportedWorkspace {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/bruno/collection");
-    ImportEngine::parse_import(
-        ImportFormat::BrunoFolder,
-        &bruno_folder_source(&root),
-        Some("collection"),
-    )
-    .expect("parse Bruno folder")
-    .workspace
+    ImportEngine::parse_bruno_folder(&bruno_folder_bundle(&root), Some("collection"))
+        .expect("parse Bruno folder")
+        .workspace
 }
 
 #[test]
@@ -719,26 +728,26 @@ fn bruno_folder_environments_layer_collection_variables_and_reference_secrets() 
 
 #[test]
 fn bruno_folder_rejects_folders_without_bru_files() {
-    let source = ImportEngine::bruno_folder_source(
+    let source = bruno_bundle(
         "/tmp/not-bruno",
         &[("README.md".to_owned(), "# Notes".to_owned())],
     );
-    assert!(ImportEngine::parse(ImportFormat::BrunoFolder, &source).is_err());
-    let yaml = ImportEngine::bruno_folder_source(
+    assert!(ImportEngine::parse_bruno_folder(&source, None).is_err());
+    let yaml = bruno_bundle(
         "/tmp/yaml",
         &[("opencollection.yml".to_owned(), "name: x".to_owned())],
     );
-    let error = ImportEngine::parse(ImportFormat::BrunoFolder, &yaml).expect_err("YAML");
+    let error = ImportEngine::parse_bruno_folder(&yaml, None).expect_err("YAML");
     assert!(error.to_string().contains("YAML"));
 }
 
 #[test]
 fn a_single_bru_file_imports_as_one_request() {
-    let source = ImportEngine::bruno_folder_source(
+    let source = bruno_bundle(
         "/Users/demo/Downloads",
         &[("Ping.bru".to_owned(), fixture("bruno/collection/Ping.bru"))],
     );
-    let workspace = ImportEngine::parse_import(ImportFormat::BrunoFolder, &source, Some("Ping"))
+    let workspace = ImportEngine::parse_bruno_folder(&source, Some("Ping"))
         .expect("single file")
         .workspace;
     let collection = only_collection(&workspace);

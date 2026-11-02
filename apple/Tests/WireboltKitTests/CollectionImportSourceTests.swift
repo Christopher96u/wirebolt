@@ -17,7 +17,7 @@ struct CollectionImportSourceTests {
         #expect(ImportFormat.detect(fileExtension: "yaml", contents: "_type: export\n__export_format: 4\n") == .insomnia)
         let bruno = #"{"name":"Library","version":"1","items":[],"environments":[]}"#
         #expect(ImportFormat.detect(fileExtension: "json", contents: bruno) == .bruno)
-        #expect(ImportFormat.detect(fileExtension: "bru", contents: "meta {\n  name: Ping\n}\n") == .brunoFolder)
+        #expect(ImportFormat.detect(fileExtension: "bru", contents: "meta {\n  name: Ping\n}\n") == .bruno)
         // Postman and Wirebolt documents keep their importers.
         #expect(ImportFormat.detect(fileExtension: "json", contents: #"{"info":{"_postman_id":"x"},"item":[]}"#) == .postmanV2)
         #expect(ImportFormat.detect(fileExtension: "json", contents: #"{"version":1,"nodes":[]}"#) == nil)

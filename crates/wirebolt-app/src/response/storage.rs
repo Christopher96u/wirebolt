@@ -434,7 +434,7 @@ impl RunHistory {
         self.replace_entries(entries)
     }
     /// # Errors
-    /// Returns a storage error if reading, writing the index fails.
+    /// Returns a storage error if reading or writing the index fails.
     pub fn clear_all(&mut self) -> ResponseResult<()> {
         self.replace_entries(Vec::new())
     }

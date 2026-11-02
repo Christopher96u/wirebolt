@@ -19,7 +19,6 @@ pub fn display_name(format: wirebolt_core::ImportFormat) -> String {
         wirebolt_core::ImportFormat::PostmanV2 => "Postman Collection v2",
         wirebolt_core::ImportFormat::Insomnia => "Insomnia",
         wirebolt_core::ImportFormat::Bruno => "Bruno collection",
-        wirebolt_core::ImportFormat::BrunoFolder => "Bruno collection folder",
     }
     .into()
 }

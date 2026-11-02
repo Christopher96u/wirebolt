@@ -1167,10 +1167,10 @@ extension ImportFormat {
     public static func unrecognizedMessage(fileName: String, contents: String) -> String {
         workspaceImportUnrecognized(name: fileName, contents: contents, formats: localizedFormats)
     }
-    public static let allCases: [ImportFormat] = [.curl, .har, .postmanV2, .insomnia, .bruno, .brunoFolder]
+    public static let allCases: [ImportFormat] = [.curl, .har, .postmanV2, .insomnia, .bruno]
 
     public static var localizedFormats: String {
-        ListFormatter.localizedString(byJoining: allCases.filter { $0 != .brunoFolder }.map(\.displayName))
+        ListFormatter.localizedString(byJoining: allCases.map(\.displayName))
     }
 
     /// Infers the importer for a file opened from Finder or dropped on the window.

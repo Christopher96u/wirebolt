@@ -10,8 +10,8 @@ use std::collections::BTreeSet;
 use serde_json::{Map, Value, json};
 
 use super::{
-    BrunoFolderBundle, BrunoSourceFile, ImportError, ImportedEnvironment, ImportedGroup,
-    ImportedRequest, ParsedImport, SecretCollector,
+    BrunoFolderBundle, ImportError, ImportedEnvironment, ImportedGroup, ImportedRequest,
+    ParsedImport, SecretCollector,
     bru::{self, BruContent, BruFile, BruPair},
     support::{
         Diagnostics, Row, array, empty_collection, environment, field, flag, header,
@@ -29,33 +29,6 @@ const REDIRECT_URI: &str = "wirebolt://oauth/callback";
 const MAX_FILES: usize = 10_000;
 
 // MARK: - Folder bundle
-
-pub(super) fn folder_source(root: &str, files: &[(String, String)]) -> String {
-    json!({
-        "root": root,
-        "files": files
-            .iter()
-            .map(|(path, contents)| json!({ "path": path, "contents": contents }))
-            .collect::<Vec<_>>(),
-    })
-    .to_string()
-}
-
-pub(super) fn parse_folder(source: &str, name: Option<&str>) -> Result<ParsedImport, ImportError> {
-    let bundle: Value = serde_json::from_str(source)
-        .map_err(|_| ImportError::new("The Bruno collection folder couldn't be read."))?;
-    let bundle = BrunoFolderBundle {
-        root: text(&bundle, "root").into(),
-        files: array(&bundle, "files")
-            .iter()
-            .map(|file| BrunoSourceFile {
-                path: text(file, "path").into(),
-                contents: text(file, "contents").into(),
-            })
-            .collect(),
-    };
-    parse_folder_bundle(&bundle, name)
-}
 
 pub(super) fn parse_folder_bundle(
     bundle: &BrunoFolderBundle,

@@ -1557,7 +1557,6 @@ pub enum DomainImportFormat {
     PostmanV2,
     Insomnia,
     Bruno,
-    BrunoFolder,
 }
 #[uniffi::remote(Enum)]
 pub enum ProxySource {
@@ -1648,7 +1647,7 @@ mod choice_tests {
                 r#"{"version":"1","name":"C","items":[]}"#,
                 DomainImportFormat::Bruno,
             ),
-            ("bru", "meta {}", DomainImportFormat::BrunoFolder),
+            ("bru", "meta {}", DomainImportFormat::Bruno),
         ] {
             assert_eq!(
                 domain_detect_import(extension.into(), source.into()),

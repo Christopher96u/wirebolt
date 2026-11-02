@@ -218,8 +218,7 @@ struct ContentView: View {
         } message: {
             Text(model.operationFailureMessage ?? (model.operationFailure?.kind == .keychain
                 ? "The credentials could not be read or saved in Keychain. Check access and try again."
-
-                    : "The operation could not be completed. Check access to the workspace and try again."))
+                : "The operation could not be completed. Check access to the workspace and try again."))
         }
         .sheet(item: $interface.workspaceNamePrompt) { prompt in
             WorkspaceNameEditor(prompt: prompt, model: model)
@@ -4578,7 +4577,7 @@ private struct NoOpenRequestPlaceholder: View {
             ContentUnavailableView {
                 Label("Start Your Workspace", systemImage: "paperplane")
             } description: {
-                Text("Create a request, or import a cURL command, HAR file, Postman, Insomnia or Bruno collection or Wirebolt JSON. You can also drop one of those files, or a Bruno collection folder, on this window.")
+                Text("Create a request, or import a cURL command, HAR file, Postman, Insomnia or Bruno collection. You can also drop one of those files, or a Bruno collection folder, on this window.")
             } actions: {
                 Button("New Request") { interface.makeNewRequest(model: model) }
                     .buttonStyle(.borderedProminent).tint(WireboltTheme.controlAccent)

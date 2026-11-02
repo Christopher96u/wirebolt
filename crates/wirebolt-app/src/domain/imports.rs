@@ -9,7 +9,7 @@ pub fn detect_collection(
     root: Option<&serde_json::Value>,
 ) -> Option<ImportFormat> {
     if extension.eq_ignore_ascii_case("bru") {
-        return Some(ImportFormat::BrunoFolder);
+        return Some(ImportFormat::Bruno);
     }
     let Some(root) = root else {
         return contents
