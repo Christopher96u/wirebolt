@@ -266,7 +266,7 @@ extension NativeAdapterTests {
         session.draft.url = ""
         await NativeTestSupport.settle(host)
         func assertDisconnectEnabled() {
-            let disconnect = NativeTestSupport.elements(host).first { $0.name == "Disconnect" }!
+            let disconnect = NativeTestSupport.elements(host, excludingTables: true).first { $0.name == "Disconnect" }!
             precondition(disconnect.object.value(forKey: "accessibilityEnabled") as? Bool == true)
         }
         assertDisconnectEnabled()
@@ -278,14 +278,14 @@ extension NativeAdapterTests {
             await session.socket.send(body: body)
             await NativeTestSupport.settle(host)
             let error = session.socket.errorMessage!
-            precondition(NativeTestSupport.elements(host).contains { $0.name.contains(error) }, "Message errors remain beside the composer while connected")
+            precondition(NativeTestSupport.elements(host, excludingTables: true).contains { $0.name.contains(error) }, "Message errors remain beside the composer while connected")
         }
         socket.acceptsMessages = false
         await session.socket.send(body: .raw(contentType: nil, value: "fixture"))
         session.socket.clearMessages()
         await NativeTestSupport.settle(host)
-        precondition(NativeTestSupport.elements(host).contains { $0.name.contains("could not be queued") })
-        precondition(NativeTestSupport.press(host, named: "Disconnect"))
+        precondition(NativeTestSupport.elements(host, excludingTables: true).contains { $0.name.contains("could not be queued") })
+        precondition(NativeTestSupport.press(host, named: "Disconnect", excludingTables: true))
         await NativeTestSupport.settle(host)
         precondition(session.socket.status == .disconnected)
         print("webSocketSendErrorsRemainVisibleAcrossMessageStates: passed")
@@ -308,15 +308,15 @@ extension NativeAdapterTests {
         let backup = root.appending(path: "cookie-failure-backup")
         try FileManager.default.moveItem(at: directory, to: backup)
         try Data("blocked".utf8).write(to: directory)
-        precondition(NativeTestSupport.press(host, named: "Clear All…"))
+        precondition(NativeTestSupport.press(host, named: "Clear All…", excludingTables: true))
         await NativeTestSupport.settle(host)
         let confirmation = NSApp.windows.first { NativeTestSupport.elements($0).contains { $0.role == "AXButton" && $0.name == "Clear All" } }!
         precondition(NativeTestSupport.press(confirmation, named: "Clear All"))
         await NativeTestSupport.settle(host)
-        precondition(NativeTestSupport.elements(host).contains { $0.name.hasPrefix("Cookie error:") })
+        precondition(NativeTestSupport.elements(host, excludingTables: true).contains { $0.name.hasPrefix("Cookie error:") })
         let retainedCookies = await model.cookies()
         precondition(retainedCookies.count == 1)
-        precondition(NativeTestSupport.elements(host).contains { $0.name == "fixture" })
+        precondition(NativeTestSupport.elements(host, excludingTables: true).contains { $0.name == "1 cookie" })
         try FileManager.default.removeItem(at: directory)
         try FileManager.default.moveItem(at: backup, to: directory)
         print("cookieClearFailureRemainsVisibleAndRetainsRows: passed")

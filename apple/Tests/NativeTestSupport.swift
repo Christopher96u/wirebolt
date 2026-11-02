@@ -43,7 +43,7 @@ private final class FixtureWindow: NSWindow { override var canBecomeKey: Bool { 
         let name: String
         let frame: NSRect
     }
-    static func elements(_ object: Any, depth: Int = 0) -> [Element] {
+    static func elements(_ object: Any, depth: Int = 0, excludingTables: Bool = false) -> [Element] {
         guard depth < 40, let object = object as? NSObject else { return [] }
         func value(_ key: String) -> Any? {
             object.responds(to: NSSelectorFromString(key)) ? object.value(forKey: key) : nil
@@ -52,14 +52,18 @@ private final class FixtureWindow: NSWindow { override var canBecomeKey: Bool { 
             let raw = value(key)
             return (raw as? NSAttributedString)?.string ?? (raw as? String) ?? ""
         }
+        let role = text("accessibilityRole")
+        // macOS table hosting views can recurse while resolving their container
+        // labels. Composer assertions need only the controls outside those tables.
+        if excludingTables && ["AXTable", "AXOutline"].contains(role) { return [] }
         let name = ["accessibilityLabel", "accessibilityTitle", "accessibilityValue"].map(text).first { !$0.isEmpty } ?? ""
-        return [Element(object: object, role: text("accessibilityRole"), name: name,
+        return [Element(object: object, role: role, name: name,
             frame: (value("accessibilityFrame") as? NSValue)?.rectValue ?? .zero)]
-            + (value("accessibilityChildren") as? [Any] ?? []).flatMap { elements($0, depth: depth + 1) }
+            + (value("accessibilityChildren") as? [Any] ?? []).flatMap { elements($0, depth: depth + 1, excludingTables: excludingTables) }
     }
     @discardableResult
-    static func press(_ object: Any, named name: String) -> Bool {
-        guard let item = elements(object).first(where: { ["AXButton", "AXMenuItem"].contains($0.role) && $0.name == name }) else { return false }
+    static func press(_ object: Any, named name: String, excludingTables: Bool = false) -> Bool {
+        guard let item = elements(object, excludingTables: excludingTables).first(where: { ["AXButton", "AXMenuItem"].contains($0.role) && $0.name == name }) else { return false }
         if let button = item.object as? NSButton { button.performClick(nil); return true }
         guard item.object.responds(to: NSSelectorFromString("accessibilityPerformPress")) else { return false }
         _ = (item.object as AnyObject).accessibilityPerformPress?()
