@@ -7,6 +7,7 @@ Changes under **Unreleased** are on `main` but not in a published build yet. Dow
 ### Added
 
 - **QUERY** method (RFC 10008) in the method menu, with its own color.
+- Custom themes from two colors and VS Code theme imports, with a live preview, checked contrast, and rename/delete controls (Settings → Appearance).
 - Black, Paper and Ember themes with checked contrast, Compact and Comfortable density, and Increase Contrast support (Settings → Appearance).
 - Settings open in the workspace window (**⌘,**); Esc or **⌘W** closes them.
 - Streaming responses show a bounded partial preview while they arrive.

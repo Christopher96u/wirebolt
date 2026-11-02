@@ -83,6 +83,8 @@ final class WireboltAppDelegate: NSObject, NSApplicationDelegate {
         }
         // In-app tabs own ⌘T; native window tabs would stack a second tab bar on top.
         NSWindow.allowsAutomaticWindowTabbing = false
+        ThemeStore.shared.loadLibrary(at: FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            .appending(path: "Wirebolt/custom-themes.json"))
         Self.applyInterfaceAppearance()
         ThemeStore.shared.update(selection: UserDefaults.standard.string(forKey: "interfaceAppearance") ?? "system",
             systemIsDark: NSApp.effectiveAppearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua,
@@ -150,7 +152,12 @@ final class WireboltAppDelegate: NSObject, NSApplicationDelegate {
     /// Applied app-wide so every window, including Settings, follows the choice, and
     /// System (nil) fully reverts to the macOS appearance.
     static func applyInterfaceAppearance() {
-        NSApp.appearance = switch UserDefaults.standard.string(forKey: "interfaceAppearance") {
+        let selection = UserDefaults.standard.string(forKey: "interfaceAppearance") ?? "system"
+        if let custom = ThemeStore.shared.customThemes.first(where: { $0.id == selection }) {
+            NSApp.appearance = NSAppearance(named: custom.tokens.preset == .paper ? .aqua : .darkAqua)
+            return
+        }
+        NSApp.appearance = switch selection {
         case "light", "paper": NSAppearance(named: .aqua)
         case "dark", "black", "ember": NSAppearance(named: .darkAqua)
         default: nil

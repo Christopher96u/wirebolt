@@ -1,0 +1,11 @@
+{
+  /* Original fixture with missing keys and an unresolved parent. */
+  "name": "Linen",
+  "include": "./parent.json",
+  "colors": { "editor.background": "#fbf7ed", "focusBorder": "#9b4266", },
+  "tokenColors": [
+    { "scope": "string", "settings": { "foreground": "#35724d", }, },
+    { "scope": "source.json meta.structure.dictionary.json string.quoted.double.json", "settings": { "foreground": "#8855aa" } },
+  ],
+  "description": "Keep https://example.invalid and /* quoted text */ intact"
+}

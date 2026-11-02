@@ -3,6 +3,7 @@ mod app_domain;
 mod app_pem;
 mod app_response;
 mod app_session;
+mod app_themes;
 mod domain_syntax;
 mod native_transport;
 

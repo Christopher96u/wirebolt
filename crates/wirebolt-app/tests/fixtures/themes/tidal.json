@@ -1,0 +1,22 @@
+{
+  // Original fixture: a VS Code-style dark palette, not a third-party theme.
+  "name": "Tidal",
+  "colors": {
+    "editor.background": "#07171f",
+    "editor.foreground": "#e9f6fa",
+    "focusBorder": "#54cbd6",
+    "sideBar.background": "#061319",
+    "sideBar.foreground": "#c4dce4",
+    "list.activeSelectionBackground": "#17465280",
+    "input.background": "#0d2028",
+    "button.background": "#54cbd6",
+    "button.foreground": "#061319",
+  },
+  "tokenColors": [
+    {"scope": ["string", "string.quoted"], "settings": {"foreground": "#a8e0b4"}},
+    {"scope": "constant.numeric, constant.language", "settings": {"foreground": "#efbc85"}},
+    {"scope": "keyword.control", "settings": {"foreground": "#ccacff"}},
+    {"scope": "support.type.property-name.json", "settings": {"foreground": "#8dcfff"}},
+    {"scope": "comment", "settings": {"foreground": "#19343f"}},
+  ],
+}
