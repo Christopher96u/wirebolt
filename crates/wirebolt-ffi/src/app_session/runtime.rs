@@ -360,9 +360,18 @@ impl AppSessionRuntime {
                 })
             })
     }
-    pub async fn clear_history(&self, id: super::SessionRequestIdentity) {
+    pub async fn clear_history(
+        &self,
+        id: super::SessionRequestIdentity,
+    ) -> Result<(), wirebolt_app::response::ResponseError> {
         let state = self.state.clone();
-        let _ = tokio::task::spawn_blocking(move || state.clear_history(&id)).await;
+        tokio::task::spawn_blocking(move || state.clear_history(&id))
+            .await
+            .unwrap_or_else(|error| {
+                Err(wirebolt_app::response::ResponseError::Io {
+                    reason: error.to_string(),
+                })
+            })
     }
     pub async fn restore_history(
         &self,

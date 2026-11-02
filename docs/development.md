@@ -81,7 +81,8 @@ unambiguously: another collection or a copied workspace may contain the same ID,
 even when the currently open workspace has only one match. Such entries keep their
 body files and are available in **History → Unassigned Legacy History** for the
 matching request ID. They are excluded from scoped counts, Clear History and quota
-eviction. No workspace or collection is guessed from the prepared URL. Displayed
+eviction. No workspace or collection is guessed from the prepared URL. Unsupported or
+damaged versioned indexes are left unchanged and report a storage error. Displayed
 responses own temporary copies, released with their last body handle.
 
 ## Performance

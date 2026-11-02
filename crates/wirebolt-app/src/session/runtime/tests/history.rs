@@ -22,7 +22,7 @@ async fn history_counts_and_clear_revision_belong_to_each_request() {
     assert_eq!(state.history_count(&key(&state, "first")).unwrap(), 2);
     assert_eq!(state.history_count(&key(&state, "second")).unwrap(), 1);
     let before = state.snapshot().history_revision;
-    state.clear_history(&key(&state, "first"));
+    state.clear_history(&key(&state, "first")).unwrap();
     assert_eq!(state.snapshot().history_revision, before + 1);
     assert_eq!(state.history_count(&key(&state, "first")).unwrap(), 0);
     assert_eq!(state.history_count(&key(&state, "second")).unwrap(), 1);
@@ -128,7 +128,7 @@ fn resetting_workspace_clears_selection_activity_and_entries_but_keeps_revisions
     let root = tempfile::tempdir().unwrap();
     let state = state(root.path());
     state.select_environment(Some("old".into()));
-    state.clear_history(&key(&state, "a"));
+    state.clear_history(&key(&state, "a")).unwrap();
     state.reset_workspace();
     assert!(state.snapshot().history_entries.is_empty());
     assert!(state.snapshot().request_activity.is_empty());
@@ -226,7 +226,7 @@ async fn corrupt_history_does_not_stop_recording_or_clearing() {
             .unwrap(),
         1
     );
-    state.clear_history(&key(&state, "health"));
+    state.clear_history(&key(&state, "health")).unwrap();
     assert_eq!(state.history_count(&key(&state, "health")).unwrap(), 0);
     assert!(state.snapshot().history_entries.is_empty());
     assert_eq!(
@@ -254,7 +254,7 @@ async fn clear_history_preserves_displayed_response_body() {
     let entry = state.history_entries(&key(&state, "a")).unwrap().remove(0);
     let run = Mutex::new(DocumentRun::default());
     state.restore(entry.clone(), &run);
-    state.clear_history(&key(&state, "a"));
+    state.clear_history(&key(&state, "a")).unwrap();
     let body = lock(&run).body().unwrap();
     assert_eq!(lock(&body).viewport(0, 8).unwrap(), b"response");
     assert!(!std::path::Path::new(&entry.body_path).exists());

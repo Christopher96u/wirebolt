@@ -488,7 +488,8 @@ public final class WireboltModel {
         }
     }
     public func clearHistory(for session: DocumentSession) async {
-        await runtime.clearHistory(id: historyIdentity(for: session))
+        do { try await runtime.clearHistory(id: historyIdentity(for: session)) }
+        catch { operationFailure = RunFailure(kind: .storage, issues: []) }
         mirrorRuntime()
     }
 

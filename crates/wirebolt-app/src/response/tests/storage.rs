@@ -470,9 +470,10 @@ fn response_export_to_itself_preserves_body() {
     let directory = tempfile::tempdir().unwrap();
     let mut body = BodyStore::new("run", directory.path()).unwrap();
     body.append(b"response").unwrap();
-    body.finish().unwrap();
     body.export(&body.path()).unwrap();
-    assert_eq!(body.viewport(0, 8).unwrap(), b"response");
+    body.append(b"!").unwrap();
+    body.finish().unwrap();
+    assert_eq!(body.viewport(0, 9).unwrap(), b"response!");
 }
 
 fn history_fixture(
@@ -559,11 +560,11 @@ fn history_migration_preserves_scoped_and_ambiguous_legacy_entries() {
     .unwrap();
     let mut history = RunHistory::new(root.path().into());
     assert_eq!(history.list(&key).unwrap().len(), 1);
-    assert_eq!(history.legacy_list("same").len(), 2);
+    assert_eq!(history.legacy_list("same").unwrap().len(), 2);
     history.clear(&key).unwrap();
     let mut reloaded = RunHistory::new(root.path().into());
     assert!(reloaded.list(&key).unwrap().is_empty());
-    let legacy = reloaded.legacy_list("same");
+    let legacy = reloaded.legacy_list("same").unwrap();
     assert_eq!(legacy.len(), 2);
     assert!(
         legacy
@@ -573,4 +574,27 @@ fn history_migration_preserves_scoped_and_ambiguous_legacy_entries() {
     let index: serde_json::Value =
         serde_json::from_slice(&std::fs::read(root.path().join("index.json")).unwrap()).unwrap();
     assert_eq!(index["version"], 2);
+}
+
+#[test]
+fn unsupported_history_index_is_preserved() {
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("index.json");
+    let original = br#"{"version":3,"entries":[]}"#;
+    std::fs::write(&path, original).unwrap();
+    let mut history = RunHistory::new(root.path().into());
+    let key = identity("same");
+    assert!(history.list(&key).is_err());
+    assert!(history.clear(&key).is_err());
+    assert!(history.relocate(&key, &identity("other")).is_err());
+    let mut body = BodyStore::new("source", root.path()).unwrap();
+    body.append(b"fixture").unwrap();
+    body.finish().unwrap();
+    assert!(
+        history
+            .record(history_fixture("new", Some(key), String::new()), &body)
+            .is_err()
+    );
+    assert!(!root.path().join("new.body").exists());
+    assert_eq!(std::fs::read(path).unwrap(), original);
 }

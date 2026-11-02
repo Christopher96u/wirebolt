@@ -129,7 +129,7 @@ impl RuntimeState {
         Ok(())
     }
     pub fn legacy_history(&self, id: &str) -> Vec<SessionHistoryEntry> {
-        lock(&self.history).legacy_list(id)
+        lock(&self.history).legacy_list(id).unwrap_or_default()
     }
     pub fn select_environment(&self, id: Option<String>) {
         *lock(&self.selected) = id;
@@ -205,12 +205,18 @@ impl RuntimeState {
         lock(&self.snapshot).history_entries = entries;
         Ok(())
     }
-    pub fn clear_history(&self, id: &SessionRequestIdentity) {
-        let _ = lock(&self.history).clear(id);
+    /// # Errors
+    /// Returns an error if the history index cannot be updated.
+    pub fn clear_history(
+        &self,
+        id: &SessionRequestIdentity,
+    ) -> crate::response::ResponseResult<()> {
+        lock(&self.history).clear(id)?;
         let mut state = lock(&self.snapshot);
         state.history_entries.clear();
         state.request_activity.remove(&id.activity_key());
         state.history_revision += 1;
+        Ok(())
     }
     pub fn record(
         &self,
