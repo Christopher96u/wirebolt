@@ -387,10 +387,10 @@ pub fn message_body(body: &DomainBody) -> Result<(Vec<u8>, bool), String> {
 /// Renders message bytes without the viewer's preview limit.
 #[must_use]
 pub fn message_text(data: &[u8], hex: bool) -> String {
+    const DIGITS: &[u8; 16] = b"0123456789ABCDEF";
     if !hex {
         return String::from_utf8_lossy(data).into_owned();
     }
-    const DIGITS: &[u8; 16] = b"0123456789ABCDEF";
     let mut text = String::with_capacity(data.len().saturating_mul(3));
     for (index, byte) in data.iter().enumerate() {
         if index > 0 {
