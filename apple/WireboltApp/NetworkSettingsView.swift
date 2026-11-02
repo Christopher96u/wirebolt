@@ -40,15 +40,16 @@ struct NetworkSettingsPage: View {
     @State private var test: ProxyConnectionTest
     @State private var testURL = ""
     @State private var showsTest = false
-    @State private var stagedIdentities = AppSessionSecrets()
+    @State private var stagedIdentities: AppSessionSecrets
     @State private var transport: TransportSettings
     @State private var transportBaseline: TransportSettings
     @State private var isConfirmingDiscard = false
     @State private var isConfirmingAppSettings = false
 
-    init(model: WireboltModel, scope: ProxyScope, session: DocumentSession? = nil, onClose: (() -> Void)? = nil, isActive: Bool = true) {
+    init(model: WireboltModel, scope: ProxyScope, session: DocumentSession? = nil, onClose: (() -> Void)? = nil, isActive: Bool = true, stagedIdentities: AppSessionSecrets = AppSessionSecrets()) {
         self.model = model; self.scope = scope; self.session = session; self.onClose = onClose
         self.isActive = isActive
+        _stagedIdentities = State(initialValue: stagedIdentities)
         _transport = State(initialValue: model.workspace.transport)
         _transportBaseline = State(initialValue: model.workspace.transport)
         _test = State(initialValue: model.makeProxyConnectionTest())
@@ -199,6 +200,7 @@ struct NetworkSettingsPage: View {
         if isSheet { sheetFooter } else { inlineFooter }
         }
         .background(theme.definition.window.color)
+        .disabled(saving)
         .onChange(of: currentConfiguration) {
             if !changed { reload() }
         }
@@ -262,16 +264,19 @@ struct NetworkSettingsPage: View {
     }
 
     private func saveAndClose() async {
-        if changed {
-            await save()
-            guard saveError == nil else { return }
-        }
-        if transportChanged {
-            do { try await model.commitStagedIdentity(stagedIdentities, reference: transport.clientCertificateReference) }
-            catch { saveError = "Could not save the client identity. Check Keychain access, then retry."; return }
-            model.updateWorkspaceTransport(transport)
-        }
-        onClose?()
+        guard !saving else { return }
+        saving = true; saveError = nil
+        defer { saving = false }
+        let selectedTransport = transport
+        do {
+            if changed { try await applyProxy() }
+            if transportChanged {
+                try await model.commitStagedIdentity(stagedIdentities, reference: selectedTransport.clientCertificateReference)
+                model.updateWorkspaceTransport(selectedTransport)
+                await model.flushWorkspaceTransport()
+            }
+            onClose?()
+        } catch { saveError = "Could not save. Check workspace and Keychain access, then retry." }
     }
 
     private var scopeDescription: String {
@@ -296,14 +301,17 @@ struct NetworkSettingsPage: View {
         let value = ProxyFormDraft(configuration: currentConfiguration)
         form = value; baseline = value
     }
+    private func applyProxy() async throws {
+        try await model.applyProxy(form.document(), scope: scope, session: session, secrets: form.secrets)
+        reload()
+        status = scope == .request ? "Applied to request" : "Saved"
+    }
     private func save() async {
+        guard !saving else { return }
         saving = true; saveError = nil
         defer { saving = false }
-        do {
-            try await model.applyProxy(form.document(), scope: scope, session: session, secrets: form.secrets)
-            reload()
-            status = scope == .request ? "Applied to request" : "Saved"
-        } catch let error as ProxyValidationError { saveError = error.message }
+        do { try await applyProxy() }
+        catch let error as ProxyValidationError { saveError = error.message }
         catch { saveError = "Could not save. Check workspace and Keychain access, then retry." }
     }
 }

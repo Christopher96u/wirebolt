@@ -102,6 +102,7 @@ enum DraftWorkProbe {
         try await auditWebSocketComposer(root: root, defaults: defaults)
         try await auditCookieRemovalFailure(root: root, defaults: defaults)
         try await auditPreparedRequestCopy(defaults: defaults)
+        try await workspaceIdentitySaveFreezesSelection(root: root, defaults: defaults)
         typingAssignmentsAvoidDraftWork()
         lastTabDirtyConfirmAndReopen(root: root, defaults: defaults)
     }
@@ -345,3 +346,44 @@ extension NativeAdapterTests {
     }
 }
 
+
+extension NativeAdapterTests {
+    static func workspaceIdentitySaveFreezesSelection(root: URL, defaults: UserDefaults) async throws {
+        let restoreAccessibility = NativeTestSupport.enableAccessibility()
+        defer { restoreAccessibility() }
+        let store = FixtureIdentityStore()
+        let model = WireboltModel(runner: FixtureRunner(), persistence: store,
+            history: HistoryRepository(root: root.appending(path: "identity-history")),
+            cookieJar: CookieJar(storageURL: root.appending(path: "identity-cookies")),
+            proxyPreferences: ProxyPreferences(defaults: defaults))
+        let name = CredentialReference.unique(role: "client-identity", scope: "tls")
+        model.workspace.transport.clientCertificateReference = name
+        let staged = AppSessionSecrets()
+        staged.edit(name: name, value: "fixture private key")
+        var closeCount = 0
+        let (window, host) = await NativeTestSupport.mount(NetworkSettingsPage(model: model, scope: .workspace,
+            onClose: { closeCount += 1 }, stagedIdentities: staged), defaults: defaults, width: 700, height: 1100)
+        defer { store.gate.release(); window.close() }
+        precondition(NativeTestSupport.press(host, named: "Timeouts, redirects & TLS"))
+        await NativeTestSupport.settle(host)
+        precondition(NativeTestSupport.press(host, named: "Validate TLS certificates"))
+        await NativeTestSupport.settle(host)
+        precondition(NativeTestSupport.press(host, named: "Save"))
+        await NativeTestSupport.wait(host) { store.gate.started }
+        await NativeTestSupport.settle(host)
+        let controls = NativeTestSupport.elements(host)
+        for title in ["Save", "Cancel", "Remove", "Replace…", "Validate TLS certificates"] {
+            let control = controls.first { $0.name == title }!
+            precondition(control.object.value(forKey: "accessibilityEnabled") as? Bool == false, "Saving freezes \(title)")
+        }
+        _ = NativeTestSupport.press(host, named: "Cancel")
+        _ = NativeTestSupport.press(host, named: "Remove")
+        precondition(closeCount == 0 && model.workspace.transport.clientCertificateReference == name)
+        store.gate.release()
+        await NativeTestSupport.wait(host) { closeCount == 1 }
+        precondition(model.workspace.transport.clientCertificateReference == name && !model.workspace.transport.validateTLS)
+        let saved = await store.saved
+        precondition(saved == [name])
+        print("workspaceIdentitySaveFreezesSelectionUntilKeychainCommit: passed")
+    }
+}

@@ -117,3 +117,33 @@ struct FixtureConnector: WebSocketConnecting {
     let socket: FixtureSocket
     func connection(for input: RunInput, state: AppSessionSocket, generation: String) -> any WebSocketTransport { socket }
 }
+
+final class FixtureCredentialGate: @unchecked Sendable {
+    private let lock = NSLock()
+    private var continuation: CheckedContinuation<Void, Never>?
+    private var began = false
+    var started: Bool { lock.withLock { began } }
+    func wait() async {
+        await withCheckedContinuation { continuation in
+            lock.withLock { self.continuation = continuation; began = true }
+        }
+    }
+    func release() {
+        let continuation = lock.withLock { let value = self.continuation; self.continuation = nil; return value }
+        continuation?.resume()
+    }
+}
+
+actor FixtureIdentityStore: WorkspacePersistence {
+    nonisolated let gate = FixtureCredentialGate()
+    private(set) var saved: [String] = []
+    func save(request: RequestDraft, in collectionID: String) async throws {}
+    func save(environment: EnvironmentDraft) async throws {}
+    func saveSecret(name: String, value: String) async throws {
+        await gate.wait()
+        saved.append(name)
+    }
+    func apply(_ command: SessionWorkspaceCommand) async throws -> WorkspaceDelta {
+        WorkspaceDelta(version: 1, kind: .workspace, affectedIDs: [])
+    }
+}
