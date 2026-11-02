@@ -254,10 +254,8 @@ fn request_from_bru(stem: &str, file: &BruFile) -> Value {
             json!({ "name": pair.name, "value": pair.value, "enabled": pair.enabled, "type": kind })
         }));
     }
-    let legacy_json = file.text("body").map(str::to_owned);
     let body_mode = file
         .value(block, "body")
-        .or_else(|| legacy_json.as_ref().map(|_| "json".to_owned()))
         .unwrap_or_else(|| "none".to_owned());
     json!({
         "type": kind,
@@ -273,7 +271,7 @@ fn request_from_bru(stem: &str, file: &BruFile) -> Value {
             "params": params,
             "body": {
                 "mode": body_mode,
-                "json": file.text("body:json").map(str::to_owned).or(legacy_json),
+                "json": file.text("body:json"),
                 "text": file.text("body:text"),
                 "xml": file.text("body:xml"),
                 "sparql": file.text("body:sparql"),

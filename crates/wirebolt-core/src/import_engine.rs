@@ -11,7 +11,6 @@ mod bruno;
 mod curl;
 mod har;
 mod insomnia;
-mod legacy_v1;
 mod postman;
 mod support;
 mod workspace;
@@ -30,7 +29,6 @@ use crate::{
 pub enum ImportFormat {
     Curl,
     Har,
-    LegacyWorkspaceV1,
     PostmanV2,
     /// Insomnia v4 export (JSON or YAML) or Insomnia v5 YAML collection.
     Insomnia,
@@ -50,7 +48,6 @@ impl ImportFormat {
         match value {
             "curl" => Ok(Self::Curl),
             "har" => Ok(Self::Har),
-            "legacy_workspace_v1" => Ok(Self::LegacyWorkspaceV1),
             "postman_v2" => Ok(Self::PostmanV2),
             "insomnia" => Ok(Self::Insomnia),
             "bruno" => Ok(Self::Bruno),
@@ -307,14 +304,6 @@ impl ImportEngine {
             ImportFormat::Insomnia => insomnia::parse(source, file_name),
             ImportFormat::Bruno => bruno::parse_export(source),
             ImportFormat::BrunoFolder => bruno::parse_folder(source, file_name),
-            ImportFormat::LegacyWorkspaceV1 => {
-                match (file_name, serde_json::from_str::<Value>(source)) {
-                    (Some(name), Ok(root)) if root.get("nodes").is_some() => {
-                        Self::parse_workspace_file(format, source, name).map(ParsedImport::from)
-                    }
-                    _ => parse_legacy_workspace(source).map(ParsedImport::from),
-                }
-            }
         };
         result.map_err(|error| unsupported_document(source).unwrap_or(error))
     }
@@ -339,34 +328,7 @@ impl ImportEngine {
         source: &str,
         name: &str,
     ) -> Result<ImportedCollection, ImportError> {
-        if format == ImportFormat::LegacyWorkspaceV1
-            && let Ok(root) = serde_json::from_str::<Value>(source)
-            && root.get("nodes").is_some()
-        {
-            return legacy_v1::parse_named(&root, Some(name));
-        }
         first_collection(Self::parse_import(format, source, Some(name))?)
-    }
-
-    /// Imports a file with everything it describes: a Wirebolt workspace export
-    /// yields one collection per exported collection plus its environments;
-    /// other formats yield the single collection of [`Self::parse_file`].
-    ///
-    /// # Errors
-    /// Returns [`ImportError`] for invalid input without including source contents.
-    pub fn parse_workspace_file(
-        format: ImportFormat,
-        source: &str,
-        name: &str,
-    ) -> Result<ImportedWorkspace, ImportError> {
-        if format == ImportFormat::LegacyWorkspaceV1 {
-            let root: Value = serde_json::from_str(source)
-                .map_err(|_| ImportError::new("legacy workspace JSON is invalid"))?;
-            if root.get("nodes").is_some() {
-                return legacy_v1::parse_workspace(&root, Some(name));
-            }
-        }
-        Self::parse_file(format, source, name).map(ImportedWorkspace::from)
     }
 
     /// Parses a source into its first collection.
@@ -541,76 +503,6 @@ fn method_and_path_name(method: &str, url: &str) -> String {
     let path = path.split(['?', '#']).next().unwrap_or("/");
     let path = if path.is_empty() { "/" } else { path };
     format!("{method} {path}")
-}
-
-fn parse_legacy_workspace(source: &str) -> Result<ImportedCollection, ImportError> {
-    let root: Value = serde_json::from_str(source)
-        .map_err(|_| ImportError::new("legacy workspace JSON is invalid"))?;
-    if root.get("nodes").is_some() {
-        return legacy_v1::parse(&root);
-    }
-    let name = root
-        .get("name")
-        .and_then(Value::as_str)
-        .unwrap_or("Imported Workspace")
-        .to_owned();
-    let requests = root
-        .get("requests")
-        .and_then(Value::as_array)
-        .or_else(|| {
-            root.pointer("/collection/requests")
-                .and_then(Value::as_array)
-        })
-        .ok_or_else(|| ImportError::new("legacy workspace document has no requests"))?;
-    let requests = requests
-        .iter()
-        .enumerate()
-        .filter_map(|(index, request)| {
-            let url = request.get("url")?.as_str()?.to_owned();
-            let method = request
-                .get("method")
-                .and_then(Value::as_str)
-                .unwrap_or("GET")
-                .to_owned();
-            Some(ImportedRequest {
-                source_id: format!("legacy-workspace-{index}"),
-                name: request
-                    .get("name")
-                    .and_then(Value::as_str)
-                    .unwrap_or("Untitled")
-                    .to_owned(),
-                group_source_id: None,
-                order: i64::try_from(index).unwrap_or(i64::MAX),
-                method,
-                url,
-                headers: request
-                    .get("headers")
-                    .and_then(Value::as_array)
-                    .into_iter()
-                    .flatten()
-                    .filter_map(header_from_name_value)
-                    .collect(),
-                ..ImportedRequest::default()
-            })
-        })
-        .collect::<Vec<_>>();
-    if requests.is_empty() {
-        return Err(ImportError::new(
-            "legacy workspace document has no importable requests",
-        ));
-    }
-    Ok(ImportedCollection {
-        name,
-        requests,
-        ..ImportedCollection::default()
-    })
-}
-
-fn header_from_name_value(value: &Value) -> Option<RequestHeader> {
-    Some(RequestHeader::enabled(
-        value.get("name").or_else(|| value.get("key"))?.as_str()?,
-        ValueSource::literal(value.get("value").and_then(Value::as_str).unwrap_or("")),
-    ))
 }
 
 fn slug(value: &str) -> String {
