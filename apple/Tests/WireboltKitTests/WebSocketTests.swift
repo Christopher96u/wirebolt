@@ -313,3 +313,18 @@ extension WebSocketTests {
         buffer.finish()
     }
 }
+
+
+struct WebSocketCopyTests {
+    @Test @MainActor func copiesCompleteMessageBeyondViewportInTextAndHex() throws {
+        let text = String(repeating: "fixture", count: 10_000) + "END"
+        let data = Data(text.utf8)
+        let message = WebSocketMessage(data: data, binary: false, outgoing: false, notice: nil, control: nil)
+        #expect(data.count > DocumentSession.previewByteLimit)
+        #expect(message.copyText(hex: false) == text)
+        let hex = message.copyText(hex: true)
+        #expect(hex.split(separator: " ").count == data.count)
+        #expect(hex.hasSuffix("45 4E 44"))
+        #expect(try WebSocketBinaryEncoding.hex.decode(hex) == data)
+    }
+}

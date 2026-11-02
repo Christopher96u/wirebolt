@@ -99,6 +99,7 @@ enum DraftWorkProbe {
         try await EnvironmentInspectorTests.run(root: root, defaults: defaults, screenshots: captureDirectory)
         try await auditNavigationAndSettings(root: root, defaults: defaults, screenshots: captureDirectory)
         try await auditRequestEditors(defaults: defaults)
+        try await auditWebSocketComposer(root: root, defaults: defaults)
         try await auditPreparedRequestCopy(defaults: defaults)
         typingAssignmentsAvoidDraftWork()
         lastTabDirtyConfirmAndReopen(root: root, defaults: defaults)
@@ -246,6 +247,50 @@ extension NativeAdapterTests {
     }
 }
 
+
+extension NativeAdapterTests {
+    static func auditWebSocketComposer(root: URL, defaults: UserDefaults) async throws {
+        let restoreAccessibility = NativeTestSupport.enableAccessibility()
+        defer { restoreAccessibility() }
+        let model = auditModel(root: root, defaults: defaults)
+        let draft = RequestDraft(id: "fixture-socket", name: "Socket fixture", url: "ws://example.invalid/", webSocket: true)
+        let session = model.sessions.open(draft: draft, kind: .webSocket)
+        let interface = WorkspaceUIState(defaults: defaults)
+        interface.synchronizeSelection(model: model)
+        interface.requestSection = .body
+        let (window, host) = await NativeTestSupport.mount(ContentView(model: model, interface: interface, loadsWorkspace: false), defaults: defaults)
+        defer { session.socket.disconnect(); window.close() }
+        let socket = FixtureSocket()
+        session.socket.connect(input: RunInput(draft: draft, variables: [:]), connector: FixtureConnector(socket: socket))
+        session.draft.url = ""
+        await NativeTestSupport.settle(host)
+        func assertDisconnectEnabled() {
+            let disconnect = NativeTestSupport.elements(host).first { $0.name == "Disconnect" }!
+            precondition(disconnect.object.value(forKey: "accessibilityEnabled") as? Bool == true)
+        }
+        assertDisconnectEnabled()
+        socket.continuation.yield(.connected([]))
+        await NativeTestSupport.wait(host) { session.socket.status == .connected }
+        await NativeTestSupport.settle(host)
+        assertDisconnectEnabled()
+        for body in [RequestBody.json(value: "{"), .webSocketMessage(.binary).editingMessage("not base64"), .file(path: root.appending(path: "missing-message").path, contentType: nil)] {
+            await session.socket.send(body: body)
+            await NativeTestSupport.settle(host)
+            let error = session.socket.errorMessage!
+            precondition(NativeTestSupport.elements(host).contains { $0.name.contains(error) }, "Message errors remain beside the composer while connected")
+        }
+        socket.acceptsMessages = false
+        await session.socket.send(body: .raw(contentType: nil, value: "fixture"))
+        session.socket.clearMessages()
+        await NativeTestSupport.settle(host)
+        precondition(NativeTestSupport.elements(host).contains { $0.name.contains("could not be queued") })
+        precondition(NativeTestSupport.press(host, named: "Disconnect"))
+        await NativeTestSupport.settle(host)
+        precondition(session.socket.status == .disconnected)
+        print("webSocketSendErrorsRemainVisibleAcrossMessageStates: passed")
+        print("disconnectRemainsEnabledWithoutURLWhileConnectingAndConnected: passed")
+    }
+}
 
 
 

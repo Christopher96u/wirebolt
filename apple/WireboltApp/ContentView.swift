@@ -2334,6 +2334,14 @@ private struct WebSocketRequestWorkspace: View {
             .background(WireboltTheme.barBackground)
             Divider()
 
+            if let error = session.socket.errorMessage {
+                Label(error, systemImage: "exclamationmark.triangle")
+                    .font(.callout).foregroundStyle(.red)
+                    .textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(WireboltTheme.Spacing.large)
+                    .accessibilityLabel("Message error: \(error)")
+            }
             content
         }
         .background(WireboltTheme.paneBackground)
@@ -2545,7 +2553,7 @@ private struct RequestURLBar: View {
                 Button(session.socket.status == .disconnected ? "Connect" : "Disconnect", action: toggleConnection)
                     .buttonStyle(.plain)
                     .frame(minHeight: theme.density.controlHeight)
-                    .disabled(session.draft.url.isEmpty)
+                    .disabled(session.socket.status == .disconnected && session.draft.url.isEmpty)
             }
             Button(action: { if session.isRunning { cancel() } else { send() } }) {
                 Image(systemName: session.isRunning ? "stop.fill" : "arrow.up")
@@ -2861,7 +2869,7 @@ private struct WebSocketResponseView: View {
             .help("View Options")
             Button("Copy Message", systemImage: "doc.on.doc") {
                 NSPasteboard.general.clearContents()
-                NSPasteboard.general.setString(preview, forType: .string)
+                NSPasteboard.general.setString(selected?.copyText(hex: hex) ?? "", forType: .string)
             }
             .labelStyle(.iconOnly).buttonStyle(.borderless)
             .disabled(selected == nil).help("Copy Selected Message")

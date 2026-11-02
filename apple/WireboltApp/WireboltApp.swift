@@ -266,12 +266,12 @@ struct WireboltCommands: Commands {
             Button("Cancel Request") { model.cancel() }
                 .keyboardShortcut(".", modifiers: .command)
                 .disabled(noWorkspace || !state.isRunning)
-            Button(state.socketStatus == .connected ? "Disconnect" : "Connect") {
+            Button(state.socketStatus == .disconnected ? "Connect" : "Disconnect") {
                 guard let session = model.sessions.activeSession, session.kind == .webSocket else { return }
                 if session.socket.status == .disconnected { Task { await model.connectWebSocket(session) } }
                 else { session.socket.disconnect() }
             }.keyboardShortcut(.return, modifiers: [.command, .control])
-                .disabled(noWorkspace || state.activeKind != .webSocket || !state.hasURL)
+                .disabled(noWorkspace || state.activeKind != .webSocket || (state.socketStatus == .disconnected && !state.hasURL))
             Divider()
             // Reorders the request or folder selected in the focused sidebar.
             Button("Move Up") {
