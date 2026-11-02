@@ -181,11 +181,11 @@ async fn invalid_token_endpoints_and_missing_secrets_fail_before_exchange() {
     );
 }
 #[test]
-fn existing_authorization_query_keeps_literal_plus_flags_and_duplicates() {
+fn existing_authorization_query_keeps_form_values_flags_and_duplicates() {
     let mut c = configuration();
     c.authorization_url = "https://auth.example/authorize?tenant=a+b&flag&key=one&key=two".into();
     let (url, _) = authorization_url(&c, "challenge", "state").unwrap();
-    assert!(url.contains("tenant=a+b&flag&key=one&key=two&response_type=code"));
+    assert!(url.contains("tenant=a+b&flag=&key=one&key=two&response_type=code"));
 }
 
 fn read_request(stream: &mut std::net::TcpStream) -> String {
@@ -276,7 +276,7 @@ impl DomainOAuthPlatform for Platform {
             .unwrap()
             .clone_from(&query["code_challenge"]);
         Ok(format!(
-            "wirebolt://oauth/callback?state={}&code=code+value",
+            "wirebolt://oauth/callback?state={}&code=code%2Bvalue",
             query["state"]
         ))
     }
@@ -673,4 +673,39 @@ async fn oauth_dns_refusal_and_connection_loss_have_distinct_typed_causes() {
         DomainNetworkFailure::ConnectionLost
     );
     server.join().unwrap();
+}
+
+#[test]
+fn authorization_form_encoding_preserves_plus_and_existing_repeated_parameters() {
+    let mut c = configuration();
+    c.authorization_url = "https://example.com/authorize?tenant=a+b&tenant=a%2Bb".into();
+    c.client_id = "client+name".into();
+    c.scopes = "read write+more café".into();
+    c.audience = "a&b=c".into();
+    let (address, _) = authorization_url(&c, "challenge+value", "state+value").unwrap();
+    let url = url::Url::parse(&address).unwrap();
+    let pairs: Vec<_> = url.query_pairs().collect();
+    assert_eq!(pairs[0].1, "a b");
+    assert_eq!(pairs[1].1, "a+b");
+    for (name, value) in [
+        ("client_id", c.client_id.as_str()),
+        ("scope", &c.scopes),
+        ("audience", &c.audience),
+        ("state", "state+value"),
+        ("code_challenge", "challenge+value"),
+    ] {
+        assert_eq!(pairs.iter().find(|(n, _)| n == name).unwrap().1, value);
+    }
+}
+
+#[test]
+fn callback_form_decoding_distinguishes_spaces_and_literal_plus() {
+    assert_eq!(
+        authorization_code(
+            "wirebolt://oauth/callback?state=s+%2B&code=code+%2B+caf%C3%A9",
+            "s +"
+        )
+        .unwrap(),
+        "code + café"
+    );
 }

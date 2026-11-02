@@ -28,6 +28,7 @@ Changes under **Unreleased** are on `main` but not in a published build yet. Dow
 
 ### Fixed
 
+- OAuth sign-in preserves literal plus signs and consistently decodes spaces in authorization parameters and callbacks.
 - **Copy cURL** now encodes query parameters the same way as Send, including literal plus signs, punctuation and Unicode.
 - Query and form fields marked sensitive are redacted in Sent Request and History while their values are still sent.
 - Cookie expiry now gives valid `Max-Age` precedence over `Expires`, regardless of attribute order, and ignores invalid expiry attributes.
