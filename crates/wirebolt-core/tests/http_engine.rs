@@ -1904,12 +1904,6 @@ async fn changed_multipart_file_is_rejected(change: &str) {
             .unwrap(),
         _ => unreachable!(),
     }
-    let server = tokio::spawn(async move {
-        let (mut socket, _) = listener.accept().await.unwrap();
-        let mut received = Vec::new();
-        socket.read_to_end(&mut received).await.unwrap();
-        received
-    });
     let result = tokio::time::timeout(
         Duration::from_secs(3),
         following_engine().run(
@@ -1923,14 +1917,15 @@ async fn changed_multipart_file_is_rejected(change: &str) {
     .expect("upload must fail promptly");
     let error = result.expect_err("changed upload must fail");
     assert_eq!(error.kind(), RunErrorKind::Request);
-    let source = std::error::Error::source(&error).unwrap().to_string();
-    assert!(source.contains("Upload file"), "{source}");
-    // Validation happens before handing any body to the transport.
-    if server.is_finished() {
-        assert!(server.await.unwrap().is_empty());
-    } else {
-        server.abort();
-    }
+    let message = error.to_string();
+    assert!(message.contains("Upload file"), "{message}");
+    // Preflight rejects the changed file before even opening the connection,
+    // so no partial body or mismatched Content-Length can reach the server.
+    assert!(
+        tokio::time::timeout(Duration::from_millis(50), listener.accept())
+            .await
+            .is_err()
+    );
 }
 #[tokio::test]
 async fn multipart_removed_between_preparation_and_send_fails_cleanly() {
