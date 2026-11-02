@@ -22,7 +22,7 @@ enum RC1History {
         public var readTimeoutMS: UInt64
         public var clientCertificateReference: String?
         public var customCAPath: String?
-    
+
         public init(
             validateTLS: Bool = true,
             followRedirects: Bool = false,
@@ -40,7 +40,7 @@ enum RC1History {
             self.clientCertificateReference = clientCertificateReference
             self.customCAPath = customCAPath
         }
-    
+
         enum CodingKeys: String, CodingKey {
             case validateTLS = "validate_tls"
             case followRedirects = "follow_redirects"
@@ -63,7 +63,7 @@ enum RC1History {
         public let version: String
         public let headers: [ResponseHeader]
         public let timeToHeadersNS: UInt64
-    
+
         enum CodingKeys: String, CodingKey {
             case status, version, headers
             case timeToHeadersNS = "time_to_headers_ns"
@@ -73,7 +73,7 @@ enum RC1History {
     public struct RunCompletion: Codable, Equatable, Sendable {
         public let bytesReceived: UInt64
         public let totalTimeNS: UInt64
-    
+
         enum CodingKeys: String, CodingKey {
             case bytesReceived = "bytes_received"
             case totalTimeNS = "total_time_ns"
@@ -102,7 +102,7 @@ enum RC1History {
         public let contentType: String?
         public let textPreview: String?
         public let redacted: Bool
-    
+
         enum CodingKeys: String, CodingKey {
             case redacted
             case byteCount = "byte_count"
@@ -124,10 +124,10 @@ enum RC1History {
         case system
         case direct
         case manual(routes: [ProxyRouteDocument])
-    
+
         private enum CodingKeys: String, CodingKey { case mode, routes }
         private enum Mode: String, Codable { case system, direct, manual }
-    
+
         public init(from decoder: any Decoder) throws {
             let container = try decoder.container(keyedBy: CodingKeys.self)
             switch try container.decode(Mode.self, forKey: .mode) {
@@ -137,7 +137,7 @@ enum RC1History {
                 self = try .manual(routes: container.decode([ProxyRouteDocument].self, forKey: .routes))
             }
         }
-    
+
         public func encode(to encoder: any Encoder) throws {
             var container = encoder.container(keyedBy: CodingKeys.self)
             switch self {
@@ -154,7 +154,7 @@ enum RC1History {
         public let destination: String
         public let endpoint: String
         public let credentials: ProxyCredentialsDocument?
-    
+
         public init(
             destination: String,
             endpoint: String,
@@ -169,7 +169,7 @@ enum RC1History {
     public struct ProxyCredentialsDocument: Codable, Hashable, Sendable {
         public let username: String
         public let password: String
-    
+
         public init(username: String, password: String) {
             self.username = username
             self.password = password
@@ -185,13 +185,13 @@ enum RC1History {
         }
         public let configuration: ProxyDocument
         public let source: Source
-    
+
         public static func resolve(request: ProxyDocument?, workspace: ProxyDocument?, app: ProxyDocument) -> Self {
             if let request { return Self(configuration: request, source: .request) }
             if let workspace { return Self(configuration: workspace, source: .workspace) }
             return Self(configuration: app, source: .appDefault)
         }
-    
+
         public func summary(for url: String? = nil) -> String {
             switch configuration {
             case .system: return "System proxy"
