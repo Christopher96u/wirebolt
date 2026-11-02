@@ -455,11 +455,10 @@ impl ResponseCookieJar {
         self.expire(now);
         let url = Url::parse(request_url).ok()?;
         let host = cookie_host(&url, request_url);
-        let decoded_path = decoded_url_path(&url);
-        let path = if decoded_path.is_empty() {
+        let path = if url.path().is_empty() {
             "/"
         } else {
-            &decoded_path
+            url.path()
         };
         let mut cookies: Vec<_> = self
             .cookies()
@@ -563,7 +562,8 @@ fn parse_cookie(source: &str, url: &Url, host: &str, now: f64) -> Option<StoredC
         value: value.into(),
         domain: host.into(),
         host_only: true,
-        path: decoded_url_path(url)
+        path: url
+            .path()
             .rsplit_once('/')
             .filter(|(parent, _)| !parent.is_empty())
             .map_or_else(|| "/".into(), |(parent, _)| parent.into()),
@@ -572,6 +572,8 @@ fn parse_cookie(source: &str, url: &Url, host: &str, now: f64) -> Option<StoredC
         same_site: String::new(),
         expires_at: None,
     };
+    let mut max_age = None;
+    let mut expires = None;
     for attribute in segments {
         let (key, value) = attribute
             .split_once('=')
@@ -583,37 +585,38 @@ fn parse_cookie(source: &str, url: &Url, host: &str, now: f64) -> Option<StoredC
                 cookie.domain = v.trim_matches('.').to_lowercase();
                 cookie.host_only = false;
             }
-            ("path", Some(v)) => cookie.path = v.into(),
+            ("path", Some(v)) if v.starts_with('/') => cookie.path = v.into(),
             ("secure", _) => cookie.secure = true,
             ("httponly", _) => cookie.http_only = true,
             ("samesite", Some(v)) => cookie.same_site = v.into(),
             ("max-age", Some(v)) => {
-                cookie.expires_at = v.parse::<i64>().ok().map(|age| {
-                    now + std::time::Duration::from_secs(age.unsigned_abs()).as_secs_f64()
-                        * if age < 0 { -1.0 } else { 1.0 }
-                });
+                let digits = v.strip_prefix('-').unwrap_or(v);
+                if !digits.is_empty() && digits.bytes().all(|b| b.is_ascii_digit()) {
+                    let age = v.parse::<i64>().unwrap_or(if v.starts_with('-') {
+                        i64::MIN
+                    } else {
+                        i64::MAX
+                    });
+                    max_age = Some(if age <= 0 {
+                        now
+                    } else {
+                        now + std::time::Duration::from_secs(age.unsigned_abs()).as_secs_f64()
+                    });
+                }
             }
             ("expires", Some(v)) => {
-                cookie.expires_at = super::cookie_date::parse_cookie_date(v);
+                if let Some(date) = super::cookie_date::parse_cookie_date(v) {
+                    expires = Some(date);
+                }
             }
             _ => (),
         }
     }
+    cookie.expires_at = max_age.or(expires);
     (cookie.host_only || host == cookie.domain || host.ends_with(&format!(".{}", cookie.domain)))
         .then_some(cookie)
 }
 
-fn decoded_url_path(url: &Url) -> String {
-    let decoded = percent_encoding::percent_decode_str(url.path()).decode_utf8_lossy();
-    // URL.path removes trailing separators, including percent-encoded ones,
-    // while retaining the root slash.
-    let trimmed = decoded.trim_end_matches('/');
-    if trimmed.is_empty() && decoded.starts_with('/') {
-        "/".into()
-    } else {
-        trimmed.into()
-    }
-}
 fn cookie_host(url: &Url, source: &str) -> String {
     // Foundation preserves the spelling of IPv6 addresses instead of compressing
     // them. Cookie files and host-only matching use that unbracketed spelling.

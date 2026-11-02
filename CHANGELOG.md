@@ -28,6 +28,8 @@ Changes under **Unreleased** are on `main` but not in a published build yet. Dow
 
 ### Fixed
 
+- Cookie expiry now gives valid `Max-Age` precedence over `Expires`, regardless of attribute order, and ignores invalid expiry attributes.
+- Cookies keep directory scope and encoded path separators when choosing which requests receive them.
 - A response body write failure left the download running in the background. It now cancels the transfer and keeps the Storage failure visible.
 - The response preview stayed blank when its temporary file could not be created. It now keeps a bounded preview in memory and reports the storage failure.
 - Undoing and redoing an environment edit lost its previous Keychain values and changed the active environment.

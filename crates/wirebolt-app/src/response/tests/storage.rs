@@ -164,7 +164,7 @@ fn history_keeps_legacy_acronyms_and_omits_absent_optional_fields() {
     }
 }
 #[test]
-fn cookie_paths_decode_urls_and_ignore_empty_attributes() {
+fn cookie_paths_preserve_encoded_urls_and_ignore_empty_attributes() {
     let mut jar = ResponseCookieJar::new(None);
     let received = jar.store(
         &[header("name=value; Domain=; Path=")],
@@ -172,7 +172,7 @@ fn cookie_paths_decode_urls_and_ignore_empty_attributes() {
         0.0,
     );
     assert_eq!(received.len(), 1);
-    assert_eq!(received[0].path, "/café");
+    assert_eq!(received[0].path, "/caf%C3%A9");
     assert!(received[0].host_only);
     assert_eq!(
         jar.header("https://api.example.com/caf%C3%A9/me", 0.0),
@@ -182,33 +182,83 @@ fn cookie_paths_decode_urls_and_ignore_empty_attributes() {
 }
 
 #[test]
-fn cookie_paths_strip_trailing_slashes_like_foundation() {
-    for url in [
-        "https://h/v1/users/",
-        "https://h/v1/users//",
-        "https://h/v1/users%2F",
+fn cookie_default_paths_preserve_directory_scope_and_encoded_separators() {
+    for (path, expected) in [
+        ("/", "/"),
+        ("/admin", "/"),
+        ("/admin/", "/admin"),
+        ("/v1/users//", "/v1/users/"),
+        ("/v1/users%2F", "/v1"),
+        ("/admin%2Fprivate/login", "/admin%2Fprivate"),
     ] {
         let mut jar = ResponseCookieJar::new(None);
-        let received = jar.store(&[header("default=value")], url, 0.0);
-        assert_eq!(received[0].path, "/v1", "{url}");
-        assert_eq!(
-            jar.header("https://h/v1/other", 0.0).as_deref(),
-            Some("default=value")
-        );
+        let url = format!("https://h{path}");
+        let received = jar.store(&[header("default=value")], &url, 0.0);
+        assert_eq!(received[0].path, expected, "{url}");
+        assert_eq!(jar.header(&url, 0.0).as_deref(), Some("default=value"));
+        if expected != "/" {
+            assert_eq!(jar.header("https://h/outside", 0.0), None);
+        }
     }
+}
+
+#[test]
+fn cookie_explicit_directory_paths_match_only_encoded_uri_scope() {
     let mut jar = ResponseCookieJar::new(None);
     let _ = jar.store(&[header("scoped=value; Path=/account/")], "https://h/", 0.0);
-    for url in [
-        "https://h/account/",
-        "https://h/account//",
-        "https://h/account%2F",
-    ] {
-        assert_eq!(jar.header(url, 0.0), None, "{url}");
+    for url in ["https://h/account/", "https://h/account//"] {
+        assert_eq!(
+            jar.header(url, 0.0).as_deref(),
+            Some("scoped=value"),
+            "{url}"
+        );
     }
     assert_eq!(
         jar.header("https://h/account/me", 0.0).as_deref(),
         Some("scoped=value")
     );
+    for path in ["/account", "/account%2F", "/account%2Fme", "/accounts/me"] {
+        assert_eq!(jar.header(&format!("https://h{path}"), 0.0), None);
+    }
+    let mut jar = ResponseCookieJar::new(None);
+    let _ = jar.store(
+        &[header("encoded=value; Path=/admin%2Fprivate")],
+        "https://h/",
+        0.0,
+    );
+    assert_eq!(
+        jar.header("https://h/admin%2Fprivate/me", 0.0).as_deref(),
+        Some("encoded=value")
+    );
+    assert_eq!(jar.header("https://h/admin/private/me", 0.0), None);
+}
+
+#[test]
+fn cookie_max_age_precedes_expires_and_invalid_attributes_do_not_erase_expiry() {
+    for attributes in [
+        "Max-Age=600; Expires=Thu, 01 Jan 1970 00:00:00 GMT",
+        "Expires=Thu, 01 Jan 1970 00:00:00 GMT; Max-Age=600",
+        "Max-Age=600; Max-Age=invalid; Expires=invalid",
+        "Expires=Thu, 01 Jan 1970 00:00:00 GMT; Expires=invalid; Max-Age=invalid",
+        "Max-Age=0; Expires=Wed, 09 Jun 2027 10:18:14 GMT",
+    ] {
+        let mut jar = ResponseCookieJar::new(None);
+        let received = jar.store(
+            &[header(&format!("session=fixture; {attributes}"))],
+            "https://h/",
+            1000.0,
+        );
+        let alive = attributes.contains("Max-Age=600");
+        assert_eq!(
+            jar.header("https://h/", 1001.0).is_some(),
+            alive,
+            "{attributes}"
+        );
+        if alive {
+            assert_eq!(received[0].expires_at, Some(1600.0));
+            assert_eq!(jar.header("https://h/", 1600.0), None);
+        }
+    }
 }
 
 #[test]

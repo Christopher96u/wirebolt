@@ -5,19 +5,25 @@ import Testing
 
 @Suite("File-backed responses")
 struct ResponseStorageTests {
-    @Test("Cookie paths and IPv6 hosts match Foundation URL projections")
-    func foundationCookieURLs() async throws {
-        for source in ["https://h/v1/users/", "https://h/v1/users//", "https://h/v1/users%2F", "http://[::1]/v1/users/", "http://[0:0:0:0:0:0:0:1]/v1/users/", "http://[::0001]/v1/users/", "http://[::FFFF:192.0.2.1]/v1/users/"] {
+    @Test("Cookie paths preserve URI encoding and directory scope; IPv6 hosts keep native spelling")
+    func encodedCookieURLs() async throws {
+        for (source, expectedPath) in [
+            ("https://h/v1/users/", "/v1/users"),
+            ("https://h/v1/users//", "/v1/users/"),
+            ("https://h/v1/users%2F", "/v1"),
+            ("http://[::1]/v1/users/", "/v1/users"),
+            ("http://[0:0:0:0:0:0:0:1]/v1/users/", "/v1/users"),
+            ("http://[::0001]/v1/users/", "/v1/users"),
+            ("http://[::FFFF:192.0.2.1]/v1/users/", "/v1/users"),
+        ] {
             let url = try #require(URL(string: source))
             let jar = CookieJar()
             let received = await jar.store(headers: [ResponseHeader(name: "Set-Cookie", value: "name=value")], requestURL: url)
-            let path = url.path
-            let parent = path.lastIndex(of: "/").map { String(path[..<$0]) }
-            #expect(received.first?.path == (parent?.isEmpty == false ? parent : "/"))
+            #expect(received.first?.path == expectedPath)
             #expect(received.first?.domain == url.host?.lowercased())
             await jar.store(headers: [ResponseHeader(name: "Set-Cookie", value: "scoped=value; Path=/account/")], requestURL: url)
             let destination = try #require(URL(string: "/account/", relativeTo: url))
-            #expect(await jar.header(for: destination) == nil)
+            #expect(await jar.header(for: destination) == "scoped=value")
         }
     }
 
@@ -177,11 +183,11 @@ extension ResponseStorageTests {
 }
 
 extension ResponseStorageTests {
-    @Test func cookiePathsDecodeURLsAndIgnoreEmptyAttributes() async throws {
+    @Test func cookiePathsPreserveEncodedURLsAndIgnoreEmptyAttributes() async throws {
         let jar = CookieJar()
         let origin = try #require(URL(string: "https://api.example.com/caf%C3%A9/login"))
         let cookies = await jar.store(headers: [ResponseHeader(name: "Set-Cookie", value: "name=value; Domain=; Path=")], requestURL: origin)
-        #expect(cookies.first?.path == "/café")
+        #expect(cookies.first?.path == "/caf%C3%A9")
         #expect(cookies.first?.hostOnly == true)
         let destination = try #require(URL(string: "https://api.example.com/caf%C3%A9/me"))
         #expect(await jar.header(for: destination) == "name=value")
