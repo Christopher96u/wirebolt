@@ -10,7 +10,7 @@ use http::{
     HeaderMap, HeaderName, HeaderValue,
     header::{AUTHORIZATION, CONTENT_LENGTH, CONTENT_TYPE},
 };
-use percent_encoding::{AsciiSet, NON_ALPHANUMERIC, utf8_percent_encode};
+use percent_encoding::{AsciiSet, NON_ALPHANUMERIC, PercentEncode, utf8_percent_encode};
 use url::Url;
 
 use crate::{
@@ -30,6 +30,12 @@ const QUERY_COMPONENT: &AsciiSet = &NON_ALPHANUMERIC
     .remove(b'_')
     .remove(b'.')
     .remove(b'~');
+
+/// Encodes a query name or value exactly as request preparation does.
+#[must_use]
+pub fn encode_query_component(value: &str) -> PercentEncode<'_> {
+    utf8_percent_encode(value, QUERY_COMPONENT)
+}
 
 pub struct RequestPipeline<'a, R: SecretResolver + ?Sized> {
     environment: Option<&'a Environment>,
@@ -186,6 +192,15 @@ struct QueryBuilder {
     changed: bool,
 }
 
+/// Appends query rows using the same RFC 3986 component encoding as Send.
+pub fn append_query_pairs<'a>(url: &mut Url, pairs: impl IntoIterator<Item = (&'a str, &'a str)>) {
+    let mut query = QueryBuilder::new(url);
+    for (name, value) in pairs {
+        query.append(name, value);
+    }
+    query.apply(url);
+}
+
 impl QueryBuilder {
     fn new(url: &Url) -> Self {
         Self {
@@ -198,11 +213,9 @@ impl QueryBuilder {
         if !self.query.is_empty() {
             self.query.push('&');
         }
-        self.query
-            .extend(utf8_percent_encode(name, QUERY_COMPONENT));
+        self.query.extend(encode_query_component(name));
         self.query.push('=');
-        self.query
-            .extend(utf8_percent_encode(value, QUERY_COMPONENT));
+        self.query.extend(encode_query_component(value));
         self.changed = true;
     }
 
@@ -225,6 +238,7 @@ fn append_query<R: SecretResolver + ?Sized>(
             resolver.resolve_source(&field.value, FieldPath::indexed("query", index, "value"));
         if let (Some(name), Some(value)) = (name, value) {
             query.append(&name, &value);
+            resolver.redaction.url |= field.sensitive;
         }
     }
 }
@@ -584,6 +598,7 @@ fn append_form_fields<R: SecretResolver + ?Sized>(
         );
         if let (Some(name), Some(value)) = (name, value) {
             serializer.append_pair(&name, &value);
+            resolver.redaction.body |= field.sensitive;
         }
     }
 }

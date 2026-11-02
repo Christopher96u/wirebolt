@@ -774,3 +774,30 @@ fn routing_and_exports_share_transport_template_resolution() {
     assert_eq!(error.issues[0].kind, RequestIssueKind::MissingVariable);
     assert_eq!(error.issues[0].path, "values[0].value");
 }
+
+#[test]
+fn sensitive_query_and_form_rows_redact_diagnostics_but_keep_transport_values() {
+    for form in [false, true] {
+        let mut request = Request::new(id("sensitive"), "Sensitive", "POST", "http://localhost/");
+        let mut field = RequestValueField::enabled("token", ValueSource::literal("fixture-secret"));
+        field.sensitive = true;
+        if form {
+            request.body = RequestBody::FormUrlEncoded {
+                fields: vec![field],
+            };
+        } else {
+            request.query.push(field);
+        }
+        let prepared = RequestPipeline::new(None, &wirebolt_core::NoSecrets)
+            .prepare(&request)
+            .unwrap();
+        if form {
+            assert!(prepared.body_is_sensitive());
+            assert_eq!(prepared.body(), b"token=fixture-secret");
+        } else {
+            assert!(prepared.url_is_sensitive());
+            assert_eq!(prepared.url().query(), Some("token=fixture-secret"));
+        }
+        assert!(!format!("{prepared:?}").contains("fixture-secret"));
+    }
+}

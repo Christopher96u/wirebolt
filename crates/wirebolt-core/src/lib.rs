@@ -42,7 +42,10 @@ pub use proxy::{
 pub use request::{
     HeaderField, PreparedRequest, RequestDraft, RequestPreparationError, prepare_request,
 };
-pub use request_pipeline::{RequestIssue, RequestIssueKind, RequestPipeline, RequestPipelineError};
+pub use request_pipeline::{
+    RequestIssue, RequestIssueKind, RequestPipeline, RequestPipelineError, append_query_pairs,
+    encode_query_component,
+};
 pub use storage::{
     ApiKeyPlacement, CURRENT_SCHEMA_VERSION, Collection, CollectionSnapshot, DocumentId,
     DocumentProblem, DocumentProblemKind, Environment, EnvironmentVariable, Group, IdentifierError,

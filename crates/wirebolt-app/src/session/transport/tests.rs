@@ -378,3 +378,27 @@ fn workspace_secret_writes_and_deletes_retire_manual_http_engines() {
     store.delete_secret("owned.secret").unwrap();
     assert!(!Arc::ptr_eq(&after_save, &engine()));
 }
+
+#[test]
+fn sensitive_rows_are_redacted_in_sent_request_and_history_projections() {
+    let mut input: RunInput =
+        serde_json::from_str(r#"{"method":"POST","url":"http://localhost/"}"#).unwrap();
+    let mut field = RequestValueField::enabled("token", ValueSource::literal("fixture-secret"));
+    field.sensitive = true;
+    input.query.push(field.clone());
+    input.body = RequestBody::FormUrlEncoded {
+        fields: vec![field],
+    };
+    let (prepared, _, snapshot) = prepare_run(input, &wirebolt_core::NoSecrets).unwrap();
+    assert_eq!(prepared.url().query(), Some("token=fixture-secret"));
+    assert_eq!(prepared.body(), b"token=fixture-secret");
+    assert_eq!(snapshot.url, "[REDACTED]");
+    assert!(snapshot.body.redacted);
+    assert!(snapshot.body.text_preview.is_none());
+    let history_projection = SessionPrepared::from(&snapshot);
+    assert!(
+        !serde_json::to_string(&history_projection)
+            .unwrap()
+            .contains("fixture-secret")
+    );
+}
