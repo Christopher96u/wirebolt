@@ -5,10 +5,9 @@
 )]
 use super::{
     Arc, DomainWorkspace, GitDelta, Mutex, PushAvailability, SessionCommandBatchResult,
-    SessionWorkspaceCommand, WorkspaceBridge, WorkspaceExport, WorkspaceFailure,
-    WorkspaceGitAction, WorkspaceGitChange, WorkspaceGitOperation, WorkspaceGitOutcome,
-    WorkspaceGitStatus, WorkspaceIO, WorkspaceImportSummary, WorkspaceImportedEnvironment,
-    WorkspaceReply,
+    SessionWorkspaceCommand, WorkspaceBridge, WorkspaceFailure, WorkspaceGitAction,
+    WorkspaceGitChange, WorkspaceGitOperation, WorkspaceGitOutcome, WorkspaceGitStatus,
+    WorkspaceIO, WorkspaceImportSummary, WorkspaceImportedEnvironment, WorkspaceReply,
 };
 use crate::lock;
 use wirebolt_app::session::persistence::{
@@ -74,13 +73,6 @@ pub enum WorkspaceGitAction {
 }
 
 #[uniffi::remote(Enum)]
-pub enum WorkspaceExport {
-    Workspace,
-    Collection { id: String },
-    Request { collection_id: String, id: String },
-}
-
-#[uniffi::remote(Enum)]
 pub enum WorkspaceIO {
     Load,
     Commands {
@@ -94,9 +86,6 @@ pub enum WorkspaceIO {
     ImportBrunoFolder {
         bundle: wirebolt_core::BrunoFolderBundle,
         name: Option<String>,
-    },
-    Export {
-        target: WorkspaceExport,
     },
     Git {
         action: WorkspaceGitAction,
@@ -114,9 +103,6 @@ pub enum WorkspaceReply {
     },
     Imported {
         summary: WorkspaceImportSummary,
-    },
-    Exported {
-        content: String,
     },
     GitStatus {
         status: WorkspaceGitStatus,

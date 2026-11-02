@@ -233,7 +233,9 @@ fn reloads_reflect_external_edits_and_deletions() {
     let path = temporary.path().join("environments/local.toml");
     fs::write(
         &path,
-        format!("schema_version = {CURRENT_SCHEMA_VERSION}\nid = \"local\"\nname = \"Edited by hand\"\n"),
+        format!(
+            "schema_version = {CURRENT_SCHEMA_VERSION}\nid = \"local\"\nname = \"Edited by hand\"\n"
+        ),
     )
     .expect("edit environment externally");
     assert_eq!(
@@ -325,9 +327,6 @@ fn rejects_future_schema_versions() {
         }
     ));
 }
-
-
-
 
 #[test]
 fn round_trips_workspace_and_request_proxy_overrides_without_secret_values() {
@@ -526,10 +525,23 @@ fn collection_deletion_refuses_symlinked_directories() {
 fn rejects_every_noncurrent_workspace_schema() {
     for version in 0..CURRENT_SCHEMA_VERSION {
         let root = tempdir().unwrap();
-        fs::write(root.path().join("wirebolt.toml"), format!("schema_version = {version}\nname = \"Old\"\n")).unwrap();
-        assert!(matches!(WorkspaceStore::open(root.path()), Err(StorageError::UnsupportedSchema { found, .. }) if found == version));
+        fs::write(
+            root.path().join("wirebolt.toml"),
+            format!("schema_version = {version}\nname = \"Old\"\n"),
+        )
+        .unwrap();
+        assert!(
+            matches!(WorkspaceStore::open(root.path()), Err(StorageError::UnsupportedSchema { found, .. }) if found == version)
+        );
     }
     let root = tempdir().unwrap();
-    fs::write(root.path().join("wirebolt.toml"), "name = \"Unversioned\"\n").unwrap();
-    assert!(matches!(WorkspaceStore::open(root.path()), Err(StorageError::UnsupportedSchema { found: 0, .. })));
+    fs::write(
+        root.path().join("wirebolt.toml"),
+        "name = \"Unversioned\"\n",
+    )
+    .unwrap();
+    assert!(matches!(
+        WorkspaceStore::open(root.path()),
+        Err(StorageError::UnsupportedSchema { found: 0, .. })
+    ));
 }

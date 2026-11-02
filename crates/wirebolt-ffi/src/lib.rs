@@ -15,17 +15,14 @@ use std::{
     sync::{Arc, LazyLock},
 };
 
-#[cfg(test)]
-use std::collections::BTreeMap;
 use wirebolt_app::lock;
 #[cfg(not(target_vendor = "apple"))]
 use wirebolt_core::NoSecrets;
+#[cfg(not(test))]
+use wirebolt_core::SecretName;
 #[cfg(test)]
-use wirebolt_core::{
-    Collection, DocumentId, Environment, Request, RequestHeader, ValueSource, Workspace,
-    WorkspaceDocument, WorkspaceStore,
-};
-use wirebolt_core::{HttpEngineConfig, ProxyMode, ProxyPolicy, SecretName};
+use wirebolt_core::{Collection, Request, Workspace, WorkspaceStore};
+use wirebolt_core::{HttpEngineConfig, ProxyMode, ProxyPolicy};
 
 #[derive(Debug, Eq, PartialEq, uniffi::Record)]
 pub struct CoreHandshake {
@@ -107,7 +104,7 @@ impl WorkspaceBridge {
             inner: SessionPersistence::open_or_create(
                 path,
                 name,
-                Arc::new(PlatformWorkspaceSecrets),
+                Arc::new(PlatformWorkspaceSecrets::default()),
             )?,
         }))
     }
@@ -128,9 +125,27 @@ impl WorkspaceBridge {
         self.inner.delete_secret(name)
     }
 }
-#[derive(Debug)]
-struct PlatformWorkspaceSecrets;
-#[cfg(target_vendor = "apple")]
+#[derive(Debug, Default)]
+struct PlatformWorkspaceSecrets {
+    #[cfg(test)]
+    values: std::sync::Mutex<std::collections::HashMap<String, String>>,
+}
+
+#[cfg(test)]
+impl WorkspaceSecrets for PlatformWorkspaceSecrets {
+    fn read(&self, name: &str) -> Result<Option<String>, WorkspaceBridgeError> {
+        Ok(lock(&self.values).get(name).cloned())
+    }
+    fn save(&self, name: &str, value: &str) -> Result<(), WorkspaceBridgeError> {
+        lock(&self.values).insert(name.into(), value.into());
+        Ok(())
+    }
+    fn remove(&self, name: &str) -> Result<(), WorkspaceBridgeError> {
+        lock(&self.values).remove(name);
+        Ok(())
+    }
+}
+#[cfg(all(target_vendor = "apple", not(test)))]
 impl WorkspaceSecrets for PlatformWorkspaceSecrets {
     fn read(&self, name: &str) -> Result<Option<String>, WorkspaceBridgeError> {
         let name = SecretName::new(name)
@@ -154,7 +169,7 @@ impl WorkspaceSecrets for PlatformWorkspaceSecrets {
             .map_err(|_| WorkspaceBridgeError::operation("secret could not be deleted"))
     }
 }
-#[cfg(not(target_vendor = "apple"))]
+#[cfg(all(not(target_vendor = "apple"), not(test)))]
 impl WorkspaceSecrets for PlatformWorkspaceSecrets {
     fn read(&self, _: &str) -> Result<Option<String>, WorkspaceBridgeError> {
         Err(WorkspaceBridgeError::operation(
@@ -279,25 +294,6 @@ impl From<HeaderField> for wirebolt_core::HeaderField {
 impl WorkspaceBridge {
     /// # Errors
     /// Returns the application operation error.
-    pub fn export_workspace_json(&self) -> Result<String, WorkspaceBridgeError> {
-        self.inner.export_workspace_json()
-    }
-    /// # Errors
-    /// Returns the application operation error.
-    pub fn export_collection_json(&self, id: &str) -> Result<String, WorkspaceBridgeError> {
-        self.inner.export_collection_json(id)
-    }
-    /// # Errors
-    /// Returns the application operation error.
-    pub fn export_request_json(
-        &self,
-        collection_id: &str,
-        id: &str,
-    ) -> Result<String, WorkspaceBridgeError> {
-        self.inner.export_request_json(collection_id, id)
-    }
-    /// # Errors
-    /// Returns the application operation error.
     pub fn save_collection(&self, id: String, name: String) -> Result<(), WorkspaceBridgeError> {
         self.inner.save_collection(id, name)
     }
@@ -416,135 +412,6 @@ mod tests {
         }
     }
 
-    fn test_secret(name: &str) -> ValueSource {
-        ValueSource::secret(SecretName::new(name).unwrap())
-    }
-
-    /// Exports a workspace with two collections, a global and a staging environment.
-    fn exported_source_workspace() -> String {
-        let id = |value: &str| DocumentId::new(value).unwrap();
-        let secret = test_secret;
-        let source_directory = tempfile::tempdir().unwrap();
-        let source =
-            WorkspaceStore::create(source_directory.path(), &Workspace::new("Source")).unwrap();
-        let mut request = Request::new(
-            id("search"),
-            "Search",
-            "GET",
-            "https://api.example.test/items",
-        );
-        request.headers = vec![RequestHeader {
-            sensitive: true,
-            ..RequestHeader::enabled("X-Api-Token", secret("inventory.token"))
-        }];
-        request.proxy_override = Some(ProxyMode::Direct);
-        request.transport.validate_tls = false;
-        request.inherits_workspace_transport = false;
-        let documents = [
-            WorkspaceDocument::Collection(Collection::new(id("inventory"), "Inventory".into())),
-            WorkspaceDocument::Request {
-                collection_id: id("inventory"),
-                request,
-            },
-            WorkspaceDocument::Collection(Collection::new(id("billing"), "Billing".into())),
-            WorkspaceDocument::Request {
-                collection_id: id("billing"),
-                request: Request::new(
-                    id("invoices"),
-                    "Invoices",
-                    "GET",
-                    "https://billing.example.test",
-                ),
-            },
-            WorkspaceDocument::Environment(Environment::new(
-                id("global"),
-                "Source globals".into(),
-                [(
-                    "baseUrl".to_owned(),
-                    ValueSource::literal("https://api.example.test"),
-                )]
-                .into(),
-            )),
-            WorkspaceDocument::Environment(Environment::new(
-                id("staging"),
-                "Staging".into(),
-                [("token".to_owned(), secret("staging.token"))].into(),
-            )),
-        ];
-        for document in &documents {
-            source.save(document).unwrap();
-        }
-        WorkspaceBridge::open_or_create(
-            source_directory.path().to_string_lossy().into_owned(),
-            "Source".into(),
-        )
-        .unwrap()
-        .export_workspace_json()
-        .unwrap()
-    }
-
-    #[test]
-    fn workspace_export_file_imports_as_separate_collections_and_environments() {
-        let exported = exported_source_workspace();
-        let secret = test_secret;
-        let target_directory = tempfile::tempdir().unwrap();
-        let target =
-            WorkspaceStore::create(target_directory.path(), &Workspace::new("Target")).unwrap();
-        target
-            .save(&WorkspaceDocument::Environment(Environment::new(
-                DocumentId::new("global").unwrap(),
-                "Target globals".into(),
-                BTreeMap::new(),
-            )))
-            .unwrap();
-        let bridge = WorkspaceBridge::open_or_create(
-            target_directory.path().to_string_lossy().into_owned(),
-            "Target".into(),
-        )
-        .unwrap();
-        let delta = bridge
-            .inner
-            .commit_import_file(ImportFormat::LegacyWorkspaceV1, &exported, "source-export")
-            .unwrap();
-        assert_eq!(delta.delta.affected_ids.len(), 2);
-
-        let snapshot = target.load().unwrap();
-        let mut collections: Vec<_> = snapshot
-            .collections
-            .iter()
-            .map(|entry| entry.collection.name.as_str())
-            .collect();
-        collections.sort_unstable();
-        assert_eq!(collections, ["Billing", "Inventory"]);
-        let inventory = snapshot
-            .collections
-            .iter()
-            .find(|entry| entry.collection.name == "Inventory")
-            .unwrap();
-        assert!(inventory.collection.groups.is_empty());
-        let imported = &inventory.requests[0];
-        assert_eq!(imported.headers[0].value, secret("inventory.token"));
-        assert!(imported.headers[0].sensitive);
-        assert_eq!(imported.proxy_override, Some(ProxyMode::Direct));
-        assert!(!imported.transport.validate_tls);
-        assert!(!imported.inherits_workspace_transport);
-
-        let environment = |name: &str| {
-            snapshot
-                .environments
-                .iter()
-                .find(|environment| environment.name == name)
-                .unwrap()
-        };
-        assert_eq!(snapshot.environments.len(), 3);
-        assert_eq!(environment("Target globals").id.as_str(), "global");
-        assert_ne!(environment("Source globals").id.as_str(), "global");
-        assert_eq!(
-            environment("Staging").variables[0].value,
-            secret("staging.token")
-        );
-    }
-
     #[test]
     fn workspace_proxy_commands_round_trip_and_reset_without_changing_transport() {
         let directory = tempfile::tempdir().unwrap();
@@ -600,10 +467,7 @@ mod tests {
         assert!(
             reopened
                 .inner
-                .commit_import(
-                    ImportFormat::LegacyWorkspaceV1,
-                    r#"{"version":2,"nodes":[]}"#
-                )
+                .commit_import(ImportFormat::PostmanV2, r#"{"invalid":true}"#)
                 .is_err()
         );
         assert_eq!(reopened.inner.domain_snapshot().unwrap(), snapshot);
@@ -865,17 +729,6 @@ mod tests {
                 .unwrap()
                 .contains("secret-value")
         );
-        let request_export = bridge
-            .export_request_json("api", "health")
-            .expect("export request");
-        let collection_export = bridge
-            .export_collection_json("api")
-            .expect("export collection");
-        let workspace_export = bridge.export_workspace_json().expect("export workspace");
-        for exported in [request_export, collection_export, workspace_export] {
-            assert!(exported.contains("api.token"));
-            assert!(!exported.contains("secret-value"));
-        }
     }
 
     #[test]

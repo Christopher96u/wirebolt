@@ -165,12 +165,6 @@ pub enum WorkspaceGitAction {
     Initialize,
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub enum WorkspaceExport {
-    Workspace,
-    Collection { id: String },
-    Request { collection_id: String, id: String },
-}
-#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum WorkspaceIO {
     Load,
     Commands {
@@ -184,9 +178,6 @@ pub enum WorkspaceIO {
     ImportBrunoFolder {
         bundle: wirebolt_core::BrunoFolderBundle,
         name: Option<String>,
-    },
-    Export {
-        target: WorkspaceExport,
     },
     Git {
         action: WorkspaceGitAction,
@@ -207,9 +198,6 @@ pub enum WorkspaceReply {
     },
     Imported {
         summary: WorkspaceImportSummary,
-    },
-    Exported {
-        content: String,
     },
     GitStatus {
         status: WorkspaceGitStatus,
@@ -289,16 +277,6 @@ impl SessionPersistence {
                 |commit| WorkspaceReply::Imported {
                     summary: commit.summary,
                 },
-            ),
-            WorkspaceIO::Export { target } => workspace_result(
-                match target {
-                    WorkspaceExport::Workspace => self.export_workspace_json(),
-                    WorkspaceExport::Collection { id } => self.export_collection_json(&id),
-                    WorkspaceExport::Request { collection_id, id } => {
-                        self.export_request_json(&collection_id, &id)
-                    }
-                },
-                |content| WorkspaceReply::Exported { content },
             ),
             WorkspaceIO::Git { action } => match action {
                 WorkspaceGitAction::Status => git_result(self.git_status(), |status| {

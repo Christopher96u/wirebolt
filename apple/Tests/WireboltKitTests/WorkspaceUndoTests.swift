@@ -259,7 +259,7 @@ struct WorkspaceUndoTests {
             RequestLocation(collectionID: "other", request: source.request)])]
         let identifier = "request|api|\(source.request.id)"
         guard case .refused(_, let reason) = model.moveEligibility(identifier, toCollectionID: "other", parentID: nil) else {
-            Issue.record("A legacy ID collision must be refused")
+            Issue.record("An ID collision must be refused")
             return
         }
         await model.moveSidebarItem(identifier, toCollectionID: "other", parentID: nil)

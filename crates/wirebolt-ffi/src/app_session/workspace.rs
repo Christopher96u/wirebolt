@@ -5,17 +5,17 @@
 )]
 use super::{
     AppSecretPlatform, AppSessionSecrets, AppSessionTabs, AppWorkspaceDocuments,
-    AppWorkspacePlatform, Arc, DomainAuthentication, DomainCollection, DomainEnvironment,
-    DomainGroup, DomainLocation, DomainProxy, DomainRequestDraft, DomainTransport, DomainWorkspace,
-    Path, SessionCommandBatchResult, SessionDeleteTarget, SessionDocument, SessionDocumentEffect,
+    AppWorkspacePlatform, Arc, DomainCollection, DomainEnvironment, DomainGroup, DomainLocation,
+    DomainProxy, DomainRequestDraft, DomainTransport, DomainWorkspace, Path,
+    SessionCommandBatchResult, SessionDeleteTarget, SessionDocument, SessionDocumentEffect,
     SessionEditorGroup, SessionLayout, SessionRestoreResult, SessionTabDocument,
     SessionTabSnapshot, SessionWorkspaceCommand, SessionWorkspaceDelta, SessionWorkspaceEdit,
     SessionWorkspaceNodeKind, SessionWorkspacePlan, WorkspaceAction, WorkspaceBridge,
-    WorkspaceClose, WorkspaceDiscard, WorkspaceExport, WorkspaceFailure, WorkspaceGitAction,
-    WorkspaceGitOperation, WorkspaceGitStatus, WorkspaceImport, WorkspaceImportFile,
-    WorkspaceImportSummary, WorkspaceLoad, WorkspaceMutation, WorkspaceOpenMode,
-    WorkspacePresentation, WorkspaceRepositoryProblem, WorkspaceRestore, WorkspaceSave,
-    WorkspaceSelectionProblem, WorkspaceUndoToken,
+    WorkspaceClose, WorkspaceDiscard, WorkspaceFailure, WorkspaceGitAction, WorkspaceGitOperation,
+    WorkspaceGitStatus, WorkspaceImport, WorkspaceImportFile, WorkspaceImportSummary,
+    WorkspaceLoad, WorkspaceMutation, WorkspaceOpenMode, WorkspacePresentation,
+    WorkspaceRepositoryProblem, WorkspaceRestore, WorkspaceSave, WorkspaceSelectionProblem,
+    WorkspaceUndoToken,
 };
 use crate::lock;
 use wirebolt_app::session::workspace::{
@@ -408,7 +408,6 @@ pub struct WorkspacePresentation {
     pub git_operation: Option<WorkspaceGitOperation>,
     pub git_failure: Option<WorkspaceFailure>,
     pub import_failure: Option<String>,
-    pub export_failure: Option<String>,
     pub import_summary: Option<WorkspaceImportSummary>,
     pub operation_failure: Option<wirebolt_app::response::ResponseFailureKind>,
     pub operation_failure_reason: Option<String>,
@@ -439,7 +438,6 @@ pub struct WorkspaceLoad {
 
 #[uniffi::remote(Record)]
 pub struct WorkspaceSave {
-    pub original_authentication: DomainAuthentication,
     pub document_id: String,
     pub draft: DomainRequestDraft,
     pub location: Option<DomainLocation>,
@@ -631,13 +629,6 @@ impl AppWorkspaceOperations {
         platform: Arc<AppWorkspacePlatform>,
     ) -> Option<WorkspaceLoad> {
         self.inner.import(request, platform.as_ref()).await
-    }
-    pub async fn export(
-        &self,
-        target: WorkspaceExport,
-        platform: Arc<AppWorkspacePlatform>,
-    ) -> Option<String> {
-        self.inner.export(target, platform.as_ref()).await
     }
 }
 
@@ -832,15 +823,6 @@ impl AppWorkspaceOperations {
             )
             .await
     }
-}
-
-#[uniffi::export]
-pub fn workspace_saved_authentication(
-    current: DomainAuthentication,
-    original: DomainAuthentication,
-    saved: DomainAuthentication,
-) -> DomainAuthentication {
-    wirebolt_app::session::workspace::documents::saved_authentication(current, &original, &saved)
 }
 
 #[uniffi::remote(Enum)]

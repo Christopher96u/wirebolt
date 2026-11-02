@@ -8,10 +8,10 @@ struct DocumentSessionRunTests {
     private func completedSession(body: String) async -> DocumentSession {
         let session = DocumentSession(draft: RequestDraft())
         let run = RunID()
-        session.beginRun(run)
-        await session.consume(.head(ResponseHead(status: 200, version: "HTTP/1.1", headers: [], timeToHeadersNS: 1)), runID: run)
-        await session.consume(.chunk(Data(body.utf8)), runID: run)
-        await session.consume(.complete(RunCompletion(bytesReceived: UInt64(body.utf8.count), totalTimeNS: 1)), runID: run)
+        let sessionRun = await RuntimeRunFixture.start(session, runID: run)
+        sessionRun.sink.event(event: .head(head: ResponseHead(status: 200, version: "HTTP/1.1", headers: [], timeToHeadersNS: 1))); session.mirror()
+        _ = sessionRun.sink.bytes(data: Data(body.utf8)); session.mirror()
+        sessionRun.sink.event(event: .complete(completion: RunCompletion(bytesReceived: UInt64(body.utf8.count), totalTimeNS: 1))); await sessionRun.complete()
         return session
     }
 
@@ -20,20 +20,20 @@ struct DocumentSessionRunTests {
         let session = await completedSession(body: "previous")
         let previousStore = try #require(session.bodyStore)
         let run = RunID()
-        session.beginRun(run)
+        let sessionRun = await RuntimeRunFixture.start(session, runID: run)
         #expect(session.isRunning && session.isAwaitingResponseHead)
         #expect(session.runStartedAt != nil)
         #expect(session.responseText == "previous" && session.responseHead?.status == 200)
         #expect(session.bodyStore === previousStore)
 
-        await session.consume(.head(ResponseHead(status: 404, version: "HTTP/1.1", headers: [], timeToHeadersNS: 1)), runID: run)
+        sessionRun.sink.event(event: .head(head: ResponseHead(status: 404, version: "HTTP/1.1", headers: [], timeToHeadersNS: 1))); session.mirror()
         #expect(!session.isAwaitingResponseHead)
         #expect(session.responseHead?.status == 404)
         #expect(session.responseText.isEmpty && session.completion == nil)
         #expect(session.bodyStore !== previousStore)
 
-        await session.consume(.chunk(Data("next".utf8)), runID: run)
-        await session.consume(.complete(RunCompletion(bytesReceived: 4, totalTimeNS: 1)), runID: run)
+        _ = sessionRun.sink.bytes(data: Data("next".utf8)); session.mirror()
+        sessionRun.sink.event(event: .complete(completion: RunCompletion(bytesReceived: 4, totalTimeNS: 1))); await sessionRun.complete()
         #expect(session.responseText == "next" && !session.isRunning && session.runStartedAt == nil)
     }
 
@@ -41,8 +41,8 @@ struct DocumentSessionRunTests {
     func failureReplacesPrevious() async {
         let session = await completedSession(body: "previous")
         let run = RunID()
-        session.beginRun(run)
-        await session.finish(runID: run, failure: RunFailure(kind: .connection, issues: []))
+        let sessionRun = await RuntimeRunFixture.start(session, runID: run)
+        sessionRun.sink.finish(failure: RunFailure(kind: .connection, issues: [])); await sessionRun.complete()
         #expect(session.failure?.kind == .connection)
         #expect(session.responseHead == nil && session.responseText.isEmpty)
         #expect(session.bodyStore != nil, "history keeps a body store for the failed run")
@@ -53,9 +53,9 @@ struct DocumentSessionRunTests {
     func cancelBeforeHead() async {
         let session = await completedSession(body: "previous")
         let run = RunID()
-        session.beginRun(run)
-        session.cancel(runID: run)
-        await session.consume(.head(ResponseHead(status: 200, version: "HTTP/1.1", headers: [], timeToHeadersNS: 1)), runID: run)
+        let sessionRun = await RuntimeRunFixture.start(session, runID: run)
+        sessionRun.cancel()
+        sessionRun.sink.event(event: .head(head: ResponseHead(status: 200, version: "HTTP/1.1", headers: [], timeToHeadersNS: 1))); session.mirror()
         #expect(session.failure?.kind == .cancelled)
         #expect(session.responseHead == nil && session.responseText.isEmpty)
     }
@@ -68,10 +68,10 @@ struct DocumentSessionRunTests {
         session.appendResponseCookies([cookie])
         #expect(session.responseCookies == [cookie])
         let run = RunID()
-        session.beginRun(run)
+        let sessionRun = await RuntimeRunFixture.start(session, runID: run)
         session.appendResponseCookies([cookie, cookie])
         #expect(session.responseCookies == [cookie])
-        await session.consume(.head(ResponseHead(status: 302, version: "HTTP/1.1", headers: [], timeToHeadersNS: 1)), runID: run)
+        sessionRun.sink.event(event: .head(head: ResponseHead(status: 302, version: "HTTP/1.1", headers: [], timeToHeadersNS: 1))); session.mirror()
         #expect(session.responseCookies == [cookie, cookie])
     }
 }

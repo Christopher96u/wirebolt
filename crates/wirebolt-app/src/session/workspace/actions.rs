@@ -622,7 +622,7 @@ pub fn action(workspace: &DomainWorkspace, command: WorkspaceAction) -> Option<N
     })
 }
 
-/// Compatibility move identifiers are parsed in the application core, not the bridge.
+/// Drag identifiers are parsed in the application core.
 #[must_use]
 pub fn move_row_id(identifier: &str) -> Option<String> {
     let (kind, collection, id) = parts(identifier)?;

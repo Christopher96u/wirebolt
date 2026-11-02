@@ -75,11 +75,6 @@ pub fn detect(extension: &str, contents: &str) -> Option<ImportFormat> {
     }) {
         return Some(ImportFormat::PostmanV2);
     }
-    if root.get("version").and_then(serde_json::Value::as_i64) == Some(1)
-        && root.get("nodes").is_some_and(serde_json::Value::is_array)
-    {
-        return Some(ImportFormat::LegacyWorkspaceV1);
-    }
     detect_collection(extension, trimmed, Some(&root)).or_else(|| {
         extension
             .eq_ignore_ascii_case("har")

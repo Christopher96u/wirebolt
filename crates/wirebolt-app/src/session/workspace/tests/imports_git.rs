@@ -63,8 +63,8 @@ fn clean_import_summary_and_plural_collection_headlines() {
 #[test]
 fn import_failure_messages_preserve_reason_and_fallback() {
     assert_eq!(
-        import_failure_message(Some("legacy collection has no nodes"), Some("old.json")),
-        "“old.json” couldn’t be imported. Legacy collection has no nodes."
+        import_failure_message(Some("collection has no requests"), Some("old.json")),
+        "“old.json” couldn’t be imported. Collection has no requests."
     );
     assert_eq!(
         import_failure_message(None, None),
@@ -86,11 +86,7 @@ fn import_detection_includes_commented_curl_and_known_formats() {
             r#"{"info":{"schema":"https://schema.getpostman.com/json/collection/v2.1.0/collection.json"},"item":[]}"#,
             Some("postman_v2"),
         ),
-        (
-            "json",
-            r#"{"version":1,"nodes":[]}"#,
-            Some("legacy_workspace_v1"),
-        ),
+        ("json", r#"{"version":1,"nodes":[]}"#, None),
         ("json", r#"{"hello":"world"}"#, None),
         ("txt", "hello", None),
     ] {

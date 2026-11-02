@@ -10,6 +10,7 @@ mkdir -p build/native-performance
 swiftc -O -whole-module-optimization -g -parse-as-library -swift-version 6 -emit-executable \
   -emit-module-path build/native-performance/workloads.swiftmodule \
   -target arm64-apple-macosx15.0 -o build/native-performance/workloads \
+  apple/Tests/WireboltKitTests/RuntimeRunFixture.swift \
   apple/Benchmarks/NativeWorkloads.swift apple/Tests/NativeTestSupport.swift "${wirebolt_app_inputs[@]}"
 if [[ "${1:-}" == build ]]; then exit 0; fi
 build/native-performance/workloads tab-close 20 build/native-performance/tab-close.json 5

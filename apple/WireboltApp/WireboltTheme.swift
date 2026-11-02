@@ -52,7 +52,7 @@ struct ThemeScope: ViewModifier {
     }
 }
 
-/// Compatibility facade for shared chrome. Every value is derived from the store;
+/// Native shared chrome projection. Every value is derived from the store;
 /// native renderers receive the resolved value explicitly as well.
 @MainActor
 enum WireboltTheme {

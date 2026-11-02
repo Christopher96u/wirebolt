@@ -31,8 +31,8 @@ struct ImportSummaryTests {
     @Test("Failure messages carry the importer's reason as a sentence")
     func failureMessages() {
         struct Reason: LocalizedError { var errorDescription: String? }
-        #expect(ImportFormat.failureMessage(for: Reason(errorDescription: "legacy collection has no nodes"), fileName: "old.json")
-            == "“old.json” couldn’t be imported. Legacy collection has no nodes.")
+        #expect(ImportFormat.failureMessage(for: Reason(errorDescription: "collection has no requests"), fileName: "old.json")
+            == "“old.json” couldn’t be imported. Collection has no requests.")
         #expect(ImportFormat.failureMessage(for: WorkspaceMutationError.unsupported, fileName: nil)
             == "The import failed. Check its format and contents.")
     }

@@ -25,7 +25,6 @@ fn collection_exports_keep_all_existing_importers() {
             r#"{"info":{"_postman_id":"x"},"item":[]}"#,
             "postman_v2",
         ),
-        ("json", r#"{"version":1,"nodes":[]}"#, "legacy_workspace_v1"),
     ] {
         assert_eq!(
             detect(extension, text),

@@ -94,7 +94,7 @@ struct PrivacySettingsPage: View {
                 SettingsRow(title: "Local data", detail: "Requests and environments stay in your workspace. Secrets stay in this Mac’s Keychain.") {
                     Image(systemName: "lock").foregroundStyle(theme.muted.color).accessibilityHidden(true)
                 }
-                SettingsRow(title: "Response history", detail: "Clear stored responses from every workspace, including unassigned legacy history.") {
+                SettingsRow(title: "Response history", detail: "Clear stored responses from every workspace.") {
                     Button("Clear All History…", role: .destructive) { clearingHistory = true }
                 }
                 SettingsRow(title: "Privacy policy", detail: "How Wirebolt handles your workspace and connections.", last: true) {

@@ -86,7 +86,7 @@ extension MarkdownPreviewTests {
     ]
 
     @Test(arguments: corpus) func matchesFoundationRenderer(source: String) async throws {
-        let old = try Self.legacyRender(source)
+        let old = try Self.foundationRender(source)
         let new = try await MarkdownPreviewCache().render(source)
         #expect(new.text.string == old.text.string)
         #expect(new.text.isEqual(to: old.text))
@@ -96,7 +96,7 @@ extension MarkdownPreviewTests {
     @MainActor
     func nativeStorage(source: String) async throws {
         let rendered = try await MarkdownPreviewCache().render(source)
-        let expected = NSTextStorage(attributedString: try Self.legacyRender(source).text)
+        let expected = NSTextStorage(attributedString: try Self.foundationRender(source).text)
         expected.ensureAttributesAreFixed(in: NSRange(location: 0, length: expected.length))
         let first = rendered.makeTextStorage()
         let second = rendered.makeTextStorage()
@@ -106,7 +106,7 @@ extension MarkdownPreviewTests {
         #expect(second.isEqual(to: expected))
         #expect(rendered.text.string == expected.string)
     }
-    static func legacyRender(_ source: String) throws -> RenderedMarkdown {
+    static func foundationRender(_ source: String) throws -> RenderedMarkdown {
         let markdown = try AttributedString(markdown: source, options: .init(interpretedSyntax: .full))
         try Task.checkCancellation()
         let output = NSMutableAttributedString(string: "")

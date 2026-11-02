@@ -1,7 +1,7 @@
 use super::{persistence_fixtures::*, *};
 
 #[test]
-fn legacy_move_collision_is_rejected_by_policy_plan_and_persistence() {
+fn move_collision_is_rejected_by_policy_plan_and_persistence() {
     let (_root, store) = persistence();
     let mut original = imported_pair(&store);
     let source = original.collections[0].requests[0].clone();

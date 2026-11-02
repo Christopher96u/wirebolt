@@ -530,7 +530,7 @@ impl DomainOAuthPlatform for PlatformAdapter {
     }
     async fn read_secret(&self, name: String) -> Option<String> {
         wirebolt_app::session::persistence::WorkspaceSecrets::read(
-            &crate::PlatformWorkspaceSecrets,
+            &crate::PlatformWorkspaceSecrets::default(),
             &name,
         )
         .ok()
@@ -638,12 +638,6 @@ pub fn domain_owned_reference(name: String) -> bool {
 
 #[uniffi::export]
 #[must_use]
-pub fn domain_legacy_reference(name: String) -> bool {
-    domain::request::legacy_reference(&name)
-}
-
-#[uniffi::export]
-#[must_use]
 pub fn domain_auth_references(authentication: DomainAuthentication) -> Vec<String> {
     domain::request::auth_references(&authentication)
 }
@@ -659,11 +653,8 @@ pub fn domain_rename_auth(
 
 #[uniffi::export]
 #[must_use]
-pub fn domain_own_auth(
-    authentication: DomainAuthentication,
-    only_legacy: bool,
-) -> OwnedAuthentication {
-    let (authentication, renames) = domain::request::own_auth(authentication, only_legacy);
+pub fn domain_own_auth(authentication: DomainAuthentication) -> OwnedAuthentication {
+    let (authentication, renames) = domain::request::own_auth(authentication);
     OwnedAuthentication {
         authentication,
         renames,
@@ -1203,15 +1194,6 @@ pub fn domain_separate_url_query(url: String, query: Vec<DomainField>) -> UrlQue
 }
 #[uniffi::export]
 #[must_use]
-pub fn domain_legacy_environment(
-    id: String,
-    name: String,
-    values: HashMap<String, DomainValueSource>,
-) -> DomainEnvironment {
-    domain::request::legacy_environment(id, name, values.into_iter().collect())
-}
-#[uniffi::export]
-#[must_use]
 pub fn domain_switch_auth(
     authentication: DomainAuthentication,
     kind: DomainAuthenticationKind,
@@ -1572,7 +1554,6 @@ pub fn domain_body_can_format(kind: DomainBodyKind) -> bool {
 pub enum DomainImportFormat {
     Curl,
     Har,
-    LegacyWorkspaceV1,
     PostmanV2,
     Insomnia,
     Bruno,
@@ -1656,11 +1637,6 @@ mod choice_tests {
                 "json",
                 r#"{"info":{"schema":"v2"}}"#,
                 DomainImportFormat::PostmanV2,
-            ),
-            (
-                "json",
-                r#"{"version":1,"nodes":[]}"#,
-                DomainImportFormat::LegacyWorkspaceV1,
             ),
             (
                 "yaml",

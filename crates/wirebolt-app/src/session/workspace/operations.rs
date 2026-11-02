@@ -6,8 +6,8 @@ pub use environment_commits::EnvironmentCommitOutcome;
 
 use super::actions::{self, NamedEdit, WorkspaceAction};
 use super::io::{
-    WorkspaceExport, WorkspaceFailure, WorkspaceGitAction, WorkspaceGitOperation,
-    WorkspaceGitStatus, WorkspaceIO, WorkspaceImportSummary, WorkspacePlatform, WorkspaceReply,
+    WorkspaceFailure, WorkspaceGitAction, WorkspaceGitOperation, WorkspaceGitStatus, WorkspaceIO,
+    WorkspaceImportSummary, WorkspacePlatform, WorkspaceReply,
 };
 use super::{
     SessionWorkspaceCommand, SessionWorkspaceEdit, SessionWorkspacePlan, WorkspaceSession,
@@ -39,7 +39,6 @@ pub struct WorkspacePresentation {
     pub git_operation: Option<WorkspaceGitOperation>,
     pub git_failure: Option<WorkspaceFailure>,
     pub import_failure: Option<String>,
-    pub export_failure: Option<String>,
     pub import_summary: Option<WorkspaceImportSummary>,
     pub operation_failure: Option<crate::response::ResponseFailureKind>,
     pub operation_failure_reason: Option<String>,
@@ -84,7 +83,6 @@ pub struct WorkspaceLoad {
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct WorkspaceSave {
-    pub original_authentication: crate::domain::DomainAuthentication,
     pub document_id: String,
     pub draft: DomainRequestDraft,
     pub location: Option<DomainLocation>,
@@ -613,7 +611,7 @@ impl WorkspaceOperations {
             let source =
                 super::location(&lock(&self.workspace.workspace), collection_id, id).cloned();
             if let Some(source) = source {
-                let (auth, renames) = own_auth(source.request.authentication, false);
+                let (auth, renames) = own_auth(source.request.authentication);
                 if secrets.flush(secret_platform).await.is_err()
                     || secrets
                         .copy(renames.clone(), secret_platform)
@@ -789,7 +787,6 @@ impl WorkspaceOperations {
         let was_saved = document.collection_id.is_some() && document.saved_draft.is_some();
         let original_collection = document.collection_id.clone();
         let mut result = WorkspaceSave {
-            original_authentication: document.draft.authentication.clone(),
             document_id: document.id,
             draft: document.draft,
             location: None,
@@ -823,12 +820,6 @@ impl WorkspaceOperations {
             self.fail(crate::response::ResponseFailureKind::Workspace);
             return result;
         }
-        let (authentication, renames) = own_auth(result.draft.authentication.clone(), true);
-        if secrets.copy(renames, secret_platform).await.is_err() {
-            self.fail(crate::response::ResponseFailureKind::Workspace);
-            return result;
-        }
-        result.draft.authentication = authentication;
         secrets.observe(request_references(&result.draft).into_iter().collect());
         let position = saved.map_or_else(
             || {
@@ -1087,25 +1078,6 @@ impl WorkspaceOperations {
             pasted,
         );
         None
-    }
-    pub async fn export(
-        &self,
-        target: WorkspaceExport,
-        platform: &dyn WorkspacePlatform,
-    ) -> Option<String> {
-        match platform.execute(WorkspaceIO::Export { target }).await {
-            WorkspaceReply::Exported { content } => Some(content),
-            reply => {
-                let mut s = lock(&self.state);
-                s.presentation.export_failure = Some(match reply {
-                    WorkspaceReply::Failed { failure } => failure.reason,
-                    _ => String::new(),
-                });
-                s.presentation.operation_failure =
-                    Some(crate::response::ResponseFailureKind::Export);
-                None
-            }
-        }
     }
 }
 #[must_use]

@@ -4,14 +4,12 @@ use std::{
     collections::HashMap,
     path::Path,
     sync::{Arc, Mutex},
-    time::Instant,
 };
 use wirebolt_app::{
     domain::{
-        DomainAuthentication, DomainBody, DomainCollection, DomainEnvironment, DomainGroup,
-        DomainLocation, DomainOAuthConfiguration, DomainProxy, DomainRequestDraft, DomainRunInput,
-        DomainTransport, DomainValueSource, DomainWorkspace, git::PushAvailability,
-        proxy::ResolvedDomainProxy,
+        DomainBody, DomainCollection, DomainEnvironment, DomainGroup, DomainLocation,
+        DomainOAuthConfiguration, DomainProxy, DomainRequestDraft, DomainRunInput, DomainTransport,
+        DomainValueSource, DomainWorkspace, git::PushAvailability, proxy::ResolvedDomainProxy,
     },
     response::{ResponseHeaderValue, StoredCookie},
     session::{
@@ -50,9 +48,9 @@ use wirebolt_app::{
                 WorkspaceSidebarState, WorkspaceUnsavedPrompt,
             },
             io::{
-                GitDelta, WorkspaceExport, WorkspaceFailure, WorkspaceGitAction,
-                WorkspaceGitChange, WorkspaceGitOperation, WorkspaceGitOutcome, WorkspaceGitStatus,
-                WorkspaceIO, WorkspaceImportSummary, WorkspaceImportedEnvironment, WorkspaceReply,
+                GitDelta, WorkspaceFailure, WorkspaceGitAction, WorkspaceGitChange,
+                WorkspaceGitOperation, WorkspaceGitOutcome, WorkspaceGitStatus, WorkspaceIO,
+                WorkspaceImportSummary, WorkspaceImportedEnvironment, WorkspaceReply,
             },
             lifecycle::{WorkspaceClose, WorkspaceDiscard, WorkspaceRestore},
             operations::{

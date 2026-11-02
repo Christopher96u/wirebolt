@@ -174,7 +174,7 @@ fn every_body_transition_preserves_only_text_and_resets_metadata() {
     }
 }
 #[test]
-fn composer_displays_legacy_text_as_raw_and_exposes_only_supported_formatting() {
+fn composer_displays_text_as_raw_and_exposes_only_supported_formatting() {
     for ((body, _), expected) in sources().into_iter().take(9).zip([
         DomainBodyKind::Empty,
         DomainBodyKind::Raw,

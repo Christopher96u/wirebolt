@@ -237,11 +237,11 @@ final class ProbeWindow: NSWindow { override var canBecomeKey: Bool { true } }
         let raw="["+(0..<rows).map { "{\"id\":\($0),\"active\":true,\"message\":\"café 東京 🚀\"}" }.joined(separator:",")+"]"
         let session=DocumentSession(draft:RequestDraft())
         let run=RunID()
-        session.beginRun(run)
         var ready=false
         Task { @MainActor in
-            await session.consume(.chunk(Data(raw.utf8)),runID:run)
-            await session.consume(.complete(RunCompletion(bytesReceived:UInt64(raw.utf8.count),totalTimeNS:1)),runID:run)
+            let sessionRun = await RuntimeRunFixture.start(session, runID: run)
+            _ = sessionRun.sink.bytes(data: Data(raw.utf8)); session.mirror()
+            sessionRun.sink.event(event: .complete(completion: RunCompletion(bytesReceived:UInt64(raw.utf8.count),totalTimeNS:1))); await sessionRun.complete()
             ready=true
         }
         for _ in 0..<1000 where !ready { spin(0.002) }
@@ -349,11 +349,12 @@ final class ProbeWindow: NSWindow { override var canBecomeKey: Bool { true } }
         let body = #"{"zeta":1,"alpha":"caf\u00e9"}"#
         let session = DocumentSession(draft: RequestDraft())
         let run = RunID()
-        session.beginRun(run)
+        var sessionRun: RuntimeRunFixture!
         var step = 0
         Task { @MainActor in
-            await session.consume(.head(ResponseHead(status: 200, version: "HTTP/1.1",
-                headers: [ResponseHeader(name: "Content-Type", value: "application/json")], timeToHeadersNS: 1)), runID: run)
+            sessionRun = await RuntimeRunFixture.start(session, runID: run)
+            sessionRun.sink.event(event: .head(head: ResponseHead(status: 200, version: "HTTP/1.1",
+                headers: [ResponseHeader(name: "Content-Type", value: "application/json")], timeToHeadersNS: 1))); session.mirror()
             step = 1
         }
         for _ in 0..<1000 where step < 1 { spin(0.002) }
@@ -362,8 +363,8 @@ final class ProbeWindow: NSWindow { override var canBecomeKey: Bool { true } }
         defer { window.close() }
         spin(0.05); flush(host)
         Task { @MainActor in
-            await session.consume(.chunk(Data(body.utf8)), runID: run)
-            await session.consume(.complete(RunCompletion(bytesReceived: UInt64(body.utf8.count), totalTimeNS: 1)), runID: run)
+            _ = sessionRun.sink.bytes(data: Data(body.utf8)); session.mirror()
+            sessionRun.sink.event(event: .complete(completion: RunCompletion(bytesReceived: UInt64(body.utf8.count), totalTimeNS: 1))); await sessionRun.complete()
             step = 2
         }
         func shows(_ prefix: String) -> Bool {
@@ -385,12 +386,11 @@ final class ProbeWindow: NSWindow { override var canBecomeKey: Bool { true } }
         try Data("fixture".utf8).write(to: blocked)
         let session = DocumentSession(draft: RequestDraft())
         let run = RunID()
-        session.rust.begin(runId: run.description, directory: blocked.path)
-        session.mirror()
+        let sessionRun = await RuntimeRunFixture.start(session, runID: run, directory: blocked)
         let body = String(repeating: "preview survives 🌍\n", count: 4000)
-        await session.consume(.head(ResponseHead(status: 200, version: "HTTP/1.1", headers: [], timeToHeadersNS: 1)), runID: run)
-        await session.consume(.chunk(Data(body.utf8)), runID: run)
-        await session.consume(.complete(RunCompletion(bytesReceived: UInt64(body.utf8.count), totalTimeNS: 1)), runID: run)
+        sessionRun.sink.event(event: .head(head: ResponseHead(status: 200, version: "HTTP/1.1", headers: [], timeToHeadersNS: 1))); session.mirror()
+        _ = sessionRun.sink.bytes(data: Data(body.utf8)); session.mirror()
+        sessionRun.sink.event(event: .complete(completion: RunCompletion(bytesReceived: UInt64(body.utf8.count), totalTimeNS: 1))); await sessionRun.complete()
         precondition(session.bodyStore == nil && session.failure?.kind == .storage)
         precondition(session.responsePreviewData.count <= DocumentSession.previewByteLimit && session.responseWasTruncated)
         let state = DocumentPresentationState()
@@ -534,11 +534,12 @@ final class ProbeWindow: NSWindow { override var canBecomeKey: Bool { true } }
         interface.responseLayout(for: model.sessions.activeGroupID).requestWidth = 1000
         spin(); flush(host)
         let before = NativeTestSupport.elements(host).first { $0.name == "Content Type" }!.frame
-        let run = RunID(); session.beginRun(run)
+        let run = RunID()
         var done = false
         Task { @MainActor in
-            await session.consume(.head(ResponseHead(status: 200, version: "HTTP/1.1", headers: [], timeToHeadersNS: 1)), runID: run)
-            await session.consume(.complete(RunCompletion(bytesReceived: 0, totalTimeNS: 1)), runID: run)
+            let sessionRun = await RuntimeRunFixture.start(session, runID: run)
+            sessionRun.sink.event(event: .head(head: ResponseHead(status: 200, version: "HTTP/1.1", headers: [], timeToHeadersNS: 1))); session.mirror()
+            sessionRun.sink.event(event: .complete(completion: RunCompletion(bytesReceived: 0, totalTimeNS: 1))); await sessionRun.complete()
             done = true
         }
         while !done { spin(0.002) }

@@ -506,11 +506,11 @@ impl WorkspaceStore {
         environments.sort_by(|left, right| left.id.cmp(&right.id));
 
         Ok(WorkspaceSnapshot {
-                workspace,
-                collections,
-                environments,
-                problems,
-            })
+            workspace,
+            collections,
+            environments,
+            problems,
+        })
     }
 
     fn load_collection(

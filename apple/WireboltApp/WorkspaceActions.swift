@@ -164,27 +164,6 @@ func present(_ panel: NSSavePanel, in window: NSWindow?) async -> NSApplication.
     }
 }
 
-/// Writes an export chosen in a save sheet; failures explain why instead of beeping.
-@MainActor
-func saveExportedDocument(named name: String, content: String) {
-    let window = NSApp.keyWindow
-    Task {
-        let panel = NSSavePanel()
-        panel.nameFieldStringValue = "\(name).json"
-        panel.allowedContentTypes = [.json]
-        panel.canCreateDirectories = true
-        guard await present(panel, in: window) == .OK, let destination = panel.url else { return }
-        do {
-            try Data(content.utf8).write(to: destination, options: .atomic)
-        } catch {
-            let alert = NSAlert(error: error)
-            alert.messageText = "The export could not be saved."
-            alert.informativeText = error.localizedDescription
-            _ = await present(alert, in: window)
-        }
-    }
-}
-
 /// Workspace folders for File ▸ Open Recent, most recent first.
 @MainActor
 @Observable
@@ -243,7 +222,7 @@ struct WireboltHelpView: View {
         ("Requests & tabs", "Choose an HTTP method and URL, then Send (⌘Return). Params, Headers, Body and Auth configure the request; Auth supports Basic, Bearer Token, API Key and OAuth 2.0, with credentials stored in Keychain per request. Cancel stops an active send. Use Navigate → Split Right to compare requests. Closing a dirty tab asks before discarding changes."),
         ("Variables & secrets", "Choose Configure Environments… from the environment menu. Global variables apply to every request; the selected environment overrides matching names. Use {{name}} in URLs and fields. Disable a row to omit it. Changes save when editing ends; use ⌘Z to undo. Click a variable’s lock button to make it secret: Finishing an edit stores the value in this Mac’s Keychain and the workspace keeps only a reference, so sharing or exporting does not share the value."),
         ("Proxy & transport", "Settings → Network sets the app default. Workspace Settings overrides it for a workspace; a request’s Settings tab can override that again. Inherit follows the parent, Direct bypasses proxies, System uses macOS settings, Manual uses your routes. Test connection sends a HEAD request without request headers, body or cookies. In Workspace Settings, Save keeps proxy and transport edits and Cancel discards them. In a request’s Settings tab, click Apply to request for proxy edits (transport edits apply to the draft directly), then save the request with ⌘S. Timeouts, redirects & TLS also sets a client certificate for mutual TLS, stored in Keychain, and a custom CA file. Reconnect WebSockets after changing settings."),
-        ("Import & export", "The + menu imports cURL, HAR, Postman Collection v2.0 and v2.1, Insomnia (v4 JSON or v5 YAML), Bruno (a collection folder or exported JSON) and Wirebolt / Legacy Collection v1 JSON. After an import, a summary lists what was created and anything that couldn’t be carried over, such as scripts. Postman collection variables and Insomnia and Bruno environments become Wirebolt environments; credentials go to Keychain. Export writes saved requests, so save edits first. API Key and OAuth use Wirebolt-specific authentication metadata: reimport with Wirebolt to preserve it. Other clients may not support these extensions. Referenced credentials must be configured on the destination Mac; response history is not exported."),
+        ("Import & export", "The + menu imports cURL, HAR, Postman Collection v2.0 and v2.1, Insomnia (v4 JSON or v5 YAML) and Bruno (a collection folder or exported JSON). A summary lists what was created and anything that couldn’t be carried over, such as scripts. Variables become environments; credentials go to Keychain. Share saved workspace definitions through Git or the workspace folder. Copy cURL creates a command for the current request, retaining references to this Mac’s Keychain items."),
         ("WebSocket", "Create a WebSocket request, enter ws:// or wss:// and Connect. Choose Text, JSON, Binary (Hex/Base64) or File for messages. Send transmits the selected representation. Disconnect ends the connection; reconnect applies updated settings."),
         ("Notes", "Write Markdown in Note → Edit. Preview renders headings, lists, emphasis, links and code locally when opened. Save with ⌘S. Images show alternative text; previews do not fetch remote content."),
         ("Git collaboration", "Workspace → Git Collaboration opens status, commit, pull and push. The workspace folder must be the root of its Git repository; if it isn’t a repository yet, choose Initialize Git Repository. Configure its remote/upstream and authentication with Git. Only saved workspace documents are committed. Save or discard edits before pulling. After a conflicted pull, resolve the listed files with Git or choose Abort Merge to return to your last commit. Wirebolt does not sync in the background."),

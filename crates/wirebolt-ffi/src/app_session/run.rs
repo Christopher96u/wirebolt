@@ -4,7 +4,7 @@
     reason = "UniFFI lifts owned records at the boundary."
 )]
 use super::{
-    AppResponseBody, Arc, DocumentRun, DomainRequestDraft, DomainTransport, Instant, Mutex, Path,
+    AppResponseBody, Arc, DocumentRun, DomainRequestDraft, DomainTransport, Mutex,
     ResolvedDomainProxy, ResponseHeaderValue, SessionCompletion, SessionDocument, SessionFailure,
     SessionHead, SessionKind, SessionPrepared, SessionPreparedBody, SessionPreparedHeader,
     SessionRunEvent, SessionRunSnapshot, StoredCookie,
@@ -165,30 +165,6 @@ impl AppDocumentSession {
             .body()
             .map(|inner| Arc::new(AppResponseBody { inner }))
     }
-    pub fn begin(&self, run_id: String, directory: String) {
-        lock(&self.document).touched = true;
-        lock(&self.run).begin(&run_id, Path::new(&directory));
-    }
-    pub fn consume(&self, run_id: String, event: SessionRunEvent) {
-        lock(&self.run).consume(&run_id, event);
-    }
-    pub fn append_batch(&self, run_id: String, chunks: Vec<Vec<u8>>) -> bool {
-        lock(&self.run)
-            .append_batch(&run_id, &chunks, Instant::now())
-            .is_some()
-    }
-    pub fn publish(&self, run_id: String) {
-        let mut run = lock(&self.run);
-        if run.accepts(&run_id) {
-            run.publish();
-        }
-    }
-    pub fn finish(&self, run_id: String, failure: Option<SessionFailure>) {
-        lock(&self.run).finish(&run_id, failure);
-    }
-    pub fn cancel(&self, run_id: String) {
-        lock(&self.run).cancel(&run_id);
-    }
     pub fn reset(&self) {
         lock(&self.run).reset();
     }
@@ -208,11 +184,6 @@ impl AppDocumentSession {
             lock(&self.run).set_cookies(cookies);
         }
     }
-}
-
-#[uniffi::export]
-pub fn session_publication_delay_ms() -> u64 {
-    u64::try_from(wirebolt_app::session::run::PUBLICATION_INTERVAL.as_millis()).unwrap_or(16)
 }
 
 #[uniffi::export]

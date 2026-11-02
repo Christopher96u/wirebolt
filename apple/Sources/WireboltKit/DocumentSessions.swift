@@ -17,7 +17,6 @@ public typealias DocumentKind = SessionKind
 @Observable
 public final class DocumentSession: Identifiable {
     public static let previewByteLimit = ResponseBodyStore.viewportByteCount
-    private nonisolated static let publicationDelayMS = Int64(sessionPublicationDelayMs())
     public let id: String
     public let socket = WebSocketDocumentState()
     public let kind: DocumentKind
@@ -53,9 +52,6 @@ public final class DocumentSession: Identifiable {
     @ObservationIgnored let rust: AppDocumentSession
     @ObservationIgnored private var draftNeedsSynchronization = false
     @ObservationIgnored private(set) var draftSynchronizationCount = 0
-    @ObservationIgnored private var progressTask: Task<Void, Never>?
-    @ObservationIgnored private var ingress: [Data] = []
-    @ObservationIgnored private var ingressBytes = 0
 
     public init(
         id: String = UUID().uuidString.lowercased(),
@@ -105,87 +101,6 @@ public final class DocumentSession: Identifiable {
         draftNeedsSynchronization = false
     }
 
-    public func beginRun(_ runID: RunID) {
-        synchronizeDraft()
-        progressTask?.cancel()
-        progressTask = nil
-        ingress = []
-        ingressBytes = 0
-        isTouched = true
-        rust.begin(runId: runID.description, directory: FileManager.default.temporaryDirectory.path)
-        mirror()
-    }
-    public func consume(_ event: RunEvent, runID: RunID) async {
-        guard activeRunID == runID else { return }
-        switch event {
-        case .cookies: return
-        case .chunk(let data):
-            ingress.append(data)
-            ingressBytes += data.count
-            if ingressBytes >= ResponseBodyStore.searchChunkByteCount || ingress.count >= 64 { await flush(runID) }
-            guard activeRunID == runID else { return }
-            if progressTask == nil {
-                progressTask = Task { [weak self] in
-                    do { try await Task.sleep(for: .milliseconds(Self.publicationDelayMS)) } catch { return }
-                    guard let self, self.activeRunID == runID else { return }
-                    await self.flush(runID)
-                    guard !Task.isCancelled, self.activeRunID == runID else { return }
-                    self.rust.publish(runId: runID.description)
-                    self.mirror()
-                    self.progressTask = nil
-                }
-            }
-            return
-        case .prepared(let snapshot): rust.consume(runId: runID.description, event: .prepared(snapshot: snapshot.sessionRecord))
-        case .head(let head): rust.consume(runId: runID.description, event: .head(head: head))
-        case .complete(let value):
-            await flush(runID)
-            progressTask?.cancel()
-            progressTask = nil
-            let rust = rust
-            await Task.detached(priority: .userInitiated) {
-                rust.consume(runId: runID.description, event: .complete(completion: value))
-            }.value
-        }
-        guard activeRunID == runID else { return }
-        mirror()
-    }
-    private func flush(_ runID: RunID) async {
-        guard !ingress.isEmpty else { return }
-        let chunks = ingress
-        let rust = rust
-        ingress.removeAll(keepingCapacity: true)
-        ingressBytes = 0
-        let accepted = await Task.detached(priority: .userInitiated) { rust.appendBatch(runId: runID.description, chunks: chunks) }.value
-        if !accepted, activeRunID == runID {
-            progressTask?.cancel()
-            progressTask = nil
-            mirror()
-        }
-    }
-    public func finish(runID: RunID, failure: RunFailure?) async {
-        guard activeRunID == runID else { return }
-        await flush(runID)
-        progressTask?.cancel()
-        progressTask = nil
-        let rust = rust
-        await Task.detached(priority: .userInitiated) { rust.finish(runId: runID.description, failure: failure) }.value
-        guard activeRunID == runID else { return }
-        mirror()
-    }
-
-    public func cancel(runID: RunID) {
-        guard activeRunID == runID else { return }
-        if !ingress.isEmpty {
-            _ = rust.appendBatch(runId: runID.description, chunks: ingress)
-            ingress.removeAll(keepingCapacity: true)
-            ingressBytes = 0
-        }
-        progressTask?.cancel()
-        progressTask = nil
-        rust.cancel(runId: runID.description)
-        mirror()
-    }
     public func markSaved(_ draft: RequestDraft) {
         rust.save(draft: draft.domain, replace: true)
         self.draft = draft
@@ -296,7 +211,7 @@ public struct SessionLayout: Equatable, Sendable {
     public struct Group: Equatable, Sendable {
         public let tabs: [Tab]
         public let selectedIndex: Int?
-        /// Index of the preview tab, if the group has one. Absent in older layouts.
+        /// Index of the preview tab, if the group has one.
         public let previewIndex: Int?
 
         public init(tabs: [Tab], selectedIndex: Int?, previewIndex: Int? = nil) {

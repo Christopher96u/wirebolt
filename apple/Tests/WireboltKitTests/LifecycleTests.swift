@@ -143,7 +143,8 @@ struct LifecycleTests {
         session.draft.url = "h"
         await settle()
         #expect(commands.hasURL)
-        session.beginRun(RunID())
+        let liveRun = await RuntimeRunFixture.start(session)
+        defer { liveRun.cancel() }
         await settle()
         #expect(commands.isRunning)
         #expect(commands.tabCount == 1)
@@ -154,7 +155,7 @@ struct LifecycleTests {
         #expect(ImportFormat.detect(fileExtension: "txt", contents: "  curl https://example.com") == .curl)
         #expect(ImportFormat.detect(fileExtension: "har", contents: #"{"log":{"entries":[]}}"#) == .har)
         #expect(ImportFormat.detect(fileExtension: "json", contents: #"{"info":{"schema":"https://schema.getpostman.com/json/collection/v2.1.0/collection.json"},"item":[]}"#) == .postmanV2)
-        #expect(ImportFormat.detect(fileExtension: "json", contents: #"{"version":1,"nodes":[]}"#) == .legacyWorkspaceV1)
+        #expect(ImportFormat.detect(fileExtension: "json", contents: #"{"version":1,"nodes":[]}"#) == nil)
         #expect(ImportFormat.detect(fileExtension: "json", contents: #"{"hello":"world"}"#) == nil)
         #expect(ImportFormat.detect(fileExtension: "txt", contents: "hello") == nil)
     }
@@ -209,17 +210,6 @@ private actor SaveRecorder: WorkspacePersistence {
         if case let .saveRequest(location) = command { saved.append((location.collectionId, RequestLocation(domain: location))) }
         return WorkspaceDelta(version: UInt64(saved.count), kind: .request, affectedIDs: [])
     }
-}
-
-@Test("Stored signed layout indices preserve legacy decoding")
-@MainActor
-func signedLayoutIndicesRemainCompatible() throws {
-    let defaults = try #require(UserDefaults(suiteName: "wirebolt.signed-layout.\(UUID().uuidString)"))
-    let source = Data(#"{"groups":[{"tabs":[{"collectionID":"api","requestID":"a"}],"selectedIndex":-1,"previewIndex":-1}],"activeGroupIndex":-1}"#.utf8)
-    defaults.set(["/legacy": source], forKey: SessionLayoutStore.defaultsKey)
-    let layout = try #require(SessionLayoutStore(defaults: defaults).layout(forWorkspace: "/legacy"))
-    #expect(layout.activeGroupIndex == -1)
-    #expect(layout.groups[0].selectedIndex == -1 && layout.groups[0].previewIndex == -1)
 }
 
 extension LifecycleTests {
@@ -317,10 +307,11 @@ extension LifecycleTests {
     }
 
     @Test(arguments: [2, 20, 100])
-    @MainActor func mixedCloseUsesNativeDirtyStateAndCancelsOnlyClosedRuns(count: Int) {
+    @MainActor func mixedCloseUsesNativeDirtyStateAndCancelsOnlyClosedRuns(count: Int) async {
         let model = WireboltModel(runner: LifecycleRunner())
         let tabs = (0..<count).map { model.sessions.open(draft: RequestDraft(id: "\($0)", name: "Original")) }
-        tabs[0].beginRun(RunID())
+        let liveRun = await RuntimeRunFixture.start(tabs[0])
+        defer { liveRun.cancel() }
         tabs[count - 1].draft.note = "Native edit, not synchronized"
         #expect(model.closeDocuments(.others(tabs[0].id)).map(\.id) == [tabs[count - 1].id])
         #expect(model.sessions.sessions.count == count)

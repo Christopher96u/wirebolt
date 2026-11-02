@@ -93,7 +93,8 @@ struct WireboltModelTests {
     @MainActor func workspaceSwitchClosesRuns() async throws {
         let model = WireboltModel(runner: StubRunner(), persistence: MutationRecorder())
         let old = model.sessions.open(draft: RequestDraft(id: "old", name: "Old"))
-        old.beginRun(RunID())
+        let liveRun = await RuntimeRunFixture.start(old)
+        defer { liveRun.cancel() }
         model.selectedEnvironmentID = "old-environment"
         #expect(await model.openWorkspace(using: MutationRecorder()))
         #expect(!old.isRunning)
@@ -158,7 +159,8 @@ struct WireboltModelTests {
         model.select(location)
         let original = try #require(model.sessions.activeSession)
         _ = model.sessions.split(tabID: original.id)
-        original.beginRun(RunID())
+        let liveRun = await RuntimeRunFixture.start(original)
+        defer { liveRun.cancel() }
         original.draft.note = "Discarded with folder"
         await model.deleteGroup(collectionID: "api", id: "parent")
         #expect(model.sessions.sessions.isEmpty)
@@ -316,10 +318,8 @@ struct WireboltModelTests {
     func globalVariables() {
         let model = WireboltModel(runner: StubRunner())
         model.workspace.environments = [
-            EnvironmentDraft(id: WorkspaceDraft.globalEnvironmentID, name: "Global Environment", legacyVariables: [
-                "host": .literal("global.example"), "shared": .literal("yes")
-            ]),
-            EnvironmentDraft(id: "local", name: "Local", legacyVariables: ["host": .literal("localhost")])
+            EnvironmentDraft(id: WorkspaceDraft.globalEnvironmentID, name: "Global Environment", variables: [EnvironmentVariableDraft(key: "host", value: .literal("global.example"), order: 0), EnvironmentVariableDraft(key: "shared", value: .literal("yes"), order: 1)]),
+            EnvironmentDraft(id: "local", name: "Local", variables: [EnvironmentVariableDraft(key: "host", value: .literal("localhost"), order: 0)])
         ]
         #expect(model.activeVariables["host"] == .literal("global.example"))
         model.selectedEnvironmentID = "local"
@@ -645,9 +645,9 @@ struct WireboltModelTests {
         let session = store.openTemporary()
         session.markSaved(session.draft)
         let run = RunID()
-        session.beginRun(run)
-        await session.consume(.chunk(Data("preserved".utf8)), runID: run)
-        await session.consume(.complete(RunCompletion(bytesReceived: 9, totalTimeNS: 1)), runID: run)
+        let sessionRun = await RuntimeRunFixture.start(session, runID: run)
+        _ = sessionRun.sink.bytes(data: Data("preserved".utf8)); session.mirror()
+        sessionRun.sink.event(event: .complete(completion: RunCompletion(bytesReceived: 9, totalTimeNS: 1))); await sessionRun.complete()
         #expect(store.close(.all).isEmpty)
         #expect(store.activeSession == nil)
         store.reopen(session)
@@ -663,14 +663,15 @@ struct WireboltModelTests {
         let source = store.openTemporary()
         source.markSaved(source.draft)
         let run = RunID()
-        source.beginRun(run)
-        await source.consume(.chunk(Data("shared body".utf8)), runID: run)
-        await source.consume(.complete(RunCompletion(bytesReceived: 11, totalTimeNS: 1)), runID: run)
+        let sourceRun = await RuntimeRunFixture.start(source, runID: run)
+        _ = sourceRun.sink.bytes(data: Data("shared body".utf8)); source.mirror()
+        sourceRun.sink.event(event: .complete(completion: RunCompletion(bytesReceived: 11, totalTimeNS: 1))); await sourceRun.complete()
         _ = try #require(store.split(tabID: source.id))
         let copy = try #require(store.activeSession)
         #expect(copy.responseText == "shared body")
         #expect(!copy.isDirty)
-        source.beginRun(RunID())
+        let liveRun = await RuntimeRunFixture.start(source)
+        defer { liveRun.cancel() }
         let bytes = try await copy.bodyStore?.viewport()
         #expect(bytes == Data("shared body".utf8))
         store.select(tabID: source.id, in: store.groups[0].id)
@@ -844,9 +845,9 @@ struct WireboltModelTests {
     func cancellationPresentation() async {
         let session = DocumentSession(draft: RequestDraft())
         let run = RunID()
-        session.beginRun(run)
-        session.cancel(runID: run)
-        await session.consume(.chunk(Data("late".utf8)), runID: run)
+        let sessionRun = await RuntimeRunFixture.start(session, runID: run)
+        sessionRun.cancel()
+        _ = sessionRun.sink.bytes(data: Data("late".utf8)); session.mirror()
         #expect(!session.isRunning)
         #expect(session.failure?.kind == .cancelled)
         #expect(session.responseBytes == 0)
@@ -1238,7 +1239,7 @@ func defaultPersistenceDeltaKeepsLocationIdentity() async throws {
 }
 
 extension WireboltModelTests {
-    @Test("A damaged history index records the send, reports once and keeps its backup")
+    @Test("A damaged history index reports once, then records and clears")
     @MainActor func damagedHistoryRecoveryIsReportedOnce() async throws {
         let root = FileManager.default.temporaryDirectory.appending(path: "wirebolt-history-recovery-\(UUID())")
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
@@ -1249,7 +1250,7 @@ extension WireboltModelTests {
         await model.send()
         #expect(await model.historyCount(for: session) == 1)
         #expect(model.operationFailure?.kind == .storage)
-        #expect(model.operationFailureMessage?.contains("index.json.backup") == true)
+        #expect(model.operationFailureMessage?.contains("History could not be loaded.") == true)
         model.operationFailure = nil
         model.operationFailureMessage = nil
         await model.send()
@@ -1257,6 +1258,5 @@ extension WireboltModelTests {
         #expect(model.operationFailure == nil)
         await model.clearAllHistory()
         #expect(await model.historyCount(for: session) == 0)
-        #expect(try String(contentsOf: root.appending(path: "index.json.backup"), encoding: .utf8) == "damaged index")
     }
 }

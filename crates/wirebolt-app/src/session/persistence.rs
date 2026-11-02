@@ -223,54 +223,6 @@ impl SessionPersistence {
         }))
     }
 
-    /// Exports the complete saved workspace with secret references intact.
-    ///
-    /// # Errors
-    /// Returns [`WorkspaceError`] if loading or encoding fails.
-    pub fn export_workspace_json(&self) -> Result<String, WorkspaceError> {
-        let snapshot = self
-            .store
-            .load()
-            .map_err(|_| WorkspaceError::operation("workspace could not be loaded"))?;
-        wirebolt_core::export_legacy_v1_workspace(&snapshot)
-            .map_err(|error| WorkspaceError::operation(&error.to_string()))
-    }
-
-    /// Exports one collection and all of its requests as a portable JSON document.
-    /// Secret material is absent because saved requests contain references only.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`WorkspaceError`] if the collection is absent or cannot be encoded.
-    pub fn export_collection_json(&self, id: &str) -> Result<String, WorkspaceError> {
-        let id = document_id(id.to_owned())?;
-        let snapshot = self
-            .store
-            .load()
-            .map_err(|_| WorkspaceError::operation("workspace could not be loaded"))?
-            .collections
-            .into_iter()
-            .find(|collection| collection.collection.id == id)
-            .ok_or(WorkspaceError::MissingDestination)?;
-        wirebolt_core::export_legacy_v1_collection(&snapshot.collection, &snapshot.requests)
-            .map_err(|error| WorkspaceError::operation(&error.to_string()))
-    }
-
-    /// Exports one saved request as portable JSON with secret references intact.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`WorkspaceError`] if the request is absent or cannot be encoded.
-    pub fn export_request_json(
-        &self,
-        collection_id: &str,
-        id: &str,
-    ) -> Result<String, WorkspaceError> {
-        let request = self.request(collection_id, id)?;
-        wirebolt_core::export_legacy_v1_request(&request)
-            .map_err(|error| WorkspaceError::operation(&error.to_string()))
-    }
-
     /// Creates or updates a collection.
     ///
     /// # Errors
@@ -302,8 +254,7 @@ impl SessionPersistence {
         self.commit_imported(parse_import(format, source, None)?)
     }
 
-    /// Imports a file under its filename, preserving every exported folder. A
-    /// Wirebolt workspace export creates each of its collections and environments.
+    /// Imports a file under its filename, preserving its folders and environments.
     ///
     /// # Errors
     /// Returns [`WorkspaceError`] with the import's user-facing reason

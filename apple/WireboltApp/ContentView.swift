@@ -218,8 +218,7 @@ struct ContentView: View {
         } message: {
             Text(model.operationFailureMessage ?? (model.operationFailure?.kind == .keychain
                 ? "The credentials could not be read or saved in Keychain. Check access and try again."
-                : model.operationFailure?.kind == .export
-                    ? (model.exportFailureMessage ?? "The saved request could not be exported.")
+
                     : "The operation could not be completed. Check access to the workspace and try again."))
         }
         .sheet(item: $interface.workspaceNamePrompt) { prompt in
@@ -843,11 +842,7 @@ private struct CollectionActionMenu: View {
             Button("Git Collaboration…") { model.isShowingGitCollaboration = true }
             Divider()
             WorkspaceImportMenu(interface: interface)
-            Button("Export Wirebolt JSON…") {
-                Task { if let document = await model.exportWorkspace() {
-                    saveExportedDocument(named: model.workspace.name, content: document)
-                } }
-            }.disabled(model.workspace.collections.isEmpty)
+
 
         } label: {
             Image(systemName: "plus")
@@ -870,7 +865,6 @@ private struct WorkspaceImportMenu: View {
             Button("cURL") { interface.isShowingCurlImporter = true }
             Button("HAR") { open(.har) }
             Divider()
-            Button("Wirebolt / Legacy Collection v1 JSON") { open(.legacyWorkspaceV1) }
             Button("Postman Collection v2") { open(.postmanV2) }
             Button("Insomnia (v4 JSON or v5 YAML)") { open(.insomnia) }
             Button("Bruno Collection (Folder or JSON)") { open(.bruno) }
@@ -1359,13 +1353,6 @@ private struct SavedCollectionRow: View {
             }
             Divider()
             WorkspaceImportMenu(interface: interface)
-            Button("Export Wirebolt JSON…") {
-                Task {
-                    if let document = await model.exportCollection(id: collection.id) {
-                        saveExportedDocument(named: collection.name, content: document)
-                    }
-                }
-            }
             Divider()
             Button("Rename") { interface.beginRename(row) }
             Button("Delete", role: .destructive) {
@@ -1485,14 +1472,6 @@ private struct SidebarRequestButton: View, @MainActor Equatable {
         Task { await model.duplicateRequest(collectionID: location.collectionID, requestID: location.request.id) }
     }
 
-    private func onExport() {
-        let (model, location) = (model, location)
-        Task {
-            if let document = await model.exportRequest(collectionID: location.collectionID, id: location.request.id) {
-                saveExportedDocument(named: location.request.name, content: document)
-            }
-        }
-    }
 
     private func onDelete() {
         interface.requestDelete(.request(collectionId: location.collectionID, id: location.request.id),
@@ -1574,7 +1553,6 @@ private struct SidebarRequestButton: View, @MainActor Equatable {
             Button("Open in New Split", action: onSplit)
             Divider()
             WorkspaceImportMenu(interface: interface)
-            Button("Export Wirebolt JSON…", action: onExport)
             Divider()
             Button("Copy cURL") { copyRequestAsCurl(location.request, model: model) }
                 .disabled(location.request.webSocket)
@@ -2685,7 +2663,6 @@ private struct RequestActionsMenu: View {
     private struct LoadedHistory {
         var documentID: String?
         var entries: [RunHistoryEntry] = []
-        var legacy: [RunHistoryEntry] = []
     }
 
     private struct LoadKey: Equatable {
@@ -2723,18 +2700,8 @@ private struct RequestActionsMenu: View {
                             }
                         }
                     }
-                    if loaded.documentID == session.id && !loaded.legacy.isEmpty {
-                        Menu("Unassigned Legacy History") {
-                            Text("Workspace and collection were not recorded. Clearing this request also deletes these entries.")
-                            ForEach(loaded.legacy) { entry in
-                                Button("\(entry.createdAt.formatted()) · \(entry.prepared.url)") {
-                                    Task { await model.restoreHistory(entry, into: session) }
-                                }
-                            }
-                        }
-                    }
                     Divider()
-                    Button("Clear History…") { isClearing = true }.disabled(entries.isEmpty && loaded.legacy.isEmpty)
+                    Button("Clear History…") { isClearing = true }.disabled(entries.isEmpty)
                 }
             }
         } label: {
@@ -2747,9 +2714,8 @@ private struct RequestActionsMenu: View {
             guard session.kind == .http else { return }
             let session = session
             let entries = await model.historyEntries(for: session)
-            let legacy = await model.legacyHistoryEntries(for: session)
             guard !Task.isCancelled else { return }
-            loaded = LoadedHistory(documentID: session.id, entries: entries, legacy: legacy)
+            loaded = LoadedHistory(documentID: session.id, entries: entries)
         }
         .onChange(of: session.id) { if isClearing { isClearing = false } }
         .alert("Clear History?", isPresented: $isClearing) {
@@ -2761,7 +2727,7 @@ private struct RequestActionsMenu: View {
                 }
             }
         } message: {
-            Text("Stored responses for this request, including unassigned legacy entries with the same request ID, will be deleted.")
+            Text("Stored responses for this request will be deleted.")
         }
     }
 }
