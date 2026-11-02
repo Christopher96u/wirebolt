@@ -1,21 +1,25 @@
 import SwiftUI
+import UniformTypeIdentifiers
 
 struct AppearanceSettingsView: View {
     @Environment(\.wireboltTheme) private var theme
+    @Environment(\.customThemeStore) private var injectedStore
+    private var store: ThemeStore { injectedStore ?? .shared }
+    @State private var editing: ThemePreview?
+    @State private var fromColors = false
+    @State private var importing = false
+    @State private var readingImport = false
+    @State private var renaming: CustomTheme?
+    @State private var deleting: CustomTheme?
     @AppStorage("interfaceAppearance") private var selection = "system"
     @AppStorage("interfaceDensity") private var density = "comfortable"
     @AppStorage("editor.fontSize") private var fontSize = 12.0
     @AppStorage("interfaceReduceMotion") private var reducesMotion = false
 
     /// Following the system still marks the preset currently in use, so one card is always selected.
-    private var selectedPreset: ThemePreset? {
-        switch selection {
-        case "light": .paper
-        case "dark": .black
-        case "system": theme.definition.preset
-        default: ThemePreset(rawValue: selection)
-        }
-    }
+    private var selectedPreset: ThemePreset? { activeCustom == nil ? theme.definition.preset : nil }
+
+    private var activeCustom: CustomTheme? { store.customThemes.first { $0.id == selection } }
 
     var body: some View {
         SettingsPage(title: "Appearance", subtitle: "Choose a contrast-checked theme. Text ≥ 7:1, muted text ≥ 4.5:1.") {
@@ -28,12 +32,37 @@ struct AppearanceSettingsView: View {
             }
             LazyVGrid(columns: [GridItem(.adaptive(minimum: 172, maximum: 172), spacing: 14)], alignment: .leading, spacing: 20) {
                 ForEach(ThemePreset.allCases, id: \.self) { preset in
-                    ThemePreviewCard(preset: preset, selected: selectedPreset == preset) { selection = preset.rawValue }
+                    ThemePreviewCard(name: preset.name, preview: ResolvedTheme(preset: preset), selected: selectedPreset == preset && activeCustom == nil) { selection = preset.rawValue }
+                }
+                ForEach(store.customThemes, id: \.id) { custom in
+                    ThemePreviewCard(name: custom.name, preview: ResolvedTheme(custom: custom), selected: selection == custom.id) { selection = custom.id }
+                        .contextMenu {
+                            Button("Rename…") { store.clearError(); renaming = custom }
+                            Button("Delete…", role: .destructive) { deleting = custom }
+                        }
                 }
                 customThemeCard
             }
+            if let message = store.errorMessage {
+                HStack {
+                    Text(message).foregroundStyle(theme.definition.error.color).accessibilityLabel("Theme error: \(message)")
+                    Spacer()
+                    Button("Dismiss theme error", systemImage: "xmark") { store.clearError() }.labelStyle(.iconOnly)
+                }
+            }
+            ForEach(store.notices, id: \.self) { Text($0).font(.callout).foregroundStyle(theme.muted.color) }
+            if let custom = activeCustom {
+                SettingsCard {
+                    SettingsRow(title: custom.name, detail: "Custom theme", last: true) {
+                        HStack {
+                            Button("Rename…") { store.clearError(); renaming = custom }
+                            Button("Delete…", role: .destructive) { deleting = custom }
+                        }.disabled(!store.isWritable)
+                    }
+                }
+            }
             SettingsCard {
-                SettingsRow(title: "Canvas & variables", detail: "Preset colors; controls stay neutral. Custom themes are not available yet.") {
+                SettingsRow(title: "Canvas & variables", detail: "Theme colors; controls stay neutral.") {
                     HStack(spacing: WireboltTheme.Spacing.xLarge) {
                         swatch(theme.definition.window)
                         swatch(theme.definition.variableForeground)
@@ -46,9 +75,9 @@ struct AppearanceSettingsView: View {
                     Label(String(format: "Text %.1f:1 · Muted %.1f:1", primary, muted), systemImage: "checkmark")
                         .foregroundStyle(theme.definition.success.color)
                 }
-                SettingsRow(title: "Import theme", detail: "Theme file import is not available yet.") {
-                    Button("Import…", systemImage: "doc.text") {}.disabled(true)
-                        .help("Theme file import is not available yet.")
+                SettingsRow(title: "VS Code theme", detail: "Import a .json colour theme, or drop it here. Comments and trailing commas are accepted.") {
+                    Button(readingImport ? "Importing…" : "Import…", systemImage: "doc.text") { store.clearError(); importing = true }
+                        .disabled(readingImport || !store.isWritable)
                 }
                 SettingsRow(title: "Density", detail: "Row height in the sidebar, tabs and fields.") {
                     Picker("Density", selection: $density) {
@@ -69,10 +98,52 @@ struct AppearanceSettingsView: View {
                 }
             }
         }
+        .fileImporter(isPresented: $importing, allowedContentTypes: [.json]) { result in
+            switch result {
+            case .success(let url): importTheme(url)
+            case .failure(let error): store.report(error)
+            }
+        }
+        .dropDestination(for: URL.self) { urls, _ in
+            guard let url = urls.first, store.isWritable, !readingImport else { return false }
+            importTheme(url)
+            return true
+        }
+        .sheet(isPresented: Binding(get: { editing != nil }, set: { if !$0 { editing = nil } })) {
+            if let editing {
+                CustomThemeEditor(initial: editing, fromColors: fromColors, store: store) { selection = $0.id }
+                    .environment(\.wireboltTheme, theme)
+            }
+        }
+        .sheet(isPresented: Binding(get: { renaming != nil }, set: { if !$0 { renaming = nil } })) {
+            if let renaming { RenameThemeSheet(custom: renaming, store: store) }
+        }
+        .confirmationDialog("Delete \(deleting?.name ?? "theme")?", isPresented: Binding(get: { deleting != nil }, set: { if !$0 { deleting = nil } }), titleVisibility: .visible, presenting: deleting) { custom in
+            Button("Delete Theme", role: .destructive) {
+                let previousSelection = selection
+                Task {
+                    if let fallback = await store.delete(id: custom.id, selection: previousSelection), selection == previousSelection { selection = fallback }
+                }
+            }
+        } message: { _ in Text("Deleting the active theme returns to Follow System.") }
+    }
+
+    private func importTheme(_ url: URL) {
+        store.clearError()
+        readingImport = true
+        Task {
+            let scoped = url.startAccessingSecurityScopedResource()
+            defer { if scoped { url.stopAccessingSecurityScopedResource() }; readingImport = false }
+            if let preview = await store.importTheme(from: url) { fromColors = false; editing = preview }
+        }
     }
 
     private var customThemeCard: some View {
-        Button {} label: {
+        Button {
+            store.clearError()
+            fromColors = true
+            editing = domainDeriveTheme(background: theme.definition.window, accent: theme.definition.variableForeground)
+        } label: {
             VStack(spacing: WireboltTheme.Spacing.large) {
                 Label("From 2 colors", systemImage: "plus")
                     .font(.system(size: theme.typography.settingsDetail))
@@ -89,11 +160,12 @@ struct AppearanceSettingsView: View {
             }
             .foregroundStyle(theme.muted.color)
             .frame(width: 172)
+            .contentShape(.rect)
         }
         .buttonStyle(.plain)
-        .disabled(true)
+        .disabled(!store.isWritable)
         .accessibilityLabel("Custom theme from 2 colors")
-        .help("Custom color themes are not available yet.")
+        .help("Derive a complete theme from a background and an accent colour.")
     }
 
     private func swatch(_ color: PaletteColor) -> some View {
@@ -107,12 +179,12 @@ struct AppearanceSettingsView: View {
     }
 }
 
-private struct ThemePreviewCard: View {
-    let preset: ThemePreset
+struct ThemePreviewCard: View {
+    let name: String
+    let preview: ResolvedTheme
     let selected: Bool
     let action: () -> Void
     @Environment(\.wireboltTheme) private var theme
-    private var preview: ResolvedTheme { ResolvedTheme(preset: preset) }
 
     var body: some View {
         Button(action: action) {
@@ -148,9 +220,9 @@ private struct ThemePreviewCard: View {
                 }
                 .accessibilityHidden(true)
                 HStack {
-                    Text(preset.name)
+                    Text(name).lineLimit(1)
                     Spacer()
-                    Text(preset == .paper ? "Light" : "Dark")
+                    Text(preview.isDark ? "Dark" : "Light")
                         .font(.system(size: theme.typography.settingsDetail)).foregroundStyle(theme.muted.color)
                 }
             }
@@ -158,7 +230,7 @@ private struct ThemePreviewCard: View {
             .contentShape(.rect)
         }
         .buttonStyle(.plain)
-        .accessibilityLabel("\(preset.name) theme")
+        .accessibilityLabel("\(name) theme")
         .accessibilityAddTraits(selected ? .isSelected : [])
     }
 }

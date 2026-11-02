@@ -1,5 +1,11 @@
 //! Authored opaque sRGB tokens and WCAG contrast resolution shared by native renderers.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub mod custom;
+pub mod library;
+pub mod vscode;
+
+use serde::{Deserialize, Serialize};
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct RgbColor {
     pub red: u8,
     pub green: u8,
@@ -49,7 +55,7 @@ impl AdaptiveColor {
         }
     }
 }
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ThemeTokens {
     pub preset: DomainThemePreset,
     pub window: RgbColor,
@@ -541,7 +547,7 @@ pub fn backgrounds(dark: bool) -> Vec<RgbColor> {
     .collect()
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum DomainThemePreset {
     Black,
     Paper,

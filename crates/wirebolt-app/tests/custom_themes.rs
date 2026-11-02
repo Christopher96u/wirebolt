@@ -1,0 +1,272 @@
+use std::{collections::HashSet, fs};
+use wirebolt_app::domain::theme::{custom, library::ThemeLibrary, vscode, *};
+
+fn assert_contrast(tokens: &ThemeTokens) {
+    for increased in [false, true] {
+        let t = custom::resolve(tokens.clone(), increased);
+        let d = &t.definition;
+        let ratio = if increased { 7.0 } else { 4.5 };
+        for s in [
+            d.window,
+            d.sidebar,
+            d.card,
+            d.selected,
+            d.tab_active,
+            d.overlay,
+        ] {
+            assert!(t.primary.contrast(s) >= 7.0);
+            for c in [
+                t.muted,
+                d.secondary,
+                d.dim,
+                d.line_number,
+                d.syntax_key,
+                d.syntax_string,
+                d.syntax_number,
+                d.syntax_keyword,
+                d.syntax_punctuation,
+                d.success,
+                d.warning,
+                d.error,
+                d.variable_foreground,
+            ] {
+                assert!(
+                    c.contrast(s) >= ratio,
+                    "{c:?} vs {s:?}, increased {increased}"
+                );
+            }
+            assert!(t.focus_border.contrast(s) >= if increased { 4.5 } else { 3.0 });
+            if increased {
+                assert!(t.hairline.contrast(s) >= 3.0);
+                assert!(t.card_border.contrast(s) >= 3.0);
+            }
+            assert!(d.control.contrast(s) >= 3.0);
+        }
+        assert!(RgbColor::hex(0x00ff_ffff).contrast(d.control) >= 4.5);
+        assert!(d.send_foreground.contrast(d.send_background) >= ratio);
+        assert!(d.variable_foreground.contrast(d.variable_background) >= ratio);
+        for chip in t.chips.values() {
+            assert!(chip.foreground.contrast(chip.background) >= ratio);
+        }
+        let colors: HashSet<_> = t.chips.values().map(|c| c.foreground).collect();
+        assert_eq!(colors.len(), MethodChipKind::ALL.len());
+        let statuses = [
+            d.method_foregrounds[1],
+            d.success,
+            d.method_foregrounds[2],
+            d.warning,
+            d.error,
+        ];
+        assert_eq!(statuses.into_iter().collect::<HashSet<_>>().len(), 5);
+        for (i, a) in d.method_foregrounds.iter().enumerate() {
+            for b in &d.method_foregrounds[i + 1..] {
+                let distance: i32 = [a.red, a.green, a.blue]
+                    .into_iter()
+                    .zip([b.red, b.green, b.blue])
+                    .map(|(a, b)| (i32::from(a) - i32::from(b)).pow(2))
+                    .sum();
+                assert!(distance >= 24 * 24, "method colours too close: {a:?} {b:?}");
+            }
+        }
+    }
+}
+
+#[test]
+fn derived_palettes_meet_contrast_and_distinguish_methods_across_colour_pairs() {
+    let values = [
+        0,
+        0x00ff_ffff,
+        0x0077_7777,
+        0x0099_9999,
+        0x00ff_0000,
+        0x0000_ff00,
+        0x0000_00ff,
+        0x00ff_ff00,
+        0x00ff_00ff,
+        0x0000_ffff,
+        0x0001_0203,
+        0x00fc_fafa,
+        0x003f_407f,
+        0x007f_5a30,
+    ];
+    for background in values {
+        for accent in values {
+            assert_contrast(
+                &custom::derive(RgbColor::hex(background), RgbColor::hex(accent)).tokens,
+            );
+        }
+    }
+    // Deterministic broad coverage, without a random dependency or machine-specific seed.
+    let mut seed = 9_u32;
+    for _ in 0..256 {
+        seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+        let background = RgbColor::hex(seed);
+        seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+        assert_contrast(&custom::derive(background, RgbColor::hex(seed)).tokens);
+    }
+}
+
+#[test]
+fn vscode_jsonc_maps_colours_scopes_and_reports_repairs_and_parent() {
+    let tidal = vscode::parse(include_bytes!("fixtures/themes/tidal.json")).unwrap();
+    assert_eq!(tidal.name, "Tidal");
+    assert_eq!(tidal.tokens.window, RgbColor::hex(0x0007_171f));
+    assert_eq!(tidal.tokens.sidebar, RgbColor::hex(0x0006_1319));
+    assert_eq!(tidal.tokens.syntax_key, RgbColor::hex(0x008d_cfff));
+    assert_eq!(tidal.tokens.syntax_string, RgbColor::hex(0x00a8_e0b4));
+    assert_eq!(tidal.tokens.syntax_number, RgbColor::hex(0x00ef_bc85));
+    assert!(tidal.notices.iter().any(|n| n.contains("syntax/comment")));
+    assert_contrast(&tidal.tokens);
+    let linen = vscode::parse(include_bytes!("fixtures/themes/linen.json")).unwrap();
+    assert_eq!(linen.tokens.preset, DomainThemePreset::Paper);
+    assert!(
+        linen
+            .notices
+            .iter()
+            .any(|n| n.contains("Parent files are not resolved"))
+    );
+    assert_contrast(&linen.tokens);
+    let minimal = vscode::parse(br##"{"colors":{"editor.background":"#123"},"tokenColors":[{"settings":{"foreground":"#fff"}}]}"##).unwrap();
+    assert_eq!(minimal.tokens.primary, RgbColor::hex(0x00ff_ffff));
+}
+
+#[test]
+fn vscode_rejects_malformed_oversized_and_non_theme_inputs_without_panicking() {
+    for bytes in [
+        include_bytes!("fixtures/themes/invalid.json").as_slice(),
+        b"[]",
+        b"{}",
+        b"{",
+        b"/* unfinished",
+        b"{\"colors\":{,,}}",
+        b"{\"colors\":[],}",
+        b"{\"tokenColors\":\"file.tmTheme\"}",
+        b"\xff\xfe",
+    ] {
+        assert!(vscode::parse(bytes).is_err(), "{bytes:?}");
+    }
+    assert!(
+        vscode::parse(&vec![b' '; vscode::MAX_IMPORT_BYTES + 1])
+            .unwrap_err()
+            .contains("too large")
+    );
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("large.json");
+    fs::write(&path, vec![b' '; vscode::MAX_IMPORT_BYTES + 1]).unwrap();
+    assert!(vscode::read(&path).unwrap_err().contains("too large"));
+    assert!(
+        vscode::read(&root.path().join("missing.json"))
+            .unwrap_err()
+            .contains("Could not open")
+    );
+    fs::write(root.path().join("theme.txt"), b"{}").unwrap();
+    assert!(
+        vscode::read(&root.path().join("theme.txt"))
+            .unwrap_err()
+            .contains(".json")
+    );
+}
+
+#[test]
+fn jsonc_preserves_quoted_comments_escapes_bom_and_rejects_extra_commas() {
+    let source = "\u{feff}{\"name\":\"https://x/*x*/\\\"end\",/* 🌊 */\"colors\":{},// hi\n\"tokenColors\":[],}";
+    assert_eq!(
+        vscode::parse(source.as_bytes()).unwrap().name,
+        "https://x/*x*/\"end"
+    );
+    for source in [
+        "{\"colors\":{,}}",
+        "{\"colors\":{},,}",
+        "{\"tokenColors\":[,]}",
+        "{\"colors\":{},} trailing",
+    ] {
+        assert!(vscode::parse(source.as_bytes()).is_err());
+    }
+}
+
+#[test]
+fn library_round_trips_renames_deletes_and_falls_back_only_for_active_theme() {
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("themes.json");
+    let mut library = ThemeLibrary::open(&path);
+    let theme = library
+        .add(
+            " Ocean ",
+            custom::derive(RgbColor::hex(0x0012_1314), RgbColor::hex(0x0077_ccff)).tokens,
+        )
+        .unwrap();
+    assert_eq!(theme.name, "Ocean");
+    assert_eq!(
+        ThemeLibrary::open(&path).snapshot().themes.as_slice(),
+        std::slice::from_ref(&theme)
+    );
+    library.rename(&theme.id, "Deep sea").unwrap();
+    assert_eq!(
+        ThemeLibrary::open(&path).snapshot().themes[0].name,
+        "Deep sea"
+    );
+    assert!(library.rename(&theme.id, " ").is_err());
+    assert!(library.rename(&theme.id, &"x".repeat(65)).is_err());
+    assert_eq!(library.delete(&theme.id, &theme.id).unwrap(), "system");
+    assert!(ThemeLibrary::open(&path).snapshot().themes.is_empty());
+    let other = library.add("Other", theme.tokens).unwrap();
+    assert_eq!(library.delete(&other.id, "paper").unwrap(), "paper");
+}
+
+#[test]
+fn corrupt_library_recovers_preserves_original_and_future_versions_are_read_only() {
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("themes.json");
+    for original in [
+        "broken",
+        "{\"version\":0,\"themes\":[]}",
+        "{\"version\":1,\"themes\":[{}]}",
+    ] {
+        fs::write(&path, original).unwrap();
+        let mut library = ThemeLibrary::open(&path);
+        assert!(library.snapshot().themes.is_empty());
+        assert!(!library.snapshot().notices.is_empty());
+        library
+            .add(
+                "Recovered",
+                custom::derive(RgbColor::hex(0), RgbColor::hex(0x0077_ccff)).tokens,
+            )
+            .unwrap();
+        assert!(
+            fs::read_dir(root.path())
+                .unwrap()
+                .any(|p| fs::read_to_string(p.unwrap().path()).is_ok_and(|s| s == original))
+        );
+    }
+    let future = "{\"version\":99,\"themes\":[],\"future\":true}";
+    fs::write(&path, future).unwrap();
+    let mut library = ThemeLibrary::open(&path);
+    assert!(!library.snapshot().writable);
+    assert!(
+        library
+            .add(
+                "No overwrite",
+                custom::derive(RgbColor::hex(0), RgbColor::hex(0)).tokens
+            )
+            .is_err()
+    );
+    assert_eq!(fs::read_to_string(&path).unwrap(), future);
+}
+
+#[test]
+fn failed_library_write_keeps_snapshot_and_invalid_tokens_are_rejected() {
+    let root = tempfile::tempdir().unwrap();
+    let parent = root.path().join("not-a-directory");
+    fs::write(&parent, "x").unwrap();
+    let mut library = ThemeLibrary::open(&parent.join("themes.json"));
+    let mut tokens = custom::derive(RgbColor::hex(0), RgbColor::hex(0)).tokens;
+    assert!(
+        library
+            .add("Failure", tokens.clone())
+            .unwrap_err()
+            .contains("Could not save")
+    );
+    assert!(library.snapshot().themes.is_empty());
+    tokens.method_foregrounds.clear();
+    assert!(library.add("Invalid", tokens).is_err());
+}

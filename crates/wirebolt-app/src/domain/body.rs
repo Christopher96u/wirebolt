@@ -220,7 +220,7 @@ fn write_json(
 
 // Foundation permits a trailing comma in objects and arrays in request JSON.
 // Response JSON stays strict.
-fn without_trailing_commas(source: &str) -> Vec<u8> {
+pub(crate) fn without_trailing_commas(source: &str) -> Vec<u8> {
     let bytes = source.as_bytes();
     let mut output = Vec::with_capacity(bytes.len());
     let mut quoted = false;

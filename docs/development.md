@@ -155,7 +155,7 @@ the other native editor workloads continue to measure wall time.
 | Location | Responsibility |
 | --- | --- |
 | `crates/wirebolt-core` | Workspace persistence, import/export, request preparation and transport |
-| `crates/wirebolt-app/src/domain` | Typed editable records and request/credential editing (`request`), stable IDs (`identity`), URL/query editing (`url`), window/tab/timeout labels (`chrome`), import recognition and summaries (`imports`), Git presentation (`git`), variables, cURL exports, proxy forms and probes, sidebar/drop/menu ordering, typed theme tokens, editor syntax/indentation, bounded PEM input and OAuth 2 protocol logic |
+| `crates/wirebolt-app/src/domain` | Typed editable records and request/credential editing (`request`), stable IDs (`identity`), URL/query editing (`url`), window/tab/timeout labels (`chrome`), import recognition and summaries (`imports`), Git presentation (`git`), variables, cURL exports, proxy forms and probes, sidebar/drop/menu ordering, typed theme tokens, custom-theme derivation/JSONC import/library persistence, editor syntax/indentation, bounded PEM input and OAuth 2 protocol logic |
 | `crates/wirebolt-app/src/response` | File-backed response bodies, sparse indexes, search, folding, wrapping policy, JSON parsing, Markdown run assembly/cache policy over platform parsing, history and cookies |
 | `crates/wirebolt-app/src/session` | Document/run state, editor groups and previews, layout, WebSocket lifecycle, reversible workspace plans, credential lifecycle, typed history, workspace persistence/import/export/Git and transport execution; `session/workspace/` owns action construction, undo payloads, save/load transitions, sidebar/close workflows and typed persistence seams; `session/runtime` owns send/cancel, per-run cookie scoping, history/activity, environment resolution, secret commands, settings writes, OAuth acquisition and cURL coordination |
 | `crates/wirebolt-ffi` | Typed domain, response and session objects; foreign platform traits and typed HTTP probe/WebSocket callbacks; `app_session/` mirrors run, tabs, secrets, workspace and runtime responsibilities |
@@ -184,6 +184,42 @@ preset spellings supplied by Rust. Swift's own enums are view state: panel secti
 renderers, filters, drop positions and picker tags such as `ProxySelection`.
 
 Read [CONTEXT.md](../CONTEXT.md) for workspace vocabulary, ownership and invariants.
+
+## Custom themes
+
+Settings → Appearance can derive a theme **From 2 colors** or import a VS Code
+`.json` colour theme through **Import…** or a file drop. Both paths show a preview
+before saving. The preview lists contrast adjustments; mid-tone backgrounds may
+move toward light or dark so all text remains readable. Increase Contrast also
+applies to custom syntax, variable, status and method colours. Geometry uses the
+same Rust-owned tokens as built-in themes.
+
+VS Code import accepts UTF-8 JSONC (comments, trailing commas and an optional BOM),
+up to **1 MiB**. It maps editor, sidebar, list, input, button, diagnostic and token
+scope colours, composites alpha colours over the canvas, and derives missing
+tokens. Parent `include` files are reported in the preview and are not resolved.
+
+Rust persists up to **64** custom palettes in version 1 of
+`~/Library/Application Support/Wirebolt/custom-themes.json`, outside the workspace.
+The existing `interfaceAppearance` preference holds the selected built-in name or
+custom ID. Saving uses an atomic replacement. A corrupt or unsupported old file
+falls back to built-ins and is preserved as a `custom-themes.corrupt-<id>.json`
+backup on the next explicit save. A newer version stays unchanged and read-only.
+Deleting the active custom theme returns to **Follow System**.
+
+`custom_themes.rs` tests contrast, method separation, JSONC fixtures and storage
+recovery. `CustomThemeTests` exercises the typed native facade under the strict
+cooperative pool. `CustomThemeNativeTests` hosts the production Appearance page
+with temporary storage and preferences, sends events only to its own window, and
+checks picker selection, preview saving, deletion and visible import errors. Run
+it with `scripts/native-adapter-tests.sh`, or capture in-process PNGs with:
+
+```sh
+./scripts/native-performance.sh build
+build/native-performance/workloads themes-ui 1 build/native-performance/themes-ui.json
+```
+
+The PNGs are written under `build/native-performance/theme-screenshots/`.
 
 ## Documentation changes
 

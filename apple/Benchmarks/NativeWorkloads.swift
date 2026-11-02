@@ -1214,6 +1214,7 @@ final class ProbeWindow: NSWindow { override var canBecomeKey: Bool { true } }
         else if mode=="sidebar-reorder" { try sidebarReorder(root: root) }
         else if mode=="proxy-screenshots" { try proxyScreenshots(root: root) }
         else if mode=="proxy-settings" { try proxySettings(root: root) }
+        else if mode=="themes-ui" { try await CustomThemeNativeTests.run(root: root, defaults: fixtureDefaults, screenshots: URL(fileURLWithPath: args[3]).deletingLastPathComponent().appending(path: "theme-screenshots")) }
         else if mode=="settings-ui" { try settingsUI(root: root) }
         else if mode=="composer-focus" { composerFocus(root: root) }
         else if mode=="tab-click" { try requestClicks(root: root, tabs: true, tabCount: size) }

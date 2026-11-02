@@ -11,6 +11,7 @@ extension PaletteColor {
 extension EnvironmentValues {
     @Entry var wireboltTheme = ResolvedTheme(preset: .black)
     @Entry var wireboltReduceMotion = false
+    @Entry var customThemeStore: ThemeStore? = nil
 }
 
 /// Resolves preferences once at the scene boundary. Reading an immutable theme in a
@@ -22,7 +23,8 @@ struct ThemeScope: ViewModifier {
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.colorSchemeContrast) private var contrast
     @Environment(\.accessibilityReduceMotion) private var systemReduceMotion
-    private let store = ThemeStore.shared
+    @Environment(\.customThemeStore) private var injectedStore
+    private var store: ThemeStore { injectedStore ?? .shared }
 
     func body(content: Content) -> some View {
         content
@@ -38,6 +40,7 @@ struct ThemeScope: ViewModifier {
             .onAppear(perform: resolve)
             .onChange(of: selection, resolve)
             .onChange(of: density, resolve)
+            .onChange(of: store.customThemes, resolve)
             .onChange(of: colorScheme, resolve)
             .onChange(of: contrast, resolve)
             .onReceive(NSWorkspace.shared.notificationCenter.publisher(for: NSWorkspace.accessibilityDisplayOptionsDidChangeNotification)) { _ in resolve() }
@@ -118,7 +121,7 @@ enum WireboltTheme {
     }
     static func requestBarMethodColor(_ method: HTTPMethod) -> Color { methodColor(method) }
     static func statusColor(_ status: UInt16) -> Color {
-        if current.increasedContrast {
+        if current.increasedContrast && current.customID == nil {
             let color = SemanticPalette.status(status)
             return (current.isDark ? color.darkHighContrast : color.lightHighContrast).color
         }

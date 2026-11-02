@@ -34,6 +34,7 @@ wirebolt_app_inputs=(
   apple/WireboltApp/ContentView.swift
   apple/WireboltApp/WorkspaceActions.swift
   apple/WireboltApp/ImportSummaryView.swift
+  apple/WireboltApp/CustomThemeEditor.swift
   apple/WireboltApp/AppearanceSettingsView.swift
   apple/WireboltApp/WireboltSettingsView.swift
   apple/WireboltApp/SettingsModal.swift
