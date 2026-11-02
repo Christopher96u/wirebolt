@@ -455,7 +455,7 @@ final class ProbeWindow: NSWindow { override var canBecomeKey: Bool { true } }
                 "Resize dividers must expose a named, full-height accessibility target")
         }
         precondition(!NativeTestSupport.elements(host).contains { $0.role == "AXButton" && ["Apply", "Cancel"].contains($0.name) })
-        let closed = await finishEnvironmentEditing(interface: interface, in: window)
+        let closed = await finishEnvironmentEditing(model: model, interface: interface, in: window)
         precondition(closed && !interface.isShowingEnvironmentInspector)
         print("environment_live_exit_guard=passed")
 
