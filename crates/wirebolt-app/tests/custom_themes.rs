@@ -13,6 +13,7 @@ fn assert_contrast(tokens: &ThemeTokens) {
             d.selected,
             d.tab_active,
             d.overlay,
+            d.variable_background,
         ] {
             assert!(t.primary.contrast(s) >= 7.0);
             for c in [
@@ -269,4 +270,30 @@ fn failed_library_write_keeps_snapshot_and_invalid_tokens_are_rejected() {
     assert!(library.snapshot().themes.is_empty());
     tokens.method_foregrounds.clear();
     assert!(library.add("Invalid", tokens).is_err());
+}
+
+#[test]
+fn imported_unresolved_variable_errors_meet_contrast_on_variable_chips() {
+    let preview = vscode::parse(br##"{"colors":{"editor.background":"#fff","focusBorder":"#000","list.activeSelectionBackground":"#fff","input.background":"#fff","editorError.foreground":"#777"}}"##).unwrap();
+    for increased in [false, true] {
+        let tokens = custom::resolve(preview.tokens.clone(), increased).definition;
+        assert!(
+            tokens.error.contrast(tokens.variable_background) >= if increased { 7.0 } else { 4.5 }
+        );
+    }
+    assert_contrast(&preview.tokens);
+}
+
+#[test]
+fn vscode_include_only_themes_derive_gaps_and_show_parent_warning() {
+    let preview = vscode::parse(br#"{"name":"Child","include":"./parent.json"}"#).unwrap();
+    assert_eq!(preview.name, "Child");
+    assert!(
+        preview
+            .notices
+            .iter()
+            .any(|n| n.contains("Parent files are not resolved"))
+    );
+    assert_contrast(&preview.tokens);
+    assert!(vscode::parse(br#"{"include":"  "}"#).is_err());
 }

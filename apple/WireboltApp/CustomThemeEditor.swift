@@ -137,6 +137,7 @@ struct ThemeSample: View {
 struct RenameThemeSheet: View {
     let custom: CustomTheme
     let store: ThemeStore
+    @Environment(\.wireboltTheme) private var theme
     @Environment(\.dismiss) private var dismiss
     @State private var name: String
     @State private var saving = false
@@ -148,7 +149,7 @@ struct RenameThemeSheet: View {
         VStack(alignment: .leading, spacing: 20) {
             Text("Rename Theme").font(.title2.weight(.semibold))
             TextField("Theme name", text: $name).textFieldStyle(.roundedBorder).accessibilityLabel("Theme name")
-            if let error = store.errorMessage { Text(error).foregroundStyle(.red) }
+            if let error = store.errorMessage { Text(error).foregroundStyle(theme.definition.error.color) }
             HStack {
                 Button("Cancel") { store.clearError(); dismiss() }.keyboardShortcut(.cancelAction)
                 Spacer()
@@ -157,6 +158,8 @@ struct RenameThemeSheet: View {
                     Task { if await store.rename(id: custom.id, name: name) { dismiss() }; saving = false }
                 }.keyboardShortcut(.defaultAction).disabled(saving)
             }
-        }.padding(24).frame(width: 380).interactiveDismissDisabled(saving)
+        }.padding(24).frame(width: 380)
+            .foregroundStyle(theme.primary.color).background(theme.definition.window.color)
+            .interactiveDismissDisabled(saving)
     }
 }

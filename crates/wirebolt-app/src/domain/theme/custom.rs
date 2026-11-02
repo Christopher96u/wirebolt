@@ -125,14 +125,7 @@ pub fn checked(mut d: ThemeTokens, increased: bool) -> (ThemeTokens, Vec<String>
     for value in &mut d.method_backgrounds {
         *value = surface(*value, dark);
     }
-    let s = [
-        d.window,
-        d.sidebar,
-        d.card,
-        d.selected,
-        d.tab_active,
-        d.overlay,
-    ];
+    let s = text_surfaces(&d);
     let ratio = if increased { 7.0 } else { 4.5 };
     adjusted(
         "text/primary",
@@ -156,11 +149,9 @@ pub fn checked(mut d: ThemeTokens, increased: bool) -> (ThemeTokens, Vec<String>
     ] {
         adjusted(name, strengthen(*value, &s, ratio), value, &mut notices);
     }
-    let mut variables = s.to_vec();
-    variables.push(d.variable_background);
     adjusted(
         "variable/foreground",
-        strengthen(d.variable_foreground, &variables, ratio),
+        strengthen(d.variable_foreground, &s, ratio),
         &mut d.variable_foreground,
         &mut notices,
     );
@@ -200,14 +191,7 @@ fn adjusted(name: &str, candidate: RgbColor, value: &mut RgbColor, notices: &mut
 #[must_use]
 pub fn resolve(tokens: ThemeTokens, increased: bool) -> ResolvedTokens {
     let (d, _) = checked(tokens, increased);
-    let surfaces = [
-        d.window,
-        d.sidebar,
-        d.card,
-        d.selected,
-        d.tab_active,
-        d.overlay,
-    ];
+    let surfaces = text_surfaces(&d);
     let chips = MethodChipKind::ALL
         .into_iter()
         .enumerate()
@@ -238,6 +222,20 @@ pub fn resolve(tokens: ThemeTokens, increased: bool) -> ResolvedTokens {
         definition: d,
         chips,
     }
+}
+
+// Error text also appears inside unresolved variable chips, so those backgrounds
+// participate in the same contract as editor, sidebar and selection surfaces.
+fn text_surfaces(tokens: &ThemeTokens) -> [RgbColor; 7] {
+    [
+        tokens.window,
+        tokens.sidebar,
+        tokens.card,
+        tokens.selected,
+        tokens.tab_active,
+        tokens.overlay,
+        tokens.variable_background,
+    ]
 }
 
 fn best_text(background: RgbColor) -> RgbColor {

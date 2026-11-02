@@ -80,8 +80,15 @@ pub fn parse(bytes: &[u8]) -> Result<ThemePreview, String> {
     let json = crate::domain::body::without_trailing_commas(uncommented);
     let doc: Document =
         serde_json::from_slice(&json).map_err(|e| format!("Invalid VS Code theme: {e}"))?;
-    if doc.colors.is_none() && doc.token_colors.is_none() {
-        return Err("A VS Code theme must contain a colors object or tokenColors array.".into());
+    let has_parent = doc
+        .include
+        .as_ref()
+        .is_some_and(|path| !path.trim().is_empty());
+    if doc.colors.is_none() && doc.token_colors.is_none() && !has_parent {
+        return Err(
+            "A VS Code theme must contain a colors object, tokenColors array or parent include."
+                .into(),
+        );
     }
     let colors = doc.colors.unwrap_or_default();
     let background = color(&colors, "editor.background", RgbColor::hex(0))?
