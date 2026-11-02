@@ -451,3 +451,23 @@ fn custom_method_uses_transport_validation() {
     }
     assert_eq!(normalize_method(" foo_bar ").as_deref(), Some("FOO_BAR"));
 }
+
+#[test]
+fn tls_identity_references_belong_to_requests_and_workspaces() {
+    let name = credential_reference("client-identity", "tls");
+    assert!(owned_reference(&name));
+    let transport = DomainTransport {
+        client_certificate_reference: Some(name.clone()),
+        ..Default::default()
+    };
+    let draft = DomainRequestDraft {
+        transport: transport.clone(),
+        ..Default::default()
+    };
+    assert!(request_references(&draft).contains(&name));
+    let workspace = DomainWorkspace {
+        transport,
+        ..Default::default()
+    };
+    assert!(workspace_references(&workspace).contains(&name));
+}

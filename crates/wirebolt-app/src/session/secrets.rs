@@ -174,6 +174,30 @@ impl SessionSecrets {
         }
         Ok(copied)
     }
+    /// Commits only the selected identity from a settings editor. Replaced and
+    /// cancelled choices remain memory-only and disappear with that editor.
+    /// # Errors
+    /// Returns a platform credential error, preserving staged material for retry.
+    pub async fn commit_identity(
+        &self,
+        reference: Option<&str>,
+        target: &Self,
+        platform: &dyn SessionSecretPlatform,
+    ) -> Result<(), SecretAccessError> {
+        let selected = reference.and_then(|name| {
+            lock(&self.state)
+                .edited
+                .get(name)
+                .cloned()
+                .map(|value| (name.to_owned(), value))
+        });
+        if let Some((name, value)) = selected {
+            target
+                .save(HashMap::from([(name, value)]), platform)
+                .await?;
+        }
+        Ok(())
+    }
     pub async fn purge(
         &self,
         in_use: Vec<String>,
@@ -209,6 +233,7 @@ pub fn scan_references(candidates: &[String], workspaces: &[String]) -> HashSet<
     for root in workspaces {
         let root = Path::new(root);
         let mut files = toml_files(&root.join("environments"));
+        files.push(root.join("wirebolt.toml"));
         if let Ok(collections) = std::fs::read_dir(root.join("collections")) {
             for collection in collections.flatten() {
                 files.extend(toml_files(&collection.path().join("requests")));

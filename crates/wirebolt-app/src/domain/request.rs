@@ -39,7 +39,7 @@ pub fn editable_credential_reference(source: &DomainValueSource, role: &str) -> 
 #[must_use]
 pub fn owned_reference(name: &str) -> bool {
     static PATTERN: LazyLock<regex::Regex> = LazyLock::new(|| {
-        regex::Regex::new(r"\A(?:(?:auth|env|request)\.[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\.[A-Za-z0-9._-]+|import-[0-9a-f]+-[0-9a-f]+-[0-9a-f]+-request-[0-9]+-[a-z-]+)\z").expect("credential reference pattern")
+        regex::Regex::new(r"\A(?:(?:auth|env|request|tls)\.[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\.[A-Za-z0-9._-]+|import-[0-9a-f]+-[0-9a-f]+-[0-9a-f]+-request-[0-9]+-[a-z-]+)\z").expect("credential reference pattern")
     });
     PATTERN.is_match(name)
 }
@@ -222,6 +222,7 @@ pub fn request_references(d: &DomainRequestDraft) -> HashSet<String> {
             .filter_map(|v| v.secret_name().map(str::to_owned)),
     );
     refs.extend(proxy_references(d.proxy.as_ref()));
+    refs.extend(d.transport.client_certificate_reference.iter().cloned());
     refs
 }
 #[must_use]
@@ -253,6 +254,7 @@ pub fn workspace_references(w: &DomainWorkspace) -> Vec<String> {
         }
     }
     refs.extend(proxy_references(w.proxy.as_ref()));
+    refs.extend(w.transport.client_certificate_reference.iter().cloned());
     refs.into_iter().collect()
 }
 #[must_use]

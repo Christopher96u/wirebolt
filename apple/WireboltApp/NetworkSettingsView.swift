@@ -40,6 +40,7 @@ struct NetworkSettingsPage: View {
     @State private var test: ProxyConnectionTest
     @State private var testURL = ""
     @State private var showsTest = false
+    @State private var stagedIdentities = AppSessionSecrets()
     @State private var transport: TransportSettings
     @State private var transportBaseline: TransportSettings
     @State private var isConfirmingDiscard = false
@@ -141,7 +142,7 @@ struct NetworkSettingsPage: View {
                         if scope != .app {
                             HStack(spacing: 14) {
                                 if scope == .request {
-                                    Button("Edit workspace settings") { model.isShowingWorkspaceSettings = true }
+                                    Button("Workspace Settings") { model.isShowingWorkspaceSettings = true }
                                 }
                                 Button("Edit app default", action: openAppSettings)
                             }.buttonStyle(.link).tint(WireboltTheme.secondary).font(.caption)
@@ -188,7 +189,7 @@ struct NetworkSettingsPage: View {
                 if scope != .app {
                     Divider()
                     DisclosureGroup("Timeouts, redirects & TLS", isExpanded: $showsTransport) {
-                        TransportSettingsFields(model: model, session: session, staged: stagesTransport ? $transport : nil).padding(.top, 12)
+                        TransportSettingsFields(model: model, session: session, staged: stagesTransport ? $transport : nil, stagedIdentities: stagesTransport ? stagedIdentities : nil).padding(.top, 12)
                     }.font(.callout.weight(.medium))
                 }
             }.padding(20).frame(maxWidth: 670, alignment: .leading).frame(maxWidth: .infinity)
@@ -265,7 +266,11 @@ struct NetworkSettingsPage: View {
             await save()
             guard saveError == nil else { return }
         }
-        if transportChanged { model.updateWorkspaceTransport(transport) }
+        if transportChanged {
+            do { try await model.commitStagedIdentity(stagedIdentities, reference: transport.clientCertificateReference) }
+            catch { saveError = "Could not save the client identity. Check Keychain access, then retry."; return }
+            model.updateWorkspaceTransport(transport)
+        }
         onClose?()
     }
 
@@ -390,7 +395,7 @@ struct ProxyConnectionIndicator: View {
                     Text("Source: \(effective.source.title)").foregroundStyle(.secondary)
                     Divider()
                     Button("Request settings") { showsDetails = false; openRequestSettings() }
-                    Button("Workspace settings") { showsDetails = false; model.isShowingWorkspaceSettings = true }
+                    Button("Workspace Settings") { showsDetails = false; model.isShowingWorkspaceSettings = true }
                     Button("App default") { showsDetails = false; model.settingsTab = "network"; presentAppSettings(model) }
                     if let last = session.preparedRun?.proxy {
                         Divider()
@@ -408,6 +413,7 @@ struct TransportSettingsFields: View {
     var session: DocumentSession?
     /// Edits a staged copy instead of the request or workspace.
     var staged: Binding<TransportSettings>?
+    var stagedIdentities: AppSessionSecrets?
     @State private var certificateError: String?
     private var inherited: Bool { session?.draft.inheritsWorkspaceTransport == true }
     private var transport: Binding<TransportSettings> {
@@ -429,7 +435,7 @@ struct TransportSettingsFields: View {
                     })).tint(WireboltTheme.controlAccent)
                 if inherited {
                     Text("Using workspace defaults. Turn off inheritance to edit only this request.").font(.caption).foregroundStyle(.secondary)
-                    Button("Edit workspace settings") { model.isShowingWorkspaceSettings = true }
+                    Button("Workspace Settings") { model.isShowingWorkspaceSettings = true }
                 }
             }
             Group {
@@ -493,8 +499,11 @@ struct TransportSettingsFields: View {
                 let identity = try ClientIdentityPEM(parsing: sources)
                 // A new name per choice: Cancel in Workspace Settings keeps the previous identity intact.
                 let name = CredentialReference.unique(role: "client-identity", scope: "tls")
-                model.editSecret(name: name, value: identity.combined)
-                await model.saveSecret(name: name, value: identity.combined)
+                if let stagedIdentities {
+                    stagedIdentities.edit(name: name, value: identity.combined)
+                } else {
+                    try await model.saveClientIdentity(name: name, value: identity.combined)
+                }
                 transport.wrappedValue.clientCertificateReference = name
                 certificateError = nil
             } catch { certificateError = error.localizedDescription }

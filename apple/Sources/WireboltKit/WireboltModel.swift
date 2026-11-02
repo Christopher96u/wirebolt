@@ -741,6 +741,18 @@ public final class WireboltModel {
         mirrorSecretEdits()
     }
 
+    public func saveClientIdentity(name: String, value: String) async throws {
+        guard let persistence else { throw WorkspaceMutationError.unsupported }
+        try await rustSecrets.save(values: [name: value], platform: persistence.sessionSecretPlatform)
+        mirrorSecretEdits()
+    }
+
+    public func commitStagedIdentity(_ staged: AppSessionSecrets, reference: String?) async throws {
+        guard let persistence else { throw WorkspaceMutationError.unsupported }
+        try await staged.commitIdentity(reference: reference, target: rustSecrets, platform: persistence.sessionSecretPlatform)
+        mirrorSecretEdits()
+    }
+
     public func saveSecret(name: String, value: String) async {
         guard let persistence else { return }
         do {
