@@ -2,7 +2,7 @@
 use crate::{WorkspaceBridge, app_response::AppResponseBody};
 use std::{
     collections::HashMap,
-    path::{Path, PathBuf},
+    path::Path,
     sync::{Arc, Mutex},
     time::Instant,
 };
@@ -15,7 +15,7 @@ use wirebolt_app::{
     },
     response::{ResponseHeaderValue, StoredCookie},
     session::{
-        history::SessionHistoryEntry,
+        history::{SessionHistoryEntry, SessionRequestIdentity},
         persistence::{SessionCommandBatchResult, SessionWorkspaceDelta, SessionWorkspaceNodeKind},
         run::{
             DocumentRun, SessionCompletion, SessionFailure, SessionHead, SessionPrepared,

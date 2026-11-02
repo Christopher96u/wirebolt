@@ -3,7 +3,9 @@
 use super::SessionWorkspaceCommand;
 use crate::{
     domain::DomainWorkspace,
-    session::persistence::{SessionCommandBatchResult, SessionPersistence},
+    session::persistence::{
+        SessionCommandBatchResult, SessionPersistence, WorkspaceLoadDiagnostics,
+    },
 };
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
@@ -196,13 +198,28 @@ pub enum WorkspaceIO {
     reason = "One typed reply per coarse workspace operation."
 )]
 pub enum WorkspaceReply {
-    Loaded { workspace: DomainWorkspace },
-    Commands { result: SessionCommandBatchResult },
-    Imported { summary: WorkspaceImportSummary },
-    Exported { content: String },
-    GitStatus { status: WorkspaceGitStatus },
-    GitOperation { operation: WorkspaceGitOperation },
-    Failed { failure: WorkspaceFailure },
+    Loaded {
+        workspace: DomainWorkspace,
+        diagnostics: WorkspaceLoadDiagnostics,
+    },
+    Commands {
+        result: SessionCommandBatchResult,
+    },
+    Imported {
+        summary: WorkspaceImportSummary,
+    },
+    Exported {
+        content: String,
+    },
+    GitStatus {
+        status: WorkspaceGitStatus,
+    },
+    GitOperation {
+        operation: WorkspaceGitOperation,
+    },
+    Failed {
+        failure: WorkspaceFailure,
+    },
 }
 #[async_trait]
 pub trait WorkspacePlatform: Send + Sync {
@@ -245,9 +262,12 @@ impl SessionPersistence {
     #[must_use]
     pub fn workspace_io(&self, request: WorkspaceIO) -> WorkspaceReply {
         match request {
-            WorkspaceIO::Load => workspace_result(self.domain_snapshot(), |workspace| {
-                WorkspaceReply::Loaded { workspace }
-            }),
+            WorkspaceIO::Load => {
+                workspace_result(self.load_result(), |result| WorkspaceReply::Loaded {
+                    workspace: result.workspace,
+                    diagnostics: result.diagnostics,
+                })
+            }
             WorkspaceIO::Commands { commands } => WorkspaceReply::Commands {
                 result: self.execute_session_commands(commands),
             },

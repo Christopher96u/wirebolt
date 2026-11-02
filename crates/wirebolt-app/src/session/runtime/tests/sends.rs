@@ -192,8 +192,8 @@ async fn independent_runs_cancellation_and_late_events_stay_scoped() {
     );
     assert_eq!(lock(&ra).snapshot().bytes, 0);
     assert_eq!(lock(&rb).snapshot().text, "kept");
-    assert_eq!(state.history_count("a").unwrap(), 0);
-    assert_eq!(state.history_count("b").unwrap(), 1);
+    assert_eq!(state.history_count(&key(&state, "a")).unwrap(), 0);
+    assert_eq!(state.history_count(&key(&state, "b")).unwrap(), 1);
 }
 #[tokio::test]
 async fn running_document_does_not_start_twice() {
@@ -272,7 +272,7 @@ async fn resolution_failures_preserve_issue_details_and_skip_history() {
         crate::response::ResponseIssueKind::MissingVariable
     );
     assert!(lock(&transport.inputs).is_empty());
-    assert_eq!(state.history_count("a").unwrap(), 0);
+    assert_eq!(state.history_count(&key(&state, "a")).unwrap(), 0);
 }
 #[tokio::test]
 async fn redirect_cookies_keep_response_origin_and_survive_failure() {

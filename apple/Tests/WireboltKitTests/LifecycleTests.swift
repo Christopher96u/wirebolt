@@ -116,13 +116,13 @@ struct LifecycleTests {
         try await body.finish()
         let prepared = PreparedRunSnapshot(method: "GET", url: "https://example.com/a", headers: [],
             body: PreparedBodySnapshot(byteCount: 0, contentType: nil, textPreview: nil, redacted: false), transport: TransportSettings())
-        try await history.record(runID: RunID(), requestID: "a", prepared: prepared,
-            responseHead: ResponseHead(status: 200, version: "HTTP/1.1", headers: [], timeToHeadersNS: 1),
-            completion: nil, failure: nil, body: body)
 
         let a = RequestLocation(collectionID: "api", request: RequestDraft(id: "a", name: "A"))
         let workspace = WorkspaceDraft(name: "Layout", collections: [CollectionDraft(id: "api", name: "API", requests: [a])])
         let model = WireboltModel(runner: LifecycleRunner(), persistence: LayoutPersistence(workspace: workspace), history: history)
+        try await history.record(runID: RunID(), identity: model.historyIdentity(for: DocumentSession(collectionID: "api", draft: RequestDraft(id: "a"))), prepared: prepared,
+            responseHead: ResponseHead(status: 200, version: "HTTP/1.1", headers: [], timeToHeadersNS: 1),
+            completion: nil, failure: nil, body: body)
         await model.loadWorkspace(restoring: SessionLayout(groups: [.init(tabs: [.init(collectionID: "api", requestID: "a")], selectedIndex: 0)]))
         let session = try #require(model.sessions.activeSession)
         for _ in 0 ..< 200 where session.responseHead == nil { try await Task.sleep(for: .milliseconds(5)) }
@@ -168,7 +168,7 @@ struct LifecycleTests {
         await writer.store(headers: [ResponseHeader(name: "Set-Cookie", value: "id=1; Max-Age=3600")], requestURL: URL(string: "https://example.com")!)
         let reader = CookieJar(storageURL: cookies)
         #expect(await reader.header(for: URL(string: "https://example.com/")!) == "id=1")
-        #expect(try await HistoryRepository(root: root.appending(path: "missing")).list(requestID: "a").isEmpty)
+        #expect(try await HistoryRepository(root: root.appending(path: "missing")).list(identity: SessionRequestIdentity(workspace: "test", collectionId: "api", requestId: "a")).isEmpty)
     }
 
     @MainActor private func settle() async {
@@ -186,6 +186,8 @@ private struct LifecycleRunner: RequestRunner {
 
 private struct LayoutPersistence: WorkspacePersistence {
     let workspace: WorkspaceDraft
+    var diagnostics = WorkspaceLoadDiagnostics(problems: [], omitted: 0, notice: nil)
+    func loadResult() async throws -> WorkspaceLoadResult { WorkspaceLoadResult(workspace: workspace.domain, diagnostics: diagnostics) }
     func load() async throws -> WorkspaceDraft { workspace }
     func save(request _: RequestDraft, in _: String) async throws {}
     func save(environment _: EnvironmentDraft) async throws {}
@@ -381,5 +383,22 @@ extension LifecycleTests {
         #expect(model.closeDocuments(.all, in: split, allowDirty: true).isEmpty)
         #expect(model.sessions.groupCount == 1)
         #expect(model.sessions.session(id: source.id) === source)
+    }
+}
+
+
+extension LifecycleTests {
+    @Test("Partial workspace loads keep requests and mirror a dismissible notice")
+    @MainActor func partialLoadNoticePreservesReadableRequests() async {
+        let request = RequestLocation(collectionID: "api", request: RequestDraft(id: "readable", name: "Readable"))
+        let workspace = WorkspaceDraft(name: "Partial", collections: [CollectionDraft(id: "api", name: "API", requests: [request])])
+        let diagnostics = WorkspaceLoadDiagnostics(problems: [WorkspaceLoadProblem(path: "collections/api/requests/broken.toml", kind: .invalidToml, reason: "Invalid TOML")], omitted: 0, notice: "Skipped broken.toml. The file remains on disk.")
+        let model = WireboltModel(runner: LifecycleRunner(), persistence: LayoutPersistence(workspace: workspace, diagnostics: diagnostics))
+        await model.loadWorkspace()
+        #expect(model.workspace.collections.first?.requests.first?.request.id == "readable")
+        #expect(model.workspaceLoadNotice == diagnostics.notice)
+        #expect(model.hasLoadedWorkspace && !model.isLoadingWorkspace)
+        model.workspaceLoadNotice = nil
+        #expect(model.workspace.collections.first?.requests.count == 1)
     }
 }

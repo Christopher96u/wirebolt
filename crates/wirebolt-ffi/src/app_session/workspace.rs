@@ -411,6 +411,7 @@ pub struct WorkspacePresentation {
     pub export_failure: Option<String>,
     pub import_summary: Option<WorkspaceImportSummary>,
     pub operation_failure: Option<wirebolt_app::response::ResponseFailureKind>,
+    pub operation_failure_reason: Option<String>,
 }
 
 #[uniffi::remote(Record)]
@@ -431,6 +432,7 @@ pub struct WorkspaceMutation {
 #[uniffi::remote(Record)]
 pub struct WorkspaceLoad {
     pub workspace: DomainWorkspace,
+    pub diagnostics: wirebolt_app::session::persistence::WorkspaceLoadDiagnostics,
     pub selected_environment_id: Option<String>,
     pub select: Option<DomainLocation>,
 }
@@ -458,6 +460,9 @@ impl AppWorkspaceOperations {
                 workspace.inner.clone(),
             ),
         })
+    }
+    pub fn connect_history(&self, runtime: Arc<super::runtime::AppSessionRuntime>) {
+        self.inner.connect_history(runtime.state.clone());
     }
     pub fn presentation(&self) -> WorkspacePresentation {
         self.inner.presentation()
@@ -489,6 +494,9 @@ impl AppWorkspaceOperations {
     ) -> bool {
         self.inner
             .can_reorder(identifier, target, collection_id, parent)
+    }
+    pub fn move_refusal(&self, identifier: String, collection_id: String) -> Option<String> {
+        self.inner.move_refusal(identifier, collection_id)
     }
     pub fn can_move_to(
         &self,

@@ -5,9 +5,9 @@
 )]
 use super::{
     AppResponseBody, Arc, DocumentRun, DomainRequestDraft, DomainTransport, Instant, Mutex, Path,
-    PathBuf, ResolvedDomainProxy, ResponseHeaderValue, SessionCompletion, SessionDocument,
-    SessionFailure, SessionHead, SessionKind, SessionPrepared, SessionPreparedBody,
-    SessionPreparedHeader, SessionRunEvent, SessionRunSnapshot, StoredCookie,
+    ResolvedDomainProxy, ResponseHeaderValue, SessionCompletion, SessionDocument, SessionFailure,
+    SessionHead, SessionKind, SessionPrepared, SessionPreparedBody, SessionPreparedHeader,
+    SessionRunEvent, SessionRunSnapshot, StoredCookie,
 };
 use crate::lock;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -208,9 +208,6 @@ impl AppDocumentSession {
             lock(&self.run).set_cookies(cookies);
         }
     }
-    pub fn restore(&self, snapshot: SessionRunSnapshot, path: String) {
-        lock(&self.run).restore(snapshot, PathBuf::from(path));
-    }
 }
 
 #[uniffi::export]
@@ -231,5 +228,18 @@ impl wirebolt_app::session::workspace::lifecycle::CloseDocument for &AppDocument
     }
     fn saved_draft(&self) -> Option<DomainRequestDraft> {
         lock(&self.document).saved_draft.clone()
+    }
+}
+
+#[uniffi::export(async_runtime = "tokio")]
+impl AppDocumentSession {
+    pub async fn restore(&self, snapshot: SessionRunSnapshot, path: String) {
+        let run = self.run.clone();
+        let _ = tokio::task::spawn_blocking(move || {
+            let body =
+                wirebolt_app::response::BodyStore::retained(std::path::Path::new(&path)).ok();
+            lock(&run).restore(snapshot, body);
+        })
+        .await;
     }
 }

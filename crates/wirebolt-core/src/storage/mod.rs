@@ -365,11 +365,93 @@ impl WorkspaceStore {
         if !path.join(COLLECTION_FILE).is_file() {
             return Err(StorageError::Missing { path });
         }
-        fs::remove_dir_all(&path)
-            .map_err(|source| StorageError::io("delete collection", &path, source))?;
+        for directory in [&path, &path.join(REQUESTS_DIRECTORY)] {
+            match fs::symlink_metadata(directory) {
+                Ok(metadata) if !metadata.is_dir() => {
+                    return Err(StorageError::InvalidDocument {
+                        path: directory.to_owned(),
+                        reason: "collection directories must be regular directories",
+                    });
+                }
+                Err(source) if source.kind() != io::ErrorKind::NotFound => {
+                    return Err(StorageError::io(
+                        "inspect collection directory",
+                        directory,
+                        source,
+                    ));
+                }
+                _ => {}
+            }
+        }
+        let snapshot = self.load_collection(&path, &mut Vec::new(), &mut Vec::new())?;
+        let mut documents = snapshot
+            .requests
+            .iter()
+            .map(|request| self.request_path(id, &request.id))
+            .collect::<Vec<_>>();
+        // The manifest goes last. Failed staging restores the original documents,
+        // so the application can keep its current tree and undo state unchanged.
+        documents.push(path.join(COLLECTION_FILE));
+        delete_managed_documents(&documents)?;
+        let _ = fs::remove_dir(path.join(REQUESTS_DIRECTORY));
+        let _ = fs::remove_dir(&path);
         self.lock_cache()
             .retain(|cached_path, _| !cached_path.starts_with(&path));
         Ok(())
+    }
+
+    /// Moves a request without replacing an existing destination. If removing the
+    /// source fails, the newly created destination is rolled back.
+    /// # Errors
+    /// Returns a storage error for a collision, missing collection or failed write.
+    pub fn move_request(
+        &self,
+        from: &DocumentId,
+        to: &DocumentId,
+        request: &Request,
+    ) -> Result<(), StorageError> {
+        if from == to {
+            self.save(&WorkspaceDocument::Request {
+                collection_id: to.clone(),
+                request: request.clone(),
+            })?;
+            return Ok(());
+        }
+        if !self.collection_path(to).join(COLLECTION_FILE).is_file() {
+            return Err(StorageError::MissingCollection { id: to.clone() });
+        }
+        let destination = self.request_path(to, &request.id);
+        require_current_schema(request.schema_version(), &destination)?;
+        let parent = self.collection_path(to).join(REQUESTS_DIRECTORY);
+        let parent = parent.as_path();
+        fs::create_dir_all(parent)
+            .map_err(|source| StorageError::io("create request directory", parent, source))?;
+        let (temporary, file) = create_temporary_file(parent, &destination)?;
+        drop(file);
+        let result = (|| {
+            write_document(&temporary, request, Durability::Fast)?;
+            // A link creates the destination atomically and fails if any file is
+            // already there, including one created since the move was planned.
+            fs::hard_link(&temporary, &destination).map_err(|source| {
+                if source.kind() == io::ErrorKind::AlreadyExists {
+                    StorageError::AlreadyExists {
+                        path: destination.clone(),
+                    }
+                } else {
+                    StorageError::io("create move destination", &destination, source)
+                }
+            })?;
+            if let Err(error) = self.delete_request(from, &request.id) {
+                fs::remove_file(&destination).map_err(|source| {
+                    StorageError::io("roll back move destination", &destination, source)
+                })?;
+                return Err(error);
+            }
+            self.lock_cache().remove(&destination);
+            Ok(())
+        })();
+        let _ = fs::remove_file(temporary);
+        result
     }
 
     /// Deletes one request document without touching its collection.
@@ -867,6 +949,13 @@ fn write_document<T: Serialize>(
     if !contents.ends_with('\n') {
         contents.push('\n');
     }
+    let bytes = contents.len() as u64;
+    if bytes > MAX_DOCUMENT_BYTES {
+        return Err(StorageError::DocumentTooLarge {
+            path: path.to_owned(),
+            bytes,
+        });
+    }
     atomic_write_if_changed(path, contents.as_bytes(), durability)
 }
 
@@ -933,6 +1022,40 @@ fn atomic_write_if_changed(
     } else {
         SaveOutcome::Created
     })
+}
+
+/// Renames to sibling temporary files first, rolling back if any rename fails.
+/// Once all documents are staged, deletion has committed; leftover hidden files
+/// from a cleanup failure remain recoverable and are never loaded as documents.
+fn delete_managed_documents(documents: &[PathBuf]) -> Result<(), StorageError> {
+    let mut staged: Vec<(PathBuf, PathBuf)> = Vec::new();
+    for path in documents {
+        let result = (|| {
+            let parent = path.parent().expect("workspace document parent");
+            let (temporary, file) = create_temporary_file(parent, path)?;
+            drop(file);
+            if let Err(source) = fs::rename(path, &temporary) {
+                let _ = fs::remove_file(&temporary);
+                return Err(StorageError::io("stage document deletion", path, source));
+            }
+            Ok(temporary)
+        })();
+        match result {
+            Ok(temporary) => staged.push((path.clone(), temporary)),
+            Err(error) => {
+                for (original, temporary) in staged.iter().rev() {
+                    fs::rename(temporary, original).map_err(|source| {
+                        StorageError::io("restore staged document", original, source)
+                    })?;
+                }
+                return Err(error);
+            }
+        }
+    }
+    for (_, temporary) in staged {
+        let _ = fs::remove_file(temporary);
+    }
+    Ok(())
 }
 
 fn create_temporary_file(
@@ -1064,6 +1187,17 @@ mod tests {
     fn peek(source: &str) -> Result<Option<u32>, &'static str> {
         let table = toml::de::DeTable::parse(source).expect("valid TOML");
         peek_schema_version(table.get_ref())
+    }
+
+    #[test]
+    fn failed_collection_deletion_restores_staged_documents() {
+        let directory = tempfile::tempdir().unwrap();
+        let original = directory.path().join("saved.toml");
+        std::fs::write(&original, b"saved request").unwrap();
+        let missing = directory.path().join("missing.toml");
+        assert!(super::delete_managed_documents(&[original.clone(), missing]).is_err());
+        assert_eq!(std::fs::read(original).unwrap(), b"saved request");
+        assert_eq!(std::fs::read_dir(directory.path()).unwrap().count(), 1);
     }
 
     #[test]

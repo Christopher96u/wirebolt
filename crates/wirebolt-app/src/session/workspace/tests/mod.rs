@@ -20,6 +20,7 @@ mod imports_git;
 mod interface;
 mod lifecycle;
 mod mutations;
+mod storage;
 mod undo;
 #[derive(Debug, Default)]
 struct Store {

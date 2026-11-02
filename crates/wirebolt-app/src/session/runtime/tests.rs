@@ -48,6 +48,10 @@ fn state(root: &std::path::Path) -> Arc<RuntimeState> {
         Arc::new(Mutex::new(ResponseCookieJar::new(None))),
     ))
 }
+fn key(state: &RuntimeState, request: &str) -> crate::session::history::SessionRequestIdentity {
+    state.request_identity(Some("api"), request)
+}
+
 fn prepared(input: &DomainRunInput) -> SessionPrepared {
     SessionPrepared {
         proxy: None,

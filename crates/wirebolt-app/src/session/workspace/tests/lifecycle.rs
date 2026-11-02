@@ -26,7 +26,18 @@ fn dirty_documents_are_unique_and_follow_tab_order() {
 }
 #[tokio::test]
 async fn save_all_persists_each_dirty_document_at_its_own_collection() {
-    let h = Harness::new(nested());
+    let mut workspace = nested();
+    workspace.collections[0]
+        .requests
+        .push(location("a", None, 0));
+    let mut b = location("b", None, 0);
+    b.collection_id = "other".into();
+    workspace.collections.push(DomainCollection {
+        id: "other".into(),
+        requests: vec![b],
+        ..Default::default()
+    });
+    let h = Harness::new(workspace);
     let mut a = document("a", Some("api"), true);
     let mut b = document("b", Some("other"), true);
     a.draft.url = "https://example.com/a".into();
@@ -167,6 +178,7 @@ async fn loaded_state_covers_no_store_success_and_failure() {
     assert!(h.ops.load(&h.store, false).await.is_none());
     assert!(!h.ops.presentation().loading && h.ops.presentation().loaded);
     lock(&h.store.replies).push_back(WorkspaceReply::Loaded {
+        diagnostics: crate::session::persistence::WorkspaceLoadDiagnostics::default(),
         workspace: nested(),
     });
     assert!(h.ops.begin_load(true));

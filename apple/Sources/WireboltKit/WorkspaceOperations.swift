@@ -30,7 +30,8 @@ final class WorkspacePlatformAdapter: WorkspaceIoPlatform {
         switch request {
         case .load:
             let persistence = try requiredPersistence()
-            return .loaded(workspace: try await persistence.load().domain)
+            let result = try await persistence.loadResult()
+            return .loaded(workspace: result.workspace, diagnostics: result.diagnostics)
         case .commands(let commands):
             let persistence = try requiredPersistence()
             return .commands(result: await persistence.applySessionCommands(commands))

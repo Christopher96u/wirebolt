@@ -111,7 +111,7 @@ fn native_workspace_io_executes_typed_load_commands_import_export_and_git() {
     )
     .unwrap();
     assert!(
-        matches!(store.workspace_io(WorkspaceIO::Load),WorkspaceReply::Loaded{workspace} if workspace.name=="Native")
+        matches!(store.workspace_io(WorkspaceIO::Load),WorkspaceReply::Loaded{workspace,..} if workspace.name=="Native")
     );
     let reply = store.workspace_io(WorkspaceIO::Commands {
         commands: vec![SessionWorkspaceCommand::RenameWorkspace {

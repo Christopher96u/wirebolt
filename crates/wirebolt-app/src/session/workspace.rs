@@ -569,6 +569,14 @@ pub fn plan_edit(
             group_id,
             order,
         } => {
+            if from_collection_id != to_collection_id
+                && collection(workspace, &to_collection_id)?
+                    .requests
+                    .iter()
+                    .any(|r| r.request.id == id)
+            {
+                return None;
+            }
             let source = location(workspace, &from_collection_id, &id)?.clone();
             let mut from = collection(workspace, &from_collection_id)?.clone();
             from.requests.retain(|r| r.request.id != id);

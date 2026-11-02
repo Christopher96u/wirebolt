@@ -10,7 +10,7 @@ use crate::{
 };
 use serde::{Deserialize, Serialize};
 use std::{
-    path::{Path, PathBuf},
+    path::Path,
     sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
@@ -283,17 +283,20 @@ impl DocumentRun {
         self.memory_preview.clone_from(&source.memory_preview);
         self.storage_failed = source.storage_failed;
     }
-    pub fn restore(&mut self, mut snapshot: SessionRunSnapshot, path: PathBuf) {
+    pub fn restore(&mut self, mut snapshot: SessionRunSnapshot, body: Option<BodyStore>) {
         snapshot.active_run_id = None;
         snapshot.started_at = None;
         snapshot.awaiting_head = false;
-        self.body = BodyStore::existing(path)
-            .ok()
-            .map(|body| Arc::new(Mutex::new(body)));
+        self.body = body.map(|body| Arc::new(Mutex::new(body)));
         snapshot.body_path = self
             .body
             .as_ref()
             .map(|b| lock(b).path().to_string_lossy().into_owned());
+        if self.body.is_none() {
+            snapshot.failure = Some(SessionFailure::new(
+                crate::response::ResponseFailureKind::Storage,
+            ));
+        }
         self.snapshot = snapshot;
         self.pending_body = None;
         self.memory_preview = None;

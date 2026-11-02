@@ -21,6 +21,7 @@ async fn workspace_switch_resets_environment_choice_git_and_undo_registry() {
         .undo
         .unwrap();
     lock(&h.store.replies).push_back(WorkspaceReply::Loaded {
+        diagnostics: crate::session::persistence::WorkspaceLoadDiagnostics::default(),
         workspace: DomainWorkspace {
             name: "Mutations".into(),
             ..Default::default()

@@ -29,6 +29,11 @@ struct RustWorkspacePersistence: WorkspacePersistence, GitCollaboration {
         workspaceDefaultName(path: path.standardizedFileURL.path, builtIn: builtInWorkspaceURL.standardizedFileURL.path)
     }
 
+    func loadResult() async throws -> WorkspaceLoadResult {
+        let bridge = bridge
+        return try await Task.detached(priority: .userInitiated) { try bridge.loadResult() }.value
+    }
+
     func load() async throws -> WorkspaceDraft {
         let bridge = bridge
         return try await Task.detached(priority: .userInitiated) {

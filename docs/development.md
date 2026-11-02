@@ -66,6 +66,45 @@ Unicode line/paragraph separators. The Markdown corpus compares every attributed
 run and visible text, including unfinished fenced-code-block newlines and inserted
 block separators.
 
+## Workspace persistence
+
+Read and write limits both apply to the complete serialized document (16 MiB),
+including TOML metadata and escaping. A rejected save keeps the previous file.
+Moves create a destination atomically without replacing any existing file, and roll
+it back if the source cannot be removed. Collection deletion stages readable
+managed documents and rolls them back on a staging failure; unmanaged files,
+malformed documents and nonempty directories remain in place.
+
+Production loads return `WorkspaceLoadResult` with typed per-file problems.
+The bridge carries at most ten diagnostics (200 characters per relative path),
+the number omitted and a Rust-composed notice. Reasons never include document
+contents. The app presents a dismissible notice while keeping readable requests
+available. Save and workspace replacement use the same guard as mutations and
+Undo; a queued stale save of a moved or deleted saved request fails.
+
+## History compatibility
+
+The local history `index.json` is version 2: an object with `version` and `entries`.
+Each new entry carries `identity` (workspace namespace, collection ID and request
+ID). The namespace uses the same canonical-path hash as workspace cookies;
+unsaved workspaces use a per-runtime namespace. Moves and Undo migrate scoped
+entries within the serialized Rust workspace operation and redirect in-flight
+completions to their current collection. Replacement loads reconcile redirects;
+late completions from another workspace are stored without changing the current
+workspace’s history presentation. Body copies are prepared on workers before
+taking presentation locks.
+
+Version 1 was an unversioned array containing only `requestID`. Reading it retains
+all entries; the next write atomically wraps them in the version 2 index. Entries
+with a complete identity retain that key. A requestID-only entry cannot be assigned
+unambiguously: another collection or a copied workspace may contain the same ID,
+even when the currently open workspace has only one match. Such entries keep their
+body files and are available in **History → Unassigned Legacy History** for the
+matching request ID. They are excluded from scoped counts, Clear History and quota
+eviction. No workspace or collection is guessed from the prepared URL. Unsupported or
+damaged versioned indexes are left unchanged and report a storage error. Displayed
+responses own temporary copies, released with their last body handle.
+
 ## Performance
 
 Run on an idle Apple Silicon Mac:

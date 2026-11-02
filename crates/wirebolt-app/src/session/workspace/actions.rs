@@ -214,6 +214,17 @@ pub fn can_reorder(
         && siblings.iter().any(|s| s == target)
 }
 #[must_use]
+pub fn move_refusal(
+    workspace: &DomainWorkspace,
+    identifier: &str,
+    collection_id: &str,
+) -> Option<String> {
+    let (kind, source, id) = parts(identifier)?;
+    (kind == "request" && source != collection_id && collection(workspace, collection_id)?.requests.iter().any(|request| request.request.id == id))
+        .then(|| "A request with the same ID already exists here. Duplicate the source request before moving it.".into())
+}
+
+#[must_use]
 pub fn can_move_to(
     workspace: &DomainWorkspace,
     identifier: &str,
@@ -230,8 +241,12 @@ pub fn can_move_to(
         return false;
     }
     match kind {
-        "request" => location(workspace, c, id)
-            .is_some_and(|r| r.collection_id != collection_id || r.group_id.as_deref() != parent),
+        "request" => {
+            move_refusal(workspace, identifier, collection_id).is_none()
+                && location(workspace, c, id).is_some_and(|r| {
+                    r.collection_id != collection_id || r.group_id.as_deref() != parent
+                })
+        }
         "group" if c == collection_id => destination
             .groups
             .iter()

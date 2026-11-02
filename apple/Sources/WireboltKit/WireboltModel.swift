@@ -24,6 +24,7 @@ extension RequestRunner {
 
 public protocol WorkspacePersistence: Sendable {
     func load() async throws -> WorkspaceDraft
+    func loadResult() async throws -> WorkspaceLoadResult
     func loadSession(_ application: AppWorkspaceSession) async throws -> WorkspaceDraft
     func save(request: RequestDraft, in collectionID: String) async throws
     func save(environment: EnvironmentDraft) async throws
@@ -47,6 +48,9 @@ public protocol WorkspacePersistence: Sendable {
 }
 
 extension WorkspacePersistence {
+    public func loadResult() async throws -> WorkspaceLoadResult {
+        WorkspaceLoadResult(workspace: try await load().domain, diagnostics: WorkspaceLoadDiagnostics(problems: [], omitted: 0, notice: nil))
+    }
     public var sessionWorkspacePlatform: AppWorkspacePlatform { .foreign(platform: WorkspacePlatformAdapter(persistence: self)) }
     public func loadSession(_ application: AppWorkspaceSession) async throws -> WorkspaceDraft {
         let workspace = try await load()
@@ -165,6 +169,7 @@ public final class WireboltModel {
     public private(set) var isLoadingWorkspace = false
     /// False until the first workspace load finishes; the window shows a skeleton meanwhile.
     public private(set) var hasLoadedWorkspace = false
+    public var workspaceLoadNotice: String?
     public private(set) var gitStatus: GitStatusSnapshot?
     public private(set) var gitOperation: GitOperationSnapshot?
     public private(set) var gitFailure: GitFailure?
@@ -210,7 +215,10 @@ public final class WireboltModel {
     @ObservationIgnored private let oauth2: any OAuth2Authorizing
     @ObservationIgnored private var transportSave: Task<Void, Never>?
     public private(set) var exportFailureMessage: String?
-    public var operationFailure: RunFailure?
+    public var operationFailure: RunFailure? {
+        didSet { if operationFailure == nil { operationFailureMessage = nil } }
+    }
+    public var operationFailureMessage: String?
     /// The window's undo manager; workspace mutations register their inverse here.
     @ObservationIgnored public weak var undoManager: UndoManager?
     /// Undo and redo run one at a time so each inverse sees the state its predecessor left.
@@ -243,6 +251,8 @@ public final class WireboltModel {
         self.gitCollaboration = gitCollaboration
         self.sessions = sessions ?? DocumentSessionStore()
         runtime = AppSessionRuntime(history: history.rust, cookies: cookieJar.rust)
+        runtime.configureHistoryWorkspace(path: persistence?.location?.standardizedFileURL.path)
+        rustOperations.connectHistory(runtime: runtime)
         self.cookieDirectory = cookieDirectory
         self.oauth2 = oauth2 ?? OAuth2Service()
     }
@@ -256,6 +266,7 @@ public final class WireboltModel {
         editedSecrets = [:]
         rustSecrets.resetEditor()
         workspaceLocation = persistence.location
+        runtime.configureHistoryWorkspace(path: persistence.location?.standardizedFileURL.path)
         runtime.configureCookies(workspace: persistence.location?.standardizedFileURL.path, directory: cookieDirectory?.path)
         mirrorRuntime()
 
@@ -452,16 +463,22 @@ public final class WireboltModel {
         mirrorSecretEdits()
     }
 
+    public func historyIdentity(for session: DocumentSession) -> SessionRequestIdentity {
+        runtime.requestIdentity(document: session.rust)
+    }
+    public func legacyHistoryEntries(for session: DocumentSession) async -> [RunHistoryEntry] {
+        await runtime.legacyHistory(requestId: session.requestID).map(RunHistoryEntry.init)
+    }
     public func historyEntries(for session: DocumentSession) async -> [RunHistoryEntry] {
-        do { return try await runtime.historyEntries(id: session.requestID).map(RunHistoryEntry.init) }
+        do { return try await runtime.historyEntries(id: historyIdentity(for: session)).map(RunHistoryEntry.init) }
         catch { operationFailure = RunFailure(kind: .storage, issues: []); return [] }
     }
     public func historyCount(for session: DocumentSession) async -> Int {
-        do { return Int(clamping: try await runtime.historyCount(id: session.requestID)) }
+        do { return Int(clamping: try await runtime.historyCount(id: historyIdentity(for: session))) }
         catch { operationFailure = RunFailure(kind: .storage, issues: []); return 0 }
     }
     public func loadHistory(for session: DocumentSession) async {
-        do { try await runtime.loadHistory(id: session.requestID) }
+        do { try await runtime.loadHistory(id: historyIdentity(for: session)) }
         catch { operationFailure = RunFailure(kind: .storage, issues: []) }
         mirrorRuntime()
     }
@@ -480,7 +497,8 @@ public final class WireboltModel {
         }
     }
     public func clearHistory(for session: DocumentSession) async {
-        await runtime.clearHistory(id: session.requestID)
+        do { try await runtime.clearHistory(id: historyIdentity(for: session)) }
+        catch { operationFailure = RunFailure(kind: .storage, issues: []) }
         mirrorRuntime()
     }
 
@@ -929,6 +947,10 @@ public final class WireboltModel {
     public func moveSidebarItem(_ identifier: String, by delta: Int) async {
         await perform(.moveBy(identifier: identifier, delta: Int64(delta)))
     }
+    public func moveRefusal(_ identifier: String, toCollectionID collectionID: String) -> String? {
+        synchronizeWorkspace()
+        return rustOperations.moveRefusal(identifier: identifier, collectionId: collectionID)
+    }
     public func canMoveSidebarItem(_ identifier: String, toCollectionID collectionID: String, parentID: String?) -> Bool {
         synchronizeWorkspace()
         return rustOperations.canMoveTo(identifier: identifier, collectionId: collectionID, parent: parentID)
@@ -951,6 +973,7 @@ public final class WireboltModel {
 
     private func applyLoadedWorkspace(_ loaded: WorkspaceLoad, restoring layout: SessionLayout? = nil) {
         mirroringWorkspace = true
+        workspaceLoadNotice = loaded.diagnostics.notice
         workspace = WorkspaceDraft(domain: loaded.workspace)
         mirroringWorkspace = false
         workspaceNeedsSynchronization = false
@@ -1036,7 +1059,10 @@ public final class WireboltModel {
         if gitOperation != operation { gitOperation = operation }
         let failure = value.gitFailure.map { GitFailure(kind: $0.kind, reason: $0.reason) }
         if gitFailure != failure { gitFailure = failure }
-        if let kind = rustOperations.takeFailure() { operationFailure = RunFailure(kind: kind, issues: []) }
+        if let kind = rustOperations.takeFailure() {
+            operationFailure = RunFailure(kind: kind, issues: [])
+            operationFailureMessage = value.operationFailureReason
+        }
         if let reason = value.exportFailure { exportFailureMessage = reason }
     }
 
@@ -1124,6 +1150,7 @@ extension WireboltModel {
                     session.relocate(to: destination)
                 }
                 sessions.refreshActiveRequest()
+                mirrorRuntime()
             }
         }
     }

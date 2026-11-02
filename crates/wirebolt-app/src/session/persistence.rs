@@ -71,6 +71,75 @@ pub struct SessionPersistence {
     version: AtomicU64,
 }
 
+pub use wirebolt_core::DocumentProblemKind as WorkspaceDocumentProblemKind;
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct WorkspaceLoadProblem {
+    pub path: String,
+    pub kind: WorkspaceDocumentProblemKind,
+    pub reason: String,
+}
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct WorkspaceLoadDiagnostics {
+    pub problems: Vec<WorkspaceLoadProblem>,
+    pub omitted: u64,
+    pub notice: Option<String>,
+}
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct WorkspaceLoadResult {
+    pub workspace: crate::domain::DomainWorkspace,
+    pub diagnostics: WorkspaceLoadDiagnostics,
+}
+impl WorkspaceLoadDiagnostics {
+    fn from_problems(problems: Vec<wirebolt_core::DocumentProblem>) -> Self {
+        const LIMIT: usize = 10;
+        let omitted = problems.len().saturating_sub(LIMIT) as u64;
+        let problems: Vec<_> = problems
+            .into_iter()
+            .take(LIMIT)
+            .map(|problem| {
+                let reason = match problem.kind {
+                    WorkspaceDocumentProblemKind::InvalidToml => "Invalid TOML",
+                    WorkspaceDocumentProblemKind::InvalidDocument => "Invalid document",
+                    WorkspaceDocumentProblemKind::UnsupportedSchema => "Newer document version",
+                    WorkspaceDocumentProblemKind::DocumentTooLarge => {
+                        "Exceeds the 16 MiB document limit"
+                    }
+                    WorkspaceDocumentProblemKind::Io => "Could not read file",
+                };
+                WorkspaceLoadProblem {
+                    path: problem
+                        .path
+                        .to_string_lossy()
+                        .chars()
+                        .filter(|character| !character.is_control())
+                        .take(200)
+                        .collect(),
+                    kind: problem.kind,
+                    reason: reason.into(),
+                }
+            })
+            .collect();
+        let notice = (!problems.is_empty()).then(|| {
+            let files = problems
+                .iter()
+                .map(|problem| format!("{} ({})", problem.path, problem.reason))
+                .collect::<Vec<_>>()
+                .join("; ");
+            let more = if omitted == 0 {
+                String::new()
+            } else {
+                format!("; {omitted} more files")
+            };
+            format!("Some workspace files were skipped: {files}{more}. The files remain on disk.")
+        });
+        Self {
+            problems,
+            omitted,
+            notice,
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SessionWorkspaceNodeKind {
@@ -507,8 +576,8 @@ impl SessionPersistence {
             .map_err(|_| WorkspaceError::operation("import collection could not be created"))?;
         created.collections.push(collection_id.clone());
 
-        for (index, imported_request) in imported.requests.into_iter().enumerate() {
-            let request_id = document_id(format!("request-{index}"))?;
+        for imported_request in imported.requests {
+            let request_id = document_id(crate::domain::identity::unique_id())?;
             let group_id = imported_request
                 .group_source_id
                 .as_ref()
@@ -764,7 +833,10 @@ impl SessionPersistence {
                         collection_id: document_id(collection_id.clone())?,
                         request,
                     })
-                    .map_err(|_| WorkspaceError::operation("request could not be saved"))?;
+                    .map_err(|error| WorkspaceError::operation(match error {
+                        wirebolt_core::StorageError::DocumentTooLarge {..} => "This request exceeds the 16 MiB document limit. Reduce its body or notes, or attach a body file.",
+                        _ => "The request could not be saved.",
+                    }))?;
                 Ok((SessionWorkspaceNodeKind::Request, vec![collection_id, id]))
             }
             super::workspace::SessionWorkspaceCommand::DeleteRequest { collection_id, id } => {
@@ -810,21 +882,15 @@ impl SessionPersistence {
                 request.order = order;
                 let destination = document_id(to_collection_id.clone())?;
                 self.store
-                    .save(&WorkspaceDocument::Request {
-                        collection_id: destination,
-                        request,
-                    })
-                    .map_err(|_| WorkspaceError::operation("request could not be moved"))?;
-                if from_collection_id != to_collection_id {
-                    self.store
-                        .delete_request(
-                            &document_id(from_collection_id.clone())?,
-                            &document_id(request_id.clone())?,
-                        )
-                        .map_err(|_| {
-                            WorkspaceError::operation("source request could not be removed")
-                        })?;
-                }
+                    .move_request(
+                        &document_id(from_collection_id.clone())?,
+                        &destination,
+                        &request,
+                    )
+                    .map_err(|error| WorkspaceError::operation(match error {
+                        wirebolt_core::StorageError::AlreadyExists {..} => "The destination already contains a request with this ID. Duplicate the source request before moving it.",
+                        _ => "The request could not be moved without replacing another request.",
+                    }))?;
                 Ok((
                     SessionWorkspaceNodeKind::Request,
                     vec![from_collection_id, to_collection_id, request_id],
@@ -1184,6 +1250,12 @@ impl SessionPersistence {
     /// # Errors
     /// Returns a storage or projection error.
     pub fn domain_snapshot(&self) -> Result<crate::domain::DomainWorkspace, WorkspaceError> {
+        self.load_result().map(|result| result.workspace)
+    }
+    /// Loads readable records and bounded, content-free diagnostics for skipped files.
+    /// # Errors
+    /// Returns a storage or projection error when the workspace cannot be read.
+    pub fn load_result(&self) -> Result<WorkspaceLoadResult, WorkspaceError> {
         use crate::domain::{DomainCollection, DomainLocation, DomainWorkspace};
 
         let snapshot = self
@@ -1217,16 +1289,20 @@ impl SessionPersistence {
                 requests,
             });
         }
-        Ok(DomainWorkspace {
-            name: snapshot.workspace.name,
-            proxy: snapshot.workspace.proxy.map(proxy_from_core),
-            transport: transport_from_core(snapshot.workspace.transport),
-            collections,
-            environments: snapshot
-                .environments
-                .into_iter()
-                .map(environment_from_core)
-                .collect(),
+        let diagnostics = WorkspaceLoadDiagnostics::from_problems(snapshot.problems);
+        Ok(WorkspaceLoadResult {
+            workspace: DomainWorkspace {
+                name: snapshot.workspace.name,
+                proxy: snapshot.workspace.proxy.map(proxy_from_core),
+                transport: transport_from_core(snapshot.workspace.transport),
+                collections,
+                environments: snapshot
+                    .environments
+                    .into_iter()
+                    .map(environment_from_core)
+                    .collect(),
+            },
+            diagnostics,
         })
     }
 }

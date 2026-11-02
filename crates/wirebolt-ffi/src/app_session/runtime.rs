@@ -217,6 +217,16 @@ impl AppSessionRuntime {
             oauth: app_runtime::RuntimeOAuth::default(),
         })
     }
+    pub fn configure_history_workspace(&self, path: Option<String>) {
+        self.state.configure_history_workspace(path.as_deref());
+    }
+    pub fn request_identity(
+        &self,
+        document: Arc<AppDocumentSession>,
+    ) -> super::SessionRequestIdentity {
+        let document = lock(&document.document);
+        self.state.document_identity(&document)
+    }
     pub fn cookie_revision(&self) -> u64 {
         self.state.cookie_revision()
     }
@@ -264,6 +274,12 @@ impl AppSessionRuntime {
 
 #[uniffi::export(async_runtime = "tokio")]
 impl AppSessionRuntime {
+    pub async fn legacy_history(&self, request_id: String) -> Vec<SessionHistoryEntry> {
+        let state = self.state.clone();
+        tokio::task::spawn_blocking(move || state.legacy_history(&request_id))
+            .await
+            .unwrap_or_default()
+    }
     pub async fn send(
         &self,
         document: Arc<AppDocumentSession>,
@@ -294,7 +310,7 @@ impl AppSessionRuntime {
     }
     pub async fn history_entries(
         &self,
-        id: String,
+        id: super::SessionRequestIdentity,
     ) -> Result<Vec<SessionHistoryEntry>, wirebolt_app::response::ResponseError> {
         let state = self.state.clone();
         tokio::task::spawn_blocking(move || state.history_entries(&id))
@@ -307,7 +323,7 @@ impl AppSessionRuntime {
     }
     pub async fn history_count(
         &self,
-        id: String,
+        id: super::SessionRequestIdentity,
     ) -> Result<u64, wirebolt_app::response::ResponseError> {
         let state = self.state.clone();
         tokio::task::spawn_blocking(move || state.history_count(&id))
@@ -320,7 +336,7 @@ impl AppSessionRuntime {
     }
     pub async fn load_history(
         &self,
-        id: String,
+        id: super::SessionRequestIdentity,
     ) -> Result<(), wirebolt_app::response::ResponseError> {
         let state = self.state.clone();
         tokio::task::spawn_blocking(move || state.load_history(&id))
@@ -331,9 +347,18 @@ impl AppSessionRuntime {
                 })
             })
     }
-    pub async fn clear_history(&self, id: String) {
+    pub async fn clear_history(
+        &self,
+        id: super::SessionRequestIdentity,
+    ) -> Result<(), wirebolt_app::response::ResponseError> {
         let state = self.state.clone();
-        let _ = tokio::task::spawn_blocking(move || state.clear_history(&id)).await;
+        tokio::task::spawn_blocking(move || state.clear_history(&id))
+            .await
+            .unwrap_or_else(|error| {
+                Err(wirebolt_app::response::ResponseError::Io {
+                    reason: error.to_string(),
+                })
+            })
     }
     pub async fn restore_history(
         &self,
@@ -348,7 +373,7 @@ impl AppSessionRuntime {
         document: Arc<AppDocumentSession>,
         observer: Arc<dyn SessionRuntimeObserver>,
     ) {
-        let id = lock(&document.document).request_id.clone();
+        let id = self.request_identity(document.clone());
         self.state
             .clone()
             .restore_latest(id, document.run.clone(), &RuntimeObserverAdapter(observer))

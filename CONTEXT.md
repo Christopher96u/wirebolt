@@ -21,7 +21,13 @@ never belong to the workspace document tree.
 
 Collections, groups, requests, and their sibling order form one hierarchical
 tree. Workspace mutations are expressed as commands and produce monotonically
-versioned deltas; a routine mutation must not reload the entire tree.
+versioned deltas; a routine mutation must not reload the entire tree. Save, edits,
+Undo, import and workspace replacement serialize through the same operation guard.
+A stale save cannot recreate a saved request that has moved or been deleted.
+Collection deletion removes only readable managed documents, stages removals before
+commit, and preserves unmanaged or unreadable files. Document writes enforce the
+same 16 MiB serialized-byte limit as reads. Partial loads retain readable records
+and expose bounded, content-free diagnostics for skipped files.
 
 ## Editing and execution
 
@@ -44,6 +50,11 @@ run that started it. The C surface only warms the runtime and reports its ABI ve
 
 Response bodies are file-backed. UI state retains bounded viewport data and
 indexes, not an ever-growing body string. History uses a quota and LRU eviction.
+History identities include the canonical workspace namespace, collection ID and
+request ID; moving a request moves its scoped history, including completions of
+runs already in flight. Request IDs from new imports are UUIDs. Legacy ID
+collisions block moves instead of replacing another request. A displayed historical
+response owns a temporary body independently of history retention.
 The cookie jar applies domain, path, secure, expiry, and SameSite rules within
 its workspace. Runtime storage remains outside Git-visible workspace files.
 

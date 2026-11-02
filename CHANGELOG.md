@@ -39,6 +39,15 @@ Changes under **Unreleased** are on `main` but not in a published build yet. Dow
 - Query and form fields marked sensitive are redacted in Sent Request and History while their values are still sent.
 - Cookie expiry now gives valid `Max-Age` precedence over `Expires`, regardless of attribute order, and ignores invalid expiry attributes.
 - Cookies keep directory scope and encoded path separators when choosing which requests receive them.
+- Saving while deleting or moving a request could recreate stale files. Save now runs in order with workspace edits and refuses a saved target that has moved or disappeared.
+- Malformed, newer-version and oversized workspace files disappeared from the sidebar without explanation. Open now keeps readable requests and shows a dismissible notice naming skipped files.
+- Requests with the same ID shared history across collections and workspaces, so clearing one cleared another’s responses. History now follows the complete request identity and moves; older entries without enough identity information remain available under Unassigned Legacy History.
+- Clearing history or evicting old entries made a restored response unreadable. Displayed responses now keep their own temporary body until the last viewer releases it.
+- Moving an imported request could overwrite another request. New imports have unique IDs; moves with a legacy ID collision are refused so both requests and their undo state survive.
+- Deleting a collection also deleted attachments and other files that Undo could not restore. It now removes only readable Wirebolt documents and leaves other files in place.
+- Malformed Insomnia folder IDs could crash import. Invalid parent links, cycles and hierarchies deeper than 128 levels now report an error.
+- A failed response export deleted the previous destination. Export now replaces it only after the body has been copied successfully.
+- Saving a request larger than the 16 MiB document limit made it disappear on reopen. Save now rejects oversized documents and keeps the previous file.
 - A response body write failure left the download running in the background. It now cancels the transfer and keeps the Storage failure visible.
 - The response preview stayed blank when its temporary file could not be created. It now keeps a bounded preview in memory and reports the storage failure.
 - Undoing and redoing an environment edit lost its previous Keychain values and changed the active environment.

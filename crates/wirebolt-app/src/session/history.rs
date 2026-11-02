@@ -4,12 +4,28 @@ use super::run::{SessionCompletion, SessionFailure, SessionHead, SessionPrepared
 use crate::response::VIEWPORT_BYTES;
 use serde::{Deserialize, Serialize};
 use std::io::Read;
+/// Complete storage identity. A document/tab ID is not a saved request identity.
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct SessionRequestIdentity {
+    pub workspace: String,
+    pub collection_id: String,
+    pub request_id: String,
+}
+impl SessionRequestIdentity {
+    #[must_use]
+    pub fn activity_key(&self) -> String {
+        format!("{}/{}", self.collection_id, self.request_id)
+    }
+}
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SessionHistoryEntry {
     pub id: String,
     #[serde(rename = "requestID")]
     pub request_id: String,
+    /// Absent only for legacy entries whose workspace and collection are unknown.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub identity: Option<SessionRequestIdentity>,
     pub created_at: f64,
     pub prepared: SessionPrepared,
     #[serde(skip_serializing_if = "Option::is_none")]
