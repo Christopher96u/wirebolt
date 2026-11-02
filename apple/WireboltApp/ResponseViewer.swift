@@ -142,7 +142,7 @@ struct ResponseViewer: View {
             ResponseSourceView(title: "Raw Response", text: rawResponseText, bodyStore: session.bodyStore,
                 byteCount: session.responseBytes, prefix: rawResponseHeaders, isReceiving: isReceivingBody)
         case .request:
-            SentRequestViewer(snapshot: session.preparedRun)
+            PreparedRequestViewer(snapshot: session.preparedRun)
         }
     }
 
@@ -897,13 +897,13 @@ private struct ResponseKeyValueTable: View {
     }
 }
 
-private struct SentRequestViewer: View {
+struct PreparedRequestViewer: View {
     let snapshot: PreparedRunSnapshot?
 
     var body: some View {
         if snapshot == nil {
-            ContentUnavailableView("No Request Sent", systemImage: "paperplane",
-                description: Text("Send the request (⌘↩) to see exactly what was transmitted."))
+            ContentUnavailableView("No Prepared Request", systemImage: "paperplane",
+                description: Text("Send the request (⌘↩) to see its redacted prepared details and body preview."))
         } else {
             sentRequest
         }
@@ -919,7 +919,9 @@ private struct SentRequestViewer: View {
                 }.font(.caption).padding(10).background(WireboltTheme.barBackground)
                 Divider()
             }
-            ResponseSourceView(title: "Raw Request", text: sentRequestText)
+            Text("Reconstructed from the prepared request. Secrets are redacted; the body may be a preview. This is not a wire capture.")
+                .font(.caption).foregroundStyle(.secondary).padding(10)
+            ResponseSourceView(title: "Prepared Request", text: sentRequestText)
         }
     }
 

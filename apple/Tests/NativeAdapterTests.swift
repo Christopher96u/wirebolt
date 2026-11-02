@@ -99,6 +99,7 @@ enum DraftWorkProbe {
         try await EnvironmentInspectorTests.run(root: root, defaults: defaults, screenshots: captureDirectory)
         try await auditNavigationAndSettings(root: root, defaults: defaults, screenshots: captureDirectory)
         try await auditRequestEditors(defaults: defaults)
+        try await auditPreparedRequestCopy(defaults: defaults)
         typingAssignmentsAvoidDraftWork()
         lastTabDirtyConfirmAndReopen(root: root, defaults: defaults)
     }
@@ -247,3 +248,21 @@ extension NativeAdapterTests {
 
 
 
+
+extension NativeAdapterTests {
+    static func auditPreparedRequestCopy(defaults: UserDefaults) async throws {
+        let restoreAccessibility = NativeTestSupport.enableAccessibility()
+        defer { restoreAccessibility() }
+        let (emptyWindow, emptyHost) = await NativeTestSupport.mount(PreparedRequestViewer(snapshot: nil), defaults: defaults)
+        precondition(NativeTestSupport.elements(emptyHost).contains { $0.name.contains("redacted prepared details and body preview") })
+        precondition(!NativeTestSupport.elements(emptyHost).contains { $0.name.contains("exactly what was transmitted") })
+        emptyWindow.close()
+        let snapshot = PreparedRunSnapshot(method: "POST", url: "https://example.invalid/", headers: [], body: PreparedBodySnapshot(byteCount: 100_000, contentType: "text/plain", textPreview: "fixture preview", redacted: false), transport: TransportSettings())
+        let (window, host) = await NativeTestSupport.mount(PreparedRequestViewer(snapshot: snapshot), defaults: defaults)
+        let names = NativeTestSupport.elements(host).map(\.name)
+        precondition(names.contains("Prepared Request") && names.contains { $0.contains("Reconstructed from the prepared request") && $0.contains("body may be a preview") })
+        precondition(!names.contains("Raw Request"))
+        window.close()
+        print("preparedRequestExplainsReconstructionRedactionAndPreview: passed")
+    }
+}
