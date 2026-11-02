@@ -176,8 +176,6 @@ pub struct Workspace {
     pub proxy: Option<ProxyMode>,
     #[serde(default)]
     pub transport: TransportSettings,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub environment_order: Vec<DocumentId>,
 }
 
 impl Workspace {
@@ -188,7 +186,6 @@ impl Workspace {
             name: name.into(),
             proxy: None,
             transport: TransportSettings::default(),
-            environment_order: Vec::new(),
         }
     }
 
@@ -570,8 +567,6 @@ pub struct Environment {
     pub name: String,
     #[serde(default, deserialize_with = "deserialize_environment_variables")]
     pub variables: Vec<EnvironmentVariable>,
-    #[serde(default)]
-    pub order: i64,
 }
 
 impl Environment {
@@ -602,7 +597,6 @@ impl Environment {
             id,
             name,
             variables,
-            order: 0,
         }
     }
 
@@ -617,7 +611,6 @@ impl Environment {
             id,
             name,
             variables,
-            order: 0,
         }
     }
 

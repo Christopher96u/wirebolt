@@ -29,7 +29,6 @@ fn fixture() -> DomainWorkspace {
             DomainEnvironment {
                 id: "local".into(),
                 name: "Local".into(),
-                order: 1,
                 variables: vec![
                     DomainVariable {
                         id: "url".into(),
@@ -54,7 +53,6 @@ fn fixture() -> DomainWorkspace {
             DomainEnvironment {
                 id: "other".into(),
                 name: "Other".into(),
-                order: 2,
                 ..Default::default()
             },
         ],
@@ -137,7 +135,6 @@ fn live_cases() -> Vec<(Commit, &'static str)> {
         (Commit::ClearVariables, "Delete Variables"),
         (Commit::Create, "Add Environment"),
         (Commit::Delete, "Delete Environment"),
-        (Commit::Move { offset: 1 }, "Reorder Environments"),
     ]
 }
 
@@ -155,6 +152,13 @@ async fn every_live_commit_has_one_named_undo_and_symmetric_redo() {
         let undo = mutation.undo.unwrap();
         assert_eq!(undo.name, label);
         let changed = h.workspace.snapshot();
+        assert!(
+            changed
+                .environments
+                .windows(2)
+                .all(|pair| pair[0].id < pair[1].id),
+            "{label}"
+        );
         assert_ne!(changed, original);
         let redo = h.ops.reverse_token(undo.token).unwrap();
         let undone = h
@@ -308,7 +312,7 @@ async fn secret_field_commits_keep_material_out_of_workspace_commands_and_undo()
 }
 
 #[tokio::test]
-async fn globals_commit_live_but_cannot_be_renamed_deleted_or_reordered() {
+async fn globals_commit_live_but_cannot_be_renamed_or_deleted() {
     let h = Harness::new(fixture());
     let added = commit(&h, &Keychain::default(), "global", Commit::AddVariable).await;
     assert_eq!(added.mutation.undo.unwrap().name, "Add Variable");
@@ -317,7 +321,6 @@ async fn globals_commit_live_but_cannot_be_renamed_deleted_or_reordered() {
             name: "Other globals".into(),
         },
         Commit::Delete,
-        Commit::Move { offset: 1 },
     ] {
         assert!(
             commit(&h, &Keychain::default(), "global", edit)
@@ -375,7 +378,7 @@ impl WorkspacePlatform for DiskStore {
 }
 
 #[tokio::test]
-async fn live_environment_order_and_secret_references_survive_disk_reload() {
+async fn live_environment_edits_keep_id_order_and_secret_references_on_disk_reload() {
     let root = tempfile::tempdir().unwrap();
     let disk = DiskStore(
         crate::session::persistence::SessionPersistence::open_or_create(
@@ -408,18 +411,6 @@ async fn live_environment_order_and_secret_references_survive_disk_reload() {
         )
         .await;
     assert!(saved.mutation.succeeded);
-    let moved = h
-        .ops
-        .commit_environment(
-            "local".into(),
-            Commit::Move { offset: 1 },
-            Some("local".into()),
-            &disk,
-            &h.secrets,
-            &keychain,
-        )
-        .await;
-    assert!(moved.mutation.succeeded);
     let WorkspaceReply::Loaded { workspace } = disk.0.workspace_io(WorkspaceIO::Load) else {
         panic!("load failed")
     };
@@ -429,7 +420,7 @@ async fn live_environment_order_and_secret_references_survive_disk_reload() {
             .iter()
             .map(|e| e.id.as_str())
             .collect::<Vec<_>>(),
-        ["global", "other", "local"]
+        ["global", "local", "other"]
     );
     for file in std::fs::read_dir(root.path().join("environments")).unwrap() {
         let source = std::fs::read_to_string(file.unwrap().path()).unwrap();
@@ -437,7 +428,8 @@ async fn live_environment_order_and_secret_references_survive_disk_reload() {
             !source.contains("new-secret-material") && !source.contains("previous-secret-material")
         );
     }
-    let token = moved.mutation.undo.unwrap();
+    assert_eq!(workspace.environments, h.workspace.snapshot().environments);
+    let token = saved.mutation.undo.unwrap();
     let redo = h.ops.reverse_token(token.token).unwrap();
     assert!(
         h.ops
@@ -466,48 +458,99 @@ async fn live_environment_order_and_secret_references_survive_disk_reload() {
 }
 
 #[tokio::test]
-async fn failed_reorder_is_one_atomic_command_and_keeps_workspace_and_undo_intact() {
-    let h = Harness::new(fixture());
-    *lock(&h.store.fail_at) = Some(0);
-    let result = commit(
-        &h,
-        &Keychain::default(),
-        "local",
-        Commit::Move { offset: 1 },
-    )
-    .await;
-    assert!(result.problem.is_some());
-    assert!(
-        !result.mutation.succeeded
-            && result.mutation.undo.is_none()
-            && result.mutation.plan.is_none()
+async fn environment_creation_deletion_and_undo_match_reload_id_order() {
+    let root = tempfile::tempdir().unwrap();
+    let disk = DiskStore(
+        crate::session::persistence::SessionPersistence::open_or_create(
+            root.path().to_string_lossy().into_owned(),
+            "Fixture".into(),
+            Arc::new(super::files::NoSecrets),
+        )
+        .unwrap(),
     );
-    assert_eq!(h.workspace.snapshot(), fixture());
-    assert!(lock(&h.store.commands).is_empty());
-    *lock(&h.store.fail_at) = None;
-    let retried = commit(
-        &h,
-        &Keychain::default(),
-        "local",
-        Commit::Move { offset: 1 },
-    )
-    .await;
-    let plan = retried.mutation.plan.unwrap();
-    assert!(
-        matches!(&plan.commands[..], [SessionWorkspaceCommand::ReorderEnvironments { ids }] if ids == &["global", "other", "local"])
-    );
-    assert_eq!(retried.mutation.undo.unwrap().name, "Reorder Environments");
+    let h = Harness::new(DomainWorkspace {
+        name: "Fixture".into(),
+        ..Default::default()
+    });
+    let keychain = Keychain::default();
+    // Deliberately insert IDs out of order and use names with a different order.
+    for (id, name) in [
+        ("zulu", "Alpha"),
+        ("alpha", "Zulu"),
+        ("global", "Global Environment"),
+    ] {
+        let saved = h
+            .ops
+            .save_environment(
+                DomainEnvironment {
+                    id: id.into(),
+                    name: name.into(),
+                    ..Default::default()
+                },
+                HashMap::new(),
+                None,
+                &disk,
+                &h.secrets,
+                &keychain,
+            )
+            .await;
+        assert!(saved.succeeded);
+        assert_environment_reload_matches(&h, &disk);
+    }
+    for edit in [
+        Commit::Create,
+        Commit::Rename {
+            name: "Renamed".into(),
+        },
+        Commit::Delete,
+    ] {
+        let result = h
+            .ops
+            .commit_environment("alpha".into(), edit, None, &disk, &h.secrets, &keychain)
+            .await;
+        assert!(result.mutation.succeeded);
+        assert_environment_reload_matches(&h, &disk);
+        let undo = result.mutation.undo.unwrap();
+        let redo = h.ops.reverse_token(undo.token).unwrap();
+        assert!(
+            h.ops
+                .undo(undo.token, redo.token, None, &disk, &h.secrets, &keychain)
+                .await
+                .succeeded
+        );
+        assert_environment_reload_matches(&h, &disk);
+        let reverse = h.ops.reverse_token(redo.token).unwrap();
+        assert!(
+            h.ops
+                .undo(
+                    redo.token,
+                    reverse.token,
+                    None,
+                    &disk,
+                    &h.secrets,
+                    &keychain
+                )
+                .await
+                .succeeded
+        );
+        assert_environment_reload_matches(&h, &disk);
+    }
 }
 
-#[test]
-fn environment_move_availability_excludes_globals_and_list_boundaries() {
-    use super::super::environment::can_move;
-    let environments = fixture().environments;
-    assert!(!can_move(&environments, "global", 1));
-    assert!(!can_move(&environments, "local", -1));
-    assert!(can_move(&environments, "local", 1));
-    assert!(can_move(&environments, "other", -1));
-    assert!(!can_move(&environments, "other", 1));
-    assert!(!can_move(&environments, "missing", 1));
-    assert!(!can_move(&environments[..2], "local", 1));
+fn assert_environment_reload_matches(h: &Harness, disk: &DiskStore) {
+    let WorkspaceReply::Loaded { workspace } = disk.0.workspace_io(WorkspaceIO::Load) else {
+        panic!("load failed")
+    };
+    let environments = h.workspace.snapshot().environments;
+    assert!(environments.windows(2).all(|pair| pair[0].id < pair[1].id));
+    assert_eq!(environments, workspace.environments);
+    let inspector =
+        super::super::environment::inspector_environments(environments.into_iter().rev().collect());
+    assert_eq!(inspector[0].id, "global");
+    assert_eq!(inspector.iter().filter(|e| e.id == "global").count(), 1);
+    assert!(
+        inspector[1..]
+            .windows(2)
+            .all(|pair| pair[0].id < pair[1].id)
+    );
 }

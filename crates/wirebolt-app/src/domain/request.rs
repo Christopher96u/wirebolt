@@ -319,7 +319,6 @@ pub fn legacy_environment(
     values: std::collections::BTreeMap<String, DomainValueSource>,
 ) -> DomainEnvironment {
     DomainEnvironment {
-        order: 0,
         id,
         name,
         variables: values

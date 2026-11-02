@@ -181,10 +181,6 @@ struct EnvironmentEditor: View {
                 .contextMenu {
                     Button("Rename") { Task { if await select(environment.id) { editingNameID = environment.id } } }
                         .disabled(environment.id == "global")
-                    Button("Move Up") { perform(.move(offset: -1), environmentID: environment.id) }
-                        .disabled(!workspaceEnvironmentCanMove(environments: model.workspace.environments.map(\.domain), id: environment.id, offset: -1))
-                    Button("Move Down") { perform(.move(offset: 1), environmentID: environment.id) }
-                        .disabled(!workspaceEnvironmentCanMove(environments: model.workspace.environments.map(\.domain), id: environment.id, offset: 1))
                     Button("Delete", role: .destructive) { perform(.delete, environmentID: environment.id) }
                         .disabled(environment.id == "global")
                 }

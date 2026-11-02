@@ -336,7 +336,6 @@ pub fn request_from_core(r: Request) -> DomainRequestDraft {
 }
 pub fn environment_from_core(e: Environment) -> DomainEnvironment {
     DomainEnvironment {
-        order: e.order,
         id: e.id.to_string(),
         name: e.name,
         variables: e.variables.into_iter().map(variable_from_core).collect(),

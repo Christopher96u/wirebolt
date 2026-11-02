@@ -573,11 +573,12 @@ pub fn move_collections(collections: &[DomainSidebarCollection], identifier: &st
     indices.into_iter().map(|i| i as u64).collect()
 }
 
-/// The environment picker excludes globals and follows saved environment order.
+/// The environment picker excludes globals and sorts names using canonical comparison.
 #[must_use]
 pub fn selectable_environments(environments: &[DomainEnvironment]) -> Vec<u64> {
-    (0..environments.len())
+    let mut indices: Vec<_> = (0..environments.len())
         .filter(|&i| environments[i].id != "global")
-        .map(|i| i as u64)
-        .collect()
+        .collect();
+    indices.sort_by(|&a, &b| canonical_compare(&environments[a].name, &environments[b].name));
+    indices.into_iter().map(|i| i as u64).collect()
 }

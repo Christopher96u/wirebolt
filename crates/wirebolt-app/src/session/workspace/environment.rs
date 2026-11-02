@@ -15,7 +15,6 @@ pub enum EnvironmentCommit {
     ClearVariables,
     Create,
     Delete,
-    Move { offset: i64 },
 }
 
 pub(super) fn validate_name(
@@ -112,27 +111,7 @@ pub fn inspector_environments(mut environments: Vec<DomainEnvironment>) -> Vec<D
             },
             |index| environments.remove(index),
         );
+    environments.sort_by(|left, right| left.id.cmp(&right.id));
     environments.insert(0, global);
     environments
-}
-
-#[must_use]
-pub fn can_move(environments: &[DomainEnvironment], id: &str, offset: i64) -> bool {
-    if id == "global" {
-        return false;
-    }
-    let ids: Vec<_> = environments
-        .iter()
-        .filter(|e| e.id != "global")
-        .map(|e| e.id.as_str())
-        .collect();
-    let Some(index) = ids.iter().position(|candidate| *candidate == id) else {
-        return false;
-    };
-    let Ok(offset) = isize::try_from(offset) else {
-        return false;
-    };
-    index
-        .checked_add_signed(offset)
-        .is_some_and(|target| target < ids.len() && target != index)
 }

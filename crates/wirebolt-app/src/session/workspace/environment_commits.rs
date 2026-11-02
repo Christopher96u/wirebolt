@@ -155,7 +155,6 @@ impl WorkspaceOperations {
                     values,
                 )));
             }
-            C::Move { offset } => return move_environment(workspace, id, offset),
             C::Create => unreachable!(),
         };
         if original == environment && values.is_empty() {
@@ -168,44 +167,6 @@ impl WorkspaceOperations {
     }
 }
 
-fn move_environment(mut workspace: DomainWorkspace, id: &str, offset: i64) -> PreparedResult {
-    if id == "global" {
-        return Err("Globals stays at the top.".into());
-    }
-    let mut environments: Vec<_> = workspace
-        .environments
-        .iter()
-        .filter(|e| e.id != "global")
-        .cloned()
-        .collect();
-    let index = environments
-        .iter()
-        .position(|e| e.id == id)
-        .ok_or("This environment no longer exists.")?;
-    let signed_offset =
-        isize::try_from(offset).unwrap_or(if offset < 0 { isize::MIN } else { isize::MAX });
-    let destination = index
-        .saturating_add_signed(signed_offset)
-        .min(environments.len().saturating_sub(1));
-    if destination == index {
-        return Ok(None);
-    }
-    let moved = environments.remove(index);
-    environments.insert(destination, moved);
-    workspace.environments.retain(|e| e.id == "global");
-    workspace.environments.extend(environments);
-    Ok(Some((
-        NamedEdit {
-            edit: SessionWorkspaceEdit::RestoreEnvironments {
-                environments: workspace.environments,
-            },
-            name: "Reorder Environments".into(),
-            created_id: None,
-        },
-        HashMap::new(),
-    )))
-}
-
 fn create_environment(workspace: &DomainWorkspace) -> PreparedCommit {
     let mut environment = actions::new_environment();
     let mut suffix = 1;
@@ -213,13 +174,6 @@ fn create_environment(workspace: &DomainWorkspace) -> PreparedCommit {
         suffix += 1;
         environment.name = format!("New Environment {suffix}");
     }
-    environment.order = workspace
-        .environments
-        .iter()
-        .map(|e| e.order)
-        .max()
-        .unwrap_or(-1)
-        .saturating_add(1);
     (
         environment::restore(workspace, environment, "Add Environment"),
         HashMap::new(),

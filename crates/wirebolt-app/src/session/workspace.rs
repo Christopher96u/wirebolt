@@ -28,9 +28,6 @@ pub enum SessionEnvironmentRestoreSelection {
     reason = "Typed edits carry the existing request record across UniFFI."
 )]
 pub enum SessionWorkspaceEdit {
-    RestoreEnvironments {
-        environments: Vec<DomainEnvironment>,
-    },
     RestoreEnvironment {
         environment: DomainEnvironment,
         index: u64,
@@ -107,9 +104,6 @@ pub enum SessionWorkspaceEdit {
     reason = "Typed commands carry the existing request record across UniFFI."
 )]
 pub enum SessionWorkspaceCommand {
-    ReorderEnvironments {
-        ids: Vec<String>,
-    },
     SaveWorkspaceProxy {
         proxy: Option<DomainProxy>,
     },
@@ -275,18 +269,9 @@ pub fn plan_edit(
         observed_secrets: vec![],
     };
     match step {
-        E::RestoreEnvironments { environments } => {
-            plan.inverse = E::RestoreEnvironments {
-                environments: workspace.environments.clone(),
-            };
-            plan.commands.push(C::ReorderEnvironments {
-                ids: environments.iter().map(|e| e.id.clone()).collect(),
-            });
-            plan.environments = Some(environments);
-        }
         E::RestoreEnvironment {
             environment,
-            index,
+            index: _,
             selection,
         } => {
             let previous = workspace
@@ -320,12 +305,8 @@ pub fn plan_edit(
                 },
             );
             environments.retain(|e| e.id != environment.id);
-            environments.insert(
-                usize::try_from(index)
-                    .unwrap_or(usize::MAX)
-                    .min(environments.len()),
-                environment.clone(),
-            );
+            environments.push(environment.clone());
+            environments.sort_by(|left, right| left.id.cmp(&right.id));
             if previous.is_none()
                 && selection != SessionEnvironmentRestoreSelection::Preserve
                 && environment.id != wirebolt_core::GLOBAL_ENVIRONMENT_ID
@@ -347,6 +328,7 @@ pub fn plan_edit(
             );
             let mut environments = workspace.environments.clone();
             environments.remove(index);
+            environments.sort_by(|left, right| left.id.cmp(&right.id));
             if plan.selected_environment_id.as_deref() == Some(&id) {
                 plan.selected_environment_id = None;
                 plan.changes_environment_selection = true;

@@ -14,7 +14,7 @@ Changes under **Unreleased** are on `main` but not in a published build yet. Dow
 
 ### Changed
 
-- Environments save as you edit, with undo and redo for names, variables, secrets and environment order. Globals appears once, and long names and values stay on one line. Saved environment ordering requires this build or newer; older builds cannot read the added ordering fields.
+- Environments save as you edit, with undo and redo for names, variables and secrets. Globals appears once, and long names and values stay on one line.
 
 - Find in large responses is faster and uses less memory; closing tabs no longer copies every open request.
 - Sidebar requests show URL paths, folders are quieter, activity columns align, and History shows the active request's entry count.

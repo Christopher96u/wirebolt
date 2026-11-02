@@ -171,6 +171,12 @@ private actor InspectorStore: WorkspacePersistence {
                     precondition(input.bounds.height >= (input.font?.pointSize ?? 0), "Text is not clipped vertically")
                 }
                 precondition(!inputs[0].convert(inputs[0].bounds, to: host).intersects(inputs[1].convert(inputs[1].bounds, to: host)), "Name and value never overlap")
+                if let directory = ProcessInfo.processInfo.environment["WIREBOLT_INSPECTOR_CAPTURE_DIRECTORY"] {
+                    guard let bitmap = host.bitmapImageRepForCachingDisplay(in: host.bounds) else { preconditionFailure("Inspector capture failed") }
+                    host.cacheDisplay(in: host.bounds, to: bitmap)
+                    let name = "inspector-\(density)-\(size).png"
+                    try bitmap.representation(using: .png, properties: [:])!.write(to: URL(fileURLWithPath: directory).appending(path: name))
+                }
                 window.close()
             }
         }

@@ -110,7 +110,6 @@ pub fn environment(
     rows: &[(&str, DomainValueSource, bool)],
 ) -> DomainEnvironment {
     DomainEnvironment {
-        order: 0,
         id: id.into(),
         name: name.into(),
         variables: rows

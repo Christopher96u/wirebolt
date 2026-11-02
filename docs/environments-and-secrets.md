@@ -20,9 +20,8 @@ Use variables in request fields with double braces:
 
 Outside editing, the URL shows each reference as a chip with just the variable name, red when no active environment defines it; click the URL to edit the raw `{{name}}` text. Global variables apply across environments. The selected environment overrides matching Global keys. A disabled row is omitted from resolution. If a variable fails to resolve, check spelling, enabled state and the selected environment before sending again.
 
-Selecting an environment in the inspector finishes the current edit and chooses the environment requests use. Globals always appears once, at the top. Use an environment’s context menu to rename, delete or move it up or down. Long names and values use one line; hover or focus a field to read the full text.
+Selecting an environment in the inspector finishes the current edit and chooses the environment requests use. Globals always appears once, at the top. Use an environment’s context menu to rename or delete it. Long names and values use one line; hover or focus a field to read the full text.
 
-Environment order is saved in `wirebolt.toml` with one atomic write, so a failed reorder leaves the previous order intact. Newly saved environment files include an `order` field for placing new environments. These files, and a manifest with `environment_order`, require a build with live environment editing; older builds reject the added fields. Keep a workspace backup before switching back to an older build.
 
 ## Credentials and secret references
 

@@ -128,7 +128,6 @@ pub fn document_id(name: &str, fallback: &str) -> String {
 #[must_use]
 pub fn new_environment() -> DomainEnvironment {
     DomainEnvironment {
-        order: 0,
         id: unique_id(),
         name: "New Environment".into(),
         variables: vec![],
