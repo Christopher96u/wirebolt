@@ -143,6 +143,11 @@ private actor InspectorStore: WorkspacePersistence {
         try await settle(host)
         precondition(closeCount == 2 && model.workspace.environments[0].variables[0].key == "close_trigger", "Toolbar close commits in-progress text")
         print("inspectorToolbarCloseCommits: passed")
+        replace(key, with: "escape_key", window: window)
+        (key.currentEditor() as? NSTextView)?.doCommand(by: #selector(NSResponder.cancelOperation(_:)))
+        try await settle(host)
+        precondition(closeCount == 3 && model.workspace.environments[0].variables[0].key == "escape_key", "Escape closes without dropping the active field")
+        print("inspectorEscapeCommits: passed")
         try await layoutFixtures(model: model, defaults: defaults)
     }
     static func layoutFixtures(model: WireboltModel, defaults: UserDefaults) async throws {
@@ -158,7 +163,7 @@ private actor InspectorStore: WorkspacePersistence {
                 window.contentView = host
                 window.orderFront(nil)
                 try await settle(host)
-                let inputs = fields(host).filter { $0.accessibilityLabel() == "Variable name" || $0.accessibilityLabel() == "Value for close_trigger" }
+                let inputs = fields(host).filter { $0.accessibilityLabel() == "Variable name" || $0.accessibilityLabel() == "Value for \(model.workspace.environments[0].variables[0].key)" }
                 precondition(inputs.count == 2)
                 for input in inputs {
                     let rect = input.convert(input.bounds, to: host)
