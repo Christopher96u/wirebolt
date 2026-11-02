@@ -28,7 +28,9 @@ pub fn active_variables(
 ) -> HashMap<String, DomainValueSource> {
     let mut values = HashMap::new();
     for environment in [
-        environments.iter().find(|e| e.id == "global"),
+        environments
+            .iter()
+            .find(|e| e.id == wirebolt_core::GLOBAL_ENVIRONMENT_ID),
         environments
             .iter()
             .find(|e| Some(e.id.as_str()) == selected),

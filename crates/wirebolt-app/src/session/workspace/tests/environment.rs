@@ -474,11 +474,7 @@ async fn environment_creation_deletion_and_undo_match_reload_id_order() {
     });
     let keychain = Keychain::default();
     // Deliberately insert IDs out of order and use names with a different order.
-    for (id, name) in [
-        ("zulu", "Alpha"),
-        ("alpha", "Zulu"),
-        ("global", "Global Environment"),
-    ] {
+    for (id, name) in [("zulu", "Alpha"), ("alpha", "Zulu"), ("global", "Globals")] {
         let saved = h
             .ops
             .save_environment(
@@ -553,4 +549,19 @@ fn assert_environment_reload_matches(h: &Harness, disk: &DiskStore) {
             .windows(2)
             .all(|pair| pair[0].id < pair[1].id)
     );
+}
+
+#[test]
+fn inspector_browsing_preserves_active_environment_until_explicit_use() {
+    use crate::session::workspace::environment::EnvironmentInspector;
+    let active = Some("staging".to_owned());
+    let mut inspector = EnvironmentInspector::new(active.clone());
+    for id in ["production", wirebolt_core::GLOBAL_ENVIRONMENT_ID, "local"] {
+        inspector.browse(id.into());
+        assert_eq!(active.as_deref(), Some("staging"));
+        assert_eq!(inspector.editing_id, id);
+    }
+    assert_eq!(inspector.use_for_requests().as_deref(), Some("local"));
+    inspector.browse(wirebolt_core::GLOBAL_ENVIRONMENT_ID.into());
+    assert_eq!(inspector.use_for_requests(), None);
 }

@@ -47,18 +47,18 @@ pub struct EnvironmentCommitOutcome {
 pub enum SessionEnvironmentRestoreSelection {
     SelectCreated,
     SelectRestored,
+    RestorePrevious { id: Option<String> },
     Preserve,
 }
 #[uniffi::remote(Enum)]
 pub enum SessionWorkspaceEdit {
     RestoreEnvironment {
         environment: DomainEnvironment,
-        index: u64,
         selection: SessionEnvironmentRestoreSelection,
     },
     RemoveEnvironment {
         id: String,
-        is_creation: bool,
+        selection: SessionEnvironmentRestoreSelection,
     },
     RestoreRequest {
         location: DomainLocation,
@@ -887,4 +887,28 @@ pub fn workspace_environment_inspector(
     environments: Vec<DomainEnvironment>,
 ) -> Vec<DomainEnvironment> {
     wirebolt_app::session::workspace::environment::inspector_environments(environments)
+}
+
+#[derive(Debug, uniffi::Object)]
+pub struct AppEnvironmentInspector {
+    inner: std::sync::Mutex<wirebolt_app::session::workspace::environment::EnvironmentInspector>,
+}
+#[uniffi::export]
+impl AppEnvironmentInspector {
+    #[uniffi::constructor]
+    pub fn new(active: Option<String>) -> std::sync::Arc<Self> {
+        std::sync::Arc::new(Self {
+            inner: std::sync::Mutex::new(
+                wirebolt_app::session::workspace::environment::EnvironmentInspector::new(active),
+            ),
+        })
+    }
+    pub fn browse(&self, id: String) -> String {
+        let mut inspector = crate::lock(&self.inner);
+        inspector.browse(id);
+        inspector.editing_id.clone()
+    }
+    pub fn use_for_requests(&self) -> Option<String> {
+        crate::lock(&self.inner).use_for_requests()
+    }
 }

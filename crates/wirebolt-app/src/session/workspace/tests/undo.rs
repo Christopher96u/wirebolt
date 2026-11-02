@@ -632,3 +632,58 @@ async fn a_new_successful_edit_discards_redo_payloads_but_failed_edits_keep_them
     );
     assert!(h.ops.reverse_token(redo.token).is_none());
 }
+
+#[tokio::test]
+async fn undo_environment_creation_restores_previous_active_and_redo_is_symmetric() {
+    for selected in [None, Some("staging".to_owned())] {
+        let h = Harness::new(DomainWorkspace {
+            environments: vec![DomainEnvironment {
+                id: "staging".into(),
+                ..Default::default()
+            }],
+            ..Default::default()
+        });
+        let created = h
+            .ops
+            .mutate(
+                Action::SaveEnvironment {
+                    environment: DomainEnvironment {
+                        id: "new".into(),
+                        ..Default::default()
+                    },
+                },
+                selected.clone(),
+                &h.store,
+                &h.secrets,
+                &Secrets,
+            )
+            .await;
+        let undo = created.undo.unwrap();
+        let redo = h.ops.reverse_token(undo.token).unwrap();
+        let removed = h
+            .ops
+            .undo(
+                undo.token,
+                redo.token,
+                Some("new".into()),
+                &h.store,
+                &h.secrets,
+                &Secrets,
+            )
+            .await;
+        let plan = removed.plan.unwrap();
+        assert!(plan.changes_environment_selection);
+        assert_eq!(plan.selected_environment_id, selected);
+        let undo = h.ops.reverse_token(redo.token).unwrap();
+        let restored = h
+            .ops
+            .undo(
+                redo.token, undo.token, selected, &h.store, &h.secrets, &Secrets,
+            )
+            .await;
+        assert_eq!(
+            restored.plan.unwrap().selected_environment_id.as_deref(),
+            Some("new")
+        );
+    }
+}

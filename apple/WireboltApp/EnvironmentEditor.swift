@@ -79,6 +79,7 @@ struct EnvironmentEditor: View {
     let closeTrigger: Int
     let onClose: () -> Void
     @State private var editing: EnvironmentInspectorEditing
+    @State private var inspector: AppEnvironmentInspector
     @State private var selectedID: String
     @State private var editingNameID: String?
     @State private var revealedSecretIDs: Set<String> = []
@@ -89,6 +90,7 @@ struct EnvironmentEditor: View {
         self.closeTrigger = closeTrigger
         self.onClose = onClose
         _editing = State(initialValue: EnvironmentInspectorEditing(model: model))
+        _inspector = State(initialValue: AppEnvironmentInspector(active: model.selectedEnvironmentID))
         _selectedID = State(initialValue: model.selectedEnvironmentID ?? WorkspaceDraft.globalEnvironmentID)
     }
 
@@ -108,6 +110,10 @@ struct EnvironmentEditor: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: WireboltTheme.Spacing.xLarge) {
                     environmentList
+                    if selectedID != WorkspaceDraft.globalEnvironmentID {
+                        Button("Use for Requests") { Task { if await editing.flush() { model.selectedEnvironmentID = inspector.useForRequests() } } }
+                            .disabled(selectedID == model.selectedEnvironmentID)
+                    }
                     variablesCard
                     if let problem = editing.commandProblem { inlineProblem(problem) }
                     Label("Secrets stay in this Mac’s Keychain.", systemImage: "key")
@@ -121,17 +127,14 @@ struct EnvironmentEditor: View {
         .padding(WireboltTheme.Spacing.xLarge)
         .background(theme.definition.overlay.color)
         .onChange(of: closeTrigger) { Task { _ = await close() } }
-        .onChange(of: model.selectedEnvironmentID) { _, id in
-            if !editing.hasEdits { selectedID = id ?? WorkspaceDraft.globalEnvironmentID }
-        }
         .onChange(of: model.workspace.environments) {
             if !environments.contains(where: { $0.id == selectedID }), !editing.hasEdits {
-                selectedID = model.selectedEnvironmentID ?? WorkspaceDraft.globalEnvironmentID
+                selectedID = inspector.browse(id: model.selectedEnvironmentID ?? WorkspaceDraft.globalEnvironmentID)
             }
         }
-        .onAppear { interface.saveEnvironmentEdits = close }
+        .onAppear { interface.closeEnvironmentInspector = close }
         .onChange(of: editing.hasEdits, initial: true) { interface.hasEnvironmentEdits = editing.hasEdits }
-        .onDisappear { interface.hasEnvironmentEdits = false; interface.saveEnvironmentEdits = nil }
+        .onDisappear { interface.hasEnvironmentEdits = false; interface.closeEnvironmentInspector = nil }
         .focusedValue(\.environmentAddRow, addRow)
         .onExitCommand { Task { _ = await close() } }
     }
@@ -143,7 +146,7 @@ struct EnvironmentEditor: View {
                 Spacer()
                 Button("New Environment", systemImage: "plus") {
                     perform(.create) {
-                        selectedID = model.selectedEnvironmentID ?? "global"
+                        selectedID = inspector.browse(id: model.selectedEnvironmentID ?? WorkspaceDraft.globalEnvironmentID)
                         editingNameID = selectedID
                     }
                 }.labelStyle(.iconOnly).buttonStyle(GhostIconStyle())
@@ -160,16 +163,19 @@ struct EnvironmentEditor: View {
                                 HStack(spacing: WireboltTheme.Spacing.medium) {
                                     Circle().fill(environmentColor(environment.name)).frame(width: 7, height: 7)
                                         .accessibilityHidden(true)
-                                    Text(environment.id == "global" ? "Globals" : environment.name)
+                                    Text(environment.name)
                                         .lineLimit(1).truncationMode(.middle)
                                     Spacer(minLength: 0)
-                                    if selectedID == environment.id { Image(systemName: "checkmark").foregroundStyle(WireboltTheme.muted) }
+                                    if model.selectedEnvironmentID == environment.id {
+                                        Label("Active", systemImage: "checkmark.circle.fill")
+                                            .font(WireboltTheme.Typography.detail).foregroundStyle(WireboltTheme.muted)
+                                    }
                                 }
                                 .contentShape(.rect)
                             }
                             .buttonStyle(.plain)
-                            .help(environment.id == "global" ? "Globals" : environment.name)
-                            .accessibilityLabel(environment.id == "global" ? "Globals" : environment.name)
+                            .help(environment.name)
+                            .accessibilityLabel(environment.name)
                             .accessibilityAddTraits(selectedID == environment.id ? .isSelected : [])
                         }
                     }
@@ -179,10 +185,11 @@ struct EnvironmentEditor: View {
                 .frame(minHeight: theme.density.controlHeight + WireboltTheme.Spacing.medium)
                 .background(selectedID == environment.id ? theme.definition.selected.color : .clear, in: .rect(cornerRadius: theme.geometry.row))
                 .contextMenu {
+                    Button("Use for Requests") { Task { if await select(environment.id) { model.selectedEnvironmentID = inspector.useForRequests() } } }
                     Button("Rename") { Task { if await select(environment.id) { editingNameID = environment.id } } }
-                        .disabled(environment.id == "global")
+                        .disabled(environment.id == WorkspaceDraft.globalEnvironmentID)
                     Button("Delete", role: .destructive) { perform(.delete, environmentID: environment.id) }
-                        .disabled(environment.id == "global")
+                        .disabled(environment.id == WorkspaceDraft.globalEnvironmentID)
                 }
             }
         }
@@ -235,7 +242,7 @@ struct EnvironmentEditor: View {
                 }.toggleStyle(.button).buttonStyle(GhostIconStyle())
                     .accessibilityLabel("Store \(variable.key) in Keychain")
             }
-            forEachProblem(variable)
+            variableProblems(variable)
         }
         .padding(.vertical, WireboltTheme.Spacing.xSmall)
         .contextMenu {
@@ -246,7 +253,7 @@ struct EnvironmentEditor: View {
     }
 
     @ViewBuilder
-    private func forEachProblem(_ variable: EnvironmentVariableDraft) -> some View {
+    private func variableProblems(_ variable: EnvironmentVariableDraft) -> some View {
         if let problem = editing.problems[.key(selectedID, variable.id)] { inlineProblem(problem) }
         if let problem = editing.problems[.value(selectedID, variable.id)] { inlineProblem(problem) }
     }
@@ -268,8 +275,7 @@ struct EnvironmentEditor: View {
     private func select(_ id: String) async -> Bool {
         guard await editing.flush() else { return false }
         editingNameID = nil
-        selectedID = id
-        model.selectedEnvironmentID = id == "global" ? nil : id
+        selectedID = inspector.browse(id: id)
         return true
     }
 
