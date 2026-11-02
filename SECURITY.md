@@ -25,7 +25,7 @@ Wirebolt is maintained by one person. The goal is to acknowledge reports within 
 Wirebolt is local-first: no accounts, telemetry or cloud sync. In scope:
 
 - Secret material leaking out of Keychain into workspace files, Git, history, logs, exports or raw-request views
-- Unsafe handling of imported files (cURL, HAR, Postman, Wirebolt JSON and other supported formats)
+- Unsafe handling of imported files (cURL, HAR, Postman, Insomnia and Bruno)
 - Proxy, TLS validation or certificate handling that differs from the configured policy
 - Markdown notes loading remote content, or Markdown or HTML response previews executing scripts
 

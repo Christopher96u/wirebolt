@@ -10,7 +10,7 @@ Scope is **macOS only**. No other platform is built or packaged here.
 
 ## Non-goals
 
-- No user-visible behavior, layout or styling changes. Every screen, shortcut, message and file format stays the same.
+- No user-visible behavior, layout or styling changes. Every screen, shortcut and message stays the same.
 - No new features, no redesign, no dependency upgrades beyond what the move needs.
 - No Linux or Windows code paths, interface or packaging.
 
@@ -18,7 +18,7 @@ Scope is **macOS only**. No other platform is built or packaged here.
 
 ```text
 crates/
-├── wirebolt-core/   # transport, storage, imports/exports, proxy, git (unchanged role)
+├── wirebolt-core/   # transport, storage, imports, proxy, git (unchanged role)
 ├── wirebolt-app/    # application core — state + commands + events, no UI, no Apple APIs
 │   ├── domain/      #   requests, workspace drafts, environments, variables, cURL, proxy policy,
 │   │                #   sidebar snapshot, labels, theme tokens and contrast, OAuth 2 logic
@@ -119,7 +119,7 @@ warmup and the core version handshake (ABI revision 5).
 | `WireboltKit/ThemeDefinition.swift` | Cached token projections and the observable ThemeStore; presets use a generated enum with Rust-supplied persisted preference strings. Density, geometry, typography, typed method-chip tokens, custom-theme derivation, JSONC import, validation, versioned library persistence and contrast resolution are Rust. Native file work is dispatched outside the cooperative pool; the app supplies the Application Support URL. |
 | `WireboltKit/VariableTemplates.swift` | Native UTF-16/NSRange projections, cached completion entries and a batched Foundation locale-comparison foreign trait; all parsing, merging, masking and matching are Rust. |
 | `WireboltKit/WebSocket.swift` | Main-actor observation, native callback/async-sequence handoff, cached native UUID/date projections, and Foundation localization of Cocoa diagnostics. Notices use the generated enum. Rust owns lifecycle generations, message retention/caps, body preparation and binary decoding, preserving the last send error on a normal server close. |
-| `WireboltKit/WireboltModel.swift` | Observation, native UndoManager token registration and platform-effect relay. Rust owns workspace action construction, reversible edits and undo payloads, load/switch/rename transitions, save/discard/close policy, import/export and Git coordination (`session/workspace`), and send/cancel, history/activity, per-run cookies, variable selection and resolution, secret editing and release, proxy/transport writes, OAuth acquisition and cURL coordination (`session/runtime`). Native caches update only changed properties. |
+| `WireboltKit/WireboltModel.swift` | Observation, native UndoManager token registration and platform-effect relay. Rust owns workspace action construction, reversible edits and undo payloads, load/switch/rename transitions, save/discard/close policy, import and Git coordination (`session/workspace`), and send/cancel, history/activity, per-run cookies, variable selection and resolution, secret editing and release, proxy/transport writes, OAuth acquisition and cURL coordination (`session/runtime`). Native caches update only changed properties. |
 | `WireboltKit/WorkspaceOperations.swift` | Typed callbacks for injected stores and native editor capture/save acknowledgements. Production operations call Rust directly. Git records retain generated delta/outcome enums without parsing strings. |
 | `WireboltKit/WorkspaceChrome.swift` | Typed label facades and Apple locale-aware numeric formatting of Rust-selected timeout units. |
 | `WireboltApp/ContentView.swift` | SwiftUI request/response composition, bindings, file panels, keyboard/focus actions and native drag hit-testing. Credential edit names, folder-drop eligibility, move-menu collections and environment ordering are Rust (`domain/request`, `domain/sidebar`). Body kinds, transitions and JSON/XML/HTML formatting are Rust (`domain/body`), as are WebSocket message kinds, binary encodings and their transitions (`session/websocket`); the view passes edited text and applies the result. |

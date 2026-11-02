@@ -41,13 +41,13 @@ Items use the Keychain service `io.github.christopher96u.wirebolt`. Approve acce
 
 ## What is shared
 
-| Data | Workspace / export |
+| Data | Workspace folder |
 | --- | --- |
 | Saved URLs, parameters, headers, bodies, notes | Included |
 | Literal environment values | Included |
 | Secret-reference names | Included |
-| Referenced Keychain credential values, including secret variables | Not resolved into the export |
+| Referenced Keychain credential values, including secret variables | Not included |
 | Response history and cookies | Not included in the workspace document tree |
 | Paths to upload files | Can be included; file bytes are not bundled |
 
-Review literal fields before committing or exporting. Keychain storage cannot protect a credential you put directly in an ordinary URL, note or JSON body.
+Review literal fields before sharing or committing. Keychain storage cannot protect a credential you put directly in an ordinary URL, note or JSON body.

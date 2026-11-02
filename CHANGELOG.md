@@ -46,7 +46,7 @@ Changes under **Unreleased** are on `main` but not in a published build yet. Dow
 - Requests with the same ID shared history across collections. History now follows collection and request IDs through moves, saves and workspace folder renames or relocation.
 - A damaged history index is reported once, then recording and clearing history continue with a fresh index.
 - Clearing history or evicting old entries made a restored response unreadable. Displayed responses now keep their own temporary body until the last viewer releases it, using APFS cloning where available; crash leftovers are cleaned on the next launch.
-- Moving an imported request could overwrite another request. New imports have unique IDs; moves with a ID collision are refused so both requests and their undo state survive.
+- Moving an imported request could overwrite another request. New imports have unique IDs; moves with an ID collision are refused so both requests and their undo state survive.
 - Deleting a collection also deleted attachments and other files that Undo could not restore. It now removes only readable Wirebolt documents and leaves other files in place.
 - Malformed Insomnia folder IDs could crash import. Invalid parent links, cycles and hierarchies deeper than 128 levels now report an error.
 - A failed response export deleted the previous destination. Export now replaces it only after the body has been copied successfully, respects normal file permissions and retains the destination's permissions and supported extended attributes.
@@ -80,7 +80,7 @@ First release candidate for Wirebolt 1.0. It collects everything since 0.1.0-bet
 - `{{variable}}` highlighting, value tooltips and completion in the URL and key-value fields.
 - Keyboard access: full sidebar navigation (arrows, type-select, Return to rename), Move Up/Down (**⌥⌘↑** / **⌥⌘↓**) and Move To, Cancel Request (**⌘.**), request and response section commands (**⌥⌘1–6**, **⌃⌘1–5**), Focus Sidebar (**⌘0**) and Focus Response (**⌥⌘0**).
 - A welcome state with New Request, Import and Open Workspace for empty workspaces, and a New Request row in empty collections.
-- Open or drop cURL, HAR, Postman and Wirebolt JSON files on the app to import them. File → Open Recent lists workspaces.
+- Open or drop cURL, HAR and Postman files on the app to import them. File → Open Recent lists workspaces.
 - API Key and OAuth 2.0 can be chosen in the Auth tab; every request keeps its own Keychain credentials, including duplicates.
 - Secret environment variables stored in Keychain, a Cookies window per workspace (delete one or Clear All), Rename Workspace, and client certificate / custom CA settings.
 - Git Collaboration can initialize a repository and abort a conflicted merge.
@@ -93,7 +93,6 @@ First release candidate for Wirebolt 1.0. It collects everything since 0.1.0-bet
 ### Changed
 
 - Postman import keeps authentication (with inheritance), variables, path variables, disabled rows, GraphQL and binary bodies, body languages and descriptions. HAR import drops HTTP/2 pseudo-headers and maps form bodies. cURL import handles multi-line commands and the common options (`-u`, `-F`, `-b`, `--data-urlencode`, `-k`, `-L`, …). Unsupported files (OpenAPI, Postman v1) explain why.
-- Wirebolt JSON export round-trips secret references, request proxy and TLS settings, content types, multipart files, environments and separate collections.
 - Copy cURL reads secrets from Keychain when the command runs instead of placing them on the clipboard.
 - New workspaces are named after their folder. Cookies are kept per workspace and session cookies are no longer saved.
 
@@ -116,7 +115,6 @@ First release candidate for Wirebolt 1.0. It collects everything since 0.1.0-bet
 - Saving an open request after moving it across collections targets the new location.
 - Deleting a folder closes descendant request sessions.
 - Pending workspace transport edits persist after settings closes.
-- Wirebolt JSON export preserves API key and OAuth configuration through native metadata.
 
 ### Clarified
 
