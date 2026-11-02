@@ -548,3 +548,35 @@ fn oversized_save_preserves_readable_request() {
     assert!(snapshot.problems.is_empty());
     assert_eq!(snapshot.collections[0].requests[0].name, "Original");
 }
+
+#[test]
+fn delete_collection_preserves_unmanaged_and_unreadable_files() {
+    let directory = tempdir().unwrap();
+    let store = WorkspaceStore::create(directory.path(), &Workspace::new("Fixture")).unwrap();
+    store
+        .save(&WorkspaceDocument::Collection(Collection::new(
+            id("api"),
+            "API".into(),
+        )))
+        .unwrap();
+    store
+        .save(&WorkspaceDocument::Request {
+            collection_id: id("api"),
+            request: Request::new(id("saved"), "Saved", "GET", "https://example.com"),
+        })
+        .unwrap();
+    let collection = directory.path().join("collections/api");
+    let attachment = collection.join("attachment.bin");
+    let malformed = collection.join("requests/broken.toml");
+    fs::write(&attachment, b"attachment").unwrap();
+    fs::write(&malformed, b"unreadable = [").unwrap();
+    fs::create_dir(collection.join("requests/notes")).unwrap();
+    fs::write(collection.join("requests/notes/readme.txt"), b"notes").unwrap();
+    store.delete_collection(&id("api")).unwrap();
+    assert_eq!(fs::read(attachment).unwrap(), b"attachment");
+    assert_eq!(fs::read(malformed).unwrap(), b"unreadable = [");
+    assert!(collection.join("requests/notes/readme.txt").is_file());
+    assert!(!collection.join("requests/saved.toml").exists());
+    assert!(!collection.join("collection.toml").exists());
+    assert!(store.load().unwrap().collections.is_empty());
+}

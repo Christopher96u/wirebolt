@@ -28,6 +28,8 @@ Changes under **Unreleased** are on `main` but not in a published build yet. Dow
 
 ### Fixed
 
+- Deleting a collection also deleted attachments and other files that Undo could not restore. It now removes only readable Wirebolt documents and leaves other files in place.
+
 - Malformed Insomnia folder IDs could crash import. Invalid parent links, cycles and hierarchies deeper than 128 levels now report an error.
 - A failed response export deleted the previous destination. Export now replaces it only after the body has been copied successfully.
 - Saving a request larger than the 16 MiB document limit made it disappear on reopen. Save now rejects oversized documents and keeps the previous file.
