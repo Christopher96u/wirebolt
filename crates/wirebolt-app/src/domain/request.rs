@@ -179,7 +179,7 @@ pub fn new_auth(kind: DomainAuthenticationKind) -> DomainAuthentication {
 pub fn parse_bulk(source: &str, previous: Vec<DomainField>) -> Vec<DomainField> {
     let mut unused = previous;
     source
-        .split('\n')
+        .split(['\r', '\n'])
         .filter(|s| !s.is_empty())
         .filter_map(|line| {
             let (enabled, text) = line

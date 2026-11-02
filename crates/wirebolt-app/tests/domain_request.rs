@@ -436,3 +436,21 @@ fn credential_edits_copy_shared_names_and_reuse_private_names() {
         "password"
     )));
 }
+
+#[test]
+fn bulk_fields_accept_crlf_cr_and_lf_without_changing_value_content() {
+    for ending in ["\r\n", "\r", "\n"] {
+        let source = [
+            "Accept: application/json",
+            "X-Test: a  b\tc:d",
+            "# Disabled: off",
+            "",
+        ]
+        .join(ending);
+        let fields = parse_bulk(&source, vec![]);
+        assert_eq!(fields.len(), 3, "{ending:?}");
+        assert_eq!(fields[0].value.editable(), "application/json");
+        assert_eq!(fields[1].value.editable(), "a  b\tc:d");
+        assert!(!fields[2].enabled);
+    }
+}
