@@ -545,3 +545,29 @@ fn rejects_every_noncurrent_workspace_schema() {
         Err(StorageError::UnsupportedSchema { found: 0, .. })
     ));
 }
+
+#[test]
+fn unversioned_old_shapes_use_the_unsupported_schema_diagnostic() {
+    let root = tempdir().unwrap();
+    fs::write(
+        root.path().join("wirebolt.toml"),
+        "name = \"Old\"\nobsolete = true\n",
+    )
+    .unwrap();
+    assert!(matches!(
+        WorkspaceStore::open(root.path()),
+        Err(StorageError::UnsupportedSchema { found: 0, .. })
+    ));
+    let store =
+        WorkspaceStore::create(root.path().join("current"), &Workspace::new("Current")).unwrap();
+    fs::write(
+        store.root().join("environments/old.toml"),
+        "id = \"old\"\nname = \"Old\"\n[variables]\nhost = \"localhost\"\n",
+    )
+    .unwrap();
+    let snapshot = store.load().unwrap();
+    assert_eq!(
+        snapshot.problems[0].kind,
+        DocumentProblemKind::UnsupportedSchema
+    );
+}

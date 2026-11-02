@@ -120,11 +120,6 @@ impl RuntimeRuns {
                 lock(run).cancel(&active.id);
                 active.transport.cancel(&active.id);
             }
-        } else {
-            let mut run = lock(run);
-            if let Some(id) = run.snapshot().active_run_id {
-                run.cancel(&id);
-            }
         }
     }
     pub async fn send(&self, command: RuntimeSend) -> Option<SessionFailure> {

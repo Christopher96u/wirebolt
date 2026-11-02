@@ -152,7 +152,6 @@ enum BridgeSmoke {
         sessionRun.sink.event(event: .complete(completion: RunCompletion(bytesReceived: 10, totalTimeNS: 1))); await sessionRun.complete()
         precondition(session.responseText == "café 🌍" && !session.isRunning)
         precondition(session.bodyStore != nil && session.completion?.bytesReceived == 10)
-        let stale = RunID()
         _ = sessionRun.sink.bytes(data: Data("late".utf8)); session.mirror()
         precondition(session.responseText == "café 🌍", "stale native events must not mutate the Rust run")
         store.pin(tabID: session.id)

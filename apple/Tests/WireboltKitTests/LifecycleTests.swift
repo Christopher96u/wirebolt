@@ -132,7 +132,8 @@ struct LifecycleTests {
 
     @Test("Menu command state changes only when availability changes")
     @MainActor func commandStateTracksAvailability() async throws {
-        let model = WireboltModel(runner: LifecycleRunner())
+        let runner = PendingRequestRunner()
+        let model = WireboltModel(runner: runner)
         let commands = WorkspaceCommandState(model: model)
         #expect(!commands.hasActiveSession)
         let session = model.sessions.open(draft: RequestDraft(id: "a", name: "A"), collectionID: "api")
@@ -143,8 +144,8 @@ struct LifecycleTests {
         session.draft.url = "h"
         await settle()
         #expect(commands.hasURL)
-        let liveRun = await RuntimeRunFixture.start(session)
-        defer { liveRun.cancel() }
+        let liveRun = await runner.start(model, session: session)
+        defer { model.cancel(session); liveRun.cancel() }
         await settle()
         #expect(commands.isRunning)
         #expect(commands.tabCount == 1)
@@ -308,9 +309,10 @@ extension LifecycleTests {
 
     @Test(arguments: [2, 20, 100])
     @MainActor func mixedCloseUsesNativeDirtyStateAndCancelsOnlyClosedRuns(count: Int) async {
-        let model = WireboltModel(runner: LifecycleRunner())
+        let runner = PendingRequestRunner()
+        let model = WireboltModel(runner: runner)
         let tabs = (0..<count).map { model.sessions.open(draft: RequestDraft(id: "\($0)", name: "Original")) }
-        let liveRun = await RuntimeRunFixture.start(tabs[0])
+        let liveRun = await runner.start(model, session: tabs[0])
         defer { liveRun.cancel() }
         tabs[count - 1].draft.note = "Native edit, not synchronized"
         #expect(model.closeDocuments(.others(tabs[0].id)).map(\.id) == [tabs[count - 1].id])
@@ -323,6 +325,8 @@ extension LifecycleTests {
         #expect(tabs.enumerated().allSatisfy { $0.element.draftSynchronizationCount == ($0.offset == count - 1 ? 1 : 0) })
         #expect(tabs[0].isRunning)
         #expect(model.closeDocuments(.all).isEmpty)
+        await liveRun.value
+        #expect(runner.cancellationCount == 1)
         #expect(!tabs[0].isRunning)
         #expect(model.sessions.sessions.isEmpty)
     }

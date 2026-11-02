@@ -805,7 +805,7 @@ fn require_matching_id(
 }
 
 /// Parses a document in one pass. The parsed table is inspected for the root
-/// `schema_version` first, so a newer document is refused before its unknown
+/// `schema_version` first, so an unsupported document is refused before its unknown
 /// fields turn into a misleading TOML error, and only then deserialized.
 fn parse_document<T: Document>(path: &Path, source: &str) -> Result<T, StorageError> {
     let table =
@@ -815,11 +815,7 @@ fn parse_document<T: Document>(path: &Path, source: &str) -> Result<T, StorageEr
             path: path.to_owned(),
             reason,
         })?;
-    if let Some(found) = declared
-        && found != CURRENT_SCHEMA_VERSION
-    {
-        return Err(unsupported_schema(path, found));
-    }
+    require_current_schema(declared.unwrap_or(0), path)?;
 
     let document = T::deserialize(toml::de::Deserializer::from(table))
         .map_err(|error| invalid_toml(path, source, &error))?;
@@ -836,14 +832,6 @@ fn invalid_toml(path: &Path, source: &str, error: &toml::de::Error) -> StorageEr
         path: path.to_owned(),
         line,
         column,
-    }
-}
-
-fn unsupported_schema(path: &Path, found: u32) -> StorageError {
-    StorageError::UnsupportedSchema {
-        path: path.to_owned(),
-        found,
-        supported: CURRENT_SCHEMA_VERSION,
     }
 }
 

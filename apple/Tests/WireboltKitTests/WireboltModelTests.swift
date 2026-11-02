@@ -91,12 +91,15 @@ struct WireboltModelTests {
 
     @Test("Workspace switching cancels old HTTP runs and clears the selected environment")
     @MainActor func workspaceSwitchClosesRuns() async throws {
-        let model = WireboltModel(runner: StubRunner(), persistence: MutationRecorder())
+        let runner = PendingRequestRunner()
+        let model = WireboltModel(runner: runner, persistence: MutationRecorder())
         let old = model.sessions.open(draft: RequestDraft(id: "old", name: "Old"))
-        let liveRun = await RuntimeRunFixture.start(old)
+        let liveRun = await runner.start(model, session: old)
         defer { liveRun.cancel() }
         model.selectedEnvironmentID = "old-environment"
         #expect(await model.openWorkspace(using: MutationRecorder()))
+        await liveRun.value
+        #expect(runner.cancellationCount == 1)
         #expect(!old.isRunning)
         #expect(model.sessions.sessions.isEmpty)
         #expect(model.selectedEnvironmentID == nil)
@@ -153,17 +156,20 @@ struct WireboltModelTests {
     @Test("Deleting a folder closes descendant splits and cancels their runs")
     @MainActor func deletedFolderClosesDescendants() async throws {
         let persistence = MutationRecorder()
-        let model = WireboltModel(runner: StubRunner(), persistence: persistence)
+        let runner = PendingRequestRunner()
+        let model = WireboltModel(runner: runner, persistence: persistence)
         let location = RequestLocation(collectionID: "api", groupID: "child", request: RequestDraft(id: "r"))
         model.workspace.collections = [CollectionDraft(id: "api", name: "API", groups: [GroupDraft(id: "parent", name: "Parent"), GroupDraft(id: "child", name: "Child", parentID: "parent")], requests: [location])]
         model.select(location)
         let original = try #require(model.sessions.activeSession)
         _ = model.sessions.split(tabID: original.id)
-        let liveRun = await RuntimeRunFixture.start(original)
+        let liveRun = await runner.start(model, session: original)
         defer { liveRun.cancel() }
         original.draft.note = "Discarded with folder"
         await model.deleteGroup(collectionID: "api", id: "parent")
         #expect(model.sessions.sessions.isEmpty)
+        await liveRun.value
+        #expect(runner.cancellationCount == 1)
         #expect(!original.isRunning)
         await model.saveCurrentRequest(collectionID: "api")
         #expect(await persistence.commands.count == 1)
