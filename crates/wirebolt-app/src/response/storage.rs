@@ -114,6 +114,20 @@ impl BodyStore {
             json: [JsonCache::Unparsed, JsonCache::Unparsed],
         })
     }
+    /// Copies a historical body into a temporary file owned by the displayed run.
+    /// # Errors
+    /// Returns an I/O error if the source cannot be copied.
+    pub fn retained(path: &Path) -> ResponseResult<Self> {
+        let temporary = tempfile::NamedTempFile::new()?;
+        fs::copy(path, temporary.path())?;
+        let mut body = Self::existing(temporary.path().to_owned())?;
+        let (_, path) = temporary
+            .keep()
+            .map_err(|error| ResponseError::from(error.error))?;
+        body.path = path;
+        body.owns_file = true;
+        Ok(body)
+    }
     #[must_use]
     pub fn path(&self) -> PathBuf {
         self.path.clone()

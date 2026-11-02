@@ -507,8 +507,8 @@ impl SessionPersistence {
             .map_err(|_| WorkspaceError::operation("import collection could not be created"))?;
         created.collections.push(collection_id.clone());
 
-        for (index, imported_request) in imported.requests.into_iter().enumerate() {
-            let request_id = document_id(format!("request-{index}"))?;
+        for imported_request in imported.requests {
+            let request_id = document_id(crate::domain::identity::unique_id())?;
             let group_id = imported_request
                 .group_source_id
                 .as_ref()
@@ -805,6 +805,22 @@ impl SessionPersistence {
                 group_id,
                 order,
             } => {
+                if from_collection_id != to_collection_id {
+                    let destination = self
+                        .store
+                        .root()
+                        .join("collections")
+                        .join(document_id(to_collection_id.clone())?.as_str())
+                        .join("requests")
+                        .join(format!("{}.toml", document_id(request_id.clone())?));
+                    if destination.try_exists().map_err(|_| {
+                        WorkspaceError::operation("move destination could not be inspected")
+                    })? {
+                        return Err(WorkspaceError::operation(
+                            "The destination already contains a request with this ID. Duplicate the source request before moving it.",
+                        ));
+                    }
+                }
                 let mut request = self.request(&from_collection_id, &request_id)?;
                 request.group_id = group_id.map(document_id).transpose()?;
                 request.order = order;

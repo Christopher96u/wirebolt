@@ -230,8 +230,12 @@ pub fn can_move_to(
         return false;
     }
     match kind {
-        "request" => location(workspace, c, id)
-            .is_some_and(|r| r.collection_id != collection_id || r.group_id.as_deref() != parent),
+        "request" => {
+            !(c != collection_id && destination.requests.iter().any(|r| r.request.id == id))
+                && location(workspace, c, id).is_some_and(|r| {
+                    r.collection_id != collection_id || r.group_id.as_deref() != parent
+                })
+        }
         "group" if c == collection_id => destination
             .groups
             .iter()

@@ -28,6 +28,10 @@ Changes under **Unreleased** are on `main` but not in a published build yet. Dow
 
 ### Fixed
 
+- Clearing history or evicting old entries made a restored response unreadable. Displayed responses now keep their own temporary body until the last viewer releases it.
+
+- Moving an imported request could overwrite another request. New imports have unique IDs; moves with a legacy ID collision are refused so both requests and their undo state survive.
+
 - Deleting a collection also deleted attachments and other files that Undo could not restore. It now removes only readable Wirebolt documents and leaves other files in place.
 
 - Malformed Insomnia folder IDs could crash import. Invalid parent links, cycles and hierarchies deeper than 128 levels now report an error.

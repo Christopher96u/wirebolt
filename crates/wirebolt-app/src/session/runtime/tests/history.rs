@@ -230,3 +230,32 @@ async fn corrupt_history_does_not_stop_recording_or_clearing() {
     assert!(state.snapshot().history_entries.is_empty());
     assert_eq!(std::fs::read(index).unwrap(), b"[]");
 }
+
+#[tokio::test]
+async fn clear_history_preserves_displayed_response_body() {
+    let root = tempfile::tempdir().unwrap();
+    let state = state(root.path());
+    RuntimeRuns::default()
+        .send(command(
+            state.clone(),
+            document("a"),
+            Arc::new(Mutex::new(DocumentRun::default())),
+            Arc::new(Transport {
+                body: b"response".to_vec(),
+                ..Default::default()
+            }),
+            root.path(),
+        ))
+        .await;
+    let entry = state.history_entries("a").unwrap().remove(0);
+    let run = Mutex::new(DocumentRun::default());
+    state.restore(entry.clone(), &run);
+    state.clear_history("a");
+    let body = lock(&run).body().unwrap();
+    assert_eq!(lock(&body).viewport(0, 8).unwrap(), b"response");
+    assert!(!std::path::Path::new(&entry.body_path).exists());
+    let pinned = lock(&body).path();
+    drop(body);
+    drop(run);
+    assert!(!pinned.exists());
+}

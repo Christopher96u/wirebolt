@@ -35,6 +35,7 @@ fn streams_searches_and_exports_without_retaining_complete_body() {
 fn history_survives_recreation_and_evicts_past_quota() {
     let root = tempfile::tempdir().unwrap();
     let mut history = RunHistory::new(root.path().into());
+    let mut displayed = None;
     for index in 0..=100 {
         let mut store = BodyStore::new(&format!("run-{index}"), root.path()).unwrap();
         store.append(format!("run {index}").as_bytes()).unwrap();
@@ -69,8 +70,16 @@ fn history_survives_recreation_and_evicts_past_quota() {
                 &store,
             )
             .unwrap();
+        if index == 0 {
+            let entry = history.list("health").unwrap().remove(0);
+            displayed = Some(BodyStore::retained(std::path::Path::new(&entry.body_path)).unwrap());
+        }
         store.remove();
     }
+    assert_eq!(
+        displayed.as_ref().unwrap().viewport(0, 5).unwrap(),
+        b"run 0"
+    );
     let mut reloaded = RunHistory::new(root.path().into());
     let entries = reloaded.list("health").unwrap();
     assert_eq!(entries.len(), 100);
