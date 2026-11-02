@@ -208,12 +208,6 @@ fn broken_documents_are_reported_without_hiding_the_rest_of_the_workspace() {
             .iter()
             .all(|problem| !problem.reason.contains("TOP-SECRET"))
     );
-    assert_eq!(
-        store.migrate().expect("migration skips broken documents"),
-        wirebolt_core::MigrationReport {
-            migrated_documents: 0,
-        }
-    );
     assert!(
         fs::read_to_string(temporary.path().join("environments/broken.toml"))
             .expect("conflicted fixture")
@@ -239,7 +233,7 @@ fn reloads_reflect_external_edits_and_deletions() {
     let path = temporary.path().join("environments/local.toml");
     fs::write(
         &path,
-        "schema_version = 3\nid = \"local\"\nname = \"Edited by hand\"\n\n[variables]\n",
+        format!("schema_version = {CURRENT_SCHEMA_VERSION}\nid = \"local\"\nname = \"Edited by hand\"\n"),
     )
     .expect("edit environment externally");
     assert_eq!(
@@ -289,7 +283,7 @@ fn reloads_reflect_an_edit_that_keeps_the_size_and_modification_time() {
 }
 
 #[test]
-fn a_future_document_with_a_quoted_key_is_never_rewritten_by_migration() {
+fn an_unsupported_document_with_a_quoted_key_is_left_unchanged() {
     let temporary = tempdir().expect("temporary workspace");
     let store = WorkspaceStore::create(temporary.path(), &Workspace::new("Wirebolt"))
         .expect("create workspace");
@@ -303,12 +297,6 @@ fn a_future_document_with_a_quoted_key_is_never_rewritten_by_migration() {
     assert_eq!(
         snapshot.problems[0].kind,
         DocumentProblemKind::UnsupportedSchema
-    );
-    assert_eq!(
-        store.migrate().expect("migration skips future documents"),
-        wirebolt_core::MigrationReport {
-            migrated_documents: 0,
-        }
     );
     assert_eq!(
         fs::read_to_string(&path).expect("future environment"),
@@ -338,134 +326,8 @@ fn rejects_future_schema_versions() {
     ));
 }
 
-#[test]
-fn explicitly_migrates_unversioned_documents_and_is_restartable() {
-    let temporary = tempdir().expect("temporary workspace");
-    fs::create_dir_all(temporary.path().join("collections/users"))
-        .expect("create collection directory");
-    fs::write(
-        temporary.path().join("wirebolt.toml"),
-        "name = \"Legacy workspace\"\n",
-    )
-    .expect("write legacy workspace");
-    fs::write(
-        temporary.path().join("collections/users/collection.toml"),
-        "id = \"users\"\nname = \"Users\"\n",
-    )
-    .expect("write legacy collection");
 
-    let store = WorkspaceStore::open(temporary.path()).expect("open legacy workspace");
-    assert_eq!(
-        store
-            .load()
-            .expect("load legacy workspace")
-            .collections
-            .len(),
-        1
-    );
-    assert_eq!(
-        store
-            .migrate()
-            .expect("migrate workspace")
-            .migrated_documents,
-        2
-    );
-    assert_eq!(
-        store
-            .migrate()
-            .expect("repeat migration")
-            .migrated_documents,
-        0
-    );
 
-    let workspace_toml =
-        fs::read_to_string(temporary.path().join("wirebolt.toml")).expect("workspace TOML");
-    let collection_toml =
-        fs::read_to_string(temporary.path().join("collections/users/collection.toml"))
-            .expect("collection TOML");
-    assert!(workspace_toml.starts_with(&format!("schema_version = {CURRENT_SCHEMA_VERSION}\n")));
-    assert!(collection_toml.starts_with(&format!("schema_version = {CURRENT_SCHEMA_VERSION}\n")));
-}
-
-#[test]
-fn migrates_schema_one_workspaces_before_proxy_fields_existed() {
-    let temporary = tempdir().expect("temporary workspace");
-    fs::write(
-        temporary.path().join("wirebolt.toml"),
-        "schema_version = 1\nname = \"Before proxy policy\"\n",
-    )
-    .expect("write schema-one workspace");
-    let store = WorkspaceStore::open(temporary.path()).expect("open schema-one workspace");
-
-    let snapshot = store.load().expect("load schema-one workspace");
-    assert_eq!(snapshot.workspace.proxy, None);
-    assert_eq!(
-        store
-            .migrate()
-            .expect("migrate schema-one workspace")
-            .migrated_documents,
-        1
-    );
-
-    let workspace_toml =
-        fs::read_to_string(temporary.path().join("wirebolt.toml")).expect("workspace TOML");
-    assert!(workspace_toml.starts_with(&format!("schema_version = {CURRENT_SCHEMA_VERSION}\n")));
-}
-
-#[test]
-fn migrates_schema_two_requests_before_composer_fields_existed() {
-    let temporary = tempdir().expect("temporary workspace");
-    fs::create_dir_all(temporary.path().join("collections/users/requests"))
-        .expect("create request directory");
-    fs::write(
-        temporary.path().join("wirebolt.toml"),
-        "schema_version = 2\nname = \"Legacy\"\n",
-    )
-    .expect("write workspace");
-    fs::write(
-        temporary.path().join("collections/users/collection.toml"),
-        "schema_version = 2\nid = \"users\"\nname = \"Users\"\n",
-    )
-    .expect("write collection");
-    fs::write(
-        temporary
-            .path()
-            .join("collections/users/requests/get-user.toml"),
-        concat!(
-            "schema_version = 2\n",
-            "id = \"get-user\"\n",
-            "name = \"Get user\"\n",
-            "method = \"GET\"\n",
-            "url = \"https://api.example.com/users\"\n",
-            "[body]\n",
-            "kind = \"empty\"\n",
-        ),
-    )
-    .expect("write request");
-
-    let store = WorkspaceStore::open(temporary.path()).expect("open schema-two workspace");
-    let snapshot = store.load().expect("load schema-two request");
-    let request = &snapshot.collections[0].requests[0];
-    assert!(request.query.is_empty());
-    assert_eq!(
-        request.authentication,
-        wirebolt_core::RequestAuthentication::None
-    );
-    assert_eq!(
-        store.migrate().expect("migrate schema-two documents"),
-        wirebolt_core::MigrationReport {
-            migrated_documents: 3,
-        }
-    );
-
-    let request_toml = fs::read_to_string(
-        temporary
-            .path()
-            .join("collections/users/requests/get-user.toml"),
-    )
-    .expect("migrated request TOML");
-    assert!(request_toml.starts_with(&format!("schema_version = {CURRENT_SCHEMA_VERSION}\n")));
-}
 
 #[test]
 fn round_trips_workspace_and_request_proxy_overrides_without_secret_values() {
@@ -658,4 +520,16 @@ fn collection_deletion_refuses_symlinked_directories() {
         fs::read(external.path().join("attachment.toml")).unwrap(),
         b"unmanaged"
     );
+}
+
+#[test]
+fn rejects_every_noncurrent_workspace_schema() {
+    for version in 0..CURRENT_SCHEMA_VERSION {
+        let root = tempdir().unwrap();
+        fs::write(root.path().join("wirebolt.toml"), format!("schema_version = {version}\nname = \"Old\"\n")).unwrap();
+        assert!(matches!(WorkspaceStore::open(root.path()), Err(StorageError::UnsupportedSchema { found, .. }) if found == version));
+    }
+    let root = tempdir().unwrap();
+    fs::write(root.path().join("wirebolt.toml"), "name = \"Unversioned\"\n").unwrap();
+    assert!(matches!(WorkspaceStore::open(root.path()), Err(StorageError::UnsupportedSchema { found: 0, .. })));
 }

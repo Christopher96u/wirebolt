@@ -49,7 +49,7 @@ pub use request_pipeline::{
 pub use storage::{
     ApiKeyPlacement, CURRENT_SCHEMA_VERSION, Collection, CollectionSnapshot, DOCUMENT_LIMIT_LABEL,
     DocumentId, DocumentProblem, DocumentProblemKind, Environment, EnvironmentVariable, Group,
-    IdentifierError, MAX_DOCUMENT_BYTES, MigrationReport, MultipartPart, MultipartPartKind,
+    IdentifierError, MAX_DOCUMENT_BYTES, MultipartPart, MultipartPartKind,
     Oauth2Configuration, Oauth2Grant, Request, RequestAuthentication, RequestBody, RequestHeader,
     RequestValueField, SaveOutcome, SecretName, StorageError, TransportSettings, ValueSource,
     Workspace, WorkspaceDocument, WorkspaceSnapshot, WorkspaceStore,

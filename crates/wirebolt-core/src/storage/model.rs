@@ -565,7 +565,7 @@ pub struct Environment {
     pub(super) schema_version: u32,
     pub id: DocumentId,
     pub name: String,
-    #[serde(default, deserialize_with = "deserialize_environment_variables")]
+    #[serde(default)]
     pub variables: Vec<EnvironmentVariable>,
 }
 
@@ -634,35 +634,6 @@ pub struct EnvironmentVariable {
 
 const fn enabled_by_default() -> bool {
     true
-}
-
-fn deserialize_environment_variables<'de, D>(
-    deserializer: D,
-) -> Result<Vec<EnvironmentVariable>, D::Error>
-where
-    D: Deserializer<'de>,
-{
-    #[derive(Deserialize)]
-    #[serde(untagged)]
-    enum StoredVariables {
-        Rows(Vec<EnvironmentVariable>),
-        Legacy(BTreeMap<String, ValueSource>),
-    }
-
-    match StoredVariables::deserialize(deserializer)? {
-        StoredVariables::Rows(rows) => Ok(rows),
-        StoredVariables::Legacy(values) => Ok(values
-            .into_iter()
-            .enumerate()
-            .map(|(order, (key, value))| EnvironmentVariable {
-                id: format!("variable-{order}"),
-                key,
-                value,
-                enabled: true,
-                order: i64::try_from(order).unwrap_or(i64::MAX),
-            })
-            .collect()),
-    }
 }
 
 #[allow(clippy::large_enum_variant)]

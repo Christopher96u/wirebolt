@@ -73,11 +73,6 @@ pub enum SaveOutcome {
     Unchanged,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct MigrationReport {
-    pub migrated_documents: usize,
-}
-
 /// One document that could not be loaded. The rest of the workspace is still
 /// returned so a single conflicted or newer file never hides everything else.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -139,7 +134,6 @@ enum Durability {
 #[derive(Clone, Debug)]
 struct CachedDocument {
     identity: FileIdentity,
-    migrated: bool,
     document: CachedKind,
 }
 
@@ -184,7 +178,6 @@ enum CachedKind {
 /// Documents that can be parsed, cached, and stamped with the current schema.
 trait Document: DeserializeOwned + Clone {
     fn schema_version(&self) -> u32;
-    fn set_schema_version(&mut self, version: u32);
     fn into_cached(self) -> CachedKind;
     fn from_cached(cached: &CachedKind) -> Option<&Self>;
 }
@@ -194,10 +187,6 @@ macro_rules! document {
         impl Document for $type {
             fn schema_version(&self) -> u32 {
                 self.schema_version
-            }
-
-            fn set_schema_version(&mut self, version: u32) {
-                self.schema_version = version;
             }
 
             fn into_cached(self) -> CachedKind {
@@ -300,7 +289,7 @@ impl WorkspaceStore {
 
     /// Loads a deterministic snapshot of every readable workspace document.
     ///
-    /// Documents that fail to parse, use a newer schema, or disagree with
+    /// Documents that fail to parse, use an unsupported schema, or disagree with
     /// their path are reported in [`WorkspaceSnapshot::problems`] and skipped.
     ///
     /// # Errors
@@ -308,7 +297,7 @@ impl WorkspaceStore {
     /// Returns [`StorageError`] only when the manifest itself cannot be read
     /// or a workspace directory cannot be listed.
     pub fn load(&self) -> Result<WorkspaceSnapshot, StorageError> {
-        self.load_with_migrations().map(|(snapshot, _)| snapshot)
+        self.load_snapshot()
     }
 
     /// Atomically saves one workspace document.
@@ -384,7 +373,7 @@ impl WorkspaceStore {
                 _ => {}
             }
         }
-        let snapshot = self.load_collection(&path, &mut Vec::new(), &mut Vec::new())?;
+        let snapshot = self.load_collection(&path, &mut Vec::new())?;
         let mut documents = snapshot
             .requests
             .iter()
@@ -487,37 +476,9 @@ impl WorkspaceStore {
         Ok(())
     }
 
-    /// Rewrites only documents loaded from an older supported schema.
-    ///
-    /// The migration is restartable: each document is replaced atomically and
-    /// a later call skips documents already on the current schema. Documents
-    /// that could not be loaded are left untouched.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`StorageError`] when discovery, decoding, or an atomic
-    /// replacement fails.
-    pub fn migrate(&self) -> Result<MigrationReport, StorageError> {
-        let (_, migrations) = self.load_with_migrations()?;
-        for document in &migrations {
-            self.save(document)?;
-        }
-
-        Ok(MigrationReport {
-            migrated_documents: migrations.len(),
-        })
-    }
-
-    fn load_with_migrations(
-        &self,
-    ) -> Result<(WorkspaceSnapshot, Vec<WorkspaceDocument>), StorageError> {
-        let (workspace, workspace_migrated): (Workspace, bool) =
-            self.read(&self.workspace_path())?;
-        let mut migrations = Vec::new();
+    fn load_snapshot(&self) -> Result<WorkspaceSnapshot, StorageError> {
+        let workspace: Workspace = self.read(&self.workspace_path())?;
         let mut problems = Vec::new();
-        if workspace_migrated {
-            migrations.push(WorkspaceDocument::Workspace(workspace.clone()));
-        }
 
         let mut collections = Vec::new();
         for directory in child_directories(&self.collections_path())? {
@@ -528,7 +489,7 @@ impl WorkspaceStore {
             {
                 continue;
             }
-            match self.load_collection(&directory, &mut migrations, &mut problems) {
+            match self.load_collection(&directory, &mut problems) {
                 Ok(snapshot) => collections.push(snapshot),
                 Err(error) => problems.push(DocumentProblem::new(&self.root, &error)),
             }
@@ -538,32 +499,23 @@ impl WorkspaceStore {
         let mut environments = Vec::new();
         for environment_file in toml_files(&self.environments_path())? {
             match self.load_environment(&environment_file) {
-                Ok((environment, migrated)) => {
-                    if migrated {
-                        migrations.push(WorkspaceDocument::Environment(environment.clone()));
-                    }
-                    environments.push(environment);
-                }
+                Ok(environment) => environments.push(environment),
                 Err(error) => problems.push(DocumentProblem::new(&self.root, &error)),
             }
         }
         environments.sort_by(|left, right| left.id.cmp(&right.id));
 
-        Ok((
-            WorkspaceSnapshot {
+        Ok(WorkspaceSnapshot {
                 workspace,
                 collections,
                 environments,
                 problems,
-            },
-            migrations,
-        ))
+            })
     }
 
     fn load_collection(
         &self,
         directory: &Path,
-        migrations: &mut Vec<WorkspaceDocument>,
         problems: &mut Vec<DocumentProblem>,
     ) -> Result<CollectionSnapshot, StorageError> {
         let directory_name = file_name(directory)?;
@@ -573,24 +525,13 @@ impl WorkspaceStore {
                 reason: "collection directory is not a valid document ID",
             })?;
         let collection_file = directory.join(COLLECTION_FILE);
-        let (collection, collection_migrated): (Collection, bool) = self.read(&collection_file)?;
+        let collection: Collection = self.read(&collection_file)?;
         require_matching_id(&collection.id, &expected_id, &collection_file)?;
-        if collection_migrated {
-            migrations.push(WorkspaceDocument::Collection(collection.clone()));
-        }
 
         let mut requests = Vec::new();
         for request_file in toml_files(&directory.join(REQUESTS_DIRECTORY))? {
             match self.load_request(&request_file) {
-                Ok((request, migrated)) => {
-                    if migrated {
-                        migrations.push(WorkspaceDocument::Request {
-                            collection_id: collection.id.clone(),
-                            request: request.clone(),
-                        });
-                    }
-                    requests.push(request);
-                }
+                Ok(request) => requests.push(request),
                 Err(error) => problems.push(DocumentProblem::new(&self.root, &error)),
             }
         }
@@ -601,23 +542,23 @@ impl WorkspaceStore {
         })
     }
 
-    fn load_request(&self, path: &Path) -> Result<(Request, bool), StorageError> {
+    fn load_request(&self, path: &Path) -> Result<Request, StorageError> {
         let expected_id = document_id_from_file(path)?;
-        let (request, migrated): (Request, bool) = self.read(path)?;
+        let request: Request = self.read(path)?;
         require_matching_id(&request.id, &expected_id, path)?;
-        Ok((request, migrated))
+        Ok(request)
     }
 
-    fn load_environment(&self, path: &Path) -> Result<(Environment, bool), StorageError> {
+    fn load_environment(&self, path: &Path) -> Result<Environment, StorageError> {
         let expected_id = document_id_from_file(path)?;
-        let (environment, migrated): (Environment, bool) = self.read(path)?;
+        let environment: Environment = self.read(path)?;
         require_matching_id(&environment.id, &expected_id, path)?;
-        Ok((environment, migrated))
+        Ok(environment)
     }
 
     /// Reads one document, serving it from the cache when the file's
     /// on-disk identity is unchanged.
-    fn read<T: Document>(&self, path: &Path) -> Result<(T, bool), StorageError> {
+    fn read<T: Document>(&self, path: &Path) -> Result<T, StorageError> {
         let metadata = fs::symlink_metadata(path).map_err(|source| {
             if source.kind() == io::ErrorKind::NotFound {
                 StorageError::Missing {
@@ -645,21 +586,20 @@ impl WorkspaceStore {
             && entry.identity == identity
             && let Some(document) = T::from_cached(&entry.document)
         {
-            return Ok((document.clone(), entry.migrated));
+            return Ok(document.clone());
         }
 
         let source = fs::read_to_string(path)
             .map_err(|source| StorageError::io("read document", path, source))?;
-        let (document, migrated) = parse_document::<T>(path, &source)?;
+        let document = parse_document::<T>(path, &source)?;
         self.lock_cache().insert(
             path.to_owned(),
             CachedDocument {
                 identity,
-                migrated,
                 document: document.clone().into_cached(),
             },
         );
-        Ok((document, migrated))
+        Ok(document)
     }
 
     fn write<T: Document + Serialize>(
@@ -677,7 +617,6 @@ impl WorkspaceStore {
                 path.to_owned(),
                 CachedDocument {
                     identity,
-                    migrated: false,
                     document: document.clone().into_cached(),
                 },
             );
@@ -868,7 +807,7 @@ fn require_matching_id(
 /// Parses a document in one pass. The parsed table is inspected for the root
 /// `schema_version` first, so a newer document is refused before its unknown
 /// fields turn into a misleading TOML error, and only then deserialized.
-fn parse_document<T: Document>(path: &Path, source: &str) -> Result<(T, bool), StorageError> {
+fn parse_document<T: Document>(path: &Path, source: &str) -> Result<T, StorageError> {
     let table =
         toml::de::DeTable::parse(source).map_err(|error| invalid_toml(path, source, &error))?;
     let declared =
@@ -877,24 +816,15 @@ fn parse_document<T: Document>(path: &Path, source: &str) -> Result<(T, bool), S
             reason,
         })?;
     if let Some(found) = declared
-        && found > CURRENT_SCHEMA_VERSION
+        && found != CURRENT_SCHEMA_VERSION
     {
         return Err(unsupported_schema(path, found));
     }
 
-    let mut document = T::deserialize(toml::de::Deserializer::from(table))
+    let document = T::deserialize(toml::de::Deserializer::from(table))
         .map_err(|error| invalid_toml(path, source, &error))?;
-    // The deserialized version is authoritative: whatever the peek saw, a
-    // document from the future is never rewritten to an older schema.
-    let found = document.schema_version();
-    if found > CURRENT_SCHEMA_VERSION {
-        return Err(unsupported_schema(path, found));
-    }
-    let migrated = found < CURRENT_SCHEMA_VERSION;
-    if migrated {
-        document.set_schema_version(CURRENT_SCHEMA_VERSION);
-    }
-    Ok((document, migrated))
+    require_current_schema(document.schema_version(), path)?;
+    Ok(document)
 }
 
 fn invalid_toml(path: &Path, source: &str, error: &toml::de::Error) -> StorageError {
@@ -1289,7 +1219,7 @@ mod tests {
 mod exclusive_move_tests {
     use super::*;
     #[test]
-    fn exclusive_copy_fallback_preserves_collisions_and_cleans_failed_copies() {
+    fn exclusive_copy_preserves_collisions_and_cleans_failed_copies() {
         let root = tempfile::tempdir().unwrap();
         let source = root.path().join("source");
         let destination = root.path().join("destination");

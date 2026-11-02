@@ -197,7 +197,7 @@ impl WorkspaceImportSummary {
 impl SessionPersistence {
     /// Opens an existing workspace or creates an empty one.
     ///
-    /// Documents that cannot be migrated are skipped and reported through
+    /// Documents that cannot be loaded are skipped and reported through
     /// the snapshot's `problems`; they never prevent the workspace from
     /// opening.
     ///
@@ -216,9 +216,6 @@ impl SessionPersistence {
             WorkspaceStore::create(root, &Workspace::new(name))
         }
         .map_err(|_| WorkspaceError::operation("workspace could not be opened"))?;
-        store
-            .migrate()
-            .map_err(|_| WorkspaceError::operation("workspace could not be migrated"))?;
         Ok(Arc::new(Self {
             store,
             secrets,
