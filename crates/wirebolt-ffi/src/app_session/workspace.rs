@@ -128,6 +128,9 @@ pub enum SessionWorkspaceEdit {
 
 #[uniffi::remote(Enum)]
 pub enum SessionWorkspaceCommand {
+    ReorderEnvironments {
+        ids: Vec<String>,
+    },
     SaveWorkspaceProxy {
         proxy: Option<DomainProxy>,
     },
@@ -891,4 +894,13 @@ pub fn workspace_environment_inspector(
     environments: Vec<DomainEnvironment>,
 ) -> Vec<DomainEnvironment> {
     wirebolt_app::session::workspace::environment::inspector_environments(environments)
+}
+
+#[uniffi::export]
+pub fn workspace_environment_can_move(
+    environments: Vec<DomainEnvironment>,
+    id: String,
+    offset: i64,
+) -> bool {
+    wirebolt_app::session::workspace::environment::can_move(&environments, &id, offset)
 }

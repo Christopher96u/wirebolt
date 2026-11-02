@@ -176,6 +176,8 @@ pub struct Workspace {
     pub proxy: Option<ProxyMode>,
     #[serde(default)]
     pub transport: TransportSettings,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub environment_order: Vec<DocumentId>,
 }
 
 impl Workspace {
@@ -186,6 +188,7 @@ impl Workspace {
             name: name.into(),
             proxy: None,
             transport: TransportSettings::default(),
+            environment_order: Vec::new(),
         }
     }
 

@@ -22,6 +22,8 @@ Outside editing, the URL shows each reference as a chip with just the variable n
 
 Selecting an environment in the inspector finishes the current edit and chooses the environment requests use. Globals always appears once, at the top. Use an environment’s context menu to rename, delete or move it up or down. Long names and values use one line; hover or focus a field to read the full text.
 
+Environment order is saved in `wirebolt.toml` with one atomic write, so a failed reorder leaves the previous order intact. Newly saved environment files include an `order` field for placing new environments. These files, and a manifest with `environment_order`, require a build with live environment editing; older builds reject the added fields. Keep a workspace backup before switching back to an older build.
+
 ## Credentials and secret references
 
 A literal value is stored in the workspace. A secret reference stores a name whose value resolves from this Mac's Keychain. A teammate receives the reference name, not its credential value.

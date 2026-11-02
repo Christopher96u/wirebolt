@@ -48,6 +48,8 @@ workspace/
 
 Files use versioned TOML. Stable IDs identify documents; ordering is stored explicitly. Prefer app commands for ordinary edits. If you edit files outside the app, save or close your drafts first and reopen the workspace to load the changes.
 
+Live environment editing adds an `order` field to saved environment files and records explicit reordering in the manifest’s `environment_order` list. Older builds reject these added fields; see [environment compatibility](environments-and-secrets.md#create-variables) before opening the workspace with an older build.
+
 Response bodies, local history, cookies and Keychain credentials are runtime data rather than workspace documents. Literal text you enter in a URL, body or variable **is** part of the saved definition. [Understand what is shared](environments-and-secrets.md#what-is-shared).
 
 ## Cookies

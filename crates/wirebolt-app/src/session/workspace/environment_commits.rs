@@ -192,9 +192,6 @@ fn move_environment(mut workspace: DomainWorkspace, id: &str, offset: i64) -> Pr
     }
     let moved = environments.remove(index);
     environments.insert(destination, moved);
-    for (i, environment) in environments.iter_mut().enumerate() {
-        environment.order = i64::try_from(i).unwrap_or(i64::MAX);
-    }
     workspace.environments.retain(|e| e.id == "global");
     workspace.environments.extend(environments);
     Ok(Some((

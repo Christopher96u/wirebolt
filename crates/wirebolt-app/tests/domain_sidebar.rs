@@ -420,7 +420,7 @@ fn move_menu_orders_collections_and_limits_folders_to_their_tree() {
     assert!(move_collections(&collections, "group|missing|folder").is_empty());
 }
 #[test]
-fn environment_picker_excludes_globals_and_stably_orders_canonical_names() {
+fn environment_picker_excludes_globals_and_preserves_workspace_order() {
     let names = [
         ("global", "Global"),
         ("z", "Zulu"),
@@ -437,5 +437,5 @@ fn environment_picker_excludes_globals_and_stably_orders_canonical_names() {
             variables: vec![],
         })
         .collect();
-    assert_eq!(selectable_environments(&environments), [4, 2, 3, 1]);
+    assert_eq!(selectable_environments(&environments), [1, 2, 3, 4]);
 }

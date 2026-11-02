@@ -587,6 +587,24 @@ impl SessionPersistence {
                     vec!["transport".to_owned()],
                 ))
             }
+            super::workspace::SessionWorkspaceCommand::ReorderEnvironments { ids } => {
+                let mut workspace = self
+                    .store
+                    .load()
+                    .map_err(|_| WorkspaceError::operation("workspace could not be loaded"))?
+                    .workspace;
+                workspace.environment_order = ids
+                    .iter()
+                    .cloned()
+                    .map(document_id)
+                    .collect::<Result<_, _>>()?;
+                self.store
+                    .save(&WorkspaceDocument::Workspace(workspace))
+                    .map_err(|_| {
+                        WorkspaceError::operation("environment order could not be saved")
+                    })?;
+                Ok((SessionWorkspaceNodeKind::Environment, ids))
+            }
             super::workspace::SessionWorkspaceCommand::RenameWorkspace { name } => {
                 let name = name.trim();
                 if name.is_empty() {

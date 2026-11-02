@@ -465,7 +465,30 @@ impl WorkspaceStore {
                 Err(error) => problems.push(DocumentProblem::new(&self.root, &error)),
             }
         }
-        environments.sort_by(|left, right| (left.order, &left.id).cmp(&(right.order, &right.id)));
+        let environment_order: HashMap<_, _> = workspace
+            .environment_order
+            .iter()
+            .enumerate()
+            .map(|(index, id)| (id.as_str(), index))
+            .collect();
+        environments.sort_by(|left, right| {
+            (
+                environment_order
+                    .get(left.id.as_str())
+                    .copied()
+                    .unwrap_or(usize::MAX),
+                left.order,
+                &left.id,
+            )
+                .cmp(&(
+                    environment_order
+                        .get(right.id.as_str())
+                        .copied()
+                        .unwrap_or(usize::MAX),
+                    right.order,
+                    &right.id,
+                ))
+        });
 
         Ok((
             WorkspaceSnapshot {

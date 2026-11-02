@@ -464,3 +464,50 @@ async fn live_environment_order_and_secret_references_survive_disk_reload() {
         ["global", "local", "other"]
     );
 }
+
+#[tokio::test]
+async fn failed_reorder_is_one_atomic_command_and_keeps_workspace_and_undo_intact() {
+    let h = Harness::new(fixture());
+    *lock(&h.store.fail_at) = Some(0);
+    let result = commit(
+        &h,
+        &Keychain::default(),
+        "local",
+        Commit::Move { offset: 1 },
+    )
+    .await;
+    assert!(result.problem.is_some());
+    assert!(
+        !result.mutation.succeeded
+            && result.mutation.undo.is_none()
+            && result.mutation.plan.is_none()
+    );
+    assert_eq!(h.workspace.snapshot(), fixture());
+    assert!(lock(&h.store.commands).is_empty());
+    *lock(&h.store.fail_at) = None;
+    let retried = commit(
+        &h,
+        &Keychain::default(),
+        "local",
+        Commit::Move { offset: 1 },
+    )
+    .await;
+    let plan = retried.mutation.plan.unwrap();
+    assert!(
+        matches!(&plan.commands[..], [SessionWorkspaceCommand::ReorderEnvironments { ids }] if ids == &["global", "other", "local"])
+    );
+    assert_eq!(retried.mutation.undo.unwrap().name, "Reorder Environments");
+}
+
+#[test]
+fn environment_move_availability_excludes_globals_and_list_boundaries() {
+    use super::super::environment::can_move;
+    let environments = fixture().environments;
+    assert!(!can_move(&environments, "global", 1));
+    assert!(!can_move(&environments, "local", -1));
+    assert!(can_move(&environments, "local", 1));
+    assert!(can_move(&environments, "other", -1));
+    assert!(!can_move(&environments, "other", 1));
+    assert!(!can_move(&environments, "missing", 1));
+    assert!(!can_move(&environments[..2], "local", 1));
+}

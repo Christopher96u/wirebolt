@@ -107,6 +107,9 @@ pub enum SessionWorkspaceEdit {
     reason = "Typed commands carry the existing request record across UniFFI."
 )]
 pub enum SessionWorkspaceCommand {
+    ReorderEnvironments {
+        ids: Vec<String>,
+    },
     SaveWorkspaceProxy {
         proxy: Option<DomainProxy>,
     },
@@ -276,12 +279,9 @@ pub fn plan_edit(
             plan.inverse = E::RestoreEnvironments {
                 environments: workspace.environments.clone(),
             };
-            plan.commands.extend(
-                environments
-                    .iter()
-                    .cloned()
-                    .map(|environment| C::SaveEnvironment { environment }),
-            );
+            plan.commands.push(C::ReorderEnvironments {
+                ids: environments.iter().map(|e| e.id.clone()).collect(),
+            });
             plan.environments = Some(environments);
         }
         E::RestoreEnvironment {
