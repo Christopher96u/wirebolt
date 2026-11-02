@@ -147,6 +147,16 @@ extension NativeAdapterTests {
         precondition(general.contains { $0.name == "History" } && general.contains { $0.name == "Clear All History…" })
         precondition(!general.contains { ["Privacy", "Privacy Policy", "Analytics", "Crash reports"].contains($0.name) })
         if let screenshots { try NativeTestSupport.capture(settingsHost, directory: screenshots, name: "audit-settings-general-history") }
+        precondition(NativeTestSupport.press(settingsHost, named: "Clear All History…"))
+        func historyConfirmation() -> NSWindow? {
+            NSApp.windows.first { candidate in
+                candidate.isVisible && NativeTestSupport.elements(candidate).contains { $0.role == "AXButton" && $0.name == "Clear All" }
+            }
+        }
+        await NativeTestSupport.wait(settingsHost) { historyConfirmation() != nil }
+        precondition(NativeTestSupport.press(historyConfirmation()!, named: "Cancel"))
+        await NativeTestSupport.wait(settingsHost) { historyConfirmation() == nil }
+        precondition(model.settingsTab == "general" && model.isShowingAppSettings)
         print("generalShowsHistoryWithoutPrivacyPage: passed")
         let search = EnvironmentInspectorTests.fields(settingsHost).first { $0.accessibilityLabel() == "Search settings" }!
         EnvironmentInspectorTests.replace(search, with: "history", window: settingsWindow)
@@ -311,7 +321,7 @@ extension NativeAdapterTests {
         try Data("blocked".utf8).write(to: directory)
         precondition(NativeTestSupport.press(host, named: "Clear All…"))
         await NativeTestSupport.settle(host)
-        let confirmation = NSApp.windows.first { NativeTestSupport.elements($0).contains { $0.role == "AXButton" && $0.name == "Clear All" } }!
+        let confirmation = NSApp.windows.first { $0.isVisible && NativeTestSupport.elements($0).contains { $0.role == "AXButton" && $0.name == "Clear All" } }!
         precondition(NativeTestSupport.press(confirmation, named: "Clear All"))
         await NativeTestSupport.settle(host)
         precondition(NativeTestSupport.elements(host).contains { $0.name.hasPrefix("Cookie error:") })

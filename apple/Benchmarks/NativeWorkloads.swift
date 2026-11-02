@@ -734,12 +734,15 @@ final class ProbeWindow: NSWindow { override var canBecomeKey: Bool { true } }
         precondition(NativeTestSupport.elements(host).contains { $0.name == "Send request or message" })
         await press("General")
         precondition(NativeTestSupport.elements(host).contains { $0.name == "History" })
-        await press("Clear All History…")
-        await NativeTestSupport.wait(host) { window.attachedSheet != nil }
-        guard let sheet = window.attachedSheet else { preconditionFailure("Clear All History must ask for confirmation") }
-        await press("Cancel", in: sheet)
-        await NativeTestSupport.wait(host) { window.attachedSheet == nil }
-        precondition(window.attachedSheet == nil)
+        precondition(NativeTestSupport.press(host, named: "Clear All History…"))
+        func historyConfirmation() -> NSWindow? {
+            NSApp.windows.first { candidate in
+                candidate.isVisible && NativeTestSupport.elements(candidate).contains { $0.role == "AXButton" && $0.name == "Clear All" }
+            }
+        }
+        await NativeTestSupport.wait(host) { historyConfirmation() != nil }
+        precondition(NativeTestSupport.press(historyConfirmation()!, named: "Cancel"))
+        await NativeTestSupport.wait(host) { historyConfirmation() == nil }
         await press("Network")
         precondition(fields(host).contains { $0.isEditable && $0.stringValue == "edited.proxy.invalid" },
             "Switching settings sections must preserve unapplied proxy edits")
