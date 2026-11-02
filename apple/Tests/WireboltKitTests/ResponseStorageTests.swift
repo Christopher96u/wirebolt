@@ -120,7 +120,7 @@ struct ResponseStorageTests {
             try await body.finish()
             try await repository.record(
                 runID: runID,
-                identity: SessionRequestIdentity(workspace: "test", collectionId: "api", requestId: "health"),
+                identity: SessionRequestIdentity(collectionId: "api", requestId: "health"),
                 prepared: snapshot,
                 responseHead: nil,
                 completion: RunCompletion(bytesReceived: UInt64(index), totalTimeNS: 1),
@@ -131,10 +131,10 @@ struct ResponseStorageTests {
         }
 
         let reloaded = HistoryRepository(root: root)
-        let entries = try await reloaded.list(identity: SessionRequestIdentity(workspace: "test", collectionId: "api", requestId: "health"))
+        let entries = try await reloaded.list(identity: SessionRequestIdentity(collectionId: "api", requestId: "health"))
         #expect(entries.count == HistoryRepository.maximumEntriesPerRequest)
-        #expect(try await reloaded.count(identity: SessionRequestIdentity(workspace: "test", collectionId: "api", requestId: "health")) == HistoryRepository.maximumEntriesPerRequest)
-        #expect(try await reloaded.count(identity: SessionRequestIdentity(workspace: "test", collectionId: "api", requestId: "missing")) == 0)
+        #expect(try await reloaded.count(identity: SessionRequestIdentity(collectionId: "api", requestId: "health")) == HistoryRepository.maximumEntriesPerRequest)
+        #expect(try await reloaded.count(identity: SessionRequestIdentity(collectionId: "api", requestId: "missing")) == 0)
         #expect(entries.allSatisfy { FileManager.default.fileExists(atPath: $0.bodyPath) })
     }
 
@@ -150,7 +150,7 @@ struct ResponseStorageTests {
         let prepared = PreparedRunSnapshot(proxy: .resolve(request: .direct, workspace: nil, app: .system),
             method: "GET", url: "https://example.com", headers: [PreparedHeaderSnapshot(name: "Accept", value: "text/plain", redacted: false)],
             body: PreparedBodySnapshot(byteCount: 0, contentType: nil, textPreview: nil, redacted: false), transport: TransportSettings())
-        try await repository.record(runID: RunID(), identity: SessionRequestIdentity(workspace: "fixture", collectionId: "api", requestId: "health"),
+        try await repository.record(runID: RunID(), identity: SessionRequestIdentity(collectionId: "api", requestId: "health"),
             prepared: prepared, responseHead: ResponseHead(status: 200, version: "HTTP/1.1", headers: [], timeToHeadersNS: 1),
             completion: RunCompletion(bytesReceived: 19, totalTimeNS: 2), failure: RunFailure(kind: .storage, issues: []), body: body)
         let data = try Data(contentsOf: root.appending(path: "index.json"))

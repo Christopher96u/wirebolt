@@ -4,7 +4,7 @@ use super::{
     custom::{self, ThemePreview},
 };
 use serde::Deserialize;
-use std::{collections::BTreeMap, fs::File, io::Read, path::Path};
+use std::{collections::BTreeMap, path::Path};
 
 pub const MAX_IMPORT_BYTES: usize = 1_048_576;
 
@@ -41,36 +41,18 @@ pub fn read(path: &Path) -> Result<ThemePreview, String> {
     {
         return Err("Choose a VS Code color theme with a .json extension.".into());
     }
-    let bytes = read_bounded(path, MAX_IMPORT_BYTES)?;
+    let bytes = super::read_bounded(path, MAX_IMPORT_BYTES, "theme file")?;
     parse(&bytes)
-}
-
-pub(super) fn read_bounded(path: &Path, limit: usize) -> Result<Vec<u8>, String> {
-    if std::fs::metadata(path).is_ok_and(|m| !m.is_file()) {
-        return Err("Choose a regular theme file.".into());
-    }
-    let file = File::open(path).map_err(|e| format!("Could not open the theme file: {e}"))?;
-    if !file.metadata().is_ok_and(|m| m.is_file()) {
-        return Err("Choose a regular theme file.".into());
-    }
-    let mut bytes = Vec::new();
-    file.take((limit + 1) as u64)
-        .read_to_end(&mut bytes)
-        .map_err(|e| format!("Could not read the theme file: {e}"))?;
-    if bytes.len() > limit {
-        return Err(format!(
-            "The theme file is too large (limit {} KiB).",
-            limit / 1024
-        ));
-    }
-    Ok(bytes)
 }
 
 /// # Errors
 /// Returns an error for oversized, malformed or unsupported VS Code theme input.
 pub fn parse(bytes: &[u8]) -> Result<ThemePreview, String> {
     if bytes.len() > MAX_IMPORT_BYTES {
-        return Err("The theme file is too large (limit 1024 KiB).".into());
+        return Err(format!(
+            "The theme file is too large (limit {} KiB).",
+            MAX_IMPORT_BYTES / 1024
+        ));
     }
     let source = std::str::from_utf8(bytes)
         .map_err(|_| "The theme file must use UTF-8 text.")?

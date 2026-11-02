@@ -93,7 +93,7 @@ enum DraftWorkProbe {
         }
         let captureDirectory = ProcessInfo.processInfo.environment["WIREBOLT_NATIVE_CAPTURE_DIRECTORY"].map { URL(fileURLWithPath: $0) }
         try await CustomThemeNativeTests.run(root: root, defaults: defaults, screenshots: captureDirectory)
-        try await EnvironmentInspectorTests.run(root: root, defaults: defaults)
+        try await EnvironmentInspectorTests.run(root: root, defaults: defaults, screenshots: captureDirectory)
         typingAssignmentsAvoidDraftWork()
         lastTabDirtyConfirmAndReopen(root: root, defaults: defaults)
     }

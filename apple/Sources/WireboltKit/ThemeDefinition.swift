@@ -3,6 +3,11 @@ import Observation
 
 public typealias ThemePreset = DomainThemePreset
 
+extension ThemeSelection: RawRepresentable {
+    public init(rawValue: String) { self = domainThemeSelection(value: rawValue) }
+    public var rawValue: String { domainThemeSelectionValue(selection: self) }
+}
+
 extension DomainThemePreset: RawRepresentable, CaseIterable {
     public static var allCases: [Self] { [.black, .paper, .ember] }
     public var rawValue: String {
@@ -59,8 +64,7 @@ public struct ThemeDefinition: Equatable, Sendable {
     public var success: PaletteColor { domain.success }
     public var warning: PaletteColor { domain.warning }
     public var error: PaletteColor { domain.error }
-    public var methodBackgrounds: [PaletteColor] { domain.methodBackgrounds }
-    public var methodForegrounds: [PaletteColor] { domain.methodForegrounds }
+    public var methods: MethodTokens { domain.methods }
     public var control: PaletteColor { domain.control }
     private static let presets = Dictionary(uniqueKeysWithValues: ThemePreset.allCases.map {
         ($0, Self(domain: domainTheme(preset: $0)))
@@ -109,29 +113,18 @@ public struct ResolvedTheme: Equatable, Sendable {
     public var focusBorder: PaletteColor { tokens.focusBorder }
 
     public init(preset: ThemePreset, density: InterfaceDensity = .comfortable, increasedContrast: Bool = false, revision: UInt64 = 0) {
-        customID = nil
-        tokens = domainResolveTheme(preset: preset, increased: increasedContrast)
-        definition = .preset(preset)
-        geometry = definition.geometry
-        typography = ThemeTypography(density: density)
-        self.revision = revision
-        self.density = density
-        self.increasedContrast = increasedContrast
+        self.init(tokens: domainResolveTheme(preset: preset, increased: increasedContrast), customID: nil, density: density, increasedContrast: increasedContrast, revision: revision)
     }
     public init(custom: CustomTheme, density: InterfaceDensity = .comfortable, increasedContrast: Bool = false, revision: UInt64 = 0) {
-        tokens = domainResolveCustomTheme(tokens: custom.tokens, increased: increasedContrast)
-        definition = ThemeDefinition(domain: tokens.definition)
-        customID = custom.id
-        geometry = definition.geometry
-        typography = ThemeTypography(density: density)
-        self.revision = revision
-        self.density = density
-        self.increasedContrast = increasedContrast
+        self.init(tokens: domainResolveCustomTheme(tokens: custom.tokens, increased: increasedContrast), customID: custom.id, density: density, increasedContrast: increasedContrast, revision: revision)
     }
     public init(appearance: ResolvedAppearance, density: InterfaceDensity, increasedContrast: Bool, revision: UInt64) {
-        tokens = appearance.tokens
+        self.init(tokens: appearance.tokens, customID: appearance.custom?.id, density: density, increasedContrast: increasedContrast, revision: revision)
+    }
+    private init(tokens: ResolvedTokens, customID: String?, density: InterfaceDensity, increasedContrast: Bool, revision: UInt64) {
+        self.tokens = tokens
         definition = ThemeDefinition(domain: tokens.definition)
-        customID = appearance.custom?.id
+        self.customID = customID
         geometry = definition.geometry
         typography = ThemeTypography(density: density)
         self.revision = revision
@@ -218,7 +211,7 @@ public final class ThemeStore {
             return true
         } catch { report(error); return false }
     }
-    public func delete(id: String, selection: String) async -> String? {
+    public func delete(id: String, selection: ThemeSelection) async -> ThemeSelection? {
         guard let library else { return nil }
         do {
             let fallback = try await Self.fileOperation { try library.delete(id: id, selection: selection) }
@@ -228,11 +221,11 @@ public final class ThemeStore {
         } catch { report(error); return nil }
     }
 
-    public func appearance(selection: String, systemIsDark: Bool = false, increasedContrast: Bool = false) -> ResolvedAppearance {
+    public func appearance(selection: ThemeSelection, systemIsDark: Bool = false, increasedContrast: Bool = false) -> ResolvedAppearance {
         domainResolveAppearance(selection: selection, themes: customThemes, systemIsDark: systemIsDark, increased: increasedContrast)
     }
 
-    public func update(selection: String, systemIsDark: Bool, increasedContrast: Bool, density: InterfaceDensity) {
+    public func update(selection: ThemeSelection, systemIsDark: Bool, increasedContrast: Bool, density: InterfaceDensity) {
         let appearance = appearance(selection: selection, systemIsDark: systemIsDark, increasedContrast: increasedContrast)
         var candidate = ResolvedTheme(appearance: appearance, density: density, increasedContrast: increasedContrast, revision: resolved.revision)
         guard candidate != resolved else { return }

@@ -41,11 +41,26 @@ fn native_controls_are_neutral_and_keep_white_glyphs_legible() {
 }
 #[test]
 fn theme_selection_and_density_keep_existing_values() {
-    assert_eq!(select_preset("system", false), DomainThemePreset::Paper);
-    assert_eq!(select_preset("ember", false), DomainThemePreset::Ember);
-    assert_eq!(select_preset("system", true), DomainThemePreset::Black);
-    assert_eq!(select_preset("light", true), DomainThemePreset::Paper);
-    assert_eq!(select_preset("dark", false), DomainThemePreset::Black);
+    assert_eq!(
+        ThemeSelection::from_preference("system").preset(false),
+        DomainThemePreset::Paper
+    );
+    assert_eq!(
+        ThemeSelection::from_preference("ember").preset(false),
+        DomainThemePreset::Ember
+    );
+    assert_eq!(
+        ThemeSelection::from_preference("system").preset(true),
+        DomainThemePreset::Black
+    );
+    assert_eq!(
+        ThemeSelection::from_preference("light").preset(true),
+        DomainThemePreset::Paper
+    );
+    assert_eq!(
+        ThemeSelection::from_preference("dark").preset(false),
+        DomainThemePreset::Black
+    );
     assert!((typography(false).body - 16.0).abs() < f64::EPSILON);
     assert!((typography(true).field - 11.0).abs() < f64::EPSILON);
 }
@@ -155,5 +170,30 @@ fn resolved_chips_cover_every_typed_method_and_custom_verbs() {
             );
             assert_eq!(method_color("WS", false), method_color("CUSTOM", false));
         }
+    }
+}
+
+#[test]
+fn named_method_tokens_match_resolved_chips_for_every_builtin_method() {
+    for preset in [
+        DomainThemePreset::Black,
+        DomainThemePreset::Paper,
+        DomainThemePreset::Ember,
+    ] {
+        let resolved = resolve(preset, false);
+        for kind in MethodChipKind::ALL {
+            assert_eq!(
+                resolved.definition.methods.get(kind),
+                &resolved.chips[&kind]
+            );
+        }
+        assert_ne!(
+            resolved.definition.methods.patch,
+            resolved.definition.methods.delete
+        );
+        assert_ne!(
+            resolved.definition.methods.post,
+            resolved.definition.methods.delete
+        );
     }
 }

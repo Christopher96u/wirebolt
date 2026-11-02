@@ -218,6 +218,7 @@ pub const MOVE_COLLISION_REASON: &str = "The destination already contains a requ
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum MoveEligibility {
     Allowed { label: String },
+    NotDestination { label: String },
     Refused { label: String, reason: String },
 }
 impl MoveEligibility {
@@ -263,6 +264,15 @@ pub fn move_eligibility(
     if parent.is_some_and(|id| !destination.groups.iter().any(|group| group.id == id)) {
         return refuse("This folder is no longer available.");
     }
+    let available = match kind {
+        "request" => location(workspace, source, id).is_some(),
+        "group" => collection(workspace, source)
+            .is_some_and(|c| c.groups.iter().any(|group| group.id == id)),
+        _ => false,
+    };
+    if !available {
+        return refuse("This item is no longer available.");
+    }
     if kind == "request" && request_move_collision(workspace, source, id, collection_id) {
         return refuse(MOVE_COLLISION_REASON);
     }
@@ -283,7 +293,7 @@ pub fn move_eligibility(
     if allowed {
         MoveEligibility::Allowed { label }
     } else {
-        refuse("This item cannot be moved to this destination.")
+        MoveEligibility::NotDestination { label }
     }
 }
 #[must_use]

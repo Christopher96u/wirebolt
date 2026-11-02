@@ -49,14 +49,13 @@ struct WorkspaceUndoTests {
         model.workspace.environments = [original, other]
         var changed = original
         changed.name = "Development"
-        changed.variables.append(EnvironmentVariableDraft(id: "host", key: "host", value: .literal("localhost")))
-        #expect(await model.saveEnvironment(changed))
+        #expect(await model.commitEnvironment(id: original.id, commit: .rename(name: changed.name)) == nil)
         #expect(model.workspace.environments == [changed, other])
         await undo(model, manager)
         #expect(model.workspace.environments == [original, other])
         await redo(model, manager)
         #expect(model.workspace.environments == [changed, other])
-        #expect(await model.deleteEnvironment(id: original.id))
+        #expect(await model.commitEnvironment(id: original.id, commit: .delete) == nil)
         await undo(model, manager)
         #expect(model.workspace.environments == [changed, other])
         #expect(model.workspace.environments[0].variables[0].value == .secret("env.local.token"))
@@ -73,9 +72,7 @@ struct WorkspaceUndoTests {
         model.workspace.environments = [original, other]
         model.selectedEnvironmentID = other.id
         try await persistence.saveSecret(name: reference, value: "old-token")
-        var changed = original
-        changed.name = "Development"
-        #expect(await model.saveEnvironment(changed, secrets: [reference: "new-token"]))
+        #expect(await model.commitEnvironment(id: original.id, commit: .variableValue(id: "token", value: "new-token")) == nil)
         let saved = try #require(model.workspace.environments.first)
         let savedReference = try #require(saved.variables.first?.value.secretName)
         #expect(savedReference != reference)
@@ -90,7 +87,7 @@ struct WorkspaceUndoTests {
         #expect(try await persistence.readSecret(name: savedReference) == "new-token")
         #expect(model.secretMaterial(for: .secret(savedReference)) == "new-token")
         #expect(model.selectedEnvironmentID == other.id)
-        #expect(await model.deleteEnvironment(id: original.id))
+        #expect(await model.commitEnvironment(id: original.id, commit: .delete) == nil)
         await undo(model, manager)
         #expect(model.workspace.environments == [saved, other])
         #expect(try await persistence.readSecret(name: savedReference) == "new-token")
@@ -265,7 +262,7 @@ struct WorkspaceUndoTests {
             Issue.record("A legacy ID collision must be refused")
             return
         }
-        model.showMoveRefusal(reason)
+        await model.moveSidebarItem(identifier, toCollectionID: "other", parentID: nil)
         #expect(model.operationFailure?.kind == .workspace)
         #expect(model.operationFailureMessage == reason)
         model.operationFailure = nil
@@ -276,7 +273,7 @@ struct WorkspaceUndoTests {
     }
 
     @Test("Move To rejects a folder's own subtree, other collections and its current place")
-    func moveToValidation() {
+    func moveToValidation() async {
         let (model, _, _) = makeModel()
         model.workspace.collections = [nested, CollectionDraft(id: "other", name: "Other")]
         #expect(!model.moveEligibility("group|api|parent", toCollectionID: "api", parentID: "grandchild").isAllowed)
@@ -286,6 +283,13 @@ struct WorkspaceUndoTests {
         #expect(!model.moveEligibility("request|api|root", toCollectionID: "api", parentID: nil).isAllowed)
         #expect(model.moveEligibility("request|api|root", toCollectionID: "other", parentID: nil).isAllowed)
         #expect(!model.moveEligibility("request|api|root", toCollectionID: "api", parentID: "missing").isAllowed)
+        guard case .notDestination = model.moveEligibility("request|api|root", toCollectionID: "api", parentID: nil) else {
+            Issue.record("The current location must be silently disabled")
+            return
+        }
+        await model.moveSidebarItem("request|api|root", toCollectionID: "api", parentID: nil)
+        #expect(model.operationFailure == nil)
+
     }
 
     @Test("A failed undo reports the failure and clears the stack instead of guessing")

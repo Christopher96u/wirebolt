@@ -1,3 +1,5 @@
+const UPLOAD_SIZE_CHANGED: &str =
+    "Upload file size changed after preparation; prepare the request again";
 use std::{
     fs::File,
     io::{self, Read},
@@ -64,7 +66,7 @@ impl MultipartBody {
                     if (output.len() - start) as u64 != byte_count {
                         return Err(io::Error::new(
                             io::ErrorKind::InvalidData,
-                            "Upload file size changed",
+                            UPLOAD_SIZE_CHANGED,
                         ));
                     }
                 }
@@ -101,7 +103,7 @@ impl MultipartBody {
                         if file.get_mut().read(&mut extra).await? != 0 {
                             return Err(io::Error::new(
                                 io::ErrorKind::InvalidData,
-                                "Upload file size changed after preparation",
+                                UPLOAD_SIZE_CHANGED,
                             ));
                         }
                         state.file = None;
@@ -144,7 +146,7 @@ async fn checked_file(path: &std::path::Path, byte_count: u64) -> io::Result<tok
     if !metadata.is_file() || metadata.len() != byte_count {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
-            "Upload file size changed after preparation; prepare the request again",
+            UPLOAD_SIZE_CHANGED,
         ));
     }
     Ok(file)

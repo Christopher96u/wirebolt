@@ -49,10 +49,12 @@ Open multiple requests in tabs. **Navigate → Split Right** (**⇧⌘D**) creat
 
 For HTTP requests, open **History** in the composer's **⋯** menu to inspect available prior runs. History is local runtime data, subject to storage limits, and is not included in workspace exports or Git commits.
 
-History is scoped to the workspace, collection and request. Requests with the same
-ID in different collections keep separate responses, and moving a request carries
-its history, including a run already in flight. History for a workspace without a
-saved folder also survives relaunch.
+History follows collection and request IDs. Requests with the same ID in different
+collections keep separate responses. Renaming, moving or re-cloning a workspace
+folder keeps its history; copies sharing those IDs share history, as in rc.1.
+Moving a request or saving a tab for the first time carries its history, including
+runs already in flight. History for a workspace without a saved folder also
+survives relaunch.
 
 When a workspace opens, older history that has only a request ID is assigned to a
 request if exactly one request in that workspace matches. For example, old runs of

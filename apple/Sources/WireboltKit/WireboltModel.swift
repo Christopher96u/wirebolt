@@ -267,7 +267,7 @@ public final class WireboltModel {
         guard let session = sessions.activeSession,
               let collectionID = session.collectionID
         else { return nil }
-        return "\(collectionID)/\(session.requestID)"
+        return sessionRequestActivityKey(collectionId: collectionID, requestId: session.requestID)
     }
 
     /// Whether `location` is the active document's saved request. Observes only that
@@ -628,18 +628,6 @@ public final class WireboltModel {
         return result.succeeded
     }
 
-    @discardableResult
-    public func saveEnvironment(_ environment: EnvironmentDraft, secrets: [String: String] = [:]) async -> Bool {
-        await undoWork?.value
-        guard let persistence else { return false }
-        synchronizeWorkspace()
-        let result = await rustOperations.saveEnvironment(
-            environment: environment.domain, values: secrets, selected: selectedEnvironmentID,
-            platform: persistence.sessionWorkspacePlatform, secrets: rustSecrets, secretPlatform: persistence.sessionSecretPlatform)
-        finishMutation(result)
-        return result.succeeded
-    }
-
     /// Returns a Rust-owned inline validation/save problem; native controls retain
     /// their text until this field commit succeeds.
     public func commitEnvironment(id: String, commit: EnvironmentCommit) async -> String? {
@@ -701,11 +689,6 @@ public final class WireboltModel {
         do { try await runtime.saveTransport(value: workspace.transport.domain, platform: runtimeSettings()) } catch {
             operationFailure = RunFailure(kind: .workspace, issues: [])
         }
-    }
-
-    @discardableResult
-    public func deleteEnvironment(id: String) async -> Bool {
-        await perform(.deleteEnvironment(id: id)).succeeded
     }
 
     /// Explicit export keeps Keychain references in the generated command.
@@ -895,7 +878,6 @@ public final class WireboltModel {
         return session
     }
 
-    public func makeNewEnvironment() -> EnvironmentDraft { EnvironmentDraft(domain: workspaceNewEnvironment()) }
 
     public func createRequest(kind: DocumentKind = .http, collectionID: String? = nil, groupID: String? = nil) async -> DocumentSession? {
         let result = await perform(.createRequest(webSocket: kind == .webSocket, collectionId: collectionID, groupId: groupID))
@@ -948,10 +930,6 @@ public final class WireboltModel {
     public func moveEligibility(_ identifier: String, toCollectionID collectionID: String, parentID: String?) -> MoveEligibility {
         synchronizeWorkspace()
         return rustOperations.moveEligibility(identifier: identifier, collectionId: collectionID, parent: parentID)
-    }
-    public func showMoveRefusal(_ reason: String) {
-        operationFailure = RunFailure(kind: .workspace, issues: [])
-        operationFailureMessage = reason
     }
     public func moveSidebarItem(_ identifier: String, toCollectionID collectionID: String, parentID: String?) async {
         await perform(.moveTo(identifier: identifier, collectionId: collectionID, parentId: parentID))
@@ -1300,6 +1278,10 @@ extension WireboltModel {
         if cookieRevision != value { cookieRevision = value }
     }
     fileprivate func mirrorRuntime() {
+        if let reason = runtime.takeHistoryProblem() {
+            operationFailure = RunFailure(kind: .storage, issues: [])
+            operationFailureMessage = reason
+        }
         let state = runtime.snapshot()
         let entries = state.historyEntries.map(RunHistoryEntry.init)
         if historyEntries != entries { historyEntries = entries }

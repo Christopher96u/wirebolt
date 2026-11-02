@@ -9,7 +9,7 @@ Screenshots show Wirebolt at source revision `324d11a`, using a disposable Catal
 | Image | Demonstrates |
 | --- | --- |
 | `screenshots/overview.png` | Real HTTP response from the documented local demo server |
-| `screenshots/environments.png` | Literal local-development variables |
+| `screenshots/environments.png` | Current environment inspector, rendered in process with literal demo variables and disposable preferences |
 | `screenshots/proxy.png` | Manual workspace proxy configuration; the displayed endpoint is illustrative, not a running proxy |
 | `screenshots/notes.png` | Native Markdown preview beside a real response |
 | `screenshots/websocket.png` | Text exchange with a local WebSocket echo fixture |

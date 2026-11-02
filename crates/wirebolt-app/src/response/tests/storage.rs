@@ -2,7 +2,6 @@ use super::*;
 use crate::session::history::SessionRequestIdentity;
 fn identity(request: &str) -> SessionRequestIdentity {
     SessionRequestIdentity {
-        workspace: "workspace".into(),
         collection_id: "api".into(),
         request_id: request.into(),
     }
@@ -363,35 +362,43 @@ fn cookie_dates_preserve_pre_epoch_expiry_two_digit_years_and_named_timezones() 
 }
 
 #[test]
-fn damaged_history_arrays_and_objects_are_backed_up_and_never_overwritten() {
+fn damaged_history_is_reported_once_then_recording_and_clearing_resume() {
     for original in [
         br#"[{"id":"broken","requestID":"health","prepared":false}]"#.as_slice(),
         br#"{"version":2,"entries":[{"id":"broken"}]}"#,
         b"invalid JSON",
+        br#"{"version":3,"entries":[]}"#,
     ] {
         let root = tempfile::tempdir().unwrap();
         let index = root.path().join("index.json");
         std::fs::write(&index, original).unwrap();
         let mut history = RunHistory::new(root.path().into());
-        assert!(history.list(&identity("health")).is_err());
-        assert!(history.clear(&identity("health")).is_err());
-        assert!(history.clear_all().is_err());
+        let error = history.take_load_problem().unwrap_err().to_string();
+        assert!(error.starts_with("History could not be loaded."));
+        assert!(error.contains("A backup is kept as"));
+        assert_eq!(std::fs::read(&index).unwrap(), original);
+        assert!(history.list(&identity("health")).unwrap().is_empty());
+        history.take_load_problem().unwrap();
         let mut body = BodyStore::new("source", root.path()).unwrap();
         body.finish().unwrap();
+        history
+            .record(
+                history_fixture("new", Some(identity("health")), String::new()),
+                &body,
+            )
+            .unwrap();
+        assert_eq!(history.count(&identity("health")).unwrap(), 1);
+        history.clear_all().unwrap();
         assert!(
-            history
-                .record(
-                    history_fixture("new", Some(identity("health")), String::new()),
-                    &body
-                )
-                .is_err()
+            RunHistory::new(root.path().into())
+                .list(&identity("health"))
+                .unwrap()
+                .is_empty()
         );
-        assert_eq!(std::fs::read(&index).unwrap(), original);
         assert_eq!(
             std::fs::read(root.path().join("index.json.backup")).unwrap(),
             original
         );
-        assert!(!root.path().join("new.body").exists());
     }
 }
 
@@ -527,7 +534,7 @@ fn history_fixture(
 }
 
 #[test]
-fn history_identity_isolates_collections_and_workspaces() {
+fn history_identity_isolates_collections_and_requests() {
     let root = tempfile::tempdir().unwrap();
     let mut history = RunHistory::new(root.path().join("history"));
     let a = identity("same");
@@ -535,10 +542,7 @@ fn history_identity_isolates_collections_and_workspaces() {
         collection_id: "other".into(),
         ..a.clone()
     };
-    let c = SessionRequestIdentity {
-        workspace: "other-workspace".into(),
-        ..a.clone()
-    };
+    let c = identity("another-request");
     let mut body = BodyStore::new("source", root.path()).unwrap();
     body.append(b"fixture").unwrap();
     body.finish().unwrap();
@@ -589,29 +593,6 @@ fn history_migration_preserves_scoped_and_ambiguous_legacy_entries() {
     let index: serde_json::Value =
         serde_json::from_slice(&std::fs::read(root.path().join("index.json")).unwrap()).unwrap();
     assert_eq!(index, serde_json::json!([]));
-}
-
-#[test]
-fn unsupported_history_index_is_preserved() {
-    let root = tempfile::tempdir().unwrap();
-    let path = root.path().join("index.json");
-    let original = br#"{"version":3,"entries":[]}"#;
-    std::fs::write(&path, original).unwrap();
-    let mut history = RunHistory::new(root.path().into());
-    let key = identity("same");
-    assert!(history.list(&key).is_err());
-    assert!(history.clear(&key).is_err());
-    assert!(history.relocate(&key, &identity("other")).is_err());
-    let mut body = BodyStore::new("source", root.path()).unwrap();
-    body.append(b"fixture").unwrap();
-    body.finish().unwrap();
-    assert!(
-        history
-            .record(history_fixture("new", Some(key), String::new()), &body)
-            .is_err()
-    );
-    assert!(!root.path().join("new.body").exists());
-    assert_eq!(std::fs::read(path).unwrap(), original);
 }
 
 #[test]
@@ -697,4 +678,19 @@ fn retained_body_clone_cost_and_release() {
     drop(retained);
     assert!(!retained_path.exists());
     assert!(!retained_directory.exists());
+}
+
+#[test]
+fn development_history_namespace_is_ignored_when_reading_identity() {
+    let root = tempfile::tempdir().unwrap();
+    let entry = history_fixture("development", Some(identity("health")), String::new());
+    let mut value = serde_json::to_value(&entry).unwrap();
+    value["identity"]["workspace"] = "old-path-sha256.json".into();
+    std::fs::write(
+        root.path().join("index.json"),
+        serde_json::to_vec(&vec![value]).unwrap(),
+    )
+    .unwrap();
+    let mut history = RunHistory::new(root.path().into());
+    assert_eq!(history.list(&identity("health")).unwrap(), [entry]);
 }

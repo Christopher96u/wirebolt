@@ -83,8 +83,7 @@ pub struct ThemeTokens {
     pub success: RgbColor,
     pub warning: RgbColor,
     pub error: RgbColor,
-    pub method_backgrounds: Vec<RgbColor>,
-    pub method_foregrounds: Vec<RgbColor>,
+    pub methods: MethodTokens,
     pub control: RgbColor,
 }
 #[must_use]
@@ -122,8 +121,30 @@ pub fn theme(preset: DomainThemePreset) -> ThemeTokens {
         success: c[22],
         warning: c[23],
         error: c[24],
-        method_backgrounds: c[25..30].to_vec(),
-        method_foregrounds: c[30..35].to_vec(),
+        methods: MethodTokens::from_fn(|kind| {
+            let authored = match kind {
+                MethodChipKind::Get => Some(0),
+                MethodChipKind::Post => Some(1),
+                MethodChipKind::Put => Some(2),
+                MethodChipKind::Delete => Some(3),
+                MethodChipKind::WebSocket => Some(4),
+                _ => None,
+            };
+            let adaptive = kind.color();
+            DomainMethodChip {
+                background: authored.map_or(c[4], |i| c[25 + i]),
+                foreground: authored.map_or_else(
+                    || {
+                        if preset == DomainThemePreset::Paper {
+                            adaptive.light
+                        } else {
+                            adaptive.dark
+                        }
+                    },
+                    |i| c[30 + i],
+                ),
+            }
+        }),
         control: c[35],
     }
 }
@@ -307,11 +328,71 @@ pub fn typography(compact: bool) -> TypographyTokens {
         title: 26.0,
     }
 }
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DomainMethodChip {
     pub background: RgbColor,
     pub foreground: RgbColor,
 }
+/// Every palette names the same complete set of HTTP and WebSocket treatments.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MethodTokens {
+    pub get: DomainMethodChip,
+    pub post: DomainMethodChip,
+    pub put: DomainMethodChip,
+    pub patch: DomainMethodChip,
+    pub delete: DomainMethodChip,
+    pub head: DomainMethodChip,
+    pub options: DomainMethodChip,
+    pub query: DomainMethodChip,
+    pub custom: DomainMethodChip,
+    pub web_socket: DomainMethodChip,
+}
+impl MethodTokens {
+    pub fn from_fn(mut value: impl FnMut(MethodChipKind) -> DomainMethodChip) -> Self {
+        Self {
+            get: value(MethodChipKind::Get),
+            post: value(MethodChipKind::Post),
+            put: value(MethodChipKind::Put),
+            patch: value(MethodChipKind::Patch),
+            delete: value(MethodChipKind::Delete),
+            head: value(MethodChipKind::Head),
+            options: value(MethodChipKind::Options),
+            query: value(MethodChipKind::Query),
+            custom: value(MethodChipKind::Custom),
+            web_socket: value(MethodChipKind::WebSocket),
+        }
+    }
+    #[must_use]
+    pub const fn get(&self, kind: MethodChipKind) -> &DomainMethodChip {
+        match kind {
+            MethodChipKind::Get => &self.get,
+            MethodChipKind::Post => &self.post,
+            MethodChipKind::Put => &self.put,
+            MethodChipKind::Patch => &self.patch,
+            MethodChipKind::Delete => &self.delete,
+            MethodChipKind::Head => &self.head,
+            MethodChipKind::Options => &self.options,
+            MethodChipKind::Query => &self.query,
+            MethodChipKind::Custom => &self.custom,
+            MethodChipKind::WebSocket => &self.web_socket,
+        }
+    }
+    pub fn values_mut(&mut self) -> [&mut DomainMethodChip; 10] {
+        [
+            &mut self.get,
+            &mut self.post,
+            &mut self.put,
+            &mut self.patch,
+            &mut self.delete,
+            &mut self.head,
+            &mut self.options,
+            &mut self.query,
+            &mut self.custom,
+            &mut self.web_socket,
+        ]
+    }
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct ResolvedTokens {
     pub is_dark: bool,
@@ -330,65 +411,112 @@ pub fn resolve(preset: DomainThemePreset, increased: bool) -> ResolvedTokens {
     let s = [d.window, d.sidebar, d.card];
     let mut chips = std::collections::HashMap::new();
     for kind in MethodChipKind::ALL {
-        let index = match kind {
-            MethodChipKind::Get => Some(0),
-            MethodChipKind::Post => Some(1),
-            MethodChipKind::Put => Some(2),
-            MethodChipKind::Delete => Some(3),
-            MethodChipKind::WebSocket => Some(4),
-            _ => None,
-        };
+        let chip = d.methods.get(kind);
         let adaptive = kind.color();
-        let dark = preset != DomainThemePreset::Paper;
         let foreground = if increased {
-            if dark {
-                adaptive.dark_high_contrast
-            } else {
+            if preset == DomainThemePreset::Paper {
                 adaptive.light_high_contrast
+            } else {
+                adaptive.dark_high_contrast
             }
-        } else if let Some(i) = index {
-            d.method_foregrounds[i]
-        } else if dark {
-            adaptive.dark
         } else {
-            adaptive.light
+            chip.foreground
         };
         chips.insert(
             kind,
             DomainMethodChip {
-                background: index.map_or(d.tab_active, |i| d.method_backgrounds[i]),
+                background: chip.background,
                 foreground,
             },
         );
     }
+    let borders = resolve_borders(&d, &s, increased);
     ResolvedTokens {
         is_dark: preset != DomainThemePreset::Paper,
         statuses: resolved_statuses(&d, &chips, increased, true),
         primary: strengthen(d.primary, &s, 7.0),
         muted: strengthen(d.muted, &s, if increased { 7.0 } else { 4.5 }),
-        hairline: if increased {
-            strengthen(d.hairline, &s, 3.0)
-        } else {
-            d.hairline
-        },
-        card_border: if increased {
-            strengthen(d.card_border, &s, 3.0)
-        } else {
-            d.card_border
-        },
-        focus_border: strengthen(d.card_border, &s, if increased { 4.5 } else { 3.0 }),
+        hairline: borders.hairline,
+        card_border: borders.card,
+        focus_border: borders.focus,
         definition: d,
         chips,
     }
 }
-#[must_use]
-pub fn select_preset(selection: &str, dark: bool) -> DomainThemePreset {
-    DomainThemePreset::from_preference(selection).unwrap_or(match selection {
-        "dark" => DomainThemePreset::Black,
-        "light" => DomainThemePreset::Paper,
-        _ if dark => DomainThemePreset::Black,
-        _ => DomainThemePreset::Paper,
-    })
+pub(super) struct ResolvedBorders {
+    pub hairline: RgbColor,
+    pub card: RgbColor,
+    pub focus: RgbColor,
+}
+pub(super) fn resolve_borders(
+    tokens: &ThemeTokens,
+    surfaces: &[RgbColor],
+    increased: bool,
+) -> ResolvedBorders {
+    ResolvedBorders {
+        hairline: if increased {
+            strengthen(tokens.hairline, surfaces, 3.0)
+        } else {
+            tokens.hairline
+        },
+        card: if increased {
+            strengthen(tokens.card_border, surfaces, 3.0)
+        } else {
+            tokens.card_border
+        },
+        focus: strengthen(
+            tokens.card_border,
+            surfaces,
+            if increased { 4.5 } else { 3.0 },
+        ),
+    }
+}
+
+/// Persisted strings are decoded once at the preference boundary, including rc.1 aliases.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ThemeSelection {
+    System,
+    BuiltIn { preset: DomainThemePreset },
+    Custom { id: String },
+}
+impl ThemeSelection {
+    #[must_use]
+    pub fn from_preference(value: &str) -> Self {
+        match value {
+            "light" => Self::BuiltIn {
+                preset: DomainThemePreset::Paper,
+            },
+            "dark" => Self::BuiltIn {
+                preset: DomainThemePreset::Black,
+            },
+            _ => DomainThemePreset::from_preference(value).map_or_else(
+                || {
+                    if value.starts_with("custom:") {
+                        Self::Custom { id: value.into() }
+                    } else {
+                        Self::System
+                    }
+                },
+                |preset| Self::BuiltIn { preset },
+            ),
+        }
+    }
+    #[must_use]
+    pub fn preference_value(&self) -> String {
+        match self {
+            Self::System => "system".into(),
+            Self::BuiltIn { preset } => preset.preference_value().into(),
+            Self::Custom { id } => id.clone(),
+        }
+    }
+    #[must_use]
+    pub const fn preset(&self, dark: bool) -> DomainThemePreset {
+        match self {
+            Self::BuiltIn { preset } => *preset,
+            _ if dark => DomainThemePreset::Black,
+            _ => DomainThemePreset::Paper,
+        }
+    }
 }
 
 const BLACK: [u32; 36] = [
@@ -636,22 +764,52 @@ pub struct ResolvedAppearance {
 }
 #[must_use]
 pub fn resolve_selection(
-    selection: &str,
+    selection: &ThemeSelection,
     themes: &[library::CustomTheme],
     system_is_dark: bool,
     increased: bool,
 ) -> ResolvedAppearance {
-    let custom = themes.iter().find(|theme| theme.id == selection).cloned();
+    let custom = if let ThemeSelection::Custom { id } = selection {
+        themes.iter().find(|theme| &theme.id == id).cloned()
+    } else {
+        None
+    };
     let tokens = custom.as_ref().map_or_else(
-        || resolve(select_preset(selection, system_is_dark), increased),
+        || resolve(selection.preset(system_is_dark), increased),
         |theme| custom::resolve(theme.tokens.clone(), increased),
     );
-    let follows_system = custom.is_none()
-        && DomainThemePreset::from_preference(selection).is_none()
-        && !matches!(selection, "light" | "dark");
+    let follows_system = !matches!(selection, ThemeSelection::BuiltIn { .. }) && custom.is_none();
     ResolvedAppearance {
         tokens,
         custom,
         follows_system,
     }
+}
+
+fn read_bounded(
+    path: &std::path::Path,
+    limit: usize,
+    description: &str,
+) -> Result<Vec<u8>, String> {
+    use std::io::Read;
+    let regular_file = || format!("Choose a regular {description}.");
+    if std::fs::metadata(path).is_ok_and(|m| !m.is_file()) {
+        return Err(regular_file());
+    }
+    let file =
+        std::fs::File::open(path).map_err(|e| format!("Could not open the {description}: {e}"))?;
+    if !file.metadata().is_ok_and(|m| m.is_file()) {
+        return Err(regular_file());
+    }
+    let mut bytes = Vec::new();
+    file.take((limit + 1) as u64)
+        .read_to_end(&mut bytes)
+        .map_err(|e| format!("Could not read the {description}: {e}"))?;
+    if bytes.len() > limit {
+        return Err(format!(
+            "The {description} is too large (limit {} KiB).",
+            limit / 1024
+        ));
+    }
+    Ok(bytes)
 }

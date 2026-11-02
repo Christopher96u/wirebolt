@@ -223,9 +223,6 @@ pub enum WorkspaceReply {
 }
 #[async_trait]
 pub trait WorkspacePlatform: Send + Sync {
-    fn workspace_namespace(&self) -> String {
-        crate::session::history::UNSAVED_WORKSPACE_NAMESPACE.into()
-    }
     async fn execute(&self, request: WorkspaceIO) -> WorkspaceReply;
 }
 fn workspace_result<T>(

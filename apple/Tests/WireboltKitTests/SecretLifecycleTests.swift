@@ -161,17 +161,14 @@ struct SecretLifecycleTests {
 
     @Test("Removing a secret variable releases its item; purging twice deletes once")
     func environmentVariableDeletion() async throws {
-        let reference = EnvironmentVariableDraft(key: "token").makeSecretReference(environmentID: "staging")
+        let reference = CredentialReference.unique(role: "staging", scope: "env")
         let environment = EnvironmentDraft(id: "staging", name: "Staging", variables: [
             EnvironmentVariableDraft(key: "token", value: .secret(reference)),
             EnvironmentVariableDraft(key: "host", value: .literal("api.example.com")),
         ])
         let keychain = KeychainRecorder(workspace: workspace([], environments: [environment]), keychain: [reference: "fixture"])
         let (model, _) = await makeModel(keychain)
-        var edited = environment
-        edited.variables.removeFirst()
-
-        #expect(await model.saveEnvironment(edited))
+        #expect(await model.commitEnvironment(id: environment.id, commit: .deleteVariable(id: environment.variables[0].id)) == nil)
         await model.purgeReleasedSecrets()
         await model.purgeReleasedSecrets()
 

@@ -1236,3 +1236,27 @@ func defaultPersistenceDeltaKeepsLocationIdentity() async throws {
     let delta = try await persistence.apply(.saveRequest(location: location.domain))
     #expect(delta.affectedIDs == [location.id])
 }
+
+extension WireboltModelTests {
+    @Test("A damaged history index records the send, reports once and keeps its backup")
+    @MainActor func damagedHistoryRecoveryIsReportedOnce() async throws {
+        let root = FileManager.default.temporaryDirectory.appending(path: "wirebolt-history-recovery-\(UUID())")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try Data("damaged index".utf8).write(to: root.appending(path: "index.json"))
+        let model = WireboltModel(runner: InputCapturingRunner(), history: HistoryRepository(root: root))
+        let session = model.sessions.open(draft: RequestDraft(id: "unsaved", url: "https://example.invalid/fixture"))
+        await model.send()
+        #expect(await model.historyCount(for: session) == 1)
+        #expect(model.operationFailure?.kind == .storage)
+        #expect(model.operationFailureMessage?.contains("index.json.backup") == true)
+        model.operationFailure = nil
+        model.operationFailureMessage = nil
+        await model.send()
+        #expect(await model.historyCount(for: session) == 2)
+        #expect(model.operationFailure == nil)
+        await model.clearAllHistory()
+        #expect(await model.historyCount(for: session) == 0)
+        #expect(try String(contentsOf: root.appending(path: "index.json.backup"), encoding: .utf8) == "damaged index")
+    }
+}

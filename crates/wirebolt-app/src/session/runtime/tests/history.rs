@@ -199,7 +199,7 @@ async fn latest_restore_checks_membership_after_io_and_rejects_departed_workspac
 }
 
 #[tokio::test]
-async fn corrupt_history_does_not_stop_a_run_or_replace_the_index() {
+async fn corrupt_history_recovers_recording_and_clearing_without_losing_backup() {
     let root = tempfile::tempdir().unwrap();
     let directory = root.path().join("history");
     std::fs::create_dir(&directory).unwrap();
@@ -218,11 +218,21 @@ async fn corrupt_history_does_not_stop_a_run_or_replace_the_index() {
             root.path(),
         ))
         .await;
-    assert!(state.history_count(&key(&state, "health")).is_err());
-    assert!(state.clear_history(&key(&state, "health")).is_err());
-    assert!(state.clear_all_history().is_err());
+    assert_eq!(state.history_count(&key(&state, "health")).unwrap(), 1);
+    assert!(
+        state
+            .take_history_problem()
+            .unwrap()
+            .contains("index.json.backup")
+    );
+    assert!(state.take_history_problem().is_none());
+    state.clear_all_history().unwrap();
     assert!(state.snapshot().history_entries.is_empty());
-    assert_eq!(std::fs::read(index).unwrap(), b"corrupt index");
+    assert_eq!(std::fs::read(index).unwrap(), b"[]");
+    assert_eq!(
+        std::fs::read(directory.join("index.json.backup")).unwrap(),
+        b"corrupt index"
+    );
 }
 
 #[tokio::test]
@@ -255,16 +265,13 @@ async fn clear_history_preserves_displayed_response_body() {
 }
 
 #[tokio::test]
-async fn request_history_does_not_cross_workspace_boundaries() {
+async fn copied_workspace_ids_share_history() {
     let root = tempfile::tempdir().unwrap();
     let first = state(root.path());
     let second = state(root.path());
-    first.configure_history_workspace(Some(root.path().join("first-workspace").to_str().unwrap()));
-    second
-        .configure_history_workspace(Some(root.path().join("second-workspace").to_str().unwrap()));
     RuntimeRuns::default()
         .send(command(
-            first,
+            first.clone(),
             document("same"),
             Arc::new(Mutex::new(DocumentRun::default())),
             Arc::new(Transport {
@@ -274,7 +281,7 @@ async fn request_history_does_not_cross_workspace_boundaries() {
             root.path(),
         ))
         .await;
-    assert_eq!(second.history_count(&key(&second, "same")).unwrap(), 0);
+    assert_eq!(second.history_count(&key(&second, "same")).unwrap(), 1);
 }
 
 #[tokio::test]
@@ -344,11 +351,10 @@ async fn late_history_record_does_not_publish_into_another_workspace() {
     let original = key(&state, "same");
     let snapshot = lock(&run).snapshot();
     let body = lock(&run).body().unwrap();
-    state.configure_history_workspace(Some(root.path().join("other-workspace").to_str().unwrap()));
     state.reset_workspace();
     state.record(&original, "late", snapshot, &body);
     assert_eq!(state.history_count(&original).unwrap(), 2);
-    assert_eq!(state.history_count(&key(&state, "same")).unwrap(), 0);
+    assert_eq!(state.history_count(&key(&state, "same")).unwrap(), 2);
     assert!(state.snapshot().history_entries.is_empty());
     assert!(state.snapshot().request_activity.is_empty());
 }
@@ -494,9 +500,7 @@ async fn workspace_load_migrates_unique_legacy_history_and_restores_activity_and
         ..Default::default()
     };
     let reloaded = state(root.path());
-    reloaded
-        .load_workspace_history("fixture", &workspace)
-        .unwrap();
+    reloaded.load_workspace_history(&workspace).unwrap();
     assert_eq!(
         reloaded.history_count(&key(&reloaded, "unique")).unwrap(),
         1

@@ -11,7 +11,7 @@ struct AppearanceSettingsView: View {
     @State private var readingImport = false
     @State private var renaming: CustomTheme?
     @State private var deleting: CustomTheme?
-    @AppStorage("interfaceAppearance") private var selection = "system"
+    @AppStorage("interfaceAppearance") private var selection = ThemeSelection.system
     @AppStorage("interfaceDensity") private var density = "comfortable"
     @AppStorage("editor.fontSize") private var fontSize = 12.0
     @AppStorage("interfaceReduceMotion") private var reducesMotion = false
@@ -25,17 +25,17 @@ struct AppearanceSettingsView: View {
         SettingsPage(title: "Appearance", subtitle: "Choose a contrast-checked theme. Text ≥ 7:1, muted text ≥ 4.5:1.") {
             HStack {
                 Spacer()
-                Toggle("Follow System", isOn: Binding(get: { selection == "system" },
-                    set: { selection = $0 ? "system" : theme.definition.preset.rawValue }))
+                Toggle("Follow System", isOn: Binding(get: { selection == .system },
+                    set: { selection = $0 ? .system : .builtIn(preset: theme.definition.preset) }))
                     .toggleStyle(.wireboltSwitch).controlSize(.small)
                     .font(.system(size: theme.typography.settingsDetail))
             }
             LazyVGrid(columns: [GridItem(.adaptive(minimum: 172, maximum: 172), spacing: 14)], alignment: .leading, spacing: 20) {
                 ForEach(ThemePreset.allCases, id: \.self) { preset in
-                    ThemePreviewCard(name: preset.name, preview: ResolvedTheme(preset: preset), selected: selectedPreset == preset && activeCustom == nil) { selection = preset.rawValue }
+                    ThemePreviewCard(name: preset.name, preview: ResolvedTheme(preset: preset), selected: selectedPreset == preset && activeCustom == nil) { selection = .builtIn(preset: preset) }
                 }
                 ForEach(store.customThemes, id: \.id) { custom in
-                    ThemePreviewCard(name: custom.name, preview: ResolvedTheme(custom: custom), selected: selection == custom.id) { selection = custom.id }
+                    ThemePreviewCard(name: custom.name, preview: ResolvedTheme(custom: custom), selected: selection == .custom(id: custom.id)) { selection = .custom(id: custom.id) }
                         .contextMenu {
                             Button("Rename…") { store.clearError(); renaming = custom }
                             Button("Delete…", role: .destructive) { deleting = custom }
@@ -111,7 +111,7 @@ struct AppearanceSettingsView: View {
         }
         .sheet(isPresented: Binding(get: { editing != nil }, set: { if !$0 { editing = nil } })) {
             if let editing {
-                CustomThemeEditor(initial: editing, fromColors: fromColors, store: store) { selection = $0.id }
+                CustomThemeEditor(initial: editing, fromColors: fromColors, store: store) { selection = .custom(id: $0.id) }
                     .environment(\.wireboltTheme, theme)
             }
         }
@@ -205,7 +205,7 @@ struct ThemePreviewCard: View {
                     rect(9, 28, 24, 4, preview.primary, radius: 2)
                     rect(60, 10, 104, 34, p.card, radius: 7)
                     rect(67, 18, 54, 4, p.secondary, radius: 2)
-                    rect(67, 32, 16, 6, p.methodBackgrounds[1], radius: 2)
+                    rect(67, 32, 16, 6, p.methods.post.background, radius: 2)
                     context.fill(Path(ellipseIn: CGRect(x: 148, y: 30, width: 10, height: 10)), with: .color(p.sendBackground.color))
                     for (y, width, color) in [(56.0, 70.0, p.syntaxKey), (66, 88, p.syntaxString),
                         (76, 46, p.syntaxNumber), (86, 60, p.syntaxKey)] {

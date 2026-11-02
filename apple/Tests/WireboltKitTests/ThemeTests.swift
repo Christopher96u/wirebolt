@@ -6,11 +6,11 @@ struct ThemeTests {
         for (preset, value) in [(ThemePreset.black, "black"), (.paper, "paper"), (.ember, "ember")] {
             #expect(preset.rawValue == value)
             #expect(ThemePreset(rawValue: value) == preset)
-            #expect(domainSelectPreset(selection: value, dark: true) == preset)
-            #expect(domainSelectPreset(selection: value, dark: false) == preset)
+            #expect(domainSelectPreset(selection: ThemeSelection(rawValue: value), dark: true) == preset)
+            #expect(domainSelectPreset(selection: ThemeSelection(rawValue: value), dark: false) == preset)
         }
-        #expect(domainSelectPreset(selection: "dark", dark: false) == .black)
-        #expect(domainSelectPreset(selection: "light", dark: true) == .paper)
+        #expect(domainSelectPreset(selection: ThemeSelection(rawValue: "dark"), dark: false) == .black)
+        #expect(domainSelectPreset(selection: ThemeSelection(rawValue: "light"), dark: true) == .paper)
         #expect(ThemePreset(rawValue: "dark") == nil)
     }
 
@@ -47,16 +47,16 @@ struct ThemeTests {
 
     @Test @MainActor func resolutionAndRevision() {
         let store = ThemeStore()
-        store.update(selection: "system", systemIsDark: false, increasedContrast: false, density: .comfortable)
+        store.update(selection: .system, systemIsDark: false, increasedContrast: false, density: .comfortable)
         #expect(store.resolved.definition.preset == .paper)
         let revision = store.resolved.revision
-        store.update(selection: "system", systemIsDark: false, increasedContrast: false, density: .comfortable)
+        store.update(selection: .system, systemIsDark: false, increasedContrast: false, density: .comfortable)
         #expect(store.resolved.revision == revision)
-        store.update(selection: "ember", systemIsDark: false, increasedContrast: true, density: .compact)
+        store.update(selection: .builtIn(preset: .ember), systemIsDark: false, increasedContrast: true, density: .compact)
         #expect(store.resolved.definition.preset == .ember)
         #expect(store.resolved.revision > revision)
         #expect(store.resolved.density.controlHeight >= 28)
-        store.update(selection: "system", systemIsDark: true, increasedContrast: false, density: .comfortable)
+        store.update(selection: .system, systemIsDark: true, increasedContrast: false, density: .comfortable)
         #expect(store.resolved.definition.preset == .black)
         #expect(store.resolved.geometry.card == 16)
     }

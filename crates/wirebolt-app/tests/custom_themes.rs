@@ -59,8 +59,11 @@ fn assert_contrast(tokens: &ThemeTokens) {
             d.error,
         ];
         assert_eq!(statuses.into_iter().collect::<HashSet<_>>().len(), 5);
-        for (i, a) in d.method_foregrounds.iter().enumerate() {
-            for b in &d.method_foregrounds[i + 1..] {
+        let colors: Vec<_> = MethodChipKind::ALL
+            .map(|kind| d.methods.get(kind).foreground)
+            .into();
+        for (i, a) in colors.iter().enumerate() {
+            for b in &colors[i + 1..] {
                 let distance: i32 = [a.red, a.green, a.blue]
                     .into_iter()
                     .zip([b.red, b.green, b.blue])
@@ -208,10 +211,32 @@ fn library_round_trips_renames_deletes_and_falls_back_only_for_active_theme() {
     );
     assert!(library.rename(&theme.id, " ").is_err());
     assert!(library.rename(&theme.id, &"x".repeat(65)).is_err());
-    assert_eq!(library.delete(&theme.id, &theme.id).unwrap(), "system");
+    assert_eq!(
+        library
+            .delete(
+                &theme.id,
+                &ThemeSelection::Custom {
+                    id: theme.id.clone()
+                }
+            )
+            .unwrap(),
+        ThemeSelection::System
+    );
     assert!(ThemeLibrary::open(&path).snapshot().themes.is_empty());
     let other = library.add("Other", theme.tokens).unwrap();
-    assert_eq!(library.delete(&other.id, "paper").unwrap(), "paper");
+    assert_eq!(
+        library
+            .delete(
+                &other.id,
+                &ThemeSelection::BuiltIn {
+                    preset: DomainThemePreset::Paper
+                }
+            )
+            .unwrap(),
+        ThemeSelection::BuiltIn {
+            preset: DomainThemePreset::Paper
+        }
+    );
 }
 
 #[test]
@@ -260,7 +285,7 @@ fn failed_library_write_keeps_snapshot_and_invalid_tokens_are_rejected() {
     let parent = root.path().join("not-a-directory");
     fs::write(&parent, "x").unwrap();
     let mut library = ThemeLibrary::open(&parent.join("themes.json"));
-    let mut tokens = custom::derive(RgbColor::hex(0), RgbColor::hex(0)).tokens;
+    let tokens = custom::derive(RgbColor::hex(0), RgbColor::hex(0)).tokens;
     assert!(
         library
             .add("Failure", tokens.clone())
@@ -268,8 +293,9 @@ fn failed_library_write_keeps_snapshot_and_invalid_tokens_are_rejected() {
             .contains("Could not save")
     );
     assert!(library.snapshot().themes.is_empty());
-    tokens.method_foregrounds.clear();
-    assert!(library.add("Invalid", tokens).is_err());
+    let mut incomplete = serde_json::to_value(&tokens).unwrap();
+    incomplete["methods"].as_object_mut().unwrap().remove("get");
+    assert!(serde_json::from_value::<ThemeTokens>(incomplete).is_err());
 }
 
 #[test]
@@ -380,7 +406,14 @@ fn saved_selection_resolves_custom_builtin_system_and_missing_themes_in_rust() {
     };
     let themes = [custom.clone()];
     for increased in [false, true] {
-        let selected = resolve_selection(&custom.id, &themes, true, increased);
+        let selected = resolve_selection(
+            &ThemeSelection::Custom {
+                id: custom.id.clone(),
+            },
+            &themes,
+            true,
+            increased,
+        );
         assert_eq!(selected.custom, Some(custom.clone()));
         assert!(!selected.follows_system && !selected.tokens.is_dark);
         for (selection, dark, follows_system) in [
@@ -390,7 +423,12 @@ fn saved_selection_resolves_custom_builtin_system_and_missing_themes_in_rust() {
             ("system", true, true),
             ("custom:missing", true, true),
         ] {
-            let resolved = resolve_selection(selection, &themes, true, increased);
+            let resolved = resolve_selection(
+                &ThemeSelection::from_preference(selection),
+                &themes,
+                true,
+                increased,
+            );
             assert!(resolved.custom.is_none());
             assert_eq!(resolved.tokens.is_dark, dark);
             assert_eq!(resolved.follows_system, follows_system);
@@ -400,4 +438,61 @@ fn saved_selection_resolves_custom_builtin_system_and_missing_themes_in_rust() {
             }
         }
     }
+}
+
+#[test]
+fn version_one_method_palettes_migrate_without_reassigning_colors() {
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("themes.json");
+    let mut library = ThemeLibrary::open(&path);
+    let theme = library
+        .add(
+            "Fixture",
+            custom::derive(RgbColor::hex(0), RgbColor::hex(0x0044_aacc)).tokens,
+        )
+        .unwrap();
+    let mut document: serde_json::Value =
+        serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    document["version"] = 1.into();
+    let tokens = document["themes"][0]["tokens"].as_object_mut().unwrap();
+    tokens.remove("methods");
+    tokens.insert(
+        "method_backgrounds".into(),
+        serde_json::to_value(
+            MethodChipKind::ALL.map(|kind| theme.tokens.methods.get(kind).background),
+        )
+        .unwrap(),
+    );
+    tokens.insert(
+        "method_foregrounds".into(),
+        serde_json::to_value(
+            MethodChipKind::ALL.map(|kind| theme.tokens.methods.get(kind).foreground),
+        )
+        .unwrap(),
+    );
+    fs::write(&path, serde_json::to_vec(&document).unwrap()).unwrap();
+    let mut migrated = ThemeLibrary::open(&path);
+    assert_eq!(
+        migrated.snapshot().themes.as_slice(),
+        std::slice::from_ref(&theme)
+    );
+    migrated.rename(&theme.id, "Migrated").unwrap();
+    let document: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    assert_eq!(document["version"], 2);
+    for kind in MethodChipKind::ALL {
+        assert_eq!(
+            migrated.snapshot().themes[0].tokens.methods.get(kind),
+            theme.tokens.methods.get(kind)
+        );
+    }
+}
+
+#[test]
+fn theme_library_reader_names_the_library_and_never_calls_it_a_theme_file() {
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("themes.json");
+    fs::write(&path, vec![b' '; 4 * 1_048_576 + 1]).unwrap();
+    let notices = ThemeLibrary::open(&path).snapshot().notices.join(" ");
+    assert!(notices.contains("custom theme library is too large"));
+    assert!(!notices.contains("theme file"));
 }

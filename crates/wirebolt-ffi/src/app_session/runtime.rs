@@ -230,6 +230,9 @@ impl AppSessionRuntime {
     pub fn snapshot(&self) -> RuntimeSnapshot {
         self.state.snapshot()
     }
+    pub fn take_history_problem(&self) -> Option<String> {
+        self.state.take_history_problem()
+    }
     pub fn select_environment(&self, id: Option<String>) {
         self.state.select_environment(id);
     }

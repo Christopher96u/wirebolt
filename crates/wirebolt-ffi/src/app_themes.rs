@@ -9,7 +9,7 @@ use std::{
     sync::{Arc, Mutex},
 };
 use wirebolt_app::domain::theme::{
-    self, ResolvedAppearance, ResolvedTokens, RgbColor, ThemeTokens,
+    self, ResolvedAppearance, ResolvedTokens, RgbColor, ThemeSelection, ThemeTokens,
     custom::ThemePreview,
     library::{CustomTheme, ThemeLibrary, ThemeLibrarySnapshot},
 };
@@ -75,7 +75,11 @@ impl AppThemeLibrary {
     pub fn rename(&self, id: String, name: String) -> Result<(), DomainError> {
         lock(&self.inner).rename(&id, &name).map_err(invalid)
     }
-    pub fn delete(&self, id: String, selection: String) -> Result<String, DomainError> {
+    pub fn delete(
+        &self,
+        id: String,
+        selection: ThemeSelection,
+    ) -> Result<ThemeSelection, DomainError> {
         lock(&self.inner).delete(&id, &selection).map_err(invalid)
     }
 }
@@ -88,10 +92,25 @@ pub struct ResolvedAppearance {
 }
 #[uniffi::export]
 pub fn domain_resolve_appearance(
-    selection: String,
+    selection: ThemeSelection,
     themes: Vec<CustomTheme>,
     system_is_dark: bool,
     increased: bool,
 ) -> theme::ResolvedAppearance {
     theme::resolve_selection(&selection, &themes, system_is_dark, increased)
+}
+
+#[uniffi::remote(Enum)]
+pub enum ThemeSelection {
+    System,
+    BuiltIn { preset: theme::DomainThemePreset },
+    Custom { id: String },
+}
+#[uniffi::export]
+pub fn domain_theme_selection(value: String) -> ThemeSelection {
+    ThemeSelection::from_preference(&value)
+}
+#[uniffi::export]
+pub fn domain_theme_selection_value(selection: ThemeSelection) -> String {
+    selection.preference_value()
 }

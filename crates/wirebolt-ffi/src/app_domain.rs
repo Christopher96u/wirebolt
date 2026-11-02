@@ -328,6 +328,22 @@ pub struct AdaptiveColor {
     pub dark_high_contrast: RgbColor,
 }
 
+use domain::theme::MethodTokens;
+
+#[uniffi::remote(Record)]
+pub struct MethodTokens {
+    pub get: DomainMethodChip,
+    pub post: DomainMethodChip,
+    pub put: DomainMethodChip,
+    pub patch: DomainMethodChip,
+    pub delete: DomainMethodChip,
+    pub head: DomainMethodChip,
+    pub options: DomainMethodChip,
+    pub query: DomainMethodChip,
+    pub custom: DomainMethodChip,
+    pub web_socket: DomainMethodChip,
+}
+
 #[uniffi::remote(Record)]
 pub struct ThemeTokens {
     pub preset: DomainThemePreset,
@@ -356,8 +372,7 @@ pub struct ThemeTokens {
     pub success: RgbColor,
     pub warning: RgbColor,
     pub error: RgbColor,
-    pub method_backgrounds: Vec<RgbColor>,
-    pub method_foregrounds: Vec<RgbColor>,
+    pub methods: domain::theme::MethodTokens,
     pub control: RgbColor,
 }
 
@@ -855,8 +870,11 @@ pub fn domain_typography(compact: bool) -> TypographyTokens {
 
 #[uniffi::export]
 #[must_use]
-pub fn domain_select_preset(selection: String, dark: bool) -> DomainThemePreset {
-    domain::theme::select_preset(&selection, dark)
+pub fn domain_select_preset(
+    selection: domain::theme::ThemeSelection,
+    dark: bool,
+) -> DomainThemePreset {
+    selection.preset(dark)
 }
 
 #[uniffi::export]

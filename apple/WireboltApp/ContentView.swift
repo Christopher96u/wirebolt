@@ -1070,9 +1070,9 @@ private struct SidebarReorderDrop: DropDelegate {
     }
     func performDrop(info: DropInfo) -> Bool {
         if let identifier = interface.sidebarDragIdentifier,
-           case .refused(_, let reason) = model.moveEligibility(identifier, toCollectionID: target.collection, parentID: target.folder ?? target.parent),
+           case .refused = model.moveEligibility(identifier, toCollectionID: target.collection, parentID: target.folder ?? target.parent),
            destination(info) == nil {
-            model.showMoveRefusal(reason)
+            Task { await model.moveSidebarItem(identifier, toCollectionID: target.collection, parentID: target.folder ?? target.parent) }
             position = nil
             interface.sidebarDragIdentifier = nil
             return false
@@ -1235,8 +1235,10 @@ private struct SidebarMoveMenu: View {
             Button(String(repeating: "    ", count: depth) + label) {
                 Task { await model.moveSidebarItem(identifier, toCollectionID: collectionID, parentID: parentID) }
             }
+        case .notDestination(let label):
+            Button(String(repeating: "    ", count: depth) + label) {}.disabled(true)
         case .refused(let label, let reason):
-            Button { model.showMoveRefusal(reason) } label: {
+            Button { Task { await model.moveSidebarItem(identifier, toCollectionID: collectionID, parentID: parentID) } } label: {
                 Label(String(repeating: "    ", count: depth) + label, systemImage: "exclamationmark.triangle")
             }
             Text(reason)
@@ -1372,10 +1374,7 @@ private struct SavedCollectionRow: View {
         }
         .dropDestination(for: String.self) { identifiers, _ in
             guard let identifier = identifiers.first else { return false }
-            if case .refused(_, let reason) = model.moveEligibility(identifier, toCollectionID: collection.id, parentID: nil) {
-                model.showMoveRefusal(reason)
-                return false
-            }
+            if case .notDestination = model.moveEligibility(identifier, toCollectionID: collection.id, parentID: nil) { return false }
             Task { await model.moveSidebarItem(identifier, toCollectionID: collection.id, parentID: nil) }
             return true
         }

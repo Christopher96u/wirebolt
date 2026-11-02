@@ -86,7 +86,7 @@ final class WireboltAppDelegate: NSObject, NSApplicationDelegate {
         ThemeStore.shared.loadLibrary(at: FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
             .appending(path: "Wirebolt/custom-themes.json"))
         Self.applyInterfaceAppearance()
-        ThemeStore.shared.update(selection: UserDefaults.standard.string(forKey: "interfaceAppearance") ?? "system",
+        ThemeStore.shared.update(selection: ThemeSelection(rawValue: UserDefaults.standard.string(forKey: "interfaceAppearance") ?? ""),
             systemIsDark: NSApp.effectiveAppearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua,
             increasedContrast: NSWorkspace.shared.accessibilityDisplayShouldIncreaseContrast,
             density: InterfaceDensity(rawValue: UserDefaults.standard.string(forKey: "interfaceDensity") ?? "comfortable") ?? .comfortable)
@@ -152,7 +152,7 @@ final class WireboltAppDelegate: NSObject, NSApplicationDelegate {
     /// Applied app-wide so every window, including Settings, follows the choice, and
     /// System (nil) fully reverts to the macOS appearance.
     static func applyInterfaceAppearance() {
-        let selection = UserDefaults.standard.string(forKey: "interfaceAppearance") ?? "system"
+        let selection = ThemeSelection(rawValue: UserDefaults.standard.string(forKey: "interfaceAppearance") ?? "")
         let appearance = ThemeStore.shared.appearance(selection: selection)
         NSApp.appearance = appearance.followsSystem ? nil : NSAppearance(named: appearance.tokens.isDark ? .darkAqua : .aqua)
     }

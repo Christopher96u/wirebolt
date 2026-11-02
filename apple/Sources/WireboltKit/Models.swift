@@ -385,16 +385,6 @@ extension EnvironmentVariableDraft {
         if case .secret = value { true } else { false }
     }
 
-    /// A new Keychain name for this variable's secret value. It is stored in the variable, so
-    /// renaming the key keeps its value, and it is unique, so no other environment,
-    /// workspace or Mac user of the same Keychain shares it.
-    public func makeSecretReference(environmentID: String) -> String {
-        CredentialReference.unique(role: environmentID, scope: "env")
-    }
-}
-
-extension EnvironmentDraft {
-    public var secretReferences: Set<String> { Set(variables.compactMap(\.value.secretName)) }
 }
 
 extension RequestDraft {

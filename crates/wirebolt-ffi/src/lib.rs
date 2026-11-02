@@ -77,6 +77,13 @@ use wirebolt_app::session::persistence::{
 };
 #[uniffi::remote(Error)]
 pub enum WorkspaceBridgeError {
+    MissingRequest,
+    MissingDestination,
+    RequestDeleteFailed,
+    RequestTooLarge,
+    RequestSaveFailed,
+    MoveCollision,
+    MoveFailed,
     OperationFailed { reason: String },
 }
 #[uniffi::remote(Error)]
@@ -732,7 +739,7 @@ mod tests {
         .unwrap();
         let before = bridge.inner.domain_snapshot().unwrap();
         let reason = |result: Result<ImportCommit, WorkspaceBridgeError>| match result {
-            Err(WorkspaceBridgeError::OperationFailed { reason }) => reason,
+            Err(error) => error.to_string(),
             Ok(_) => panic!("import must fail"),
         };
 

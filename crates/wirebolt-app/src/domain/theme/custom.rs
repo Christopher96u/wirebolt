@@ -11,9 +11,6 @@ pub struct ThemePreview {
     pub notices: Vec<String>,
 }
 
-/// A custom palette has one pair for every typed method, unlike the five authored pairs.
-pub const METHOD_COUNT: usize = MethodChipKind::ALL.len();
-
 #[must_use]
 pub fn derive(background: RgbColor, accent: RgbColor) -> ThemePreview {
     let dark = background.luminance() < 0.179;
@@ -49,26 +46,36 @@ pub fn derive(background: RgbColor, accent: RgbColor) -> ThemePreview {
     tokens.variable_foreground = accent;
     // Small hue rotation harmonizes with the accent without reversing semantic meanings.
     let rotation = (hue(accent) % 30.0 - 15.0) * 0.5;
-    let hues = [
-        140.0, 210.0, 24.0, 280.0, 0.0, 175.0, 330.0, 65.0, 95.0, 245.0,
-    ];
-    tokens.method_foregrounds = hues
-        .map(|h| hsl(h + rotation, 0.72, if dark { 0.68 } else { 0.32 }))
-        .to_vec();
-    tokens.method_foregrounds[method_index(MethodChipKind::Custom)] =
-        RgbColor::hex(if dark { 0x00bb_bbbb } else { 0x0044_4444 });
-    tokens.method_backgrounds = tokens
-        .method_foregrounds
-        .iter()
-        .map(|color| mix(background, *color, 0.08))
-        .collect();
-    tokens.success = tokens.method_foregrounds[method_index(MethodChipKind::Get)];
-    tokens.warning = tokens.method_foregrounds[method_index(MethodChipKind::Query)];
-    tokens.error = tokens.method_foregrounds[method_index(MethodChipKind::Delete)];
+    tokens.methods = super::MethodTokens::from_fn(|kind| {
+        let hue = match kind {
+            MethodChipKind::Get => 140.0,
+            MethodChipKind::Post => 210.0,
+            MethodChipKind::Put => 24.0,
+            MethodChipKind::Patch => 280.0,
+            MethodChipKind::Delete => 0.0,
+            MethodChipKind::Head => 175.0,
+            MethodChipKind::Options => 330.0,
+            MethodChipKind::Query => 65.0,
+            MethodChipKind::Custom => 95.0,
+            MethodChipKind::WebSocket => 245.0,
+        };
+        let foreground = if kind == MethodChipKind::Custom {
+            RgbColor::hex(if dark { 0x00bb_bbbb } else { 0x0044_4444 })
+        } else {
+            hsl(hue + rotation, 0.72, if dark { 0.68 } else { 0.32 })
+        };
+        DomainMethodChip {
+            background: mix(background, foreground, 0.08),
+            foreground,
+        }
+    });
+    tokens.success = tokens.methods.get.foreground;
+    tokens.warning = tokens.methods.query.foreground;
+    tokens.error = tokens.methods.delete.foreground;
     tokens.syntax_key = accent;
-    tokens.syntax_string = tokens.method_foregrounds[method_index(MethodChipKind::Get)];
-    tokens.syntax_number = tokens.method_foregrounds[method_index(MethodChipKind::Put)];
-    tokens.syntax_keyword = tokens.method_foregrounds[method_index(MethodChipKind::Patch)];
+    tokens.syntax_string = tokens.methods.get.foreground;
+    tokens.syntax_number = tokens.methods.put.foreground;
+    tokens.syntax_keyword = tokens.methods.patch.foreground;
     tokens.syntax_punctuation = tokens.secondary;
     let (tokens, notices) = checked(tokens, false);
     ThemePreview {
@@ -79,7 +86,7 @@ pub fn derive(background: RgbColor, accent: RgbColor) -> ThemePreview {
 }
 
 /// Surface bounds leave room for AAA text, distinct semantic hues and neutral native
-/// controls with white glyphs. No single foreground can meet AAA on mid-grey surfaces.
+/// controls with white glyphs. No single foreground can meet AAA on mid-gray surfaces.
 fn surface(color: RgbColor, dark: bool) -> RgbColor {
     let target = RgbColor::hex(if dark { 0 } else { 0x00ff_ffff });
     for step in 0..=255 {
@@ -93,17 +100,6 @@ fn surface(color: RgbColor, dark: bool) -> RgbColor {
         }
     }
     target
-}
-
-/// # Errors
-/// Returns an error for an incomplete custom method palette.
-pub fn validate(tokens: &ThemeTokens) -> Result<(), String> {
-    if tokens.method_backgrounds.len() != METHOD_COUNT
-        || tokens.method_foregrounds.len() != METHOD_COUNT
-    {
-        return Err("The custom theme has an incomplete method palette.".into());
-    }
-    Ok(())
 }
 
 #[must_use]
@@ -127,8 +123,8 @@ pub fn checked(mut tokens: ThemeTokens, increased: bool) -> (ThemeTokens, Vec<St
     ] {
         adjusted(name, surface(*value, dark), value, &mut notices);
     }
-    for value in &mut tokens.method_backgrounds {
-        *value = surface(*value, dark);
+    for chip in tokens.methods.values_mut() {
+        chip.background = surface(chip.background, dark);
     }
     // Borders are neutral and based on repaired surfaces, never on the accent.
     let neutral = RgbColor::hex(if dark { 0x00ff_ffff } else { 0 });
@@ -186,14 +182,10 @@ pub fn checked(mut tokens: ThemeTokens, increased: bool) -> (ThemeTokens, Vec<St
             &mut notices,
         );
     }
-    for (foreground, background) in tokens
-        .method_foregrounds
-        .iter_mut()
-        .zip(&tokens.method_backgrounds)
-    {
+    for chip in tokens.methods.values_mut() {
         let mut surfaces = surfaces.to_vec();
-        surfaces.push(*background);
-        *foreground = strengthen(*foreground, &surfaces, ratio);
+        surfaces.push(chip.background);
+        chip.foreground = strengthen(chip.foreground, &surfaces, ratio);
     }
     tokens.control = RgbColor::hex(0x0076_7676);
     (tokens, notices)
@@ -217,45 +209,17 @@ pub fn resolve(tokens: ThemeTokens, increased: bool) -> ResolvedTokens {
     let surfaces = text_surfaces(&tokens);
     let chips = MethodChipKind::ALL
         .into_iter()
-        .enumerate()
-        .map(|(i, kind)| {
-            (
-                kind,
-                DomainMethodChip {
-                    background: tokens
-                        .method_backgrounds
-                        .get(i)
-                        .copied()
-                        .unwrap_or(tokens.tab_active),
-                    foreground: tokens
-                        .method_foregrounds
-                        .get(i)
-                        .copied()
-                        .unwrap_or(tokens.primary),
-                },
-            )
-        })
+        .map(|kind| (kind, tokens.methods.get(kind).clone()))
         .collect();
+    let borders = super::resolve_borders(&tokens, &surfaces, increased);
     ResolvedTokens {
         is_dark: tokens.preset != DomainThemePreset::Paper,
         statuses: super::resolved_statuses(&tokens, &chips, increased, false),
         primary: tokens.primary,
         muted: tokens.muted,
-        hairline: if increased {
-            strengthen(tokens.hairline, &surfaces, 3.0)
-        } else {
-            tokens.hairline
-        },
-        card_border: if increased {
-            strengthen(tokens.card_border, &surfaces, 3.0)
-        } else {
-            tokens.card_border
-        },
-        focus_border: strengthen(
-            tokens.card_border,
-            &surfaces,
-            if increased { 4.5 } else { 3.0 },
-        ),
+        hairline: borders.hairline,
+        card_border: borders.card,
+        focus_border: borders.focus,
         definition: tokens,
         chips,
     }
@@ -346,13 +310,6 @@ fn hsl(hue: f64, saturation: f64, lightness: f64) -> RgbColor {
         green: channel(green),
         blue: channel(blue),
     }
-}
-
-fn method_index(kind: MethodChipKind) -> usize {
-    MethodChipKind::ALL
-        .iter()
-        .position(|candidate| *candidate == kind)
-        .expect("all method kinds have a palette entry")
 }
 
 fn neutral_gray(surface: RgbColor) -> RgbColor {

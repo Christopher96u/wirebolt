@@ -8,7 +8,7 @@ use crate::{
     },
 };
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     path::Path,
     sync::{
         Arc, Mutex,
@@ -32,7 +32,7 @@ pub struct RuntimeSnapshot {
 }
 #[derive(Debug)]
 struct HistoryContext {
-    workspace: String,
+    requests: Option<HashSet<SessionRequestIdentity>>,
     moves: HashMap<SessionRequestIdentity, SessionRequestIdentity>,
 }
 #[derive(Debug)]
@@ -44,6 +44,7 @@ pub struct RuntimeState {
     selected: Mutex<Option<String>>,
     generation: AtomicU64,
     history_context: Mutex<HistoryContext>,
+    history_problem: Mutex<Option<String>>,
 }
 impl RuntimeState {
     #[must_use]
@@ -55,42 +56,30 @@ impl RuntimeState {
             snapshot: Mutex::default(),
             selected: Mutex::default(),
             generation: AtomicU64::new(0),
+            history_problem: Mutex::default(),
             history_context: Mutex::new(HistoryContext {
-                workspace: super::super::history::UNSAVED_WORKSPACE_NAMESPACE.into(),
+                requests: None,
                 moves: HashMap::new(),
             }),
         }
     }
-    pub fn configure_history_workspace(&self, path: Option<&str>) {
-        self.set_history_namespace(path.map_or_else(
-            || super::super::history::UNSAVED_WORKSPACE_NAMESPACE.into(),
-            |path| crate::response::workspace_namespace(Path::new(path)),
-        ));
-    }
-    fn set_history_namespace(&self, namespace: String) {
-        let mut context = lock(&self.history_context);
-        if context.workspace != namespace {
-            context.workspace = namespace;
-            self.generation.fetch_add(1, Ordering::AcqRel);
-        }
-    }
     /// # Errors
-    /// Reports damaged indexes and failed legacy migrations without replacing them.
+    /// Reports backed-up damage once after recovery, or a failed read/migration.
     pub fn load_workspace_history(
         &self,
-        namespace: &str,
         workspace: &crate::domain::DomainWorkspace,
     ) -> crate::response::ResponseResult<()> {
         let mut history = lock(&self.history);
-        self.set_history_namespace(namespace.to_owned());
+        self.generation.fetch_add(1, Ordering::AcqRel);
+        self.reconcile_history(workspace);
         {
             let mut state = lock(&self.snapshot);
             state.history_entries.clear();
             state.request_activity.clear();
             state.history_revision += 1;
         }
-        history.migrate_legacy(namespace, workspace)?;
-        let entries = history.workspace_entries(namespace)?;
+        history.migrate_legacy(workspace)?;
+        let entries = history.workspace_entries(workspace)?;
         let mut state = lock(&self.snapshot);
         state.history_entries.clear();
         state.request_activity.clear();
@@ -111,7 +100,7 @@ impl RuntimeState {
             }
         }
         state.history_revision += 1;
-        Ok(())
+        history.take_load_problem()
     }
     #[must_use]
     pub fn request_identity(
@@ -120,7 +109,6 @@ impl RuntimeState {
         request: &str,
     ) -> SessionRequestIdentity {
         SessionRequestIdentity {
-            workspace: lock(&self.history_context).workspace.clone(),
             collection_id: collection.unwrap_or("").into(),
             request_id: request.into(),
         }
@@ -134,16 +122,23 @@ impl RuntimeState {
     }
     pub fn reconcile_history(&self, workspace: &crate::domain::DomainWorkspace) {
         let mut context = lock(&self.history_context);
-        let namespace = context.workspace.clone();
-        context.moves.retain(|from, _| {
-            from.workspace != namespace
-                || crate::session::workspace::location(
-                    workspace,
-                    &from.collection_id,
-                    &from.request_id,
-                )
-                .is_none()
-        });
+        context.requests = Some(
+            workspace
+                .collections
+                .iter()
+                .flat_map(|collection| {
+                    collection
+                        .requests
+                        .iter()
+                        .map(|request| SessionRequestIdentity {
+                            collection_id: collection.id.clone(),
+                            request_id: request.request.id.clone(),
+                        })
+                })
+                .collect(),
+        );
+        let requests = context.requests.clone().unwrap_or_default();
+        context.moves.retain(|from, _| !requests.contains(from));
     }
     /// # Errors
     /// Returns an I/O error if the history index cannot be saved.
@@ -171,11 +166,20 @@ impl RuntimeState {
                     }
                 }
                 context.moves.insert(from.clone(), to.clone());
+                if let Some(requests) = &mut context.requests {
+                    requests.remove(&from);
+                    requests.insert(to.clone());
+                }
                 drop(context);
                 history.relocate(&from, &to)?;
+                self.collect_history_problem(&mut history);
                 let entries = history.list(&to)?;
                 let context = lock(&self.history_context);
-                if to.workspace != context.workspace {
+                if context
+                    .requests
+                    .as_ref()
+                    .is_some_and(|requests| !requests.contains(&to))
+                {
                     continue;
                 }
                 let mut snapshot = lock(&self.snapshot);
@@ -189,6 +193,15 @@ impl RuntimeState {
             }
         }
         Ok(())
+    }
+    /// Reads only the retained notice; history disk work stays on workers.
+    pub fn take_history_problem(&self) -> Option<String> {
+        lock(&self.history_problem).take()
+    }
+    fn collect_history_problem(&self, history: &mut RunHistory) {
+        if let Err(error) = history.take_load_problem() {
+            *lock(&self.history_problem) = Some(error.to_string());
+        }
     }
     pub fn legacy_history(&self, id: &str) -> Vec<SessionHistoryEntry> {
         lock(&self.history).legacy_list(id).unwrap_or_default()
@@ -250,7 +263,10 @@ impl RuntimeState {
         &self,
         id: &SessionRequestIdentity,
     ) -> crate::response::ResponseResult<Vec<SessionHistoryEntry>> {
-        lock(&self.history).list(id)
+        let mut history = lock(&self.history);
+        let entries = history.list(id)?;
+        self.collect_history_problem(&mut history);
+        Ok(entries)
     }
     /// # Errors
     /// Returns a history storage error.
@@ -258,7 +274,10 @@ impl RuntimeState {
         &self,
         id: &SessionRequestIdentity,
     ) -> crate::response::ResponseResult<u64> {
-        lock(&self.history).count(id)
+        let mut history = lock(&self.history);
+        let count = history.count(id)?;
+        self.collect_history_problem(&mut history);
+        Ok(count)
     }
     /// # Errors
     /// Returns a history storage error.
@@ -273,7 +292,9 @@ impl RuntimeState {
         &self,
         id: &SessionRequestIdentity,
     ) -> crate::response::ResponseResult<()> {
-        lock(&self.history).clear(id)?;
+        let mut history = lock(&self.history);
+        history.clear(id)?;
+        self.collect_history_problem(&mut history);
         let mut state = lock(&self.snapshot);
         state.history_entries.clear();
         state.request_activity.remove(&id.activity_key());
@@ -281,9 +302,11 @@ impl RuntimeState {
         Ok(())
     }
     /// # Errors
-    /// Returns a storage error without replacing a damaged index.
+    /// Returns a storage error if reading, backing up or writing the index fails.
     pub fn clear_all_history(&self) -> crate::response::ResponseResult<()> {
-        lock(&self.history).clear_all()?;
+        let mut history = lock(&self.history);
+        history.clear_all()?;
+        self.collect_history_problem(&mut history);
         let mut state = lock(&self.snapshot);
         state.history_entries.clear();
         state.request_activity.clear();
@@ -319,11 +342,17 @@ impl RuntimeState {
         if history.record(entry, &lock(body)).is_err() {
             return;
         }
+        self.collect_history_problem(&mut history);
         let Ok(entries) = history.list(&id) else {
             return;
         };
         let context = lock(&self.history_context);
-        if id.workspace != context.workspace {
+        if !id.collection_id.is_empty()
+            && context
+                .requests
+                .as_ref()
+                .is_some_and(|requests| !requests.contains(&id))
+        {
             return;
         }
         let mut state = lock(&self.snapshot);
@@ -339,6 +368,7 @@ impl RuntimeState {
     }
     pub fn reset_workspace(&self) {
         self.select_environment(None);
+        lock(&self.history_context).requests = Some(HashSet::new());
         let mut state = lock(&self.snapshot);
         self.generation.fetch_add(1, Ordering::AcqRel);
         state.history_entries.clear();

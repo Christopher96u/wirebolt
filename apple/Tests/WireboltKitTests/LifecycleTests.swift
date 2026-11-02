@@ -168,7 +168,7 @@ struct LifecycleTests {
         await writer.store(headers: [ResponseHeader(name: "Set-Cookie", value: "id=1; Max-Age=3600")], requestURL: URL(string: "https://example.com")!)
         let reader = CookieJar(storageURL: cookies)
         #expect(await reader.header(for: URL(string: "https://example.com/")!) == "id=1")
-        #expect(try await HistoryRepository(root: root.appending(path: "missing")).list(identity: SessionRequestIdentity(workspace: "test", collectionId: "api", requestId: "a")).isEmpty)
+        #expect(try await HistoryRepository(root: root.appending(path: "missing")).list(identity: SessionRequestIdentity(collectionId: "api", requestId: "a")).isEmpty)
     }
 
     @MainActor private func settle() async {

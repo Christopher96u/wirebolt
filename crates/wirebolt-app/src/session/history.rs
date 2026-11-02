@@ -5,12 +5,10 @@ use crate::response::VIEWPORT_BYTES;
 use serde::{Deserialize, Serialize};
 use std::io::Read;
 
-/// The one workspace without a saved location survives runtime recreation.
-pub const UNSAVED_WORKSPACE_NAMESPACE: &str = "unsaved-workspace";
-/// Complete storage identity. A document/tab ID is not a saved request identity.
+/// Collection and request IDs survive workspace relocation. Copies share history.
+/// Unlocated requests use an empty collection ID, stable across launches.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct SessionRequestIdentity {
-    pub workspace: String,
     pub collection_id: String,
     pub request_id: String,
 }
@@ -26,7 +24,7 @@ pub struct SessionHistoryEntry {
     pub id: String,
     #[serde(rename = "requestID")]
     pub request_id: String,
-    /// Absent only for legacy entries whose workspace and collection are unknown.
+    /// Absent only for legacy entries whose collection is unknown.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub identity: Option<SessionRequestIdentity>,
     pub created_at: f64,

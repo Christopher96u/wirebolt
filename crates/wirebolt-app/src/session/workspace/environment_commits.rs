@@ -30,6 +30,13 @@ impl WorkspaceOperations {
             .await
         {
             Ok(Some((edit, values))) => {
+                let previous_failure = {
+                    let state = crate::lock(&self.state);
+                    (
+                        state.presentation.operation_failure.clone(),
+                        state.presentation.operation_failure_reason.clone(),
+                    )
+                };
                 let mutation = if let SessionWorkspaceEdit::RestoreEnvironment {
                     environment, ..
                 } = &edit.edit
@@ -50,6 +57,11 @@ impl WorkspaceOperations {
                     self.commit_named(edit, selected, platform, secrets, secret_platform)
                         .await
                 };
+                {
+                    let mut state = crate::lock(&self.state);
+                    state.presentation.operation_failure = previous_failure.0;
+                    state.presentation.operation_failure_reason = previous_failure.1;
+                }
                 let problem = (!mutation.succeeded).then(|| {
                     "Could not save this change. Your text is still here; try again.".into()
                 });

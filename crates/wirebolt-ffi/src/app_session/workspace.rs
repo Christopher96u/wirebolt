@@ -553,26 +553,6 @@ impl AppWorkspaceOperations {
             )
             .await
     }
-    pub async fn save_environment(
-        &self,
-        environment: DomainEnvironment,
-        values: std::collections::HashMap<String, String>,
-        selected: Option<String>,
-        platform: Arc<AppWorkspacePlatform>,
-        secrets: Arc<AppSessionSecrets>,
-        secret_platform: Arc<AppSecretPlatform>,
-    ) -> WorkspaceMutation {
-        self.inner
-            .save_environment(
-                environment,
-                values,
-                selected,
-                platform.as_ref(),
-                &secrets.inner,
-                secret_platform.as_ref(),
-            )
-            .await
-    }
     pub async fn mutate(
         &self,
         command: WorkspaceAction,
@@ -659,11 +639,6 @@ impl AppWorkspaceOperations {
     ) -> Option<String> {
         self.inner.export(target, platform.as_ref()).await
     }
-}
-
-#[uniffi::export]
-pub fn workspace_new_environment() -> DomainEnvironment {
-    wirebolt_app::session::workspace::actions::new_environment()
 }
 
 #[uniffi::export]
@@ -899,6 +874,7 @@ use wirebolt_app::session::workspace::actions::MoveEligibility;
 #[uniffi::remote(Enum)]
 pub enum MoveEligibility {
     Allowed { label: String },
+    NotDestination { label: String },
     Refused { label: String, reason: String },
 }
 

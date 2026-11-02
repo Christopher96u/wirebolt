@@ -259,3 +259,106 @@ async fn internal_save_failure_codes_are_not_used_as_alert_text() {
         Some("The workspace change could not be saved. Check the workspace folder and try again.")
     );
 }
+
+#[tokio::test]
+async fn external_request_deletion_can_be_saved_before_and_after_reload() {
+    for reload in [false, true] {
+        let (_root, store) = persistence();
+        let original = imported_pair(&store);
+        let mut source = original.collections[0].requests[0].clone();
+        store
+            .apply_session_command(SessionWorkspaceCommand::CreateGroup {
+                collection_id: source.collection_id.clone(),
+                group: DomainGroup {
+                    id: "folder".into(),
+                    name: "Folder".into(),
+                    parent_id: None,
+                    order: 0,
+                },
+            })
+            .unwrap();
+        source.group_id = Some("folder".into());
+        source.order = 7;
+        store
+            .apply_session_command(SessionWorkspaceCommand::SaveRequest {
+                location: source.clone(),
+            })
+            .unwrap();
+        let session = Arc::new(WorkspaceSession::default());
+        session.replace(store.domain_snapshot().unwrap());
+        let ops = WorkspaceOperations::new(session.clone());
+        let platform = SaveGate {
+            store: store.clone(),
+            ready: tokio::sync::Notify::default(),
+            release: tokio::sync::Notify::default(),
+            pause: std::sync::atomic::AtomicBool::new(false),
+        };
+        // Persistence here stands for a file removed by git, outside WorkspaceOperations.
+        store
+            .apply_session_command(SessionWorkspaceCommand::DeleteRequest {
+                collection_id: source.collection_id.clone(),
+                id: source.request.id.clone(),
+            })
+            .unwrap();
+        if reload {
+            ops.load(&platform, false).await.unwrap();
+        }
+        let mut draft = source.request.clone();
+        draft.note = "Recover external deletion".into();
+        let document = SessionDocument::new(
+            "tab".into(),
+            SessionKind::Http,
+            Some(source.collection_id.clone()),
+            None,
+            draft.clone(),
+            Some(source.request.clone()),
+            "",
+        );
+        let result = ops
+            .save(
+                document,
+                None,
+                &platform,
+                &SessionSecrets::default(),
+                &Secrets,
+            )
+            .await;
+        assert!(result.succeeded);
+        let disk = store.domain_snapshot().unwrap();
+        let saved =
+            super::super::location(&disk, &source.collection_id, &source.request.id).unwrap();
+        assert_eq!(saved.request, draft);
+        assert_eq!(saved.order, source.order);
+        assert_eq!(saved.group_id, source.group_id);
+        assert_eq!(session.snapshot(), disk);
+    }
+}
+
+#[test]
+fn workspace_failure_messages_follow_typed_errors_and_never_expose_internal_reasons() {
+    use crate::session::persistence::WorkspaceError;
+    assert!(
+        WorkspaceError::MissingDestination
+            .user_message()
+            .starts_with("The destination no longer exists.")
+    );
+    assert!(
+        WorkspaceError::MissingRequest
+            .user_message()
+            .starts_with("The request no longer exists.")
+    );
+    assert!(
+        WorkspaceError::RequestTooLarge
+            .user_message()
+            .contains("16 MiB")
+    );
+    assert_eq!(
+        WorkspaceError::operation("Uppercase private detail").user_message(),
+        WorkspaceError::operation("lowercase private detail").user_message()
+    );
+    assert!(
+        !WorkspaceError::operation("Uppercase private detail")
+            .user_message()
+            .contains("private detail")
+    );
+}

@@ -45,7 +45,10 @@ impl WorkspacePlatform for Store {
                     return WorkspaceReply::Commands {
                         result: SessionCommandBatchResult {
                             completed,
-                            failure_reason: Some("failed".into()),
+                            failure_reason: Some(
+                                crate::session::persistence::WorkspaceError::operation("failed")
+                                    .user_message(),
+                            ),
                         },
                     };
                 }
@@ -231,5 +234,28 @@ impl WorkspaceOperations {
         self.save_all_live(ids, platform, &documents, secrets, secret_platform)
             .await;
         lock(&documents.saved).clone()
+    }
+}
+
+#[derive(Debug, Default)]
+struct EnvironmentSecrets(
+    Mutex<std::collections::HashMap<String, String>>,
+    std::sync::atomic::AtomicBool,
+);
+#[async_trait]
+impl SessionSecretPlatform for EnvironmentSecrets {
+    async fn read(&self, name: String) -> Result<Option<String>, ()> {
+        Ok(lock(&self.0).get(&name).cloned())
+    }
+    async fn save(&self, name: String, value: String) -> Result<(), ()> {
+        if self.1.load(std::sync::atomic::Ordering::Relaxed) {
+            return Err(());
+        }
+        lock(&self.0).insert(name, value);
+        Ok(())
+    }
+    async fn remove(&self, name: String) -> Result<(), ()> {
+        lock(&self.0).remove(&name);
+        Ok(())
     }
 }

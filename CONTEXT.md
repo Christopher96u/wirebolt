@@ -23,7 +23,7 @@ Collections, groups, requests, and their sibling order form one hierarchical
 tree. Workspace mutations are expressed as commands and produce monotonically
 versioned deltas; a routine mutation must not reload the entire tree. Save, edits,
 Undo, import and workspace replacement serialize through the same operation guard.
-A stale save cannot recreate a saved request that has moved or been deleted.
+A stale save cannot recreate a request moved or deleted by an in-app action. Files removed externally can be recreated by saving.
 Collection deletion removes only readable managed documents, stages removals before
 commit, and preserves unmanaged or unreadable files. Document writes enforce the
 same 16 MiB serialized-byte limit as reads. Partial loads retain readable records
@@ -50,18 +50,23 @@ run that started it. The C surface only warms the runtime and reports its ABI ve
 
 Response bodies are file-backed. UI state retains bounded viewport data and
 indexes, not an ever-growing body string. History uses a quota and LRU eviction.
-History identities include the canonical workspace namespace, collection ID and
-request ID; moving a request moves its scoped history, including completions of
-runs already in flight. Request IDs from new imports are UUIDs. Legacy ID
-collisions block moves instead of replacing another request, with one Rust-owned
-eligibility result and refusal reason. History indexes remain arrays readable by
-rc.1, with optional complete identities. Loading a workspace assigns a legacy
-requestID-only entry when exactly one request in that workspace matches, including
-in a copied workspace. Ambiguous entries remain reachable as Unassigned Legacy
-History; scoped clearing includes matching legacy IDs, global clearing includes
-all entries, and legacy entries count toward quota. Unsaved workspaces use a stable
-namespace across launches. A displayed historical response owns a temporary body
-independently of history retention; crash leftovers are cleaned on the next load.
+History identities include collection ID and request ID, independent of the
+workspace path. Renamed, moved or re-cloned workspace folders retain history;
+copies sharing those IDs share history as in rc.1. Moving a request moves its scoped
+history, including completions of runs already in flight. Request IDs from new
+imports are UUIDs. Legacy ID collisions block moves instead of replacing another
+request, with one Rust-owned eligibility result and refusal reason. Ordinary
+non-destinations are disabled or ignored without a warning. History indexes remain
+arrays readable by rc.1, with optional complete identities. Loading a workspace
+assigns a legacy requestID-only entry when exactly one request in that workspace
+matches, including in a copied workspace. Ambiguous entries remain reachable as
+Unassigned Legacy History; scoped clearing includes matching legacy IDs, global
+clearing includes all entries, and legacy entries count toward quota. Unsaved
+requests use an empty collection ID, stable across launches; their first save
+relocates history and in-flight completions to the saved collection. Damaged history
+indexes are backed up and reported once before recording continues with a fresh
+index. A displayed historical response owns a temporary body independently of
+history retention; crash leftovers are cleaned on the next load.
 The cookie jar applies domain, path, secure, expiry, and SameSite rules within
 its workspace. Runtime storage remains outside Git-visible workspace files.
 

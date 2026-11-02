@@ -286,6 +286,7 @@ pub use crate::session::history::SessionHistoryEntry as HistoryEntry;
 use crate::session::history::SessionRequestIdentity;
 
 const PREVIOUS_HISTORY_INDEX_VERSION: u32 = 2;
+pub const HISTORY_LOAD_FAILURE: &str = "History could not be loaded.";
 
 #[derive(Deserialize)]
 struct HistoryIndex {
@@ -296,6 +297,7 @@ struct HistoryIndex {
 pub struct RunHistory {
     root: PathBuf,
     entries: Option<ResponseResult<Vec<HistoryEntry>>>,
+    load_problem: Option<ResponseError>,
     maximum_entries: usize,
     maximum_bytes: u64,
 }
@@ -305,6 +307,7 @@ impl RunHistory {
         Self {
             root,
             entries: None,
+            load_problem: None,
             maximum_entries: 100,
             maximum_bytes: 2 * 1024 * 1024 * 1024,
         }
@@ -314,8 +317,26 @@ impl RunHistory {
             let _ = retained_root();
             let path = self.root.join("index.json");
             let entries = match fs::read(&path) {
-                Ok(data) => decode_history_index(&data)
-                    .map_err(|error| history_backup_error(&self.root, &data, &error)),
+                Ok(data) => match decode_history_index(&data) {
+                    Ok(entries) => Ok(entries),
+                    Err(error) => match backup_history_index(&self.root, &data) {
+                        Ok(backup) => {
+                            self.load_problem = Some(ResponseError::Io {
+                                reason: format!(
+                                    "{} A backup is kept as {}. New history will be recorded in a fresh index.",
+                                    error,
+                                    backup.file_name().unwrap_or_default().to_string_lossy()
+                                ),
+                            });
+                            Ok(Vec::new())
+                        }
+                        Err(backup_error) => Err(ResponseError::Io {
+                            reason: format!(
+                                "{error} A backup could not be saved: {backup_error}. The original index is still unchanged."
+                            ),
+                        }),
+                    },
+                },
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(Vec::new()),
                 Err(error) => Err(error.into()),
             };
@@ -326,6 +347,13 @@ impl RunHistory {
             .expect("history was loaded")
             .as_mut()
             .map_err(|error| error.clone())
+    }
+    /// Consume a recovered-index notice once; unrecoverable storage errors remain errors.
+    /// # Errors
+    /// Reports the backed-up damage or an unreadable index.
+    pub fn take_load_problem(&mut self) -> ResponseResult<()> {
+        self.entries()?;
+        self.load_problem.take().map_or(Ok(()), Err)
     }
     /// # Errors
     /// Returns an I/O error if the body or index cannot be stored.
@@ -442,7 +470,6 @@ impl RunHistory {
     /// Returns an error if the index cannot be read or migration cannot be saved.
     pub fn migrate_legacy(
         &mut self,
-        namespace: &str,
         workspace: &crate::domain::DomainWorkspace,
     ) -> ResponseResult<()> {
         let mut matches = std::collections::HashMap::new();
@@ -453,7 +480,6 @@ impl RunHistory {
                     .and_modify(|value| *value = None)
                     .or_insert_with(|| {
                         Some(SessionRequestIdentity {
-                            workspace: namespace.into(),
                             collection_id: collection.id.clone(),
                             request_id: location.request.id.clone(),
                         })
@@ -476,21 +502,28 @@ impl RunHistory {
         Ok(())
     }
     /// # Errors
-    /// Returns a storage error without replacing a damaged index.
+    /// Returns a storage error if reading, backing up or writing the index fails.
     pub fn clear_all(&mut self) -> ResponseResult<()> {
         self.replace_entries(Vec::new())
     }
     /// # Errors
     /// Returns an error for an unreadable index.
-    pub fn workspace_entries(&mut self, namespace: &str) -> ResponseResult<Vec<HistoryEntry>> {
+    pub fn workspace_entries(
+        &mut self,
+        workspace: &crate::domain::DomainWorkspace,
+    ) -> ResponseResult<Vec<HistoryEntry>> {
         Ok(self
             .entries()?
             .iter()
             .filter(|entry| {
-                entry
-                    .identity
-                    .as_ref()
-                    .is_some_and(|identity| identity.workspace == namespace)
+                entry.identity.as_ref().is_some_and(|identity| {
+                    crate::session::workspace::location(
+                        workspace,
+                        &identity.collection_id,
+                        &identity.request_id,
+                    )
+                    .is_some()
+                })
             })
             .cloned()
             .collect())
@@ -515,7 +548,7 @@ impl RunHistory {
 }
 fn decode_history_index(data: &[u8]) -> ResponseResult<Vec<HistoryEntry>> {
     let unreadable = || ResponseError::Io {
-        reason: "The history index could not be read; it has been left unchanged.".into(),
+        reason: HISTORY_LOAD_FAILURE.into(),
     };
     let value: serde_json::Value = serde_json::from_slice(data).map_err(|_| unreadable())?;
     if value.is_array() {
@@ -528,20 +561,6 @@ fn decode_history_index(data: &[u8]) -> ResponseResult<Vec<HistoryEntry>> {
     Ok(index.entries)
 }
 
-fn history_backup_error(root: &Path, data: &[u8], error: &ResponseError) -> ResponseError {
-    let message = match backup_history_index(root, data) {
-        Ok(path) => format!(
-            "A backup is kept as {}.",
-            path.file_name().unwrap_or_default().to_string_lossy()
-        ),
-        Err(backup_error) => format!(
-            "A backup could not be saved: {backup_error}. The original index is still unchanged."
-        ),
-    };
-    ResponseError::Io {
-        reason: format!("{error} {message}"),
-    }
-}
 fn backup_history_index(root: &Path, data: &[u8]) -> std::io::Result<PathBuf> {
     let destination = root.join("index.json.backup");
     if fs::read(&destination).ok().as_deref() == Some(data) {
@@ -614,7 +633,7 @@ pub(super) fn json_io(error: &serde_json::Error) -> ResponseError {
         reason: error.to_string(),
     }
 }
-fn atomic_write(path: &Path, bytes: &[u8]) -> ResponseResult<()> {
+pub(crate) fn atomic_write(path: &Path, bytes: &[u8]) -> ResponseResult<()> {
     let parent = path.parent().unwrap_or_else(|| Path::new("."));
     fs::create_dir_all(parent)?;
     let mut file = tempfile::NamedTempFile::new_in(parent)?;
@@ -775,13 +794,10 @@ impl ResponseCookieJar {
 }
 #[must_use]
 pub fn cookie_storage_path(workspace: &Path, directory: &Path) -> PathBuf {
-    directory.join(workspace_namespace(workspace))
+    directory.join(cookie_storage_name(workspace))
 }
 
-/// Stable history identity independent of cookie storage layout. The suffix
-/// preserves namespaces written by pre-rc2 builds.
-#[must_use]
-pub fn workspace_namespace(workspace: &Path) -> String {
+fn cookie_storage_name(workspace: &Path) -> String {
     let path = resolved_workspace_path(workspace);
     let digest = Sha256::digest(path.to_string_lossy().as_bytes());
     let mut hex = String::with_capacity(32);
@@ -990,7 +1006,6 @@ mod retention_tests {
                     id: "new".into(),
                     created_at: 1.0,
                     identity: Some(SessionRequestIdentity {
-                        workspace: "fixture".into(),
                         collection_id: "api".into(),
                         request_id: "new".into(),
                     }),
@@ -1023,16 +1038,20 @@ mod history_backup_tests {
     }
     #[test]
     fn damaged_history_reports_backup_failure_without_claiming_success() {
+        use std::os::unix::fs::PermissionsExt;
         let root = tempfile::tempdir().unwrap();
-        let error = history_backup_error(
-            &root.path().join("missing"),
-            b"damaged",
-            &ResponseError::Io {
-                reason: "The index is unchanged.".into(),
-            },
-        );
-        let reason = error.to_string();
+        fs::write(root.path().join("index.json"), b"damaged").unwrap();
+        let permissions = fs::metadata(root.path()).unwrap().permissions();
+        fs::set_permissions(root.path(), fs::Permissions::from_mode(0o500)).unwrap();
+        let mut history = RunHistory::new(root.path().into());
+        let result = history.entries().map(|_| ());
+        fs::set_permissions(root.path(), permissions).unwrap();
+        let reason = result.unwrap_err().to_string();
         assert!(reason.contains("backup could not be saved"));
         assert!(!reason.contains("backup is kept"));
+        assert_eq!(
+            fs::read(root.path().join("index.json")).unwrap(),
+            b"damaged"
+        );
     }
 }

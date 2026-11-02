@@ -97,6 +97,8 @@ struct State {
     undo: HashMap<u64, (Option<SessionWorkspaceEdit>, String)>,
     search: HashMap<(String, String), (String, String)>,
     redo_tokens: HashSet<u64>,
+    removed_requests: HashSet<(String, String)>,
+    request_positions: HashMap<(String, String), (Option<String>, i64)>,
 }
 struct EnvironmentSave {
     environment: crate::domain::DomainEnvironment,
@@ -164,8 +166,7 @@ impl WorkspaceOperations {
     }
     fn fail_reason(&self, reason: String) {
         self.fail(crate::response::ResponseFailureKind::Workspace);
-        lock(&self.state).presentation.operation_failure_reason =
-            Some(workspace_failure_message(&reason));
+        lock(&self.state).presentation.operation_failure_reason = Some(reason);
     }
     #[must_use]
     pub fn begin_load(&self, configured: bool) -> bool {
@@ -179,6 +180,7 @@ impl WorkspaceOperations {
     }
     #[must_use]
     pub fn loaded(&self, workspace: DomainWorkspace, selected: Option<String>) -> WorkspaceLoad {
+        self.remember_request_positions(&lock(&self.workspace.workspace).collections);
         let selected_environment_id = selected
             .filter(|id| workspace.environments.iter().any(|e| &e.id == id))
             .or_else(|| {
@@ -210,24 +212,19 @@ impl WorkspaceOperations {
         workspace: DomainWorkspace,
         selected: Option<String>,
         diagnostics: crate::session::persistence::WorkspaceLoadDiagnostics,
-        namespace: String,
     ) -> WorkspaceLoad {
         let history = lock(&self.history).clone();
         if let Some(history) = history {
             let workspace = workspace.clone();
-            match tokio::task::spawn_blocking(move || {
-                history.load_workspace_history(&namespace, &workspace)
-            })
-            .await
+            match tokio::task::spawn_blocking(move || history.load_workspace_history(&workspace))
+                .await
             {
                 Ok(Ok(())) => {}
                 result => {
                     self.fail(crate::response::ResponseFailureKind::Storage);
                     let reason = match result {
-                        Ok(Err(error)) => format!("History could not be loaded: {error}"),
-                        _ => {
-                            "History could not be loaded. The index has been left unchanged.".into()
-                        }
+                        Ok(Err(error)) => error.to_string(),
+                        _ => crate::response::HISTORY_LOAD_FAILURE.into(),
                     };
                     lock(&self.state).presentation.operation_failure_reason = Some(reason);
                 }
@@ -256,6 +253,8 @@ impl WorkspaceOperations {
                     ..Default::default()
                 };
                 state.undo.clear();
+                state.removed_requests.clear();
+                state.request_positions.clear();
             }
         }
         if let WorkspaceReply::Loaded {
@@ -263,17 +262,15 @@ impl WorkspaceOperations {
             diagnostics,
         } = result
         {
-            if switching && let Some(history) = lock(&self.history).as_ref() {
-                history.reset_workspace();
+            if switching {
+                self.workspace.replace(DomainWorkspace::default());
+                if let Some(history) = lock(&self.history).as_ref() {
+                    history.reset_workspace();
+                }
             }
             Some(
-                self.loaded_with_diagnostics(
-                    workspace,
-                    None,
-                    diagnostics,
-                    platform.workspace_namespace(),
-                )
-                .await,
+                self.loaded_with_diagnostics(workspace, None, diagnostics)
+                    .await,
             )
         } else {
             self.fail(crate::response::ResponseFailureKind::Workspace);
@@ -346,29 +343,6 @@ impl WorkspaceOperations {
         let _guard = self.edits.lock().await;
         self.mutate_locked(command, selected, platform, secrets, secret_platform)
             .await
-    }
-    pub async fn save_environment(
-        &self,
-        environment: crate::domain::DomainEnvironment,
-        values: HashMap<String, String>,
-        selected: Option<String>,
-        platform: &dyn WorkspacePlatform,
-        secrets: &SessionSecrets,
-        secret_platform: &dyn SessionSecretPlatform,
-    ) -> WorkspaceMutation {
-        let _guard = self.edits.lock().await;
-        self.save_environment_locked(
-            EnvironmentSave {
-                environment,
-                values,
-                name: None,
-            },
-            selected,
-            platform,
-            secrets,
-            secret_platform,
-        )
-        .await
     }
     async fn save_environment_locked(
         &self,
@@ -457,9 +431,15 @@ impl WorkspaceOperations {
             )),
             _ => None,
         };
-        if let Some(actions::MoveEligibility::Refused { reason, .. }) = eligibility {
-            self.fail_reason(reason);
-            return WorkspaceMutation::default();
+        match eligibility {
+            Some(actions::MoveEligibility::Refused { reason, .. }) => {
+                self.fail_reason(reason);
+                return WorkspaceMutation::default();
+            }
+            Some(actions::MoveEligibility::NotDestination { .. }) => {
+                return WorkspaceMutation::default();
+            }
+            _ => {}
         }
         let needs_root = matches!(&command, WorkspaceAction::CreateRequest { collection_id, .. } if collection_id.as_deref().unwrap_or(actions::ROOT_COLLECTION) == actions::ROOT_COLLECTION)
             || matches!(&command, WorkspaceAction::CreateGroup { collection_id, .. } if collection_id == actions::ROOT_COLLECTION);
@@ -565,6 +545,36 @@ impl WorkspaceOperations {
         }
         result
     }
+    fn track_removed_requests(&self, plan: &SessionWorkspacePlan) {
+        let before = lock(&self.workspace.workspace);
+        let mut state = lock(&self.state);
+        for collection in &before.collections {
+            if !plan.removed_collection_ids.contains(&collection.id)
+                && !plan.collections.iter().any(|c| c.id == collection.id)
+            {
+                continue;
+            }
+            for request in &collection.requests {
+                if !plan.collections.iter().any(|c| {
+                    c.id == collection.id
+                        && c.requests
+                            .iter()
+                            .any(|r| r.request.id == request.request.id)
+                }) {
+                    state
+                        .removed_requests
+                        .insert((collection.id.clone(), request.request.id.clone()));
+                }
+            }
+        }
+        for collection in &plan.collections {
+            for request in &collection.requests {
+                state
+                    .removed_requests
+                    .remove(&(collection.id.clone(), request.request.id.clone()));
+            }
+        }
+    }
     async fn apply_named(
         &self,
         named: NamedEdit,
@@ -642,7 +652,9 @@ impl WorkspaceOperations {
                 return WorkspaceMutation::default();
             }
         }
+        self.track_removed_requests(&plan);
         self.workspace.commit(plan.clone());
+        self.remember_request_positions(&plan.collections);
         self.move_history(&plan.effects).await;
         secrets.observe(plan.observed_secrets.clone());
         if failed {
@@ -711,7 +723,22 @@ impl WorkspaceOperations {
         self.saved_request(&location);
         location
     }
+    fn remember_request_positions(&self, collections: &[crate::domain::DomainCollection]) {
+        let mut state = lock(&self.state);
+        for collection in collections {
+            for request in &collection.requests {
+                state.request_positions.insert(
+                    (collection.id.clone(), request.request.id.clone()),
+                    (request.group_id.clone(), request.order),
+                );
+            }
+        }
+    }
     fn saved_request(&self, location: &DomainLocation) {
+        lock(&self.state).request_positions.insert(
+            (location.collection_id.clone(), location.request.id.clone()),
+            (location.group_id.clone(), location.order),
+        );
         if let Some(c) = lock(&self.workspace.workspace)
             .collections
             .iter_mut()
@@ -738,6 +765,7 @@ impl WorkspaceOperations {
     ) -> WorkspaceSave {
         let _guard = self.edits.lock().await;
         let was_saved = document.collection_id.is_some() && document.saved_draft.is_some();
+        let original_collection = document.collection_id.clone();
         let mut result = WorkspaceSave {
             original_authentication: document.draft.authentication.clone(),
             document_id: document.id,
@@ -749,13 +777,17 @@ impl WorkspaceOperations {
             self.fail(crate::response::ResponseFailureKind::Workspace);
             return result;
         };
+        let saved = super::location(
+            &lock(&self.workspace.workspace),
+            &collection_id,
+            &result.draft.id,
+        )
+        .cloned();
         if was_saved
-            && super::location(
-                &lock(&self.workspace.workspace),
-                &collection_id,
-                &result.draft.id,
-            )
-            .is_none()
+            && saved.is_none()
+            && lock(&self.state)
+                .removed_requests
+                .contains(&(collection_id.clone(), result.draft.id.clone()))
         {
             self.fail_reason(
                 "The saved request has moved or been deleted. Reopen it before saving.".into(),
@@ -773,16 +805,20 @@ impl WorkspaceOperations {
         }
         result.draft.authentication = authentication;
         secrets.observe(request_references(&result.draft).into_iter().collect());
-        let saved = super::location(
-            &lock(&self.workspace.workspace),
-            &collection_id,
-            &result.draft.id,
-        )
-        .cloned();
+        let (group_id, order) = saved.map_or_else(
+            || {
+                lock(&self.state)
+                    .request_positions
+                    .get(&(collection_id.clone(), result.draft.id.clone()))
+                    .cloned()
+                    .unwrap_or_default()
+            },
+            |request| (request.group_id, request.order),
+        );
         let location = DomainLocation {
             collection_id,
-            group_id: saved.as_ref().and_then(|r| r.group_id.clone()),
-            order: saved.map_or(0, |r| r.order),
+            group_id,
+            order,
             request: result.draft.clone(),
         };
         if let Some(reason) = commands(
@@ -798,6 +834,14 @@ impl WorkspaceOperations {
             return result;
         }
         self.saved_request(&location);
+        if original_collection.is_none() {
+            self.move_history(&[super::SessionDocumentEffect::Relocate {
+                collection_id: String::new(),
+                request_id: location.request.id.clone(),
+                destination: location.collection_id.clone(),
+            }])
+            .await;
+        }
         result.location = Some(location);
         result.succeeded = true;
         result
@@ -811,7 +855,9 @@ async fn commands(
         WorkspaceReply::Commands { result } => result,
         _ => crate::session::persistence::SessionCommandBatchResult {
             completed: 0,
-            failure_reason: Some("workspace".into()),
+            failure_reason: Some(
+                crate::session::persistence::WorkspaceError::operation("workspace").user_message(),
+            ),
         },
     }
 }
@@ -907,13 +953,8 @@ impl WorkspaceOperations {
                     diagnostics,
                 } => {
                     loaded = Some(
-                        self.loaded_with_diagnostics(
-                            workspace,
-                            None,
-                            diagnostics,
-                            persistence.workspace_namespace(),
-                        )
-                        .await,
+                        self.loaded_with_diagnostics(workspace, None, diagnostics)
+                            .await,
                     );
                     self.clear_undo();
                 }
@@ -994,12 +1035,7 @@ impl WorkspaceOperations {
                         .map(|e| e.id.clone())
                 });
             let mut loaded = self
-                .loaded_with_diagnostics(
-                    workspace,
-                    environment,
-                    diagnostics,
-                    platform.workspace_namespace(),
-                )
+                .loaded_with_diagnostics(workspace, environment, diagnostics)
                 .await;
             loaded.select = loaded
                 .workspace
@@ -1154,16 +1190,4 @@ impl WorkspaceOperations {
             .first()
             .map(|c| c.id.clone())
     }
-}
-
-fn workspace_failure_message(reason: &str) -> String {
-    if reason.chars().next().is_some_and(char::is_uppercase) {
-        return reason.into();
-    }
-    match reason {
-        "request does not exist" => "The request no longer exists. Reload the workspace before saving.",
-        "collection does not exist" | "parent group does not exist" => "The destination no longer exists. Reload the workspace and try again.",
-        "request could not be deleted" => "The request could not be deleted. Check the workspace folder's permissions and try again.",
-        _ => "The workspace change could not be saved. Check the workspace folder and try again.",
-    }.into()
 }

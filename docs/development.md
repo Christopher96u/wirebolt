@@ -80,32 +80,34 @@ The bridge carries at most ten diagnostics (200 characters per relative path),
 the number omitted and a Rust-composed notice. Reasons never include document
 contents. The app presents a dismissible notice while keeping readable requests
 available. Save and workspace replacement use the same guard as mutations and
-Undo; a queued stale save of a moved or deleted saved request fails.
+Undo; a queued stale save of a request moved or deleted inside the app fails.
+Saving a request file removed externally recreates it at its last known location.
 
 ## History compatibility
 
 The local history `index.json` remains a JSON array compatible with rc.1's Swift
-`RunHistoryEntry` decoder. New entries add optional `identity` fields (workspace
-namespace, collection ID and request ID); rc.1 ignores these keys. The short-lived
-version 2 envelope is accepted on read, but every write uses an array. Both damaged
-arrays and damaged or unsupported envelopes are left unchanged, backed up as
-`index.json.backup` (or a distinct `index.json.backup-*` file if occupied), and
-reported as storage errors. A failed backup is reported accurately. An unreadable index is never
-silently replaced with empty history.
+`RunHistoryEntry` decoder. New entries add optional `identity` fields (collection
+ID and request ID); rc.1 ignores these keys. Namespace fields written by development
+builds are ignored on read. The short-lived version 2 envelope is accepted on read,
+but every write uses an array. Damaged arrays and damaged or unsupported envelopes
+are backed up as `index.json.backup` (or a distinct `index.json.backup-*` file if
+occupied) and reported once. After a successful backup, recording and clearing
+continue with a fresh empty index. Backups are never deleted. A failed backup or an
+unreadable index remains an error and the original index stays unchanged.
 
-`workspace_namespace()` derives history's namespace from the canonical workspace
-path, independently of cookie storage layout. Its historical `.json` suffix is
-retained for compatibility. Rust configures it when loading the workspace. The
-workspace without a saved folder uses the stable `unsaved-workspace` namespace.
-Moves and Undo migrate scoped entries within the serialized Rust workspace
-operation and redirect in-flight completions to their current collection.
-Replacement loads reconcile redirects; late completions from another workspace do
-not change the current workspace's history presentation.
+History follows collection and request IDs, independently of the workspace folder's
+name or location. Re-cloning a workspace retains history; copies with the same IDs
+share history, as in rc.1. New imports receive unique request IDs. Requests without
+a collection use an empty collection ID, stable across launches. Their first save,
+moves and Undo relocate scoped entries within the serialized Rust workspace
+operation and redirect in-flight completions to the saved collection. Replacement
+loads reconcile redirects; late completions for requests absent from the open
+workspace do not change its history presentation.
 
 At workspace load, a requestID-only entry is attributed to the complete identity
 when that ID matches exactly one request in the loaded workspace, then persisted.
 For example, if only collection `api` contains `health`, its legacy entries become
-`<workspace>/api/health`, reappear in History and sidebar activity, and can restore
+`api/health`, reappear in History and sidebar activity, and can restore
 the last response at launch. Loading a copied workspace may attribute legacy
 entries to the copy, preserving the visibility users had before scoped history.
 IDs present in several collections remain reachable under **History → Unassigned
@@ -276,8 +278,9 @@ WIREBOLT_NATIVE_CAPTURE_DIRECTORY="$PWD/build/review-screenshots" scripts/native
 
 This optional variable controls captures from both native suites. No real
 workspace, preferences or Keychain is used. The benchmark-only
-`environment-screenshots` mode writes `environment-inspector.png` beside its
-output JSON; it also uses disposable fixtures.
+`environment-screenshots` mode writes `environment-inspector.png` to the same
+capture directory when the variable is set, otherwise beside its output JSON;
+it also uses disposable fixtures.
 
 ## Documentation changes
 

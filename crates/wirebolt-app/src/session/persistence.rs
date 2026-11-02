@@ -33,6 +33,13 @@ pub trait WorkspaceSecrets: fmt::Debug + Send + Sync {
 }
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum WorkspaceError {
+    MissingRequest,
+    MissingDestination,
+    RequestDeleteFailed,
+    RequestTooLarge,
+    RequestSaveFailed,
+    MoveCollision,
+    MoveFailed,
     OperationFailed { reason: String },
 }
 
@@ -40,6 +47,7 @@ impl fmt::Display for WorkspaceError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::OperationFailed { reason } => formatter.write_str(reason),
+            _ => formatter.write_str(&self.user_message()),
         }
     }
 }
@@ -246,7 +254,7 @@ impl SessionPersistence {
             .collections
             .into_iter()
             .find(|collection| collection.collection.id == id)
-            .ok_or_else(|| WorkspaceError::operation("collection does not exist"))?;
+            .ok_or(WorkspaceError::MissingDestination)?;
         wirebolt_core::export_legacy_v1_collection(&snapshot.collection, &snapshot.requests)
             .map_err(|error| WorkspaceError::operation(&error.to_string()))
     }
@@ -713,7 +721,7 @@ impl SessionPersistence {
                         .iter()
                         .all(|existing| &existing.id != parent)
                 }) {
-                    return Err(WorkspaceError::operation("parent group does not exist"));
+                    return Err(WorkspaceError::MissingDestination);
                 }
                 if collection
                     .groups
@@ -813,7 +821,7 @@ impl SessionPersistence {
                         .iter()
                         .all(|existing| &existing.id != parent)
                 }) {
-                    return Err(WorkspaceError::operation("parent group does not exist"));
+                    return Err(WorkspaceError::MissingDestination);
                 }
                 let group = collection
                     .groups
@@ -835,8 +843,10 @@ impl SessionPersistence {
                         request,
                     })
                     .map_err(|error| match error {
-                        wirebolt_core::StorageError::DocumentTooLarge {..} => WorkspaceError::operation(&format!("This request exceeds the {} document limit. Reduce its body or notes, or attach a body file.", wirebolt_core::DOCUMENT_LIMIT_LABEL)),
-                        _ => WorkspaceError::operation("The request could not be saved."),
+                        wirebolt_core::StorageError::DocumentTooLarge { .. } => {
+                            WorkspaceError::RequestTooLarge
+                        }
+                        _ => WorkspaceError::RequestSaveFailed,
                     })?;
                 Ok((SessionWorkspaceNodeKind::Request, vec![collection_id, id]))
             }
@@ -846,7 +856,7 @@ impl SessionPersistence {
                         &document_id(collection_id.clone())?,
                         &document_id(id.clone())?,
                     )
-                    .map_err(|_| WorkspaceError::operation("request could not be deleted"))?;
+                    .map_err(|_| WorkspaceError::RequestDeleteFailed)?;
                 Ok((SessionWorkspaceNodeKind::Request, vec![collection_id, id]))
             }
             super::workspace::SessionWorkspaceCommand::DuplicateRequest {
@@ -888,15 +898,11 @@ impl SessionPersistence {
                         &destination,
                         &request,
                     )
-                    .map_err(|error| {
-                        WorkspaceError::operation(match error {
-                            wirebolt_core::StorageError::AlreadyExists { .. } => {
-                                super::workspace::actions::MOVE_COLLISION_REASON
-                            }
-                            _ => {
-                                "The request could not be moved without replacing another request."
-                            }
-                        })
+                    .map_err(|error| match error {
+                        wirebolt_core::StorageError::AlreadyExists { .. } => {
+                            WorkspaceError::MoveCollision
+                        }
+                        _ => WorkspaceError::MoveFailed,
                     })?;
                 Ok((
                     SessionWorkspaceNodeKind::Request,
@@ -943,7 +949,7 @@ impl SessionPersistence {
             .collections
             .into_iter()
             .find(|entry| entry.collection.id == id)
-            .ok_or_else(|| WorkspaceError::operation("collection does not exist"))?;
+            .ok_or(WorkspaceError::MissingDestination)?;
         let expected: std::collections::HashSet<String> = snapshot
             .collection
             .groups
@@ -1024,7 +1030,7 @@ impl SessionPersistence {
             .into_iter()
             .find(|snapshot| snapshot.collection.id == id)
             .map(|snapshot| snapshot.collection)
-            .ok_or_else(|| WorkspaceError::operation("collection does not exist"))
+            .ok_or(WorkspaceError::MissingDestination)
     }
 
     /// # Errors
@@ -1048,7 +1054,7 @@ impl SessionPersistence {
                     .into_iter()
                     .find(|request| request.id == request_id)
             })
-            .ok_or_else(|| WorkspaceError::operation("request does not exist"))
+            .ok_or(WorkspaceError::MissingRequest)
     }
 
     fn save_collection_document(&self, collection: Collection) -> Result<(), WorkspaceError> {
@@ -1064,6 +1070,19 @@ impl SessionPersistence {
 }
 
 impl WorkspaceError {
+    #[must_use]
+    pub fn user_message(&self) -> String {
+        match self {
+            Self::MissingRequest => "The request no longer exists. Reload the workspace before saving.".into(),
+            Self::MissingDestination => "The destination no longer exists. Reload the workspace and try again.".into(),
+            Self::RequestDeleteFailed => "The request could not be deleted. Check the workspace folder's permissions and try again.".into(),
+            Self::RequestTooLarge => format!("This request exceeds the {} document limit. Reduce its body or notes, or attach a body file.", wirebolt_core::DOCUMENT_LIMIT_LABEL),
+            Self::RequestSaveFailed => "The request could not be saved.".into(),
+            Self::MoveCollision => super::workspace::actions::MOVE_COLLISION_REASON.into(),
+            Self::MoveFailed => "The request could not be moved without replacing another request.".into(),
+            Self::OperationFailed { .. } => "The workspace change could not be saved. Check the workspace folder and try again.".into(),
+        }
+    }
     #[must_use]
     pub fn operation(reason: &str) -> Self {
         Self::OperationFailed {
@@ -1327,10 +1346,10 @@ impl SessionPersistence {
         for command in commands {
             match self.apply_session_command(command) {
                 Ok(_) => completed += 1,
-                Err(WorkspaceError::OperationFailed { reason }) => {
+                Err(error) => {
                     return SessionCommandBatchResult {
                         completed,
-                        failure_reason: Some(reason),
+                        failure_reason: Some(error.user_message()),
                     };
                 }
             }

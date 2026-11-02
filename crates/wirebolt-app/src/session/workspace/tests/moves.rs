@@ -153,3 +153,81 @@ fn move_destination_labels_follow_collection_folder_and_top_level_vocabulary() {
         );
     }
 }
+
+#[tokio::test]
+async fn ordinary_non_destinations_are_disabled_and_silently_ignored() {
+    let workspace = nested();
+    let ops = WorkspaceOperations::new(Arc::new(WorkspaceSession::default()));
+    let _ = ops.loaded(workspace.clone(), None);
+    let platform = Store::default();
+    for (identifier, collection, parent) in [
+        ("request|api|root", "api", None),
+        ("group|api|parent", "api", None),
+        ("group|api|parent", "api", Some("parent")),
+        ("group|api|parent", "api", Some("grandchild")),
+        ("group|api|parent", "other", None),
+    ] {
+        // Include an ordinary other collection for the cross-collection folder case.
+        let mut workspace = workspace.clone();
+        workspace.collections.push(DomainCollection {
+            id: "other".into(),
+            ..Default::default()
+        });
+        let _ = ops.loaded(workspace, None);
+        assert!(matches!(
+            ops.move_eligibility(
+                identifier.into(),
+                collection.into(),
+                parent.map(str::to_owned)
+            ),
+            actions::MoveEligibility::NotDestination { .. }
+        ));
+        assert!(
+            !ops.mutate(
+                Action::MoveTo {
+                    identifier: identifier.into(),
+                    collection_id: collection.into(),
+                    parent_id: parent.map(str::to_owned)
+                },
+                None,
+                &platform,
+                &SessionSecrets::default(),
+                &Secrets
+            )
+            .await
+            .succeeded
+        );
+        assert!(ops.presentation().operation_failure.is_none());
+    }
+    assert!(lock(&platform.commands).is_empty());
+}
+
+#[tokio::test]
+async fn missing_move_sources_report_a_reason_instead_of_becoming_non_destinations() {
+    let ops = WorkspaceOperations::new(Arc::new(WorkspaceSession::default()));
+    let _ = ops.loaded(nested(), None);
+    for identifier in ["request|api|missing", "group|api|missing"] {
+        assert!(
+            matches!(ops.move_eligibility(identifier.into(), "api".into(), None), actions::MoveEligibility::Refused { reason, .. } if reason == "This item is no longer available.")
+        );
+        assert!(
+            !ops.mutate(
+                Action::MoveTo {
+                    identifier: identifier.into(),
+                    collection_id: "api".into(),
+                    parent_id: None
+                },
+                None,
+                &Store::default(),
+                &SessionSecrets::default(),
+                &Secrets
+            )
+            .await
+            .succeeded
+        );
+        assert_eq!(
+            ops.presentation().operation_failure_reason.as_deref(),
+            Some("This item is no longer available.")
+        );
+    }
+}

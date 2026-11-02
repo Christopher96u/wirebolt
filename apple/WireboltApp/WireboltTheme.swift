@@ -17,7 +17,7 @@ extension EnvironmentValues {
 /// Resolves preferences once at the scene boundary. Reading an immutable theme in a
 /// leaf does not establish any dependency on drafts, run progress or workspace state.
 struct ThemeScope: ViewModifier {
-    @AppStorage("interfaceAppearance") private var selection = "system"
+    @AppStorage("interfaceAppearance") private var selection = ThemeSelection.system
     @AppStorage("interfaceDensity") private var density = "comfortable"
     @AppStorage("interfaceReduceMotion") private var reducesMotion = false
     @Environment(\.colorScheme) private var colorScheme

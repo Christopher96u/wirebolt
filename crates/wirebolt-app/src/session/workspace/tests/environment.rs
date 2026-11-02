@@ -1,23 +1,6 @@
 use super::super::environment::EnvironmentCommit as Commit;
 use super::*;
-use std::collections::HashMap;
 
-#[derive(Debug, Default)]
-struct Keychain(Mutex<HashMap<String, String>>);
-#[async_trait]
-impl SessionSecretPlatform for Keychain {
-    async fn read(&self, name: String) -> Result<Option<String>, ()> {
-        Ok(lock(&self.0).get(&name).cloned())
-    }
-    async fn save(&self, name: String, value: String) -> Result<(), ()> {
-        lock(&self.0).insert(name, value);
-        Ok(())
-    }
-    async fn remove(&self, name: String) -> Result<(), ()> {
-        lock(&self.0).remove(&name);
-        Ok(())
-    }
-}
 fn fixture() -> DomainWorkspace {
     DomainWorkspace {
         environments: vec![
@@ -61,7 +44,7 @@ fn fixture() -> DomainWorkspace {
 }
 async fn commit(
     h: &Harness,
-    keychain: &Keychain,
+    keychain: &EnvironmentSecrets,
     id: &str,
     edit: Commit,
 ) -> EnvironmentCommitOutcome {
@@ -143,7 +126,7 @@ async fn every_live_commit_has_one_named_undo_and_symmetric_redo() {
     for (edit, label) in live_cases() {
         let original = fixture();
         let h = Harness::new(original.clone());
-        let keychain = Keychain::default();
+        let keychain = EnvironmentSecrets::default();
         lock(&keychain.0).insert("env.local.token".into(), "previous-secret-material".into());
         let result = commit(&h, &keychain, "local", edit).await;
         assert_eq!(result.problem, None, "{label}");
@@ -229,7 +212,7 @@ async fn invalid_field_commits_never_write_or_register_undo() {
         },
     ] {
         let h = Harness::new(fixture());
-        let result = commit(&h, &Keychain::default(), "local", edit).await;
+        let result = commit(&h, &EnvironmentSecrets::default(), "local", edit).await;
         assert!(result.problem.is_some());
         assert!(!result.mutation.succeeded && result.mutation.undo.is_none());
         assert!(lock(&h.store.commands).is_empty());
@@ -240,7 +223,7 @@ async fn invalid_field_commits_never_write_or_register_undo() {
 #[tokio::test]
 async fn secret_field_commits_keep_material_out_of_workspace_commands_and_undo() {
     let h = Harness::new(fixture());
-    let keychain = Keychain::default();
+    let keychain = EnvironmentSecrets::default();
     lock(&keychain.0).insert("env.local.token".into(), "previous-secret-material".into());
     let edit = Commit::VariableValue {
         id: "token".into(),
@@ -314,7 +297,13 @@ async fn secret_field_commits_keep_material_out_of_workspace_commands_and_undo()
 #[tokio::test]
 async fn globals_commit_live_but_cannot_be_renamed_or_deleted() {
     let h = Harness::new(fixture());
-    let added = commit(&h, &Keychain::default(), "global", Commit::AddVariable).await;
+    let added = commit(
+        &h,
+        &EnvironmentSecrets::default(),
+        "global",
+        Commit::AddVariable,
+    )
+    .await;
     assert_eq!(added.mutation.undo.unwrap().name, "Add Variable");
     for edit in [
         Commit::Rename {
@@ -323,7 +312,7 @@ async fn globals_commit_live_but_cannot_be_renamed_or_deleted() {
         Commit::Delete,
     ] {
         assert!(
-            commit(&h, &Keychain::default(), "global", edit)
+            commit(&h, &EnvironmentSecrets::default(), "global", edit)
                 .await
                 .problem
                 .is_some()
@@ -334,7 +323,7 @@ async fn globals_commit_live_but_cannot_be_renamed_or_deleted() {
 #[tokio::test]
 async fn repeated_additions_get_unique_valid_names_and_noop_has_no_undo() {
     let h = Harness::new(fixture());
-    let keychain = Keychain::default();
+    let keychain = EnvironmentSecrets::default();
     for _ in 0..3 {
         assert!(
             commit(&h, &keychain, "local", Commit::AddVariable)
@@ -389,7 +378,7 @@ async fn live_environment_edits_keep_id_order_and_secret_references_on_disk_relo
         .unwrap(),
     );
     let h = Harness::new(fixture());
-    let keychain = Keychain::default();
+    let keychain = EnvironmentSecrets::default();
     for environment in fixture().environments {
         assert!(
             matches!(disk.0.workspace_io(WorkspaceIO::Commands { commands: vec![SessionWorkspaceCommand::SaveEnvironment { environment }] }), WorkspaceReply::Commands { result } if result.failure_reason.is_none())
@@ -472,25 +461,23 @@ async fn environment_creation_deletion_and_undo_match_reload_id_order() {
         name: "Fixture".into(),
         ..Default::default()
     });
-    let keychain = Keychain::default();
+    let keychain = EnvironmentSecrets::default();
     // Deliberately insert IDs out of order and use names with a different order.
     for (id, name) in [("zulu", "Alpha"), ("alpha", "Zulu"), ("global", "Globals")] {
-        let saved = h
-            .ops
-            .save_environment(
-                DomainEnvironment {
-                    id: id.into(),
-                    name: name.into(),
-                    ..Default::default()
-                },
-                HashMap::new(),
-                None,
-                &disk,
-                &h.secrets,
-                &keychain,
-            )
-            .await;
-        assert!(saved.succeeded);
+        let environment = DomainEnvironment {
+            id: id.into(),
+            name: name.into(),
+            ..Default::default()
+        };
+        assert!(
+            disk.0
+                .execute_session_commands(vec![SessionWorkspaceCommand::SaveEnvironment {
+                    environment
+                }])
+                .failure_reason
+                .is_none()
+        );
+        h.ops.load(&disk, false).await.unwrap();
         assert_environment_reload_matches(&h, &disk);
     }
     for edit in [
@@ -564,4 +551,26 @@ fn inspector_browsing_preserves_active_environment_until_explicit_use() {
     assert_eq!(inspector.use_for_requests().as_deref(), Some("local"));
     inspector.browse(wirebolt_core::GLOBAL_ENVIRONMENT_ID.into());
     assert_eq!(inspector.use_for_requests(), None);
+}
+
+#[tokio::test]
+async fn failed_live_environment_commit_reports_inline_once_and_can_be_retried() {
+    let original = fixture();
+    let h = Harness::new(original.clone());
+    *lock(&h.store.fail_at) = Some(0);
+    let keychain = EnvironmentSecrets::default();
+    let edit = Commit::VariableValue {
+        id: "url".into(),
+        value: "https://retry.example.invalid".into(),
+    };
+    let failed = commit(&h, &keychain, "local", edit.clone()).await;
+    assert!(!failed.mutation.succeeded);
+    assert!(failed.problem.unwrap().contains("Your text is still here"));
+    assert!(h.ops.presentation().operation_failure.is_none());
+    assert!(h.ops.presentation().operation_failure_reason.is_none());
+    assert_eq!(h.workspace.snapshot(), original);
+    *lock(&h.store.fail_at) = None;
+    let retried = commit(&h, &keychain, "local", edit).await;
+    assert!(retried.mutation.succeeded && retried.problem.is_none());
+    assert!(h.ops.presentation().operation_failure.is_none());
 }

@@ -22,7 +22,6 @@ pub struct SessionHistoryEntry {
 
 #[uniffi::remote(Record)]
 pub struct SessionRequestIdentity {
-    pub workspace: String,
     pub collection_id: String,
     pub request_id: String,
 }
@@ -30,7 +29,6 @@ pub struct SessionRequestIdentity {
 #[uniffi::export]
 pub fn session_request_activity_key(collection_id: String, request_id: String) -> String {
     SessionRequestIdentity {
-        workspace: String::new(),
         collection_id,
         request_id,
     }
