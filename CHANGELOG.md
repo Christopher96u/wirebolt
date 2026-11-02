@@ -61,11 +61,11 @@ Changes under **Unreleased** are on `main` but not in a published build yet. Dow
 
 ## 1.0.0-rc.1
 
-First release candidate for Wirebolt 1.0. It collects everything since 0.1.0-beta.2 and is the first build published from this repository.
+First release candidate for Wirebolt 1.0. It collects everything since 0.1.0-beta.2 and is the first build published from this repository; Homebrew users of the old `christopher96u/tap` need to [switch taps](https://github.com/Christopher96u/wirebolt/blob/main/docs/installation.md#migrate-from-the-beta-tap).
 
 ### Breaking changes
 
-- The bundle identifier is now `io.github.christopher96u.wirebolt`.
+- The bundle identifier is now `io.github.christopher96u.wirebolt`. Preferences, the remembered workspace and Keychain items stored under `local.wirebolt.app` are not migrated: reopen the workspace and re-enter stored credentials.
 - Wirebolt runs one workspace window. **⌘N** creates a request; File → New Window is gone.
 - Deleting a request or an empty folder happens immediately and can be undone with **⌘Z**. Wirebolt asks first only when a deletion also removes other items or discards unsaved edits.
 - Environment and workspace settings sheets use **Cancel** and **Save** (Return). Esc cancels and asks before discarding edits; closing no longer saves.
@@ -80,7 +80,7 @@ First release candidate for Wirebolt 1.0. It collects everything since 0.1.0-bet
 - `{{variable}}` highlighting, value tooltips and completion in the URL and key-value fields.
 - Keyboard access: full sidebar navigation (arrows, type-select, Return to rename), Move Up/Down (**⌥⌘↑** / **⌥⌘↓**) and Move To, Cancel Request (**⌘.**), request and response section commands (**⌥⌘1–6**, **⌃⌘1–5**), Focus Sidebar (**⌘0**) and Focus Response (**⌥⌘0**).
 - A welcome state with New Request, Import and Open Workspace for empty workspaces, and a New Request row in empty collections.
-- Open or drop cURL, HAR and Postman files on the app to import them. File → Open Recent lists workspaces.
+- Open or drop cURL, HAR, Postman and Wirebolt JSON files on the app to import them. File → Open Recent lists workspaces.
 - API Key and OAuth 2.0 can be chosen in the Auth tab; every request keeps its own Keychain credentials, including duplicates.
 - Secret environment variables stored in Keychain, a Cookies window per workspace (delete one or Clear All), Rename Workspace, and client certificate / custom CA settings.
 - Git Collaboration can initialize a repository and abort a conflicted merge.
@@ -93,6 +93,7 @@ First release candidate for Wirebolt 1.0. It collects everything since 0.1.0-bet
 ### Changed
 
 - Postman import keeps authentication (with inheritance), variables, path variables, disabled rows, GraphQL and binary bodies, body languages and descriptions. HAR import drops HTTP/2 pseudo-headers and maps form bodies. cURL import handles multi-line commands and the common options (`-u`, `-F`, `-b`, `--data-urlencode`, `-k`, `-L`, …). Unsupported files (OpenAPI, Postman v1) explain why.
+- Wirebolt JSON export round-trips secret references, request proxy and TLS settings, content types, multipart files, environments and separate collections.
 - Copy cURL reads secrets from Keychain when the command runs instead of placing them on the clipboard.
 - New workspaces are named after their folder. Cookies are kept per workspace and session cookies are no longer saved.
 
@@ -115,6 +116,7 @@ First release candidate for Wirebolt 1.0. It collects everything since 0.1.0-bet
 - Saving an open request after moving it across collections targets the new location.
 - Deleting a folder closes descendant request sessions.
 - Pending workspace transport edits persist after settings closes.
+- Wirebolt JSON export preserves API key and OAuth configuration through native metadata.
 
 ### Clarified
 
