@@ -1081,17 +1081,17 @@ private struct SidebarReorderDrop: DropDelegate {
               let provider = info.itemProviders(for: [UTType.text]).first else { return false }
         position = nil
         interface.sidebarDragIdentifier = nil
-        let target = target
-        let model = model
+        let dropTarget = target
+        let sidebarModel = model
         // Verify the actual pasteboard payload, rather than trusting a previous drag's UI state.
         provider.loadObject(ofClass: NSString.self) { value, _ in
             guard let identifier = value as? String, identifier == expected else { return }
             Task { @MainActor in
-                if destination == .inside, let folder = target.folder {
-                    await model.moveSidebarItem(identifier, toCollectionID: target.collection, parentID: folder)
+                if destination == .inside, let folder = dropTarget.folder {
+                    await sidebarModel.moveSidebarItem(identifier, toCollectionID: dropTarget.collection, parentID: folder)
                 } else {
-                    await model.reorderSidebar(identifier, relativeTo: target.item, after: destination == .after,
-                                               collectionID: target.collection, parentID: target.parent)
+                    await sidebarModel.reorderSidebar(identifier, relativeTo: dropTarget.item, after: destination == .after,
+                                                      collectionID: dropTarget.collection, parentID: dropTarget.parent)
                 }
             }
         }
