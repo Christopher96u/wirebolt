@@ -510,6 +510,14 @@ impl WorkspaceOperations {
         )
     }
     #[must_use]
+    pub fn move_refusal(&self, identifier: String, collection_id: String) -> Option<String> {
+        actions::move_refusal(
+            &lock(&self.workspace.workspace),
+            &identifier,
+            &collection_id,
+        )
+    }
+    #[must_use]
     pub fn can_move_to(
         &self,
         identifier: String,

@@ -1218,6 +1218,7 @@ private struct SidebarMoveMenu: View {
             Task { await model.moveSidebarItem(identifier, toCollectionID: collectionID, parentID: parentID) }
         }
         .disabled(!model.canMoveSidebarItem(identifier, toCollectionID: collectionID, parentID: parentID))
+        .help(model.moveRefusal(identifier, toCollectionID: collectionID) ?? "Move to this folder")
     }
 }
 

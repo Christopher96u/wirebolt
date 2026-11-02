@@ -925,6 +925,10 @@ public final class WireboltModel {
     public func moveSidebarItem(_ identifier: String, by delta: Int) async {
         await perform(.moveBy(identifier: identifier, delta: Int64(delta)))
     }
+    public func moveRefusal(_ identifier: String, toCollectionID collectionID: String) -> String? {
+        synchronizeWorkspace()
+        return rustOperations.moveRefusal(identifier: identifier, collectionId: collectionID)
+    }
     public func canMoveSidebarItem(_ identifier: String, toCollectionID collectionID: String, parentID: String?) -> Bool {
         synchronizeWorkspace()
         return rustOperations.canMoveTo(identifier: identifier, collectionId: collectionID, parent: parentID)

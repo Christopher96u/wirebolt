@@ -468,6 +468,9 @@ impl AppWorkspaceOperations {
         self.inner
             .can_reorder(identifier, target, collection_id, parent)
     }
+    pub fn move_refusal(&self, identifier: String, collection_id: String) -> Option<String> {
+        self.inner.move_refusal(identifier, collection_id)
+    }
     pub fn can_move_to(
         &self,
         identifier: String,

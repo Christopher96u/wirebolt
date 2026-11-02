@@ -580,3 +580,80 @@ fn delete_collection_preserves_unmanaged_and_unreadable_files() {
     assert!(!collection.join("collection.toml").exists());
     assert!(store.load().unwrap().collections.is_empty());
 }
+
+#[test]
+fn request_move_never_replaces_a_destination_and_rolls_back_missing_source() {
+    let root = tempdir().unwrap();
+    let store = WorkspaceStore::create(root.path(), &Workspace::new("Fixture")).unwrap();
+    for name in ["source", "target"] {
+        store
+            .save(&WorkspaceDocument::Collection(Collection::new(
+                id(name),
+                name.into(),
+            )))
+            .unwrap();
+    }
+    let request = Request::new(id("same"), "Target", "GET", "https://example.com");
+    store
+        .save(&WorkspaceDocument::Request {
+            collection_id: id("target"),
+            request: request.clone(),
+        })
+        .unwrap();
+    let mut changed = request.clone();
+    changed.name = "Source".into();
+    assert!(matches!(
+        store.move_request(&id("source"), &id("target"), &changed),
+        Err(StorageError::AlreadyExists { .. })
+    ));
+    assert_eq!(
+        store
+            .load()
+            .unwrap()
+            .collections
+            .iter()
+            .find(|c| c.collection.id == id("target"))
+            .unwrap()
+            .requests[0]
+            .name,
+        "Target"
+    );
+    changed.id = id("missing");
+    assert!(matches!(
+        store.move_request(&id("source"), &id("target"), &changed),
+        Err(StorageError::Missing { .. })
+    ));
+    assert!(
+        !root
+            .path()
+            .join("collections/target/requests/missing.toml")
+            .exists()
+    );
+}
+
+#[test]
+fn collection_deletion_refuses_symlinked_directories() {
+    let root = tempdir().unwrap();
+    let external = tempdir().unwrap();
+    fs::write(external.path().join("attachment.toml"), b"unmanaged").unwrap();
+    let store = WorkspaceStore::create(root.path(), &Workspace::new("Fixture")).unwrap();
+    store
+        .save(&WorkspaceDocument::Collection(Collection::new(
+            id("api"),
+            "API".into(),
+        )))
+        .unwrap();
+    let requests = root.path().join("collections/api/requests");
+    fs::remove_dir(&requests).unwrap();
+    std::os::unix::fs::symlink(external.path(), &requests).unwrap();
+    assert!(store.delete_collection(&id("api")).is_err());
+    assert!(
+        root.path()
+            .join("collections/api/collection.toml")
+            .is_file()
+    );
+    assert_eq!(
+        fs::read(external.path().join("attachment.toml")).unwrap(),
+        b"unmanaged"
+    );
+}

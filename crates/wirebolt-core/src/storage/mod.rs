@@ -365,6 +365,24 @@ impl WorkspaceStore {
         if !path.join(COLLECTION_FILE).is_file() {
             return Err(StorageError::Missing { path });
         }
+        for directory in [&path, &path.join(REQUESTS_DIRECTORY)] {
+            match fs::symlink_metadata(directory) {
+                Ok(metadata) if !metadata.is_dir() => {
+                    return Err(StorageError::InvalidDocument {
+                        path: directory.to_owned(),
+                        reason: "collection directories must be regular directories",
+                    });
+                }
+                Err(source) if source.kind() != io::ErrorKind::NotFound => {
+                    return Err(StorageError::io(
+                        "inspect collection directory",
+                        directory,
+                        source,
+                    ));
+                }
+                _ => {}
+            }
+        }
         let snapshot = self.load_collection(&path, &mut Vec::new(), &mut Vec::new())?;
         let mut documents = snapshot
             .requests
@@ -380,6 +398,60 @@ impl WorkspaceStore {
         self.lock_cache()
             .retain(|cached_path, _| !cached_path.starts_with(&path));
         Ok(())
+    }
+
+    /// Moves a request without replacing an existing destination. If removing the
+    /// source fails, the newly created destination is rolled back.
+    /// # Errors
+    /// Returns a storage error for a collision, missing collection or failed write.
+    pub fn move_request(
+        &self,
+        from: &DocumentId,
+        to: &DocumentId,
+        request: &Request,
+    ) -> Result<(), StorageError> {
+        if from == to {
+            self.save(&WorkspaceDocument::Request {
+                collection_id: to.clone(),
+                request: request.clone(),
+            })?;
+            return Ok(());
+        }
+        if !self.collection_path(to).join(COLLECTION_FILE).is_file() {
+            return Err(StorageError::MissingCollection { id: to.clone() });
+        }
+        let destination = self.request_path(to, &request.id);
+        require_current_schema(request.schema_version(), &destination)?;
+        let parent = self.collection_path(to).join(REQUESTS_DIRECTORY);
+        let parent = parent.as_path();
+        fs::create_dir_all(parent)
+            .map_err(|source| StorageError::io("create request directory", parent, source))?;
+        let (temporary, file) = create_temporary_file(parent, &destination)?;
+        drop(file);
+        let result = (|| {
+            write_document(&temporary, request, Durability::Fast)?;
+            // A link creates the destination atomically and fails if any file is
+            // already there, including one created since the move was planned.
+            fs::hard_link(&temporary, &destination).map_err(|source| {
+                if source.kind() == io::ErrorKind::AlreadyExists {
+                    StorageError::AlreadyExists {
+                        path: destination.clone(),
+                    }
+                } else {
+                    StorageError::io("create move destination", &destination, source)
+                }
+            })?;
+            if let Err(error) = self.delete_request(from, &request.id) {
+                fs::remove_file(&destination).map_err(|source| {
+                    StorageError::io("roll back move destination", &destination, source)
+                })?;
+                return Err(error);
+            }
+            self.lock_cache().remove(&destination);
+            Ok(())
+        })();
+        let _ = fs::remove_file(temporary);
+        result
     }
 
     /// Deletes one request document without touching its collection.

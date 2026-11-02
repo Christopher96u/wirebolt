@@ -826,21 +826,16 @@ impl SessionPersistence {
                 request.order = order;
                 let destination = document_id(to_collection_id.clone())?;
                 self.store
-                    .save(&WorkspaceDocument::Request {
-                        collection_id: destination,
-                        request,
-                    })
-                    .map_err(|_| WorkspaceError::operation("request could not be moved"))?;
-                if from_collection_id != to_collection_id {
-                    self.store
-                        .delete_request(
-                            &document_id(from_collection_id.clone())?,
-                            &document_id(request_id.clone())?,
+                    .move_request(
+                        &document_id(from_collection_id.clone())?,
+                        &destination,
+                        &request,
+                    )
+                    .map_err(|_| {
+                        WorkspaceError::operation(
+                            "request could not be moved without replacing another request",
                         )
-                        .map_err(|_| {
-                            WorkspaceError::operation("source request could not be removed")
-                        })?;
-                }
+                    })?;
                 Ok((
                     SessionWorkspaceNodeKind::Request,
                     vec![from_collection_id, to_collection_id, request_id],
