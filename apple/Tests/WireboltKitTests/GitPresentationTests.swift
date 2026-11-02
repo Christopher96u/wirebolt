@@ -116,9 +116,9 @@ private struct StatusOnlyGit: GitCollaboration {
 
 private actor RenamingPersistence: WorkspacePersistence {
     private var loads = 0
-    func load() async throws -> WorkspaceDraft {
+    func loadResult() async throws -> WorkspaceLoadResult {
         loads += 1
-        return WorkspaceDraft(name: loads == 1 ? "Conflicted" : "Reloaded")
+        return WorkspaceDraft(name: loads == 1 ? "Conflicted" : "Reloaded").loadResult
     }
     func save(request _: RequestDraft, in _: String) async throws {}
     func save(environment _: EnvironmentDraft) async throws {}

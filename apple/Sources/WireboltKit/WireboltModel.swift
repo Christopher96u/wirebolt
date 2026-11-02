@@ -23,9 +23,7 @@ extension RequestRunner {
 }
 
 public protocol WorkspacePersistence: Sendable {
-    func load() async throws -> WorkspaceDraft
     func loadResult() async throws -> WorkspaceLoadResult
-    func loadSession(_ application: AppWorkspaceSession) async throws -> WorkspaceDraft
     func save(request: RequestDraft, in collectionID: String) async throws
     func save(environment: EnvironmentDraft) async throws
     func saveSecret(name: String, value: String) async throws
@@ -48,15 +46,10 @@ public protocol WorkspacePersistence: Sendable {
 }
 
 extension WorkspacePersistence {
-    public func loadResult() async throws -> WorkspaceLoadResult {
-        WorkspaceLoadResult(workspace: try await load().domain, diagnostics: WorkspaceLoadDiagnostics(problems: [], omitted: 0, notice: nil))
-    }
+    // Write-only platform adapters can omit loading. A loader must return the
+    // complete typed result; no fallback can silently discard diagnostics.
+    public func loadResult() async throws -> WorkspaceLoadResult { throw WorkspaceMutationError.unsupported }
     public var sessionWorkspacePlatform: AppWorkspacePlatform { .foreign(platform: WorkspacePlatformAdapter(persistence: self)) }
-    public func loadSession(_ application: AppWorkspaceSession) async throws -> WorkspaceDraft {
-        let workspace = try await load()
-        application.replace(workspace: workspace.domain)
-        return workspace
-    }
     public var location: URL? { nil }
     public var runtimeWorkspaceBridge: WorkspaceBridge? { nil }
     public var sessionSecretPlatform: AppSecretPlatform { AppSecretPlatform.foreign(platform: SessionSecretAdapter(persistence: self)) }
@@ -243,16 +236,15 @@ public final class WireboltModel {
     ) {
         let rustWorkspace = AppWorkspaceSession()
         self.rustWorkspace = rustWorkspace
-        rustOperations = AppWorkspaceOperations(workspace: rustWorkspace)
+        let runtime = AppSessionRuntime(history: history.rust, cookies: cookieJar.rust)
+        self.runtime = runtime
+        rustOperations = AppWorkspaceOperations(workspace: rustWorkspace, runtime: runtime)
         self.proxyPreferences = proxyPreferences ?? ProxyPreferences()
         self.socketConnector = socketConnector
         self.runner = runner
         self.persistence = persistence
         self.gitCollaboration = gitCollaboration
         self.sessions = sessions ?? DocumentSessionStore()
-        runtime = AppSessionRuntime(history: history.rust, cookies: cookieJar.rust)
-        runtime.configureHistoryWorkspace(path: persistence?.location?.standardizedFileURL.path)
-        rustOperations.connectHistory(runtime: runtime)
         self.cookieDirectory = cookieDirectory
         self.oauth2 = oauth2 ?? OAuth2Service()
     }
@@ -266,7 +258,6 @@ public final class WireboltModel {
         editedSecrets = [:]
         rustSecrets.resetEditor()
         workspaceLocation = persistence.location
-        runtime.configureHistoryWorkspace(path: persistence.location?.standardizedFileURL.path)
         runtime.configureCookies(workspace: persistence.location?.standardizedFileURL.path, directory: cookieDirectory?.path)
         mirrorRuntime()
 
@@ -496,6 +487,14 @@ public final class WireboltModel {
             mirrorRuntime()
         }
     }
+    public func clearAllHistory() async {
+        do { try await runtime.clearAllHistory() }
+        catch { operationFailure = RunFailure(kind: .storage, issues: []) }
+        mirrorRuntime()
+    }
+    public func activity(for location: RequestLocation) -> RequestActivity? {
+        requestActivity[location.id]
+    }
     public func clearHistory(for session: DocumentSession) async {
         do { try await runtime.clearHistory(id: historyIdentity(for: session)) }
         catch { operationFailure = RunFailure(kind: .storage, issues: []) }
@@ -545,7 +544,6 @@ public final class WireboltModel {
         rustSecrets.clearObserved()
         configurePersistence(persistence, gitCollaboration: gitCollaboration)
         transportSave = nil
-        runtime.resetWorkspace()
         oauthReceipts = [:]
         historyEntries = []
         requestActivity = [:]
@@ -947,13 +945,13 @@ public final class WireboltModel {
     public func moveSidebarItem(_ identifier: String, by delta: Int) async {
         await perform(.moveBy(identifier: identifier, delta: Int64(delta)))
     }
-    public func moveRefusal(_ identifier: String, toCollectionID collectionID: String) -> String? {
+    public func moveEligibility(_ identifier: String, toCollectionID collectionID: String, parentID: String?) -> MoveEligibility {
         synchronizeWorkspace()
-        return rustOperations.moveRefusal(identifier: identifier, collectionId: collectionID)
+        return rustOperations.moveEligibility(identifier: identifier, collectionId: collectionID, parent: parentID)
     }
-    public func canMoveSidebarItem(_ identifier: String, toCollectionID collectionID: String, parentID: String?) -> Bool {
-        synchronizeWorkspace()
-        return rustOperations.canMoveTo(identifier: identifier, collectionId: collectionID, parent: parentID)
+    public func showMoveRefusal(_ reason: String) {
+        operationFailure = RunFailure(kind: .workspace, issues: [])
+        operationFailureMessage = reason
     }
     public func moveSidebarItem(_ identifier: String, toCollectionID collectionID: String, parentID: String?) async {
         await perform(.moveTo(identifier: identifier, collectionId: collectionID, parentId: parentID))

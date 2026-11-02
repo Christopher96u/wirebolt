@@ -84,26 +84,41 @@ Undo; a queued stale save of a moved or deleted saved request fails.
 
 ## History compatibility
 
-The local history `index.json` is version 2: an object with `version` and `entries`.
-Each new entry carries `identity` (workspace namespace, collection ID and request
-ID). The namespace uses the same canonical-path hash as workspace cookies;
-unsaved workspaces use a per-runtime namespace. Moves and Undo migrate scoped
-entries within the serialized Rust workspace operation and redirect in-flight
-completions to their current collection. Replacement loads reconcile redirects;
-late completions from another workspace are stored without changing the current
-workspace’s history presentation. Body copies are prepared on workers before
-taking presentation locks.
+The local history `index.json` remains a JSON array compatible with rc.1's Swift
+`RunHistoryEntry` decoder. New entries add optional `identity` fields (workspace
+namespace, collection ID and request ID); rc.1 ignores these keys. The short-lived
+version 2 envelope is accepted on read, but every write uses an array. Both damaged
+arrays and damaged or unsupported envelopes are left unchanged, backed up as
+`index.json.backup`, and reported as storage errors. An unreadable index is never
+silently replaced with empty history.
 
-Version 1 was an unversioned array containing only `requestID`. Reading it retains
-all entries; the next write atomically wraps them in the version 2 index. Entries
-with a complete identity retain that key. A requestID-only entry cannot be assigned
-unambiguously: another collection or a copied workspace may contain the same ID,
-even when the currently open workspace has only one match. Such entries keep their
-body files and are available in **History → Unassigned Legacy History** for the
-matching request ID. They are excluded from scoped counts, Clear History and quota
-eviction. No workspace or collection is guessed from the prepared URL. Unsupported or
-damaged versioned indexes are left unchanged and report a storage error. Displayed
-responses own temporary copies, released with their last body handle.
+`workspace_namespace()` derives history's namespace from the canonical workspace
+path, independently of cookie storage layout. Its historical `.json` suffix is
+retained for compatibility. Rust configures it when loading the workspace. The
+workspace without a saved folder uses the stable `unsaved-workspace` namespace.
+Moves and Undo migrate scoped entries within the serialized Rust workspace
+operation and redirect in-flight completions to their current collection.
+Replacement loads reconcile redirects; late completions from another workspace do
+not change the current workspace's history presentation.
+
+At workspace load, a requestID-only entry is attributed to the complete identity
+when that ID matches exactly one request in the loaded workspace, then persisted.
+For example, if only collection `api` contains `health`, its legacy entries become
+`<workspace>/api/health`, reappear in History and sidebar activity, and can restore
+the last response at launch. Loading a copied workspace may attribute legacy
+entries to the copy, preserving the visibility users had before scoped history.
+IDs present in several collections remain reachable under **History → Unassigned
+Legacy History**. Unmatched entries stay stored for a future matching workspace.
+The request's **Clear History** also removes its unassigned legacy ID matches;
+**Settings → Privacy → Clear All History** removes all scoped and legacy entries.
+All entries count toward retention quotas. No identity is inferred from a URL.
+
+Restored responses own temporary body copies independently of history retention.
+Copies are made on workers into paths that do not exist, allowing APFS cloning.
+Releasing the last body handle removes the temporary file and directory. Process
+leases protect another running instance's copies; the next history load cleans up
+unleased directories left after a crash. Index updates finish before evicted bodies
+are removed, so failed writes preserve existing responses.
 
 ## Performance
 

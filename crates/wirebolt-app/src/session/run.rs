@@ -283,6 +283,14 @@ impl DocumentRun {
         self.memory_preview.clone_from(&source.memory_preview);
         self.storage_failed = source.storage_failed;
     }
+    /// Retain on a worker before taking the run lock, so large bodies never block presentation.
+    pub async fn restore_body(run: Arc<Mutex<Self>>, snapshot: SessionRunSnapshot, path: String) {
+        let _ = tokio::task::spawn_blocking(move || {
+            let body = BodyStore::retained(std::path::Path::new(&path)).ok();
+            crate::lock(&run).restore(snapshot, body);
+        })
+        .await;
+    }
     pub fn restore(&mut self, mut snapshot: SessionRunSnapshot, body: Option<BodyStore>) {
         snapshot.active_run_id = None;
         snapshot.started_at = None;

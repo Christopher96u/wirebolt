@@ -578,7 +578,9 @@ fn delete_collection_preserves_unmanaged_and_unreadable_files() {
     assert!(collection.join("requests/notes/readme.txt").is_file());
     assert!(!collection.join("requests/saved.toml").exists());
     assert!(!collection.join("collection.toml").exists());
-    assert!(store.load().unwrap().collections.is_empty());
+    let loaded = store.load().unwrap();
+    assert!(loaded.collections.is_empty());
+    assert!(loaded.problems.is_empty());
 }
 
 #[test]

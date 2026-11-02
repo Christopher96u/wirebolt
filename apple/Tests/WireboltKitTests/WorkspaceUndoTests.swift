@@ -258,13 +258,13 @@ struct WorkspaceUndoTests {
     func moveToValidation() {
         let (model, _, _) = makeModel()
         model.workspace.collections = [nested, CollectionDraft(id: "other", name: "Other")]
-        #expect(!model.canMoveSidebarItem("group|api|parent", toCollectionID: "api", parentID: "grandchild"))
-        #expect(!model.canMoveSidebarItem("group|api|parent", toCollectionID: "other", parentID: nil))
-        #expect(!model.canMoveSidebarItem("group|api|parent", toCollectionID: "api", parentID: nil))
-        #expect(model.canMoveSidebarItem("group|api|grandchild", toCollectionID: "api", parentID: "parent"))
-        #expect(!model.canMoveSidebarItem("request|api|root", toCollectionID: "api", parentID: nil))
-        #expect(model.canMoveSidebarItem("request|api|root", toCollectionID: "other", parentID: nil))
-        #expect(!model.canMoveSidebarItem("request|api|root", toCollectionID: "api", parentID: "missing"))
+        #expect(!model.moveEligibility("group|api|parent", toCollectionID: "api", parentID: "grandchild").isAllowed)
+        #expect(!model.moveEligibility("group|api|parent", toCollectionID: "other", parentID: nil).isAllowed)
+        #expect(!model.moveEligibility("group|api|parent", toCollectionID: "api", parentID: nil).isAllowed)
+        #expect(model.moveEligibility("group|api|grandchild", toCollectionID: "api", parentID: "parent").isAllowed)
+        #expect(!model.moveEligibility("request|api|root", toCollectionID: "api", parentID: nil).isAllowed)
+        #expect(model.moveEligibility("request|api|root", toCollectionID: "other", parentID: nil).isAllowed)
+        #expect(!model.moveEligibility("request|api|root", toCollectionID: "api", parentID: "missing").isAllowed)
     }
 
     @Test("A failed undo reports the failure and clears the stack instead of guessing")
@@ -308,7 +308,7 @@ private actor UndoRecorder: WorkspacePersistence {
     init(fails: Bool = false) { self.fails = fails }
 
     func setFails(_ value: Bool) { fails = value }
-    func load() async throws -> WorkspaceDraft { WorkspaceDraft(name: "Undo") }
+    func loadResult() async throws -> WorkspaceLoadResult {WorkspaceDraft(name: "Undo").loadResult }
     func save(request _: RequestDraft, in _: String) async throws {}
     func save(environment _: EnvironmentDraft) async throws {}
     func saveSecret(name: String, value: String) async throws { secrets[name] = value }

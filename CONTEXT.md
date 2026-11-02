@@ -53,8 +53,15 @@ indexes, not an ever-growing body string. History uses a quota and LRU eviction.
 History identities include the canonical workspace namespace, collection ID and
 request ID; moving a request moves its scoped history, including completions of
 runs already in flight. Request IDs from new imports are UUIDs. Legacy ID
-collisions block moves instead of replacing another request. A displayed historical
-response owns a temporary body independently of history retention.
+collisions block moves instead of replacing another request, with one Rust-owned
+eligibility result and refusal reason. History indexes remain arrays readable by
+rc.1, with optional complete identities. Loading a workspace assigns a legacy
+requestID-only entry when exactly one request in that workspace matches, including
+in a copied workspace. Ambiguous entries remain reachable as Unassigned Legacy
+History; scoped clearing includes matching legacy IDs, global clearing includes
+all entries, and legacy entries count toward quota. Unsaved workspaces use a stable
+namespace across launches. A displayed historical response owns a temporary body
+independently of history retention; crash leftovers are cleaned on the next load.
 The cookie jar applies domain, path, secure, expiry, and SameSite rules within
 its workspace. Runtime storage remains outside Git-visible workspace files.
 

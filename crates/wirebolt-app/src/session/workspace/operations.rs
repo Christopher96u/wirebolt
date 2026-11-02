@@ -164,7 +164,8 @@ impl WorkspaceOperations {
     }
     fn fail_reason(&self, reason: String) {
         self.fail(crate::response::ResponseFailureKind::Workspace);
-        lock(&self.state).presentation.operation_failure_reason = Some(reason);
+        lock(&self.state).presentation.operation_failure_reason =
+            Some(workspace_failure_message(&reason));
     }
     #[must_use]
     pub fn begin_load(&self, configured: bool) -> bool {
@@ -204,12 +205,34 @@ impl WorkspaceOperations {
             select,
         }
     }
-    fn loaded_with_diagnostics(
+    async fn loaded_with_diagnostics(
         &self,
         workspace: DomainWorkspace,
         selected: Option<String>,
         diagnostics: crate::session::persistence::WorkspaceLoadDiagnostics,
+        namespace: String,
     ) -> WorkspaceLoad {
+        let history = lock(&self.history).clone();
+        if let Some(history) = history {
+            let workspace = workspace.clone();
+            match tokio::task::spawn_blocking(move || {
+                history.load_workspace_history(&namespace, &workspace)
+            })
+            .await
+            {
+                Ok(Ok(())) => {}
+                result => {
+                    self.fail(crate::response::ResponseFailureKind::Storage);
+                    let reason = match result {
+                        Ok(Err(error)) => format!("History could not be loaded: {error}"),
+                        _ => {
+                            "History could not be loaded. The index has been left unchanged.".into()
+                        }
+                    };
+                    lock(&self.state).presentation.operation_failure_reason = Some(reason);
+                }
+            }
+        }
         let mut loaded = self.loaded(workspace, selected);
         loaded.diagnostics = diagnostics;
         loaded
@@ -221,28 +244,39 @@ impl WorkspaceOperations {
     ) -> Option<WorkspaceLoad> {
         let _guard = self.edits.lock().await;
         let result = platform.execute(WorkspaceIO::Load).await;
-        let mut state = lock(&self.state);
-        state.presentation.loading = false;
-        if !switching {
-            state.presentation.loaded = true;
-        }
-        if let WorkspaceReply::Loaded {
-            workspace,
-            diagnostics,
-        } = result
         {
-            if switching {
+            let mut state = lock(&self.state);
+            state.presentation.loading = false;
+            if !switching {
+                state.presentation.loaded = true;
+            }
+            if switching && matches!(result, WorkspaceReply::Loaded { .. }) {
                 state.presentation = WorkspacePresentation {
                     loaded: true,
                     ..Default::default()
                 };
                 state.undo.clear();
             }
-            drop(state);
-            Some(self.loaded_with_diagnostics(workspace, None, diagnostics))
+        }
+        if let WorkspaceReply::Loaded {
+            workspace,
+            diagnostics,
+        } = result
+        {
+            if switching && let Some(history) = lock(&self.history).as_ref() {
+                history.reset_workspace();
+            }
+            Some(
+                self.loaded_with_diagnostics(
+                    workspace,
+                    None,
+                    diagnostics,
+                    platform.workspace_namespace(),
+                )
+                .await,
+            )
         } else {
-            state.presentation.operation_failure =
-                Some(crate::response::ResponseFailureKind::Workspace);
+            self.fail(crate::response::ResponseFailureKind::Workspace);
             None
         }
     }
@@ -400,6 +434,33 @@ impl WorkspaceOperations {
         secrets: &SessionSecrets,
         secret_platform: &dyn SessionSecretPlatform,
     ) -> WorkspaceMutation {
+        let eligibility = match &command {
+            WorkspaceAction::MoveTo {
+                identifier,
+                collection_id,
+                parent_id,
+            } => Some(self.move_eligibility(
+                identifier.clone(),
+                collection_id.clone(),
+                parent_id.clone(),
+            )),
+            WorkspaceAction::MoveRequest {
+                from_collection_id,
+                id,
+                to_collection_id,
+                group_id,
+                ..
+            } => Some(self.move_eligibility(
+                format!("request|{from_collection_id}|{id}"),
+                to_collection_id.clone(),
+                group_id.clone(),
+            )),
+            _ => None,
+        };
+        if let Some(actions::MoveEligibility::Refused { reason, .. }) = eligibility {
+            self.fail_reason(reason);
+            return WorkspaceMutation::default();
+        }
         let needs_root = matches!(&command, WorkspaceAction::CreateRequest { collection_id, .. } if collection_id.as_deref().unwrap_or(actions::ROOT_COLLECTION) == actions::ROOT_COLLECTION)
             || matches!(&command, WorkspaceAction::CreateGroup { collection_id, .. } if collection_id == actions::ROOT_COLLECTION);
         let mut root = None;
@@ -552,7 +613,7 @@ impl WorkspaceOperations {
         let failed = outcome.failure_reason.is_some();
         if failed {
             let Some(partial) = self.workspace.partial(plan, outcome.completed) else {
-                self.fail(crate::response::ResponseFailureKind::Workspace);
+                self.fail_reason(outcome.failure_reason.unwrap_or_default());
                 return WorkspaceMutation::default();
             };
             plan = partial;
@@ -613,21 +674,13 @@ impl WorkspaceOperations {
         )
     }
     #[must_use]
-    pub fn move_refusal(&self, identifier: String, collection_id: String) -> Option<String> {
-        actions::move_refusal(
-            &lock(&self.workspace.workspace),
-            &identifier,
-            &collection_id,
-        )
-    }
-    #[must_use]
-    pub fn can_move_to(
+    pub fn move_eligibility(
         &self,
         identifier: String,
         collection_id: String,
         parent: Option<String>,
-    ) -> bool {
-        actions::can_move_to(
+    ) -> actions::MoveEligibility {
+        actions::move_eligibility(
             &lock(&self.workspace.workspace),
             &identifier,
             &collection_id,
@@ -853,7 +906,15 @@ impl WorkspaceOperations {
                     workspace,
                     diagnostics,
                 } => {
-                    loaded = Some(self.loaded_with_diagnostics(workspace, None, diagnostics));
+                    loaded = Some(
+                        self.loaded_with_diagnostics(
+                            workspace,
+                            None,
+                            diagnostics,
+                            persistence.workspace_namespace(),
+                        )
+                        .await,
+                    );
                     self.clear_undo();
                 }
                 _ => {
@@ -932,7 +993,14 @@ impl WorkspaceOperations {
                         .find(|e| workspace.environments.iter().any(|v| v.id == e.id))
                         .map(|e| e.id.clone())
                 });
-            let mut loaded = self.loaded_with_diagnostics(workspace, environment, diagnostics);
+            let mut loaded = self
+                .loaded_with_diagnostics(
+                    workspace,
+                    environment,
+                    diagnostics,
+                    platform.workspace_namespace(),
+                )
+                .await;
             loaded.select = loaded
                 .workspace
                 .collections
@@ -1086,4 +1154,16 @@ impl WorkspaceOperations {
             .first()
             .map(|c| c.id.clone())
     }
+}
+
+fn workspace_failure_message(reason: &str) -> String {
+    if reason.chars().next().is_some_and(char::is_uppercase) {
+        return reason.into();
+    }
+    match reason {
+        "request does not exist" => "The request no longer exists. Reload the workspace before saving.",
+        "collection does not exist" | "parent group does not exist" => "The destination no longer exists. Reload the workspace and try again.",
+        "request could not be deleted" => "The request could not be deleted. Check the workspace folder's permissions and try again.",
+        _ => "The workspace change could not be saved. Check the workspace folder and try again.",
+    }.into()
 }

@@ -26,3 +26,13 @@ pub struct SessionRequestIdentity {
     pub collection_id: String,
     pub request_id: String,
 }
+
+#[uniffi::export]
+pub fn session_request_activity_key(collection_id: String, request_id: String) -> String {
+    SessionRequestIdentity {
+        workspace: String::new(),
+        collection_id,
+        request_id,
+    }
+    .activity_key()
+}

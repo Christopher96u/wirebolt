@@ -199,7 +199,7 @@ async fn latest_restore_checks_membership_after_io_and_rejects_departed_workspac
 }
 
 #[tokio::test]
-async fn corrupt_history_does_not_stop_recording_or_clearing() {
+async fn corrupt_history_does_not_stop_a_run_or_replace_the_index() {
     let root = tempfile::tempdir().unwrap();
     let directory = root.path().join("history");
     std::fs::create_dir(&directory).unwrap();
@@ -218,21 +218,11 @@ async fn corrupt_history_does_not_stop_recording_or_clearing() {
             root.path(),
         ))
         .await;
-    assert_eq!(state.history_count(&key(&state, "health")).unwrap(), 1);
-    assert_eq!(state.snapshot().history_entries.len(), 1);
-    assert_eq!(
-        crate::response::RunHistory::new(directory)
-            .count(&key(&state, "health"))
-            .unwrap(),
-        1
-    );
-    state.clear_history(&key(&state, "health")).unwrap();
-    assert_eq!(state.history_count(&key(&state, "health")).unwrap(), 0);
+    assert!(state.history_count(&key(&state, "health")).is_err());
+    assert!(state.clear_history(&key(&state, "health")).is_err());
+    assert!(state.clear_all_history().is_err());
     assert!(state.snapshot().history_entries.is_empty());
-    assert_eq!(
-        serde_json::from_slice::<serde_json::Value>(&std::fs::read(index).unwrap()).unwrap()["version"],
-        2
-    );
+    assert_eq!(std::fs::read(index).unwrap(), b"corrupt index");
 }
 
 #[tokio::test]
@@ -269,6 +259,9 @@ async fn request_history_does_not_cross_workspace_boundaries() {
     let root = tempfile::tempdir().unwrap();
     let first = state(root.path());
     let second = state(root.path());
+    first.configure_history_workspace(Some(root.path().join("first-workspace").to_str().unwrap()));
+    second
+        .configure_history_workspace(Some(root.path().join("second-workspace").to_str().unwrap()));
     RuntimeRuns::default()
         .send(command(
             first,
@@ -449,4 +442,124 @@ async fn latest_restore_retains_body_before_observer_gate() {
         b"fixture"
     );
     assert!(lock(&run).snapshot().failure.is_none());
+}
+
+#[tokio::test]
+async fn workspace_load_migrates_unique_legacy_history_and_restores_activity_and_response() {
+    let root = tempfile::tempdir().unwrap();
+    let original = state(root.path());
+    for id in ["unique", "ambiguous", "missing"] {
+        RuntimeRuns::default()
+            .send(command(
+                original.clone(),
+                document(id),
+                Arc::new(Mutex::new(DocumentRun::default())),
+                Arc::new(Transport {
+                    body: b"legacy response".to_vec(),
+                    ..Default::default()
+                }),
+                root.path(),
+            ))
+            .await;
+    }
+    let index = root.path().join("history/index.json");
+    let mut entries: Vec<crate::session::history::SessionHistoryEntry> =
+        serde_json::from_slice(&std::fs::read(&index).unwrap()).unwrap();
+    for entry in &mut entries {
+        entry.identity = None;
+    }
+    std::fs::write(&index, serde_json::to_vec(&entries).unwrap()).unwrap();
+    let workspace = DomainWorkspace {
+        collections: [
+            ("api", vec!["unique", "ambiguous"]),
+            ("other", vec!["ambiguous"]),
+        ]
+        .into_iter()
+        .map(|(collection, ids)| DomainCollection {
+            id: collection.into(),
+            requests: ids
+                .into_iter()
+                .map(|id| DomainLocation {
+                    collection_id: collection.into(),
+                    request: DomainRequestDraft {
+                        id: id.into(),
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                })
+                .collect(),
+            ..Default::default()
+        })
+        .collect(),
+        ..Default::default()
+    };
+    let reloaded = state(root.path());
+    reloaded
+        .load_workspace_history("fixture", &workspace)
+        .unwrap();
+    assert_eq!(
+        reloaded.history_count(&key(&reloaded, "unique")).unwrap(),
+        1
+    );
+    assert!(
+        reloaded
+            .snapshot()
+            .request_activity
+            .contains_key("api/unique")
+    );
+    assert_eq!(reloaded.legacy_history("ambiguous").len(), 1);
+    assert_eq!(reloaded.legacy_history("missing").len(), 1);
+    let run = Arc::new(Mutex::new(DocumentRun::default()));
+    reloaded
+        .clone()
+        .restore_latest(key(&reloaded, "unique"), run.clone(), &Changes::default())
+        .await;
+    assert_eq!(lock(&run).snapshot().text, "legacy response");
+    let persisted: Vec<crate::session::history::SessionHistoryEntry> =
+        serde_json::from_slice(&std::fs::read(index).unwrap()).unwrap();
+    assert!(
+        persisted
+            .iter()
+            .find(|entry| entry.request_id == "unique")
+            .unwrap()
+            .identity
+            .is_some()
+    );
+    reloaded
+        .clear_history(&key(&reloaded, "ambiguous"))
+        .unwrap();
+    assert!(reloaded.legacy_history("ambiguous").is_empty());
+    reloaded.clear_all_history().unwrap();
+    assert!(reloaded.legacy_history("missing").is_empty());
+    assert_eq!(
+        reloaded.history_count(&key(&reloaded, "unique")).unwrap(),
+        0
+    );
+}
+
+#[tokio::test]
+async fn unsaved_workspace_history_survives_runtime_recreation() {
+    let root = tempfile::tempdir().unwrap();
+    let original = state(root.path());
+    RuntimeRuns::default()
+        .send(command(
+            original.clone(),
+            document("a"),
+            Arc::new(Mutex::new(DocumentRun::default())),
+            Arc::new(Transport {
+                body: b"unsaved response".to_vec(),
+                ..Default::default()
+            }),
+            root.path(),
+        ))
+        .await;
+    let reloaded = state(root.path());
+    assert_eq!(key(&original, "a"), key(&reloaded, "a"));
+    assert_eq!(reloaded.history_count(&key(&reloaded, "a")).unwrap(), 1);
+    let run = Arc::new(Mutex::new(DocumentRun::default()));
+    reloaded
+        .clone()
+        .restore_latest(key(&reloaded, "a"), run.clone(), &Changes::default())
+        .await;
+    assert_eq!(lock(&run).snapshot().text, "unsaved response");
 }

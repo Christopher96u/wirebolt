@@ -561,15 +561,12 @@ fn move_to_rejects_cycles_other_collections_current_parent_and_missing_parent() 
         ("request|api|root", "api", None),
         ("request|api|root", "api", Some("missing")),
     ] {
-        assert!(!actions::can_move_to(&w, id, c, p));
+        assert!(!actions::move_eligibility(&w, id, c, p).is_allowed());
     }
-    assert!(actions::can_move_to(
-        &w,
-        "group|api|grandchild",
-        "api",
-        Some("parent")
-    ));
-    assert!(actions::can_move_to(&w, "request|api|root", "other", None));
+    assert!(
+        actions::move_eligibility(&w, "group|api|grandchild", "api", Some("parent")).is_allowed()
+    );
+    assert!(actions::move_eligibility(&w, "request|api|root", "other", None).is_allowed());
 }
 #[tokio::test]
 async fn failed_undo_reports_error_and_invalidates_every_token() {

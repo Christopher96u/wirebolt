@@ -206,7 +206,7 @@ pub struct SessionWorkspacePlan {
 fn collection<'a>(workspace: &'a DomainWorkspace, id: &str) -> Option<&'a DomainCollection> {
     workspace.collections.iter().find(|c| c.id == id)
 }
-fn location<'a>(
+pub(crate) fn location<'a>(
     workspace: &'a DomainWorkspace,
     collection_id: &str,
     id: &str,
@@ -569,12 +569,12 @@ pub fn plan_edit(
             group_id,
             order,
         } => {
-            if from_collection_id != to_collection_id
-                && collection(workspace, &to_collection_id)?
-                    .requests
-                    .iter()
-                    .any(|r| r.request.id == id)
-            {
+            if actions::request_move_collision(
+                workspace,
+                &from_collection_id,
+                &id,
+                &to_collection_id,
+            ) {
                 return None;
             }
             let source = location(workspace, &from_collection_id, &id)?.clone();

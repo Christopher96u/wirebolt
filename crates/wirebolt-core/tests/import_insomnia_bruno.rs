@@ -901,7 +901,6 @@ fn insomnia_invalid_graph_is_rejected_without_crash() {
         serde_json::json!([{"_type":"request_group","_id":"a","parentId":"b"},{"_type":"request_group","_id":"b","parentId":"a"}]),
         serde_json::json!([{"_type":"request","_id":"","url":"https://example.com"}]),
         serde_json::json!([{"_type":"request","_id":"r","parentId":"missing","url":"https://example.com"}]),
-        serde_json::json!([{"_type":"request","_id":"r","url":"https://example.com"},{"_type":"request_group","_id":"g","parentId":"r"}]),
     ] {
         let source = serde_json::json!({"__export_format":4,"resources":resources}).to_string();
         assert!(ImportEngine::parse_import(ImportFormat::Insomnia, &source, None).is_err());
@@ -926,5 +925,21 @@ fn insomnia_long_parent_chain_is_bounded() {
         } else {
             assert!(result.is_err());
         }
+    }
+}
+
+#[test]
+fn insomnia_workspace_parent_ids_and_placeholders_remain_compatible() {
+    for parent in [
+        serde_json::Value::Null,
+        serde_json::json!("__WORKSPACE_ID__"),
+        serde_json::json!("external-workspace"),
+    ] {
+        let source = serde_json::json!({"__export_format":4,"resources":[
+            {"_type":"workspace","_id":"wrk","parentId":parent,"name":"API"},
+            {"_type":"request","_id":"r","parentId":"wrk","name":"Get","method":"GET","url":"https://example.com"}
+        ]}).to_string();
+        let parsed = ImportEngine::parse_import(ImportFormat::Insomnia, &source, None).unwrap();
+        assert_eq!(parsed.workspace.collections[0].requests.len(), 1);
     }
 }

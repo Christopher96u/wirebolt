@@ -84,7 +84,7 @@ struct WireboltSettingsView: View {
                 case .general: GeneralSettingsPage(model: model, openWorkspaceSettings: openWorkspaceSettings)
                 case .appearance: AppearanceSettingsView()
                 case .keyboard: KeyboardSettingsPage()
-                case .privacy: PrivacySettingsPage()
+                case .privacy: PrivacySettingsPage(model: model)
                 case .network: EmptyView()
                 }
             }

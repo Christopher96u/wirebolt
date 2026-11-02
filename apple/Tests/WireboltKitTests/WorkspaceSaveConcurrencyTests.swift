@@ -60,7 +60,7 @@ private actor SuspendedWorkspaceSave: WorkspacePersistence {
     private var writing: CheckedContinuation<Void, Never>?
     private(set) var saved: [RequestLocation] = []
     init(fails: Bool = false) { self.fails = fails }
-    func load() async throws -> WorkspaceDraft { WorkspaceDraft(name: "Saves") }
+    func loadResult() async throws -> WorkspaceLoadResult {WorkspaceDraft(name: "Saves").loadResult }
     func save(request _: RequestDraft, in _: String) async throws {}
     func save(environment _: EnvironmentDraft) async throws {}
     func saveSecret(name _: String, value _: String) async throws {}

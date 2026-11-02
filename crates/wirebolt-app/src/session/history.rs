@@ -4,6 +4,9 @@ use super::run::{SessionCompletion, SessionFailure, SessionHead, SessionPrepared
 use crate::response::VIEWPORT_BYTES;
 use serde::{Deserialize, Serialize};
 use std::io::Read;
+
+/// The one workspace without a saved location survives runtime recreation.
+pub const UNSAVED_WORKSPACE_NAMESPACE: &str = "unsaved-workspace";
 /// Complete storage identity. A document/tab ID is not a saved request identity.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct SessionRequestIdentity {

@@ -77,6 +77,8 @@ struct KeyboardSettingsPage: View {
 }
 
 struct PrivacySettingsPage: View {
+    @Bindable var model: WireboltModel
+    @State private var clearingHistory = false
     @State private var showingPolicy = false
     @Environment(\.wireboltTheme) private var theme
 
@@ -92,10 +94,19 @@ struct PrivacySettingsPage: View {
                 SettingsRow(title: "Local data", detail: "Requests and environments stay in your workspace. Secrets stay in this Mac’s Keychain.") {
                     Image(systemName: "lock").foregroundStyle(theme.muted.color).accessibilityHidden(true)
                 }
+                SettingsRow(title: "Response history", detail: "Clear stored responses from every workspace, including unassigned legacy history.") {
+                    Button("Clear All History…", role: .destructive) { clearingHistory = true }
+                }
                 SettingsRow(title: "Privacy policy", detail: "How Wirebolt handles your workspace and connections.", last: true) {
                     Button("Privacy Policy") { showingPolicy = true }
                 }
             }
+        }
+        .alert("Clear All History?", isPresented: $clearingHistory) {
+            Button("Clear All History", role: .destructive) { Task { await model.clearAllHistory() } }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("All stored response history will be deleted. Responses already open in tabs stay available.")
         }
         .sheet(isPresented: $showingPolicy) {
             VStack(alignment: .leading, spacing: WireboltTheme.Spacing.xLarge) {

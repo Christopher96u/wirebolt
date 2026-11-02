@@ -454,15 +454,15 @@ pub struct AppWorkspaceOperations {
 #[uniffi::export]
 impl AppWorkspaceOperations {
     #[uniffi::constructor]
-    pub fn new(workspace: Arc<AppWorkspaceSession>) -> Arc<Self> {
-        Arc::new(Self {
-            inner: wirebolt_app::session::workspace::operations::WorkspaceOperations::new(
-                workspace.inner.clone(),
-            ),
-        })
-    }
-    pub fn connect_history(&self, runtime: Arc<super::runtime::AppSessionRuntime>) {
-        self.inner.connect_history(runtime.state.clone());
+    pub fn new(
+        workspace: Arc<AppWorkspaceSession>,
+        runtime: Arc<super::runtime::AppSessionRuntime>,
+    ) -> Arc<Self> {
+        let inner = wirebolt_app::session::workspace::operations::WorkspaceOperations::new(
+            workspace.inner.clone(),
+        );
+        inner.connect_history(runtime.state.clone());
+        Arc::new(Self { inner })
     }
     pub fn presentation(&self) -> WorkspacePresentation {
         self.inner.presentation()
@@ -495,16 +495,14 @@ impl AppWorkspaceOperations {
         self.inner
             .can_reorder(identifier, target, collection_id, parent)
     }
-    pub fn move_refusal(&self, identifier: String, collection_id: String) -> Option<String> {
-        self.inner.move_refusal(identifier, collection_id)
-    }
-    pub fn can_move_to(
+    pub fn move_eligibility(
         &self,
         identifier: String,
         collection_id: String,
         parent: Option<String>,
-    ) -> bool {
-        self.inner.can_move_to(identifier, collection_id, parent)
+    ) -> wirebolt_app::session::workspace::actions::MoveEligibility {
+        self.inner
+            .move_eligibility(identifier, collection_id, parent)
     }
     pub fn next_order(&self, collection_id: String, parent: Option<String>) -> i64 {
         self.inner.next_order(collection_id, parent)
@@ -895,4 +893,11 @@ pub fn workspace_environment_inspector(
     environments: Vec<DomainEnvironment>,
 ) -> Vec<DomainEnvironment> {
     wirebolt_app::session::workspace::environment::inspector_environments(environments)
+}
+
+use wirebolt_app::session::workspace::actions::MoveEligibility;
+#[uniffi::remote(Enum)]
+pub enum MoveEligibility {
+    Allowed { label: String },
+    Refused { label: String, reason: String },
 }

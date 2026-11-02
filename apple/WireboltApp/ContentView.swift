@@ -1057,14 +1057,26 @@ private struct SidebarReorderDrop: DropDelegate {
         return info.location.y < 12 ? .before : .after
     }
 
-    func validateDrop(info: DropInfo) -> Bool { destination(info) != nil }
+    func validateDrop(info: DropInfo) -> Bool {
+        guard let identifier = interface.sidebarDragIdentifier else { return false }
+        if case .refused = model.moveEligibility(identifier, toCollectionID: target.collection, parentID: target.folder ?? target.parent) { return true }
+        return destination(info) != nil
+    }
     func dropEntered(info: DropInfo) { position = destination(info) }
     func dropExited(info: DropInfo) { position = nil }
     func dropUpdated(info: DropInfo) -> DropProposal? {
         position = destination(info)
-        return DropProposal(operation: position == nil ? .forbidden : .move)
+        return DropProposal(operation: position == nil && !validateDrop(info: info) ? .forbidden : .move)
     }
     func performDrop(info: DropInfo) -> Bool {
+        if let identifier = interface.sidebarDragIdentifier,
+           case .refused(_, let reason) = model.moveEligibility(identifier, toCollectionID: target.collection, parentID: target.folder ?? target.parent),
+           destination(info) == nil {
+            model.showMoveRefusal(reason)
+            position = nil
+            interface.sidebarDragIdentifier = nil
+            return false
+        }
         guard let destination = destination(info), let expected = interface.sidebarDragIdentifier,
               let provider = info.itemProviders(for: [UTType.text]).first else { return false }
         position = nil
@@ -1208,23 +1220,29 @@ private struct SidebarMoveMenu: View {
             ForEach(collections) { collection in
                 if collection.id != collections.first?.id { Divider() }
                 // The root collection has no sidebar header; its items sit at the top level.
-                destination(collection.id == WorkspaceDraft.rootCollectionID ? "Top Level" : collection.name,
-                            collectionID: collection.id, parentID: nil)
+                destination(collectionID: collection.id, parentID: nil)
                 ForEach(collection.folderOutline(), id: \.group.id) { entry in
-                    destination(String(repeating: "    ", count: entry.depth + 1) + entry.group.name,
-                                collectionID: collection.id, parentID: entry.group.id)
+                    destination(collectionID: collection.id, parentID: entry.group.id, depth: entry.depth + 1)
                 }
             }
         }
     }
 
-    private func destination(_ title: String, collectionID: String, parentID: String?) -> some View {
-        Button(title) {
-            Task { await model.moveSidebarItem(identifier, toCollectionID: collectionID, parentID: parentID) }
+    @ViewBuilder
+    private func destination(collectionID: String, parentID: String?, depth: Int = 0) -> some View {
+        switch model.moveEligibility(identifier, toCollectionID: collectionID, parentID: parentID) {
+        case .allowed(let label):
+            Button(String(repeating: "    ", count: depth) + label) {
+                Task { await model.moveSidebarItem(identifier, toCollectionID: collectionID, parentID: parentID) }
+            }
+        case .refused(let label, let reason):
+            Button { model.showMoveRefusal(reason) } label: {
+                Label(String(repeating: "    ", count: depth) + label, systemImage: "exclamationmark.triangle")
+            }
+            Text(reason)
         }
-        .disabled(!model.canMoveSidebarItem(identifier, toCollectionID: collectionID, parentID: parentID))
-        .help(model.moveRefusal(identifier, toCollectionID: collectionID) ?? "Move to this folder")
     }
+
 }
 
 struct InlineSidebarName: View {
@@ -1353,8 +1371,11 @@ private struct SavedCollectionRow: View {
             }
         }
         .dropDestination(for: String.self) { identifiers, _ in
-            guard let identifier = identifiers.first,
-                  model.canMoveSidebarItem(identifier, toCollectionID: collection.id, parentID: nil) else { return false }
+            guard let identifier = identifiers.first else { return false }
+            if case .refused(_, let reason) = model.moveEligibility(identifier, toCollectionID: collection.id, parentID: nil) {
+                model.showMoveRefusal(reason)
+                return false
+            }
             Task { await model.moveSidebarItem(identifier, toCollectionID: collection.id, parentID: nil) }
             return true
         }
@@ -1483,7 +1504,7 @@ private struct SidebarRequestButton: View, @MainActor Equatable {
     private var identifier: String { "request|\(location.collectionID)|\(location.request.id)" }
 
     var body: some View {
-        let activity = model.requestActivity["\(location.collectionID)/\(location.request.id)"]
+        let activity = model.activity(for: location)
         VStack(alignment: .leading, spacing: WireboltTheme.Spacing.xSmall) {
             if theme.density == .comfortable {
                 HStack(spacing: WireboltTheme.Spacing.medium) {
@@ -2714,7 +2735,7 @@ private struct RequestActionsMenu: View {
                         }
                     }
                     Divider()
-                    Button("Clear History…") { isClearing = true }.disabled(entries.isEmpty)
+                    Button("Clear History…") { isClearing = true }.disabled(entries.isEmpty && loaded.legacy.isEmpty)
                 }
             }
         } label: {

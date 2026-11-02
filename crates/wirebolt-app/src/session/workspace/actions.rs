@@ -213,49 +213,77 @@ pub fn can_reorder(
         && siblings.contains(&source)
         && siblings.iter().any(|s| s == target)
 }
-#[must_use]
-pub fn move_refusal(
-    workspace: &DomainWorkspace,
-    identifier: &str,
-    collection_id: &str,
-) -> Option<String> {
-    let (kind, source, id) = parts(identifier)?;
-    (kind == "request" && source != collection_id && collection(workspace, collection_id)?.requests.iter().any(|request| request.request.id == id))
-        .then(|| "A request with the same ID already exists here. Duplicate the source request before moving it.".into())
-}
+pub const MOVE_COLLISION_REASON: &str = "The destination already contains a request with this ID. Duplicate the source request before moving it.";
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum MoveEligibility {
+    Allowed { label: String },
+    Refused { label: String, reason: String },
+}
+impl MoveEligibility {
+    #[must_use]
+    pub fn is_allowed(&self) -> bool {
+        matches!(self, Self::Allowed { .. })
+    }
+}
 #[must_use]
-pub fn can_move_to(
+pub fn request_move_collision(workspace: &DomainWorkspace, from: &str, id: &str, to: &str) -> bool {
+    from != to && location(workspace, to, id).is_some()
+}
+#[must_use]
+pub fn move_eligibility(
     workspace: &DomainWorkspace,
     identifier: &str,
     collection_id: &str,
     parent: Option<&str>,
-) -> bool {
-    let Some((kind, c, id)) = parts(identifier) else {
-        return false;
+) -> MoveEligibility {
+    let destination = collection(workspace, collection_id);
+    let label = parent
+        .and_then(|id| destination?.groups.iter().find(|group| group.id == id))
+        .map_or_else(
+            || {
+                if collection_id == ROOT_COLLECTION {
+                    "Top Level".into()
+                } else {
+                    destination.map_or_else(String::new, |collection| collection.name.clone())
+                }
+            },
+            |group| group.name.clone(),
+        );
+    let refuse = |reason: &str| MoveEligibility::Refused {
+        label: label.clone(),
+        reason: reason.into(),
     };
-    let Some(destination) = collection(workspace, collection_id) else {
-        return false;
+    let Some((kind, source, id)) = parts(identifier) else {
+        return refuse("This item is no longer available.");
     };
-    if parent.is_some_and(|id| !destination.groups.iter().any(|g| g.id == id)) {
-        return false;
+    let Some(destination) = destination else {
+        return refuse("This destination is no longer available.");
+    };
+    if parent.is_some_and(|id| !destination.groups.iter().any(|group| group.id == id)) {
+        return refuse("This folder is no longer available.");
     }
-    match kind {
-        "request" => {
-            move_refusal(workspace, identifier, collection_id).is_none()
-                && location(workspace, c, id).is_some_and(|r| {
-                    r.collection_id != collection_id || r.group_id.as_deref() != parent
-                })
-        }
-        "group" if c == collection_id => destination
+    if kind == "request" && request_move_collision(workspace, source, id, collection_id) {
+        return refuse(MOVE_COLLISION_REASON);
+    }
+    let allowed = match kind {
+        "request" => location(workspace, source, id).is_some_and(|request| {
+            request.collection_id != collection_id || request.group_id.as_deref() != parent
+        }),
+        "group" if source == collection_id => destination
             .groups
             .iter()
-            .find(|g| g.id == id)
-            .is_some_and(|g| {
-                g.parent_id.as_deref() != parent
-                    && !parent.is_some_and(|p| descendants(destination, id).contains(p))
+            .find(|group| group.id == id)
+            .is_some_and(|group| {
+                group.parent_id.as_deref() != parent
+                    && !parent.is_some_and(|parent| descendants(destination, id).contains(parent))
             }),
         _ => false,
+    };
+    if allowed {
+        MoveEligibility::Allowed { label }
+    } else {
+        refuse("This item cannot be moved to this destination.")
     }
 }
 #[must_use]
@@ -557,7 +585,9 @@ pub fn action(workspace: &DomainWorkspace, command: WorkspaceAction) -> Option<N
             collection_id,
             parent_id,
         } => {
-            if !can_move_to(workspace, &identifier, &collection_id, parent_id.as_deref()) {
+            if !move_eligibility(workspace, &identifier, &collection_id, parent_id.as_deref())
+                .is_allowed()
+            {
                 return None;
             }
             let (kind, c, id) = parts(&identifier)?;

@@ -1067,7 +1067,7 @@ private actor RoutedRunner: RequestRunner {
 private struct StubPersistence: WorkspacePersistence {
     let workspace: WorkspaceDraft
 
-    func load() async throws -> WorkspaceDraft { workspace }
+    func loadResult() async throws -> WorkspaceLoadResult {workspace.loadResult }
     func save(request _: RequestDraft, in _: String) async throws {}
     func save(environment _: EnvironmentDraft) async throws {}
     func saveSecret(name _: String, value _: String) async throws {}
@@ -1076,9 +1076,7 @@ private struct StubPersistence: WorkspacePersistence {
 private actor PersistenceRecorder: WorkspacePersistence {
     var savedRequest: (RequestDraft, String)?
 
-    func load() async throws -> WorkspaceDraft {
-        WorkspaceDraft(name: "Demo")
-    }
+    func loadResult() async throws -> WorkspaceLoadResult {WorkspaceDraft(name: "Demo").loadResult }
 
     func save(request: RequestDraft, in collectionID: String) async throws {
         savedRequest = (request, collectionID)
@@ -1091,7 +1089,7 @@ private actor PersistenceRecorder: WorkspacePersistence {
 private actor SecretPersistenceRecorder: WorkspacePersistence {
     private(set) var savedSecret: (String, String)?
 
-    func load() async throws -> WorkspaceDraft { WorkspaceDraft(name: "OAuth") }
+    func loadResult() async throws -> WorkspaceLoadResult {WorkspaceDraft(name: "OAuth").loadResult }
     func save(request _: RequestDraft, in _: String) async throws {}
     func save(environment _: EnvironmentDraft) async throws {}
     func saveSecret(name: String, value: String) async throws { savedSecret = (name, value) }
@@ -1117,11 +1115,11 @@ private actor SequencedPersistence: WorkspacePersistence {
         self.workspaces = workspaces
     }
 
-    func load() async throws -> WorkspaceDraft {
+    func loadResult() async throws -> WorkspaceLoadResult {
         if workspaces.count > 1 {
-            return workspaces.removeFirst()
+            return workspaces.removeFirst().loadResult
         }
-        return workspaces[0]
+        return workspaces[0].loadResult
     }
 
     func save(request _: RequestDraft, in _: String) async throws {}
@@ -1135,9 +1133,9 @@ private actor MutationRecorder: WorkspacePersistence {
     private(set) var commands: [SessionWorkspaceCommand] = []
     private(set) var loadCount = 0
 
-    func load() async throws -> WorkspaceDraft {
+    func loadResult() async throws -> WorkspaceLoadResult {
         loadCount += 1
-        return WorkspaceDraft(name: "Mutations")
+        return WorkspaceDraft(name: "Mutations").loadResult
     }
 
     func save(request _: RequestDraft, in _: String) async throws {}
@@ -1195,7 +1193,7 @@ private extension GitStatusSnapshot {
 }
 
 private struct UnreadableWorkspace: WorkspacePersistence {
-    func load() async throws -> WorkspaceDraft { throw RunFailure(kind: .workspace, issues: []) }
+    func loadResult() async throws -> WorkspaceLoadResult { throw RunFailure(kind: .workspace, issues: []) }
     func save(request: RequestDraft, in collectionID: String) async throws {}
     func save(environment: EnvironmentDraft) async throws {}
     func saveSecret(name: String, value: String) async throws {}
@@ -1203,7 +1201,7 @@ private struct UnreadableWorkspace: WorkspacePersistence {
 
 private actor PausedSecretPersistence: WorkspacePersistence {
     private var pending: CheckedContinuation<Void, Never>?
-    func load() async throws -> WorkspaceDraft { WorkspaceDraft(name: "Fixture") }
+    func loadResult() async throws -> WorkspaceLoadResult {WorkspaceDraft(name: "Fixture").loadResult }
     func save(request: RequestDraft, in collectionID: String) async throws {}
     func save(environment: EnvironmentDraft) async throws {}
     func saveSecret(name: String, value: String) async throws {

@@ -30,7 +30,8 @@ const COLLECTION_FILE: &str = "collection.toml";
 const REQUESTS_DIRECTORY: &str = "requests";
 const ENVIRONMENTS_DIRECTORY: &str = "environments";
 const DOCUMENT_EXTENSION: &str = ".toml";
-const MAX_DOCUMENT_BYTES: u64 = 16 * 1024 * 1024;
+pub const MAX_DOCUMENT_BYTES: u64 = 16 * 1024 * 1024;
+pub const DOCUMENT_LIMIT_LABEL: &str = "16 MiB";
 
 /// Whether a workspace-relative path (with `/` separators) names a document
 /// Wirebolt itself writes: the manifest, a collection manifest, a request,
@@ -430,17 +431,9 @@ impl WorkspaceStore {
         drop(file);
         let result = (|| {
             write_document(&temporary, request, Durability::Fast)?;
-            // A link creates the destination atomically and fails if any file is
-            // already there, including one created since the move was planned.
-            fs::hard_link(&temporary, &destination).map_err(|source| {
-                if source.kind() == io::ErrorKind::AlreadyExists {
-                    StorageError::AlreadyExists {
-                        path: destination.clone(),
-                    }
-                } else {
-                    StorageError::io("create move destination", &destination, source)
-                }
-            })?;
+            // No hard links or platform-only syscalls: exclusive creation works
+            // on APFS, exFAT/FAT and network volumes, and never replaces a file.
+            exclusive_copy(&temporary, &destination)?;
             if let Err(error) = self.delete_request(from, &request.id) {
                 fs::remove_file(&destination).map_err(|source| {
                     StorageError::io("roll back move destination", &destination, source)
@@ -528,6 +521,13 @@ impl WorkspaceStore {
 
         let mut collections = Vec::new();
         for directory in child_directories(&self.collections_path())? {
+            // A deleted collection may retain attachments or unreadable documents.
+            // Only the absence of a manifest means this is not a collection.
+            if fs::symlink_metadata(directory.join(COLLECTION_FILE))
+                .is_err_and(|error| error.kind() == io::ErrorKind::NotFound)
+            {
+                continue;
+            }
             match self.load_collection(&directory, &mut migrations, &mut problems) {
                 Ok(snapshot) => collections.push(snapshot),
                 Err(error) => problems.push(DocumentProblem::new(&self.root, &error)),
@@ -1024,6 +1024,37 @@ fn atomic_write_if_changed(
     })
 }
 
+fn exclusive_copy(source: &Path, destination: &Path) -> Result<(), StorageError> {
+    let mut output = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(destination)
+        .map_err(|source| {
+            if source.kind() == io::ErrorKind::AlreadyExists {
+                StorageError::AlreadyExists {
+                    path: destination.to_owned(),
+                }
+            } else {
+                StorageError::io("create move destination", destination, source)
+            }
+        })?;
+    let result = (|| {
+        let mut input = fs::File::open(source)?;
+        io::copy(&mut input, &mut output)?;
+        output.sync_all()
+    })();
+    if let Err(source) = result {
+        drop(output);
+        let _ = fs::remove_file(destination);
+        return Err(StorageError::io(
+            "copy move destination",
+            destination,
+            source,
+        ));
+    }
+    Ok(())
+}
+
 /// Renames to sibling temporary files first, rolling back if any rename fails.
 /// Once all documents are staged, deletion has committed; leftover hidden files
 /// from a cleanup failure remain recoverable and are never loaded as documents.
@@ -1251,5 +1282,28 @@ mod tests {
         ] {
             assert!(!is_managed_document_path(unmanaged), "{unmanaged}");
         }
+    }
+}
+
+#[cfg(test)]
+mod exclusive_move_tests {
+    use super::*;
+    #[test]
+    fn exclusive_copy_fallback_preserves_collisions_and_cleans_failed_copies() {
+        let root = tempfile::tempdir().unwrap();
+        let source = root.path().join("source");
+        let destination = root.path().join("destination");
+        fs::write(&source, b"source").unwrap();
+        exclusive_copy(&source, &destination).unwrap();
+        assert_eq!(fs::read(&destination).unwrap(), b"source");
+        fs::write(&destination, b"existing").unwrap();
+        assert!(matches!(
+            exclusive_copy(&source, &destination),
+            Err(StorageError::AlreadyExists { .. })
+        ));
+        assert_eq!(fs::read(&destination).unwrap(), b"existing");
+        fs::remove_file(&destination).unwrap();
+        assert!(exclusive_copy(&root.path().join("missing"), &destination).is_err());
+        assert!(!destination.exists());
     }
 }

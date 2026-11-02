@@ -46,18 +46,18 @@ enum BridgeSmoke {
             )
             _ = try bridge.applySessionCommand(command: .createCollection(collection: CollectionDraft(id: "custom", name: "Custom").domain))
             let persistence = try RustWorkspacePersistence(path: temporaryWorkspace, mode: .open)
-            let workspace = try await persistence.load()
+            let workspace = WorkspaceDraft(domain: try await persistence.loadResult().workspace)
             guard workspace.collections.map(\.id) == ["custom"] else {
                 fatalError("opening a workspace mutated its collections")
             }
             let proxy = ProxyDocument.manual(routes: [ProxyRouteDocument(destination: .all, endpoint: "http://localhost:8080")])
             _ = try await persistence.apply(.saveWorkspaceProxy(proxy: proxy))
-            let withProxy = try await persistence.load()
+            let withProxy = WorkspaceDraft(domain: try await persistence.loadResult().workspace)
             let normalizedProxy = try ProxyFormDraft(configuration: withProxy.proxy).document()
             precondition(normalizedProxy == proxy, "workspace proxy must cross the Swift/Rust persistence bridge")
             let request = RequestDraft(id: "proxy-request", name: "Proxy override", url: "http://localhost:18765/json", note: "# Markdown\n\n**Bold** and `code`\n\n- café 🚀", proxy: .direct)
             try await persistence.save(request: request, in: "custom")
-            let savedRequest = try await persistence.load().collections[0].requests[0].request
+            let savedRequest = WorkspaceDraft(domain: try await persistence.loadResult().workspace).collections[0].requests[0].request
             precondition(savedRequest.note == request.note, "Markdown source must survive TOML round-trip unchanged")
             precondition(savedRequest.proxy == .direct, "request override must survive disk round-trip")
             _ = try await persistence.apply(.createGroup(collectionId: "custom", group: GroupDraft(id: "folder", name: "Folder").domain))
@@ -66,11 +66,20 @@ enum BridgeSmoke {
             _ = try await persistence.apply(.reorderChildren(collectionId: "custom", parentId: nil,
                 items: ["request:second", "group:folder", "request:proxy-request"]))
             let reopened = try RustWorkspacePersistence(path: temporaryWorkspace, mode: .open)
-            let reordered = try await reopened.load()
+            let reordered = WorkspaceDraft(domain: try await reopened.loadResult().workspace)
             precondition(reordered.collections[0].orderedChildren(parentID: nil) == ["request:second", "group:folder", "request:proxy-request"], "mixed sibling order must survive reopening through Swift/Rust")
             _ = try await persistence.apply(.saveWorkspaceProxy(proxy: nil))
-            let inherited = try await persistence.load()
+            let inherited = WorkspaceDraft(domain: try await persistence.loadResult().workspace)
             precondition(inherited.proxy == nil, "resetting workspace proxy must restore inheritance")
+            let broken = temporaryWorkspace.appending(path: "collections/custom/requests/broken.toml")
+            try Data(#"name = "private-fixture"#.utf8).write(to: broken)
+            let partial = try await persistence.loadResult()
+            precondition(partial.diagnostics.problems.count == 1)
+            precondition(partial.diagnostics.problems[0].kind == .invalidToml)
+            precondition(partial.diagnostics.notice?.contains("broken.toml") == true)
+            precondition(partial.diagnostics.notice?.contains("private-fixture") == false)
+            precondition(partial.workspace.collections[0].requests.count == 2)
+            try FileManager.default.removeItem(at: broken)
             await verifyWorkspaceOperations(persistence)
 
         } catch {

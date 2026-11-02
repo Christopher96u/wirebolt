@@ -47,12 +47,12 @@ pub use request_pipeline::{
     encode_query_component,
 };
 pub use storage::{
-    ApiKeyPlacement, CURRENT_SCHEMA_VERSION, Collection, CollectionSnapshot, DocumentId,
-    DocumentProblem, DocumentProblemKind, Environment, EnvironmentVariable, Group, IdentifierError,
-    MigrationReport, MultipartPart, MultipartPartKind, Oauth2Configuration, Oauth2Grant, Request,
-    RequestAuthentication, RequestBody, RequestHeader, RequestValueField, SaveOutcome, SecretName,
-    StorageError, TransportSettings, ValueSource, Workspace, WorkspaceDocument, WorkspaceSnapshot,
-    WorkspaceStore,
+    ApiKeyPlacement, CURRENT_SCHEMA_VERSION, Collection, CollectionSnapshot, DOCUMENT_LIMIT_LABEL,
+    DocumentId, DocumentProblem, DocumentProblemKind, Environment, EnvironmentVariable, Group,
+    IdentifierError, MAX_DOCUMENT_BYTES, MigrationReport, MultipartPart, MultipartPartKind,
+    Oauth2Configuration, Oauth2Grant, Request, RequestAuthentication, RequestBody, RequestHeader,
+    RequestValueField, SaveOutcome, SecretName, StorageError, TransportSettings, ValueSource,
+    Workspace, WorkspaceDocument, WorkspaceSnapshot, WorkspaceStore,
 };
 
 pub const STREAM_ABI_VERSION: u32 = 5;

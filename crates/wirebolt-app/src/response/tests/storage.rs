@@ -363,78 +363,48 @@ fn cookie_dates_preserve_pre_epoch_expiry_two_digit_years_and_named_timezones() 
 }
 
 #[test]
-fn corrupt_history_loads_empty_and_next_write_repairs_the_index() {
-    let root = tempfile::tempdir().unwrap();
-    let index = root.path().join("index.json");
-    let original = br#"[{"id":"broken","requestID":"health","prepared":false}]"#;
-    std::fs::write(&index, original).unwrap();
-    let mut history = RunHistory::new(root.path().into());
-    assert!(history.list(&identity("health")).unwrap().is_empty());
-    assert_eq!(history.count(&identity("health")).unwrap(), 0);
-    assert_eq!(std::fs::read(&index).unwrap(), original);
-    history.clear(&identity("health")).unwrap();
-    assert_eq!(
-        serde_json::from_slice::<serde_json::Value>(&std::fs::read(&index).unwrap()).unwrap(),
-        serde_json::json!({"version":2,"entries":[]})
-    );
-
-    std::fs::write(&index, original).unwrap();
-    let mut history = RunHistory::new(root.path().into());
-    let source = r#"{"id":"new-run","requestID":"health","createdAt":42,"prepared":{"proxy":null,"method":"GET","url":"https://example.com","headers":[],"body":{"byte_count":0,"content_type":null,"text_preview":null,"redacted":false},"transport":{"validate_tls":true,"follow_redirects":true,"maximum_redirects":10,"total_timeout_ms":0,"read_timeout_ms":0,"client_certificate_reference":null,"custom_ca_path":null}},"bodyPath":""}"#;
-    let mut body = BodyStore::new("source", root.path()).unwrap();
-    body.append(b"saved response").unwrap();
-    body.finish().unwrap();
-    history
-        .record(
-            {
-                let mut entry: HistoryEntry = serde_json::from_str(source).unwrap();
-                entry.identity = Some(identity("health"));
-                entry
-            },
-            &body,
-        )
-        .unwrap();
-    let entries = RunHistory::new(root.path().into())
-        .list(&identity("health"))
-        .unwrap();
-    assert_eq!(entries.len(), 1);
-    assert_eq!(entries[0].id, "new-run");
-    assert_eq!(
-        std::fs::read(&entries[0].body_path).unwrap(),
-        b"saved response"
-    );
+fn damaged_history_arrays_and_objects_are_backed_up_and_never_overwritten() {
+    for original in [
+        br#"[{"id":"broken","requestID":"health","prepared":false}]"#.as_slice(),
+        br#"{"version":2,"entries":[{"id":"broken"}]}"#,
+        b"invalid JSON",
+    ] {
+        let root = tempfile::tempdir().unwrap();
+        let index = root.path().join("index.json");
+        std::fs::write(&index, original).unwrap();
+        let mut history = RunHistory::new(root.path().into());
+        assert!(history.list(&identity("health")).is_err());
+        assert!(history.clear(&identity("health")).is_err());
+        assert!(history.clear_all().is_err());
+        let mut body = BodyStore::new("source", root.path()).unwrap();
+        body.finish().unwrap();
+        assert!(
+            history
+                .record(
+                    history_fixture("new", Some(identity("health")), String::new()),
+                    &body
+                )
+                .is_err()
+        );
+        assert_eq!(std::fs::read(&index).unwrap(), original);
+        assert_eq!(
+            std::fs::read(root.path().join("index.json.backup")).unwrap(),
+            original
+        );
+        assert!(!root.path().join("new.body").exists());
+    }
 }
 
 #[test]
-fn failed_body_export_does_not_load_or_cache_an_unreadable_index() {
-    let root = tempfile::tempdir().unwrap();
-    let index = root.path().join("index.json");
-    std::fs::write(&index, b"corrupt index").unwrap();
-    let source = r#"{"id":"saved","requestID":"health","createdAt":42,"prepared":{"proxy":null,"method":"GET","url":"https://example.com","headers":[],"body":{"byte_count":0,"content_type":null,"text_preview":null,"redacted":false},"transport":{"validate_tls":true,"follow_redirects":true,"maximum_redirects":10,"total_timeout_ms":0,"read_timeout_ms":0,"client_certificate_reference":null,"custom_ca_path":null}},"bodyPath":""}"#;
-    let mut saved: HistoryEntry = serde_json::from_str(source).unwrap();
-    saved.identity = Some(identity("health"));
-    let mut history = RunHistory::new(root.path().into());
-    let mut body = BodyStore::new("source", root.path()).unwrap();
-    body.finish().unwrap();
-    std::fs::remove_file(body.path()).unwrap();
-    assert!(history.record(saved.clone(), &body).is_err());
-    std::fs::write(&index, serde_json::to_vec(&vec![saved.clone()]).unwrap()).unwrap();
-    assert_eq!(history.list(&identity("health")).unwrap(), vec![saved]);
-}
-
-#[test]
-fn unreadable_history_index_is_cached_as_empty() {
+fn unreadable_history_index_remains_an_error_for_this_repository() {
     let root = tempfile::tempdir().unwrap();
     let index = root.path().join("index.json");
     std::fs::create_dir(&index).unwrap();
     let mut history = RunHistory::new(root.path().into());
-    assert_eq!(history.count(&identity("health")).unwrap(), 0);
+    assert!(history.count(&identity("health")).is_err());
     std::fs::remove_dir(&index).unwrap();
-    history.clear(&identity("health")).unwrap();
-    assert_eq!(
-        serde_json::from_slice::<serde_json::Value>(&std::fs::read(&index).unwrap()).unwrap(),
-        serde_json::json!({"version":2,"entries":[]})
-    );
+    assert!(history.clear_all().is_err());
+    assert!(!index.exists());
 }
 
 #[test]
@@ -615,15 +585,10 @@ fn history_migration_preserves_scoped_and_ambiguous_legacy_entries() {
     let mut reloaded = RunHistory::new(root.path().into());
     assert!(reloaded.list(&key).unwrap().is_empty());
     let legacy = reloaded.legacy_list("same").unwrap();
-    assert_eq!(legacy.len(), 2);
-    assert!(
-        legacy
-            .iter()
-            .all(|entry| std::path::Path::new(&entry.body_path).exists())
-    );
+    assert!(legacy.is_empty());
     let index: serde_json::Value =
         serde_json::from_slice(&std::fs::read(root.path().join("index.json")).unwrap()).unwrap();
-    assert_eq!(index["version"], 2);
+    assert_eq!(index, serde_json::json!([]));
 }
 
 #[test]
@@ -647,4 +612,89 @@ fn unsupported_history_index_is_preserved() {
     );
     assert!(!root.path().join("new.body").exists());
     assert_eq!(std::fs::read(path).unwrap(), original);
+}
+
+#[test]
+fn previous_v2_history_reads_then_writes_an_rc1_array() {
+    let root = tempfile::tempdir().unwrap();
+    let legacy = history_fixture("legacy", None, String::new());
+    std::fs::write(
+        root.path().join("index.json"),
+        serde_json::to_vec(&serde_json::json!({"version":2,"entries":[legacy]})).unwrap(),
+    )
+    .unwrap();
+    let mut history = RunHistory::new(root.path().into());
+    assert_eq!(history.legacy_list("same").unwrap().len(), 1);
+    let mut body = BodyStore::new("new", root.path()).unwrap();
+    body.append(b"fixture").unwrap();
+    body.finish().unwrap();
+    history
+        .record(
+            history_fixture("new", Some(identity("same")), String::new()),
+            &body,
+        )
+        .unwrap();
+    let entries: Vec<HistoryEntry> =
+        serde_json::from_slice(&std::fs::read(root.path().join("index.json")).unwrap()).unwrap();
+    assert_eq!(entries.len(), 2);
+}
+
+#[test]
+fn export_uses_umask_and_preserves_existing_permissions() {
+    use std::os::unix::fs::{MetadataExt, PermissionsExt};
+    let root = tempfile::tempdir().unwrap();
+    let normal = root.path().join("normal");
+    std::fs::write(&normal, b"normal").unwrap();
+    let mut body = BodyStore::new("source", root.path()).unwrap();
+    body.append(b"exported").unwrap();
+    body.finish().unwrap();
+    let destination = root.path().join("export");
+    body.export(&destination).unwrap();
+    assert_eq!(
+        std::fs::metadata(&destination).unwrap().mode() & 0o777,
+        std::fs::metadata(normal).unwrap().mode() & 0o777
+    );
+    std::fs::set_permissions(&destination, std::fs::Permissions::from_mode(0o640)).unwrap();
+    body.export(&destination).unwrap();
+    assert_eq!(
+        std::fs::metadata(&destination).unwrap().mode() & 0o777,
+        0o640
+    );
+    assert_eq!(std::fs::read(destination).unwrap(), b"exported");
+}
+
+#[test]
+fn retained_body_clone_cost_and_release() {
+    use std::io::Write;
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("large.body");
+    let mut file = std::fs::File::create(&path).unwrap();
+    let chunk = vec![b'x'; 1024 * 1024];
+    for _ in 0..300 {
+        file.write_all(&chunk).unwrap();
+    }
+    file.sync_all().unwrap();
+    // Measure per-tab retention after the process lease has been initialized.
+    drop(BodyStore::retained(&path).unwrap());
+    let start = std::time::Instant::now();
+    let retained = BodyStore::retained(&path).unwrap();
+    let clone_ms = start.elapsed().as_secs_f64() * 1000.0;
+    let retained_path = retained.path();
+    let retained_directory = retained_path.parent().unwrap().to_owned();
+    assert_eq!(retained.size(), 300 * 1024 * 1024);
+    assert_eq!(retained.viewport(0, 1).unwrap(), b"x");
+    // An existing destination forces the previous streaming-copy behavior.
+    let existing = root.path().join("existing.body");
+    std::fs::File::create(&existing).unwrap();
+    let start = std::time::Instant::now();
+    std::fs::copy(&path, &existing).unwrap();
+    let copy_ms = start.elapsed().as_secs_f64() * 1000.0;
+    println!(
+        "retained_body_300_mib clone_ms={clone_ms:.3} existing_destination_copy_ms={copy_ms:.3}"
+    );
+    std::fs::remove_file(path).unwrap();
+    assert_eq!(retained.viewport(0, 1).unwrap(), b"x");
+    drop(retained);
+    assert!(!retained_path.exists());
+    assert!(!retained_directory.exists());
 }

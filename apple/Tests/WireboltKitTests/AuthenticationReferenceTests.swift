@@ -92,7 +92,7 @@ actor KeychainRecorder: WorkspacePersistence {
         saved = keychain
     }
 
-    func load() async throws -> WorkspaceDraft { workspace }
+    func loadResult() async throws -> WorkspaceLoadResult {workspace.loadResult }
     func save(request _: RequestDraft, in _: String) async throws {}
     func save(environment: EnvironmentDraft) async throws { environments.append(environment) }
     func readSecret(name: String) async throws -> String? { saved[name] }

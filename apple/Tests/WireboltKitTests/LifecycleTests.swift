@@ -188,7 +188,6 @@ private struct LayoutPersistence: WorkspacePersistence {
     let workspace: WorkspaceDraft
     var diagnostics = WorkspaceLoadDiagnostics(problems: [], omitted: 0, notice: nil)
     func loadResult() async throws -> WorkspaceLoadResult { WorkspaceLoadResult(workspace: workspace.domain, diagnostics: diagnostics) }
-    func load() async throws -> WorkspaceDraft { workspace }
     func save(request _: RequestDraft, in _: String) async throws {}
     func save(environment _: EnvironmentDraft) async throws {}
     func saveSecret(name _: String, value _: String) async throws {}
@@ -200,7 +199,7 @@ private actor SaveRecorder: WorkspacePersistence {
 
     init(fails: Bool = false) { self.fails = fails }
 
-    func load() async throws -> WorkspaceDraft { WorkspaceDraft(name: "Saves") }
+    func loadResult() async throws -> WorkspaceLoadResult {WorkspaceDraft(name: "Saves").loadResult }
     func save(request _: RequestDraft, in _: String) async throws {}
     func save(environment _: EnvironmentDraft) async throws {}
     func saveSecret(name _: String, value _: String) async throws {}

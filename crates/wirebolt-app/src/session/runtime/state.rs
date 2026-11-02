@@ -56,21 +56,62 @@ impl RuntimeState {
             selected: Mutex::default(),
             generation: AtomicU64::new(0),
             history_context: Mutex::new(HistoryContext {
-                workspace: format!("session:{}", crate::domain::identity::unique_id()),
+                workspace: super::super::history::UNSAVED_WORKSPACE_NAMESPACE.into(),
                 moves: HashMap::new(),
             }),
         }
     }
     pub fn configure_history_workspace(&self, path: Option<&str>) {
-        lock(&self.history_context).moves.clear();
-        let Some(path) = path else {
-            lock(&self.history_context).workspace =
-                format!("session:{}", crate::domain::identity::unique_id());
-            return;
-        };
-        // Reuse the canonical workspace namespace used for local cookie storage.
-        let key = cookie_storage_path(Path::new(path), Path::new(""));
-        lock(&self.history_context).workspace = key.to_string_lossy().into_owned();
+        self.set_history_namespace(path.map_or_else(
+            || super::super::history::UNSAVED_WORKSPACE_NAMESPACE.into(),
+            |path| crate::response::workspace_namespace(Path::new(path)),
+        ));
+    }
+    fn set_history_namespace(&self, namespace: String) {
+        let mut context = lock(&self.history_context);
+        if context.workspace != namespace {
+            context.workspace = namespace;
+            self.generation.fetch_add(1, Ordering::AcqRel);
+        }
+    }
+    /// # Errors
+    /// Reports damaged indexes and failed legacy migrations without replacing them.
+    pub fn load_workspace_history(
+        &self,
+        namespace: &str,
+        workspace: &crate::domain::DomainWorkspace,
+    ) -> crate::response::ResponseResult<()> {
+        let mut history = lock(&self.history);
+        self.set_history_namespace(namespace.to_owned());
+        {
+            let mut state = lock(&self.snapshot);
+            state.history_entries.clear();
+            state.request_activity.clear();
+            state.history_revision += 1;
+        }
+        history.migrate_legacy(namespace, workspace)?;
+        let entries = history.workspace_entries(namespace)?;
+        let mut state = lock(&self.snapshot);
+        state.history_entries.clear();
+        state.request_activity.clear();
+        for entry in entries {
+            let Some(identity) = entry.identity else {
+                continue;
+            };
+            let activity = RequestActivity {
+                date: entry.created_at,
+                status: entry.response_head.map(|head| head.status),
+            };
+            let previous = state
+                .request_activity
+                .entry(identity.activity_key())
+                .or_insert(activity.clone());
+            if previous.date < activity.date {
+                *previous = activity;
+            }
+        }
+        state.history_revision += 1;
+        Ok(())
     }
     #[must_use]
     pub fn request_identity(
@@ -93,14 +134,15 @@ impl RuntimeState {
     }
     pub fn reconcile_history(&self, workspace: &crate::domain::DomainWorkspace) {
         let mut context = lock(&self.history_context);
+        let namespace = context.workspace.clone();
         context.moves.retain(|from, _| {
-            !workspace.collections.iter().any(|collection| {
-                collection.id == from.collection_id
-                    && collection
-                        .requests
-                        .iter()
-                        .any(|location| location.request.id == from.request_id)
-            })
+            from.workspace != namespace
+                || crate::session::workspace::location(
+                    workspace,
+                    &from.collection_id,
+                    &from.request_id,
+                )
+                .is_none()
         });
     }
     /// # Errors
@@ -238,6 +280,16 @@ impl RuntimeState {
         state.history_revision += 1;
         Ok(())
     }
+    /// # Errors
+    /// Returns a storage error without replacing a damaged index.
+    pub fn clear_all_history(&self) -> crate::response::ResponseResult<()> {
+        lock(&self.history).clear_all()?;
+        let mut state = lock(&self.snapshot);
+        state.history_entries.clear();
+        state.request_activity.clear();
+        state.history_revision += 1;
+        Ok(())
+    }
     pub fn record(
         &self,
         id: &SessionRequestIdentity,
@@ -287,7 +339,6 @@ impl RuntimeState {
     }
     pub fn reset_workspace(&self) {
         self.select_environment(None);
-        lock(&self.history_context).moves.clear();
         let mut state = lock(&self.snapshot);
         self.generation.fetch_add(1, Ordering::AcqRel);
         state.history_entries.clear();

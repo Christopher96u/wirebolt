@@ -1038,7 +1038,7 @@ pub fn domain_curl_value_sources(draft: DomainRequestDraft) -> Vec<DomainValueSo
 }
 #[uniffi::export]
 impl WorkspaceBridge {
-    /// Loads typed application records without a JSON round trip through Swift.
+    /// Loads readable application records with bounded diagnostics for skipped files.
     ///
     /// # Errors
     /// Returns an error if the workspace cannot be read or projected.
@@ -1048,6 +1048,7 @@ impl WorkspaceBridge {
     {
         self.inner.load_result()
     }
+    /// Loads typed application records without a JSON round trip through Swift.
     /// # Errors
     /// Returns an error if the workspace cannot be read or projected.
     pub fn domain_snapshot(&self) -> Result<DomainWorkspace, crate::WorkspaceBridgeError> {

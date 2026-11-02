@@ -101,9 +101,10 @@ impl WorkspaceLoadDiagnostics {
                     WorkspaceDocumentProblemKind::InvalidToml => "Invalid TOML",
                     WorkspaceDocumentProblemKind::InvalidDocument => "Invalid document",
                     WorkspaceDocumentProblemKind::UnsupportedSchema => "Newer document version",
-                    WorkspaceDocumentProblemKind::DocumentTooLarge => {
-                        "Exceeds the 16 MiB document limit"
-                    }
+                    WorkspaceDocumentProblemKind::DocumentTooLarge => &format!(
+                        "Exceeds the {} document limit",
+                        wirebolt_core::DOCUMENT_LIMIT_LABEL
+                    ),
                     WorkspaceDocumentProblemKind::Io => "Could not read file",
                 };
                 WorkspaceLoadProblem {
@@ -833,10 +834,10 @@ impl SessionPersistence {
                         collection_id: document_id(collection_id.clone())?,
                         request,
                     })
-                    .map_err(|error| WorkspaceError::operation(match error {
-                        wirebolt_core::StorageError::DocumentTooLarge {..} => "This request exceeds the 16 MiB document limit. Reduce its body or notes, or attach a body file.",
-                        _ => "The request could not be saved.",
-                    }))?;
+                    .map_err(|error| match error {
+                        wirebolt_core::StorageError::DocumentTooLarge {..} => WorkspaceError::operation(&format!("This request exceeds the {} document limit. Reduce its body or notes, or attach a body file.", wirebolt_core::DOCUMENT_LIMIT_LABEL)),
+                        _ => WorkspaceError::operation("The request could not be saved."),
+                    })?;
                 Ok((SessionWorkspaceNodeKind::Request, vec![collection_id, id]))
             }
             super::workspace::SessionWorkspaceCommand::DeleteRequest { collection_id, id } => {
@@ -887,10 +888,16 @@ impl SessionPersistence {
                         &destination,
                         &request,
                     )
-                    .map_err(|error| WorkspaceError::operation(match error {
-                        wirebolt_core::StorageError::AlreadyExists {..} => "The destination already contains a request with this ID. Duplicate the source request before moving it.",
-                        _ => "The request could not be moved without replacing another request.",
-                    }))?;
+                    .map_err(|error| {
+                        WorkspaceError::operation(match error {
+                            wirebolt_core::StorageError::AlreadyExists { .. } => {
+                                super::workspace::actions::MOVE_COLLISION_REASON
+                            }
+                            _ => {
+                                "The request could not be moved without replacing another request."
+                            }
+                        })
+                    })?;
                 Ok((
                     SessionWorkspaceNodeKind::Request,
                     vec![from_collection_id, to_collection_id, request_id],

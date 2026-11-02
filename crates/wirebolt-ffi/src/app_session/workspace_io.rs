@@ -181,6 +181,12 @@ impl AppWorkspacePlatform {
 
 #[async_trait::async_trait]
 impl wirebolt_app::session::workspace::io::WorkspacePlatform for AppWorkspacePlatform {
+    fn workspace_namespace(&self) -> String {
+        self.native.as_ref().map_or_else(
+            || wirebolt_app::session::history::UNSAVED_WORKSPACE_NAMESPACE.into(),
+            |native| wirebolt_app::response::workspace_namespace(native.store.root()),
+        )
+    }
     async fn execute(&self, request: WorkspaceIO) -> WorkspaceReply {
         if let Some(native) = &self.native {
             let native = native.clone();

@@ -1,4 +1,5 @@
 import Foundation
+import Darwin
 import CryptoKit
 import Testing
 @testable import WireboltKit
@@ -135,6 +136,61 @@ struct ResponseStorageTests {
         #expect(try await reloaded.count(identity: SessionRequestIdentity(workspace: "test", collectionId: "api", requestId: "health")) == HistoryRepository.maximumEntriesPerRequest)
         #expect(try await reloaded.count(identity: SessionRequestIdentity(workspace: "test", collectionId: "api", requestId: "missing")) == 0)
         #expect(entries.allSatisfy { FileManager.default.fileExists(atPath: $0.bodyPath) })
+    }
+
+    @Test("New history indexes decode with rc.1's exact Codable entry shape")
+    func rc1HistoryIndexCompatibility() async throws {
+        let root = temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let repository = HistoryRepository(root: root)
+        let body = try ResponseBodyStore(runID: RunID(), directory: root)
+        try await body.append(Data("compatible response".utf8))
+        try await body.finish()
+        let prepared = PreparedRunSnapshot(proxy: .resolve(request: .direct, workspace: nil, app: .system),
+            method: "GET", url: "https://example.com", headers: [PreparedHeaderSnapshot(name: "Accept", value: "text/plain", redacted: false)],
+            body: PreparedBodySnapshot(byteCount: 0, contentType: nil, textPreview: nil, redacted: false), transport: TransportSettings())
+        try await repository.record(runID: RunID(), identity: SessionRequestIdentity(workspace: "fixture", collectionId: "api", requestId: "health"),
+            prepared: prepared, responseHead: ResponseHead(status: 200, version: "HTTP/1.1", headers: [], timeToHeadersNS: 1),
+            completion: RunCompletion(bytesReceived: 19, totalTimeNS: 2), failure: RunFailure(kind: .storage, issues: []), body: body)
+        let data = try Data(contentsOf: root.appending(path: "index.json"))
+        let entries = try JSONDecoder().decode([RC1History.RunHistoryEntry].self, from: data)
+        #expect(entries.count == 1)
+        #expect(entries[0].requestID == "health")
+        #expect(entries[0].responseHead?.status == 200)
+        #expect(entries[0].prepared.proxy?.source == .request)
+        #expect(entries[0].failure?.kind == "storage")
+        #expect(try Data(contentsOf: URL(fileURLWithPath: entries[0].bodyPath)) == Data("compatible response".utf8))
+    }
+
+    @Test("Replacing an export preserves extended attributes")
+    func exportPreservesExtendedAttributes() async throws {
+        let root = temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let destination = root.appending(path: "export.body")
+        try Data("old".utf8).write(to: destination)
+        let attribute = "com.wirebolt.storage-fixture"
+        let value = Data("fixture attribute".utf8)
+        let written = destination.path.withCString { path in
+            attribute.withCString { key in
+                value.withUnsafeBytes { bytes in setxattr(path, key, bytes.baseAddress, bytes.count, 0, 0) }
+            }
+        }
+        #expect(written == 0)
+        let body = try ResponseBodyStore(runID: RunID(), directory: root)
+        try await body.append(Data("new".utf8))
+        try await body.finish()
+        try await body.export(to: destination)
+        var restored = Data(count: value.count)
+        let count = destination.path.withCString { path in
+            attribute.withCString { key in
+                restored.withUnsafeMutableBytes { bytes in getxattr(path, key, bytes.baseAddress, bytes.count, 0, 0) }
+            }
+        }
+        #expect(count == value.count)
+        #expect(restored == value)
+        #expect(try Data(contentsOf: destination) == Data("new".utf8))
     }
 
     @Test("cookies honor host, path, TLS, expiry and persistence")

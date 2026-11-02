@@ -457,12 +457,19 @@ public struct RequestLocation: Identifiable, Equatable, Sendable {
             transport: DomainTransport(
                 validateTls: false, followRedirects: false, maximumRedirects: 0, totalTimeoutMs: 0, readTimeoutMs: 0,
                 clientCertificateReference: nil, customCaPath: nil), inheritsWorkspaceTransport: false))
-    init(domain: DomainLocation) { self.domain = domain }
+    private var activityKey = ""
+    init(domain: DomainLocation) {
+        self.domain = domain
+        activityKey = sessionRequestActivityKey(collectionId: domain.collectionId, requestId: domain.request.id)
+    }
 
-    public var id: String { "\(collectionID)/\(request.id)" }
+    public var id: String { activityKey }
     public var collectionID: String {
         get { domain.collectionId }
-        set { domain.collectionId = newValue }
+        set {
+            domain.collectionId = newValue
+            activityKey = sessionRequestActivityKey(collectionId: newValue, requestId: domain.request.id)
+        }
     }
     public var groupID: String? {
         get { domain.groupId }
@@ -474,7 +481,10 @@ public struct RequestLocation: Identifiable, Equatable, Sendable {
     }
     public var request: RequestDraft {
         get { RequestDraft(domain: domain.request) }
-        set { domain.request = newValue.domain }
+        set {
+            domain.request = newValue.domain
+            activityKey = sessionRequestActivityKey(collectionId: domain.collectionId, requestId: newValue.id)
+        }
     }
     public init(
         collectionID: String,

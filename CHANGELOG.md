@@ -41,8 +41,11 @@ Changes under **Unreleased** are on `main` but not in a published build yet. Dow
 - Cookies keep directory scope and encoded path separators when choosing which requests receive them.
 - Saving while deleting or moving a request could recreate stale files. Save now runs in order with workspace edits and refuses a saved target that has moved or disappeared.
 - Malformed, newer-version and oversized workspace files disappeared from the sidebar without explanation. Open now keeps readable requests and shows a dismissible notice naming skipped files.
-- Requests with the same ID shared history across collections and workspaces, so clearing one cleared another’s responses. History now follows the complete request identity and moves; older entries without enough identity information remain available under Unassigned Legacy History.
+- Requests with the same ID shared history across collections and workspaces, so clearing one cleared another's responses. History now follows the complete request identity and moves; legacy entries are migrated when a request ID is unique in the open workspace, while ambiguous entries remain available under Unassigned Legacy History. History files remain readable by rc.1.
 - Clearing history or evicting old entries made a restored response unreadable. Displayed responses now keep their own temporary body until the last viewer releases it.
+- Restored large responses now use APFS body cloning where available, with temporary copies removed after use and crash leftovers cleaned on the next launch.
+- Response exports respect normal file permissions and retain an existing destination's permissions and supported extended attributes.
+
 - Moving an imported request could overwrite another request. New imports have unique IDs; moves with a legacy ID collision are refused so both requests and their undo state survive.
 - Deleting a collection also deleted attachments and other files that Undo could not restore. It now removes only readable Wirebolt documents and leaves other files in place.
 - Malformed Insomnia folder IDs could crash import. Invalid parent links, cycles and hierarchies deeper than 128 levels now report an error.

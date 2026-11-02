@@ -179,10 +179,11 @@ fn v4<'a>(
         .collect())
 }
 
+const MAX_INSOMNIA_DEPTH: usize = 128;
+
 /// v4 stores a graph in a flat array, so JSON's nesting limit does not bound it.
 /// Validate every component, including ones unreachable from a workspace.
 fn validate_v4_graph(resources: &[Value]) -> Result<(), ImportError> {
-    const MAX_DEPTH: usize = 128;
     let mut by_id = HashMap::new();
     for resource in resources {
         let id = text(resource, "_id");
@@ -191,37 +192,16 @@ fn validate_v4_graph(resources: &[Value]) -> Result<(), ImportError> {
                 "Insomnia resource IDs must be non-empty and unique.",
             ));
         }
-        if resource
-            .get("parentId")
-            .is_some_and(|parent| !parent.is_null() && !parent.is_string())
-        {
-            return Err(ImportError::new("An Insomnia parent ID is invalid."));
-        }
     }
     for resource in resources {
         let parent = text(resource, "parentId");
-        if !parent.is_empty() {
-            let Some(parent_resource) = by_id.get(parent) else {
-                return Err(ImportError::new(
-                    "An Insomnia resource refers to a missing parent.",
-                ));
-            };
-            let valid_parent = match text(resource, "_type") {
-                "request_group" | "request" | "websocket_request" => matches!(
-                    text(parent_resource, "_type"),
-                    "workspace" | "request_group"
-                ),
-                "environment" => {
-                    matches!(text(parent_resource, "_type"), "workspace" | "environment")
-                }
-                "workspace" => false,
-                _ => true,
-            };
-            if !valid_parent {
-                return Err(ImportError::new(
-                    "An Insomnia resource has an invalid parent type.",
-                ));
-            }
+        if !parent.is_empty()
+            && !by_id.contains_key(parent)
+            && text(resource, "_type") != "workspace"
+        {
+            return Err(ImportError::new(
+                "An Insomnia resource refers to a missing parent.",
+            ));
         }
         let mut path = HashSet::new();
         let mut current = text(resource, "_id");
@@ -231,9 +211,9 @@ fn validate_v4_graph(resources: &[Value]) -> Result<(), ImportError> {
                     "The Insomnia folder hierarchy contains a cycle.",
                 ));
             }
-            if path.len() > MAX_DEPTH {
+            if path.len() > MAX_INSOMNIA_DEPTH {
                 return Err(ImportError::new(
-                    "The Insomnia folder hierarchy exceeds 128 levels.",
+                    "The Insomnia folder hierarchy exceeds the supported depth limit.",
                 ));
             }
             current = by_id

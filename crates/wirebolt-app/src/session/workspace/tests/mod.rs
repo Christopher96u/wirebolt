@@ -14,13 +14,19 @@ use std::{
     collections::VecDeque,
     sync::{Arc, Mutex},
 };
+mod delete;
 mod environment;
 mod files;
+mod history;
+mod imports;
 mod imports_git;
 mod interface;
 mod lifecycle;
+mod load;
+mod moves;
 mod mutations;
-mod storage;
+mod persistence_fixtures;
+mod save;
 mod undo;
 #[derive(Debug, Default)]
 struct Store {

@@ -217,9 +217,6 @@ impl AppSessionRuntime {
             oauth: app_runtime::RuntimeOAuth::default(),
         })
     }
-    pub fn configure_history_workspace(&self, path: Option<String>) {
-        self.state.configure_history_workspace(path.as_deref());
-    }
     pub fn request_identity(
         &self,
         document: Arc<AppDocumentSession>,
@@ -353,6 +350,16 @@ impl AppSessionRuntime {
     ) -> Result<(), wirebolt_app::response::ResponseError> {
         let state = self.state.clone();
         tokio::task::spawn_blocking(move || state.clear_history(&id))
+            .await
+            .unwrap_or_else(|error| {
+                Err(wirebolt_app::response::ResponseError::Io {
+                    reason: error.to_string(),
+                })
+            })
+    }
+    pub async fn clear_all_history(&self) -> Result<(), wirebolt_app::response::ResponseError> {
+        let state = self.state.clone();
+        tokio::task::spawn_blocking(move || state.clear_all_history())
             .await
             .unwrap_or_else(|error| {
                 Err(wirebolt_app::response::ResponseError::Io {

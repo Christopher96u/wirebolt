@@ -102,8 +102,8 @@ private actor ImportPersistence: WorkspacePersistence {
 
     init(outcome: Outcome) { self.outcome = outcome }
 
-    func load() async throws -> WorkspaceDraft {
-        guard committed else { return WorkspaceDraft(name: "Imports") }
+    func loadResult() async throws -> WorkspaceLoadResult {
+        guard committed else { return WorkspaceDraft(name: "Imports").loadResult }
         let request = RequestLocation(collectionID: "import-0", request: RequestDraft(id: "request-0", name: "List"))
         return WorkspaceDraft(
             name: "Imports",
@@ -112,7 +112,7 @@ private actor ImportPersistence: WorkspacePersistence {
                 EnvironmentDraft(id: "existing", name: "Existing"),
                 EnvironmentDraft(id: "import-env-0", name: "Shop API"),
             ]
-        )
+        ).loadResult
     }
 
     func save(request _: RequestDraft, in _: String) async throws {}
