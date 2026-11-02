@@ -411,7 +411,7 @@ async fn live_environment_edits_keep_id_order_and_secret_references_on_disk_relo
         )
         .await;
     assert!(saved.mutation.succeeded);
-    let WorkspaceReply::Loaded { workspace } = disk.0.workspace_io(WorkspaceIO::Load) else {
+    let WorkspaceReply::Loaded { workspace, .. } = disk.0.workspace_io(WorkspaceIO::Load) else {
         panic!("load failed")
     };
     assert_eq!(
@@ -444,7 +444,7 @@ async fn live_environment_edits_keep_id_order_and_secret_references_on_disk_relo
             .await
             .succeeded
     );
-    let WorkspaceReply::Loaded { workspace } = disk.0.workspace_io(WorkspaceIO::Load) else {
+    let WorkspaceReply::Loaded { workspace, .. } = disk.0.workspace_io(WorkspaceIO::Load) else {
         panic!("load failed")
     };
     assert_eq!(
@@ -538,7 +538,7 @@ async fn environment_creation_deletion_and_undo_match_reload_id_order() {
 }
 
 fn assert_environment_reload_matches(h: &Harness, disk: &DiskStore) {
-    let WorkspaceReply::Loaded { workspace } = disk.0.workspace_io(WorkspaceIO::Load) else {
+    let WorkspaceReply::Loaded { workspace, .. } = disk.0.workspace_io(WorkspaceIO::Load) else {
         panic!("load failed")
     };
     let environments = h.workspace.snapshot().environments;
