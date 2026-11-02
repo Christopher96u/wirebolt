@@ -986,7 +986,7 @@ public final class WireboltModel {
     @ObservationIgnored public var finishEnvironmentEditing: (@MainActor () async -> Bool)?
 
     private func performGitOperation(_ action: WorkspaceGitAction) async {
-        let inspectorReady = if rustOperations.gitReplacesWorkspace(action: action) {
+        let inspectorReady = if workspaceGitReplacesWorkspace(action: action) {
             await finishEnvironmentEditing?() != false
         } else { true }
         let begin = rustOperations.beginGit(configured: gitCollaboration != nil, action: action,

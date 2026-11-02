@@ -474,9 +474,6 @@ impl AppWorkspaceOperations {
     pub fn reverse_token(&self, token: u64) -> Option<WorkspaceUndoToken> {
         self.inner.reverse_token(token)
     }
-    pub fn git_replaces_workspace(&self, action: WorkspaceGitAction) -> bool {
-        action.replaces_workspace()
-    }
     pub fn begin_git(
         &self,
         configured: bool,
@@ -892,4 +889,10 @@ impl AppEnvironmentInspector {
     pub fn use_for_requests(&self) -> Option<String> {
         crate::lock(&self.inner).use_for_requests()
     }
+}
+
+#[uniffi::export]
+#[must_use]
+pub fn workspace_git_replaces_workspace(action: WorkspaceGitAction) -> bool {
+    action.replaces_workspace()
 }
