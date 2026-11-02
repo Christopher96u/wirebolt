@@ -59,7 +59,7 @@ Changes under **Unreleased** are on `main` but not in a published build yet. Dow
 - XML and HTML payloads stay unchanged by Format, which now appears only for JSON because inserted whitespace can change their content.
 - OAuth sign-in preserves literal plus signs and valueless URL parameters, and uses form encoding for authorization parameters and callbacks (spaces encode as `+`, as required by RFC 6749).
 - **Copy cURL** now encodes query parameters the same way as Send, including literal plus signs, punctuation and Unicode.
-- Query and form fields marked sensitive are redacted in Sent Request and History while their values are still sent.
+- Query and form fields marked sensitive are redacted in Prepared Request and History while their values are still sent.
 - Cookie expiry now gives valid `Max-Age` precedence over `Expires`, regardless of attribute order, and ignores invalid expiry attributes.
 - Cookies keep directory scope and encoded path separators when choosing which requests receive them.
 - Saving while deleting or moving a request could recreate stale files. Save now runs in order with workspace edits and refuses a target moved or deleted inside the app; saving recreates a request file removed externally.
