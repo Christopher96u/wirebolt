@@ -348,7 +348,10 @@ async fn abort_reloads_and_initialize_clears_previous_operation() {
             },
         },
     ]);
-    assert!(h.ops.begin_git(true, WorkspaceGitAction::Abort, false));
+    assert!(
+        h.ops
+            .begin_git(true, WorkspaceGitAction::Abort, false, true)
+    );
     let loaded = h
         .ops
         .git(WorkspaceGitAction::Abort, &h.store, Some(&h.store))
@@ -359,7 +362,10 @@ async fn abort_reloads_and_initialize_clears_previous_operation() {
         h.ops.presentation().git_operation.unwrap().outcome,
         WorkspaceGitOutcome::MergeAborted
     );
-    assert!(h.ops.begin_git(true, WorkspaceGitAction::Initialize, false));
+    assert!(
+        h.ops
+            .begin_git(true, WorkspaceGitAction::Initialize, false, true)
+    );
     h.ops
         .git(WorkspaceGitAction::Initialize, &h.store, Some(&h.store))
         .await;
@@ -370,7 +376,10 @@ async fn abort_reloads_and_initialize_clears_previous_operation() {
 #[tokio::test]
 async fn unsupported_git_recovery_preserves_error_kind() {
     let h = Harness::new(nested());
-    assert!(h.ops.begin_git(true, WorkspaceGitAction::Abort, false));
+    assert!(
+        h.ops
+            .begin_git(true, WorkspaceGitAction::Abort, false, true)
+    );
     h.ops.git(WorkspaceGitAction::Abort, &h.store, None).await;
     assert_eq!(
         h.ops.presentation().git_failure.unwrap().kind,
@@ -392,7 +401,7 @@ async fn git_runs_only_when_requested_and_pull_reloads_only_updated_outcome() {
         (WorkspaceGitAction::Pull, WorkspaceGitOutcome::UpToDate),
     ] {
         lock(&h.store.replies).push_back(operation(outcome));
-        assert!(h.ops.begin_git(true, action.clone(), false));
+        assert!(h.ops.begin_git(true, action.clone(), false, true));
         assert!(h.ops.git(action, &h.store, Some(&h.store)).await.is_none());
         assert_eq!(h.ops.presentation().git_operation.unwrap().outcome, outcome);
     }
@@ -405,7 +414,7 @@ async fn git_runs_only_when_requested_and_pull_reloads_only_updated_outcome() {
             diagnostics: crate::session::persistence::WorkspaceLoadDiagnostics::default(),
         },
     ]);
-    assert!(h.ops.begin_git(true, WorkspaceGitAction::Pull, false));
+    assert!(h.ops.begin_git(true, WorkspaceGitAction::Pull, false, true));
     assert_eq!(
         h.ops
             .git(WorkspaceGitAction::Pull, &h.store, Some(&h.store))
@@ -419,12 +428,15 @@ async fn git_runs_only_when_requested_and_pull_reloads_only_updated_outcome() {
 #[test]
 fn pulling_refuses_unsaved_edits_and_unconfigured_git_has_exact_guidance() {
     let h = Harness::new(nested());
-    assert!(!h.ops.begin_git(true, WorkspaceGitAction::Pull, true));
+    assert!(!h.ops.begin_git(true, WorkspaceGitAction::Pull, true, true));
     assert_eq!(
         h.ops.presentation().git_failure.unwrap().reason,
         "Save or discard request edits before pulling."
     );
-    assert!(!h.ops.begin_git(false, WorkspaceGitAction::Status, false));
+    assert!(
+        !h.ops
+            .begin_git(false, WorkspaceGitAction::Status, false, true)
+    );
     assert_eq!(
         h.ops.presentation().git_failure.unwrap().reason,
         "Open a workspace before using Git collaboration."
@@ -434,8 +446,11 @@ fn pulling_refuses_unsaved_edits_and_unconfigured_git_has_exact_guidance() {
 async fn git_reload_failure_reports_distinct_failure_and_finishes_busy_state() {
     let h = Harness::new(nested());
     lock(&h.store.replies).push_back(operation(WorkspaceGitOutcome::Updated));
-    assert!(h.ops.begin_git(true, WorkspaceGitAction::Pull, false));
-    assert!(!h.ops.begin_git(true, WorkspaceGitAction::Status, false));
+    assert!(h.ops.begin_git(true, WorkspaceGitAction::Pull, false, true));
+    assert!(
+        !h.ops
+            .begin_git(true, WorkspaceGitAction::Status, false, true)
+    );
     h.ops
         .git(WorkspaceGitAction::Pull, &h.store, Some(&h.store))
         .await;
@@ -518,4 +533,34 @@ fn repository_problems_recognize_only_guidance_kinds() {
         ),
         None
     );
+}
+
+#[test]
+fn workspace_replacing_git_actions_require_committed_inspector_fields() {
+    for action in [WorkspaceGitAction::Pull, WorkspaceGitAction::Abort] {
+        let h = Harness::new(nested());
+        assert!(action.replaces_workspace());
+        assert!(!h.ops.begin_git(true, action, false, false));
+        assert!(!h.ops.presentation().git_busy);
+        assert!(
+            h.ops
+                .presentation()
+                .git_failure
+                .unwrap()
+                .reason
+                .contains("environment inspector")
+        );
+    }
+    for action in [
+        WorkspaceGitAction::Status,
+        WorkspaceGitAction::Commit {
+            message: "fixture".into(),
+        },
+        WorkspaceGitAction::Push,
+        WorkspaceGitAction::Initialize,
+    ] {
+        let h = Harness::new(nested());
+        assert!(!action.replaces_workspace());
+        assert!(h.ops.begin_git(true, action, false, false));
+    }
 }

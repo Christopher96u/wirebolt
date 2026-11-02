@@ -474,8 +474,18 @@ impl AppWorkspaceOperations {
     pub fn reverse_token(&self, token: u64) -> Option<WorkspaceUndoToken> {
         self.inner.reverse_token(token)
     }
-    pub fn begin_git(&self, configured: bool, action: WorkspaceGitAction, dirty: bool) -> bool {
-        self.inner.begin_git(configured, action, dirty)
+    pub fn git_replaces_workspace(&self, action: WorkspaceGitAction) -> bool {
+        action.replaces_workspace()
+    }
+    pub fn begin_git(
+        &self,
+        configured: bool,
+        action: WorkspaceGitAction,
+        dirty: bool,
+        inspector_ready: bool,
+    ) -> bool {
+        self.inner
+            .begin_git(configured, action, dirty, inspector_ready)
     }
     pub fn begin_import(&self, configured: bool, pasted: bool) -> bool {
         self.inner.begin_import(configured, pasted)

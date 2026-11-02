@@ -93,7 +93,7 @@ struct GitMergeRecoveryTests {
         #expect(guards == 2)
         #expect(await collaboration.calls.isEmpty)
         #expect(model.workspace.name == "Conflicted")
-        #expect(model.operationFailureMessage?.contains("environment inspector") == true)
+        #expect(model.gitFailure?.reason.contains("environment inspector") == true)
         model.finishEnvironmentEditing = { guards += 1; return true }
         await model.abortGitMerge()
         #expect(model.workspace.name == "Reloaded")

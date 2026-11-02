@@ -887,8 +887,22 @@ async fn commands(
 )]
 impl WorkspaceOperations {
     #[must_use]
-    pub fn begin_git(&self, configured: bool, action: WorkspaceGitAction, dirty: bool) -> bool {
+    pub fn begin_git(
+        &self,
+        configured: bool,
+        action: WorkspaceGitAction,
+        dirty: bool,
+        inspector_ready: bool,
+    ) -> bool {
         let mut s = lock(&self.state);
+        if action.replaces_workspace() && !inspector_ready {
+            s.presentation.git_failure = Some(WorkspaceFailure {
+                kind: super::io::WorkspaceFailureKind::Workspace,
+                reason: "Finish or discard the environment inspector edits before replacing workspace files.".into(),
+                localized: true,
+            });
+            return false;
+        }
         if action == WorkspaceGitAction::Pull && dirty {
             s.presentation.git_failure = Some(WorkspaceFailure {
                 kind: crate::session::workspace::io::WorkspaceFailureKind::UnsavedRequest,
@@ -918,7 +932,7 @@ impl WorkspaceOperations {
         platform: &dyn WorkspacePlatform,
         persistence: Option<&dyn WorkspacePlatform>,
     ) -> Option<WorkspaceLoad> {
-        let _guard = if matches!(action, WorkspaceGitAction::Pull | WorkspaceGitAction::Abort) {
+        let _guard = if action.replaces_workspace() {
             Some(self.edits.lock().await)
         } else {
             None
