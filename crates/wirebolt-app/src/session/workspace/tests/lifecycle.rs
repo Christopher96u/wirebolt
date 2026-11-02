@@ -195,17 +195,29 @@ fn close_dirty_scope_blocks_atomically_then_discards_only_closed_documents() {
         );
     }
     a.draft.note = "Unsaved".into();
+    projections.insert(a.id.clone(), SessionTabDocument::from_document(&a));
+    let targets = tabs.close_targets(&SessionCloseScope::All, None);
+    let mut state = (tabs, projections);
+    let fetched = std::rc::Rc::new(std::cell::RefCell::new(vec![]));
     let blocked = policy::close(
-        &mut tabs,
-        vec![a.clone(), b.clone()],
-        &SessionCloseScope::All,
-        None,
+        &mut state,
+        close_entries(&[a.clone(), b.clone()], &fetched),
+        &targets,
         false,
+    );
+    assert!(
+        fetched.borrow().is_empty(),
+        "blocked close must not fetch saved drafts"
     );
     assert_eq!(blocked.blocked, ["a"]);
     assert!(blocked.removed.is_empty());
     assert_eq!(blocked.snapshot.session_ids.len(), 2);
-    let closed = policy::close(&mut tabs, vec![a, b], &SessionCloseScope::All, None, true);
+    let closed = policy::close(&mut state, close_entries(&[a, b], &fetched), &targets, true);
+    assert_eq!(
+        *fetched.borrow(),
+        ["a"],
+        "clean documents must not fetch saved drafts"
+    );
     assert!(closed.blocked.is_empty());
     assert_eq!(closed.removed.len(), 2);
     assert!(closed.snapshot.session_ids.is_empty());
@@ -286,4 +298,106 @@ async fn live_save_all_reads_later_drafts_after_acknowledging_earlier_saves() {
             .await
     );
     assert_eq!(lock(&live.results)[1].draft.note, "Latest B");
+}
+
+#[test]
+fn close_scopes_fetch_only_dirty_removed_payloads_at_every_tab_count() {
+    for count in [2, 20, 100] {
+        for scope in [
+            SessionCloseScope::One { id: "0".into() },
+            SessionCloseScope::Others { id: "0".into() },
+            SessionCloseScope::All,
+        ] {
+            for dirty in [false, true] {
+                let mut tabs = SessionTabs::default();
+                let mut projections = HashMap::new();
+                let mut documents = vec![];
+                for i in 0..count {
+                    let mut doc = document(&i.to_string(), Some("api"), true);
+                    if dirty && i == count - 1 {
+                        doc.draft.note = "Edited".into();
+                    }
+                    let projection = SessionTabDocument::from_document(&doc);
+                    tabs.open(projection, &mut projections, None, false, i == count - 1);
+                    documents.push(doc);
+                }
+                let expected = match scope {
+                    SessionCloseScope::One { .. } => 1,
+                    SessionCloseScope::Others { .. } => count - 1,
+                    _ => count,
+                };
+                let fetched = std::rc::Rc::new(std::cell::RefCell::new(vec![]));
+                let targets = tabs.close_targets(&scope, None);
+                let result = policy::close(
+                    &mut (tabs, projections),
+                    close_entries(&documents, &fetched),
+                    &targets,
+                    true,
+                );
+                assert_eq!(result.removed.len(), expected);
+                assert_eq!(result.snapshot.session_ids.len(), count - expected);
+                let expected_fetch =
+                    usize::from(dirty && !matches!(scope, SessionCloseScope::One { .. }));
+                assert_eq!(fetched.borrow().len(), expected_fetch);
+                assert_eq!(
+                    result.removed.iter().filter(|d| d.saved.is_some()).count(),
+                    expected_fetch
+                );
+                if expected_fetch > 0 {
+                    assert_eq!(*fetched.borrow(), [(count - 1).to_string()]);
+                }
+                if count == expected {
+                    assert!(result.snapshot.groups[0].preview_tab_id.is_none());
+                }
+            }
+        }
+    }
+}
+
+struct CloseProbe {
+    document: SessionDocument,
+    fetched: std::rc::Rc<std::cell::RefCell<Vec<String>>>,
+}
+impl policy::CloseDocument for CloseProbe {
+    fn is_dirty(&self) -> bool {
+        self.document.dirty()
+    }
+    fn saved_draft(&self) -> Option<DomainRequestDraft> {
+        self.fetched.borrow_mut().push(self.document.id.clone());
+        self.document.saved_draft.clone()
+    }
+}
+fn close_entries(
+    documents: &[SessionDocument],
+    fetched: &std::rc::Rc<std::cell::RefCell<Vec<String>>>,
+) -> Vec<(SessionTabDocument, CloseProbe)> {
+    documents
+        .iter()
+        .map(|doc| {
+            (
+                SessionTabDocument::from_document(doc),
+                CloseProbe {
+                    document: doc.clone(),
+                    fetched: fetched.clone(),
+                },
+            )
+        })
+        .collect()
+}
+
+#[test]
+fn rust_dirty_policy_overrides_a_clean_native_projection() {
+    let mut document = document("unicode", None, true);
+    document.draft.note = "e\u{301}".into();
+    document.saved_draft = Some(document.draft.clone());
+    let projection = SessionTabDocument::from_document(&document);
+    let mut state = (SessionTabs::default(), HashMap::new());
+    state
+        .0
+        .open(projection.clone(), &mut state.1, None, false, false);
+    document.draft.note = "é".into();
+    let targets = state.0.close_targets(&SessionCloseScope::All, None);
+    let result = policy::close(&mut state, vec![(projection, document)], &targets, false);
+    assert_eq!(result.blocked, ["unicode"]);
+    assert!(result.removed.is_empty());
 }

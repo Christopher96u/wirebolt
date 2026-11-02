@@ -518,13 +518,69 @@ private enum PerformanceContract {
         var milliseconds: [Double] = []
         var rssMebibytes: [Double] = []
         let fileManager = FileManager.default
+        let defaultsBefore = try realDefaultsSnapshot()
+        let root = fileManager.temporaryDirectory.appendingPathComponent("wirebolt-launch-\(UUID().uuidString)")
+        try fileManager.createDirectory(at: root, withIntermediateDirectories: true)
+        let copiedApp = root.appendingPathComponent("LaunchProbe.app")
+        defer {
+            // LaunchServices can register a directly executed app outside HOME.
+            // Unregister while the bundle still exists, including on failed runs.
+            var failures: [String] = []
+            do {
+                let unregister = Process()
+                unregister.executableURL = URL(fileURLWithPath: "/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister")
+                unregister.arguments = ["-u", copiedApp.path]
+                unregister.standardOutput = FileHandle.nullDevice
+                unregister.standardError = FileHandle.nullDevice
+                if fileManager.fileExists(atPath: copiedApp.path) {
+                    try unregister.run()
+                    unregister.waitUntilExit()
+                    if unregister.terminationStatus != 0 {
+                        failures.append("lsregister exited \(unregister.terminationStatus)")
+                    }
+                }
+            } catch { failures.append("unregister: \(error)") }
+            do { try fileManager.removeItem(at: root) }
+            catch { failures.append("delete temporary root: \(error)") }
+            do {
+                let defaultsAfter = try realDefaultsSnapshot()
+                if defaultsBefore != defaultsAfter { failures.append("real defaults export changed") }
+            } catch { failures.append("export real defaults: \(error)") }
+            precondition(failures.isEmpty, "Launch smoke cleanup failed: \(failures.joined(separator: "; "))")
+            FileHandle.standardError.write(Data("launch isolation: unregistered and deleted \(copiedApp.path); real defaults export byte-identical\n".utf8))
+        }
+        // Give CFPreferences a distinct application domain as well as an isolated
+        // home. Modifying/signing only this copy leaves every installed app alone.
+        let sourceApp = executable.deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+        guard sourceApp.pathExtension == "app" else {
+            throw HarnessError.invalidMeasurement("launch smoke requires a bundled app")
+        }
+        try fileManager.copyItem(at: sourceApp, to: copiedApp)
+        let plistURL = copiedApp.appendingPathComponent("Contents/Info.plist")
+        var plist = try PropertyListSerialization.propertyList(from: Data(contentsOf: plistURL), format: nil) as! [String: Any]
+        let domain = "io.github.christopher96u.wirebolt.performance.\(UUID().uuidString.lowercased())"
+        plist["CFBundleIdentifier"] = domain
+        try PropertyListSerialization.data(fromPropertyList: plist, format: .xml, options: 0).write(to: plistURL)
+        let signer = Process()
+        signer.executableURL = URL(fileURLWithPath: "/usr/bin/codesign")
+        signer.arguments = ["--force", "--sign", "-", copiedApp.path]
+        signer.standardOutput = FileHandle.nullDevice
+        signer.standardError = FileHandle.nullDevice
+        try signer.run()
+        signer.waitUntilExit()
+        guard signer.terminationStatus == 0 else { throw HarnessError.invalidMeasurement("could not sign isolated launch copy") }
+        let isolatedExecutable = copiedApp.appendingPathComponent("Contents/MacOS/\(executable.lastPathComponent)")
 
         for _ in 0 ..< count {
-            let readyFile = fileManager.temporaryDirectory
-                .appendingPathComponent("wirebolt-ready-\(UUID().uuidString)")
+            let sampleRoot = root.appendingPathComponent(UUID().uuidString)
+            let home = sampleRoot.appendingPathComponent("home")
+            let temporary = sampleRoot.appendingPathComponent("tmp")
+            try fileManager.createDirectory(at: home, withIntermediateDirectories: true)
+            try fileManager.createDirectory(at: temporary, withIntermediateDirectories: true)
+            let readyFile = sampleRoot.appendingPathComponent("ready")
             let process = Process()
-            process.executableURL = executable
-            let workspace = fileManager.temporaryDirectory.appendingPathComponent("wirebolt-launch-\(UUID().uuidString)")
+            process.executableURL = isolatedExecutable
+            let workspace = sampleRoot.appendingPathComponent("workspace")
             process.arguments = ["--workspace", workspace.path]
             defer {
                 stop(process)
@@ -532,8 +588,28 @@ private enum PerformanceContract {
                 try? fileManager.removeItem(at: workspace)
             }
             var environment = ProcessInfo.processInfo.environment
+            environment["HOME"] = home.path
+            environment["CFFIXED_USER_HOME"] = home.path
+            environment["TMPDIR"] = temporary.path + "/"
+            environment["WIREBOLT_LAUNCH_ISOLATION_ROOT"] = sampleRoot.path
+            environment["WIREBOLT_LAUNCH_DEFAULTS_DOMAIN"] = domain
+            environment.removeValue(forKey: "WIREBOLT_ISOLATION_PROBE_FILE")
             environment["WIREBOLT_READY_FILE"] = readyFile.path
             process.environment = environment
+
+            let report = sampleRoot.appendingPathComponent("isolation.json")
+            let probe = Process()
+            probe.executableURL = isolatedExecutable
+            var probeEnvironment = environment
+            probeEnvironment["WIREBOLT_ISOLATION_PROBE_FILE"] = report.path
+            probe.environment = probeEnvironment
+            try probe.run()
+            probe.waitUntilExit()
+            guard probe.terminationStatus == 0,
+                  let verified = try JSONSerialization.jsonObject(with: Data(contentsOf: report)) as? [String: String],
+                  verified["home"] == home.path, verified["defaultsDomain"] == domain,
+                  verified["applicationSupport"]?.hasPrefix(home.path + "/") == true
+            else { throw HarnessError.invalidMeasurement("launch isolation probe failed") }
 
             let started = DispatchTime.now().uptimeNanoseconds
             try process.run()
@@ -568,6 +644,21 @@ private enum PerformanceContract {
         }
 
         return (milliseconds, rssMebibytes)
+    }
+
+    private static func realDefaultsSnapshot() throws -> Data {
+        let process = Process()
+        let output = Pipe()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/defaults")
+        process.arguments = ["export", "io.github.christopher96u.wirebolt", "-"]
+        process.standardOutput = output
+        process.standardError = FileHandle.nullDevice
+        try process.run()
+        let data = output.fileHandleForReading.readDataToEndOfFile()
+        process.waitUntilExit()
+        // A missing domain is also a snapshot; fail if it appears after launch.
+        precondition(process.terminationStatus == 0 || process.terminationStatus == 1)
+        return Data([UInt8(process.terminationStatus)]) + data
     }
 
     private static func stop(_ process: Process) {

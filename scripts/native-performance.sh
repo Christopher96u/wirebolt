@@ -12,6 +12,8 @@ swiftc -O -whole-module-optimization -g -parse-as-library -swift-version 6 -emit
   -target arm64-apple-macosx15.0 -o build/native-performance/workloads \
   apple/Benchmarks/NativeWorkloads.swift "${wirebolt_app_inputs[@]}"
 if [[ "${1:-}" == build ]]; then exit 0; fi
+build/native-performance/workloads tab-close 20 build/native-performance/tab-close.json 5
+build/native-performance/workloads body-typing 1 build/native-performance/body-typing.json 20
 build/native-performance/workloads notes-ui 1 build/native-performance/notes-ui.json
 build/native-performance/workloads markdown 10000 build/native-performance/markdown-10k.json
 build/native-performance/workloads markdown 100000 build/native-performance/markdown-100k.json

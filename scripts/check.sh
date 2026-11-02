@@ -16,6 +16,7 @@ scripts/test.sh
 # Checks the bridge and builds the harness for the launch smoke; it enforces no timings.
 scripts/performance.sh smoke
 if [[ "$benchmarks" == true ]]; then
+  scripts/search-performance.sh
   scripts/editor-performance.sh
 fi
 scripts/build-app.sh

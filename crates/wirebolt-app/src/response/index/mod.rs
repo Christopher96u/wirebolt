@@ -7,6 +7,7 @@ use super::{
 };
 pub use cache::TextIndexCache;
 use std::{
+    borrow::Cow,
     fs::{self, File},
     io::Read,
     sync::Arc,
@@ -260,9 +261,10 @@ impl TextIndex {
         if query.text.is_empty() {
             return Ok(vec![]);
         }
+        cancellation.check()?;
         let data = fs::read(&self.options.path)?;
         cancellation.check()?;
-        let source = self.options.prefix.clone() + &String::from_utf8_lossy(&data);
+        let source = search_source(&self.options.prefix, &data);
         let scope = if let Some((start, end)) = selection {
             let start = self.selection_offset(&start, &source, &data, cancellation)?;
             let end = self.selection_offset(&end, &source, &data, cancellation)?;
@@ -274,6 +276,19 @@ impl TextIndex {
             None
         };
         let ranges = query.matches_with_engine(&source, scope, cancellation, engine)?;
+        // Prefix/decoding fallbacks are needed only by the matcher. Release them
+        // before row mapping, which reads the original bytes.
+        drop(source);
+        self.map_search_ranges(&ranges, &data, cancellation)
+    }
+
+    fn map_search_ranges(
+        &self,
+        ranges: &[ResponseTextRange],
+        data: &[u8],
+        cancellation: &ResponseCancellation,
+    ) -> ResponseResult<Vec<IndexedMatch>> {
+        cancellation.check()?;
         if ranges.is_empty() {
             return Ok(vec![]);
         }
@@ -313,33 +328,42 @@ impl TextIndex {
                 event_index += 1;
             }
             source_offset = end;
+            event_index < events.len()
         };
+        let mut unresolved = true;
         for (index, row) in self.prefix_rows.iter().enumerate() {
+            cancellation.check()?;
             let newline = self.prefix_rows.get(index + 1).map_or_else(
                 || self.options.prefix.ends_with('\n'),
                 |next| !next.continuation,
             );
-            consume(
+            unresolved = consume(
                 row.number,
                 &(row.text.clone() + if newline { "\n" } else { "" }),
                 false,
             );
+            if !unresolved {
+                break;
+            }
         }
         let mut previous: Option<TextRow> = None;
         // A single scan maps all capped search endpoints; there is no row-by-row bridge traffic.
-        self.scan(None, false, cancellation, |row| {
-            if let Some(previous) = &previous {
-                consume(
-                    previous.number + count(self.prefix_rows.len()),
-                    &String::from_utf8_lossy(
-                        &data[size(previous.byte_offset)..size(row.byte_offset)],
-                    ),
-                    false,
-                );
-            }
-            previous = Some(row);
-            true
-        })?;
+        if unresolved {
+            self.scan(None, false, cancellation, |row| {
+                if let Some(previous) = &previous {
+                    unresolved = consume(
+                        previous.number + count(self.prefix_rows.len()),
+                        &String::from_utf8_lossy(
+                            &data[size(previous.byte_offset)..size(row.byte_offset)],
+                        ),
+                        false,
+                    );
+                }
+                // Do not consume this row again as EOF after stopping early.
+                previous = unresolved.then_some(row);
+                unresolved
+            })?;
+        }
         if let Some(previous) = previous {
             consume(
                 previous.number + count(self.prefix_rows.len()),
@@ -347,6 +371,7 @@ impl TextIndex {
                 true,
             );
         }
+        cancellation.check()?;
         Ok(starts
             .into_iter()
             .zip(ends)
@@ -425,6 +450,18 @@ impl TextIndex {
     }
 }
 
+fn search_source<'a>(prefix: &str, data: &'a [u8]) -> Cow<'a, str> {
+    let body = String::from_utf8_lossy(data);
+    if prefix.is_empty() {
+        body
+    } else {
+        let mut source = String::with_capacity(prefix.len() + body.len());
+        source.push_str(prefix);
+        source.push_str(&body);
+        Cow::Owned(source)
+    }
+}
+
 fn make_prefix_rows(
     options: &IndexOptions,
     shaper: Option<&dyn TextShaper>,
@@ -491,4 +528,19 @@ fn make_prefix_rows(
         row.spaces = super::space_runs(&row.text);
     }
     (prefix_rows, prefix_lines)
+}
+
+#[cfg(test)]
+mod search_allocation_tests {
+    use super::*;
+
+    #[test]
+    fn valid_utf8_without_prefix_borrows_the_read_buffer() {
+        let data = "🚀e\u{301}".as_bytes();
+        let source = search_source("", data);
+        assert!(matches!(source, Cow::Borrowed(_)));
+        assert_eq!(source.as_ptr(), data.as_ptr());
+        assert!(matches!(search_source("Header\n", data), Cow::Owned(_)));
+        assert_eq!(search_source("", &[0xff]), "�");
+    }
 }

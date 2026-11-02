@@ -162,6 +162,8 @@ enum FeatureWorkloads {
         }
         defer { Darwin.close(descriptor) }
 
+        // This byte-scan baseline is synthetic. scripts/search-performance.sh also
+        // gates actual AppTextIndex/ICU searches (absent, capped and EOF at 10/100 MiB).
         let needle = Array("wirebolt-needle!".utf8)
         var buffer = [UInt8](repeating: 0, count: 256 * 1024)
         let search = try (0 ..< samples).map { _ in
