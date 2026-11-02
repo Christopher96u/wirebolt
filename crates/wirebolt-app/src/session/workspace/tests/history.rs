@@ -236,3 +236,94 @@ async fn workspace_folder_rename_and_move_preserve_request_history() {
         previous = path;
     }
 }
+
+#[tokio::test]
+async fn requests_added_after_load_publish_history_and_activity_immediately() {
+    use crate::response::{BodyStore, ResponseCookieJar, RunHistory};
+    use crate::session::{run::*, runtime::RuntimeState};
+    for creation in ["command", "draft", "save"] {
+        let (root, store) = persistence();
+        let workspace = imported_pair(&store);
+        let collection = workspace.collections[0].id.clone();
+        let session = Arc::new(WorkspaceSession::default());
+        let ops = WorkspaceOperations::new(session);
+        let history = Arc::new(RuntimeState::new(
+            Arc::new(Mutex::new(RunHistory::new(root.path().join("history")))),
+            Arc::new(Mutex::new(ResponseCookieJar::new(None))),
+        ));
+        ops.connect_history(history.clone());
+        let platform = SaveGate {
+            store,
+            ready: tokio::sync::Notify::default(),
+            release: tokio::sync::Notify::default(),
+            pause: std::sync::atomic::AtomicBool::new(false),
+        };
+        ops.load(&platform, false).await.unwrap();
+        let request_id = match creation {
+            "command" => ops
+                .mutate(
+                    Action::CreateRequest {
+                        web_socket: false,
+                        collection_id: Some(collection.clone()),
+                        group_id: None,
+                    },
+                    None,
+                    &platform,
+                    &SessionSecrets::default(),
+                    &Secrets,
+                )
+                .await
+                .created_id
+                .unwrap(),
+            "draft" => ops.new_request(false, collection.clone(), None).request.id,
+            _ => {
+                let saved = ops
+                    .save(
+                        document("saved", Some(&collection), true),
+                        None,
+                        &platform,
+                        &SessionSecrets::default(),
+                        &Secrets,
+                    )
+                    .await;
+                assert!(saved.succeeded);
+                saved.location.unwrap().request.id
+            }
+        };
+        let identity = history.request_identity(Some(&collection), &request_id);
+        let mut body = BodyStore::new("run", root.path()).unwrap();
+        body.append(b"new request").unwrap();
+        body.finish().unwrap();
+        let before = history.snapshot().history_revision;
+        history.record(
+            &identity,
+            "run",
+            SessionRunSnapshot {
+                prepared: Some(SessionPrepared {
+                    proxy: None,
+                    method: "GET".into(),
+                    url: "https://example.invalid/new".into(),
+                    headers: vec![],
+                    body: SessionPreparedBody {
+                        byte_count: 0,
+                        content_type: None,
+                        text_preview: None,
+                        redacted: false,
+                    },
+                    transport: DomainTransport::default(),
+                }),
+                ..Default::default()
+            },
+            &Arc::new(Mutex::new(body)),
+        );
+        let snapshot = history.snapshot();
+        assert_eq!(snapshot.history_entries.len(), 1, "{creation}");
+        assert!(snapshot.history_revision > before, "{creation}");
+        assert!(
+            snapshot
+                .request_activity
+                .contains_key(&identity.activity_key()),
+            "{creation}"
+        );
+    }
+}

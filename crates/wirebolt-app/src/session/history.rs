@@ -14,6 +14,13 @@ pub struct SessionRequestIdentity {
 }
 impl SessionRequestIdentity {
     #[must_use]
+    pub fn new(collection_id: &str, request_id: &str) -> Self {
+        Self {
+            collection_id: collection_id.into(),
+            request_id: request_id.into(),
+        }
+    }
+    #[must_use]
     pub fn activity_key(&self) -> String {
         format!("{}/{}", self.collection_id, self.request_id)
     }

@@ -12,7 +12,6 @@ use super::io::{
 use super::{
     SessionWorkspaceCommand, SessionWorkspaceEdit, SessionWorkspacePlan, WorkspaceSession,
 };
-use crate::lock;
 use crate::{
     domain::{
         DomainLocation, DomainRequestDraft, DomainWorkspace,
@@ -20,6 +19,7 @@ use crate::{
     },
     session::secrets::{SessionSecretPlatform, SessionSecrets},
 };
+use crate::{lock, session::history::SessionRequestIdentity};
 use std::{
     collections::{HashMap, HashSet},
     sync::{Arc, Mutex},
@@ -97,8 +97,21 @@ struct State {
     undo: HashMap<u64, (Option<SessionWorkspaceEdit>, String)>,
     search: HashMap<(String, String), (String, String)>,
     redo_tokens: HashSet<u64>,
-    removed_requests: HashSet<(String, String)>,
-    request_positions: HashMap<(String, String), (Option<String>, i64)>,
+    removed_requests: HashSet<SessionRequestIdentity>,
+    request_positions: HashMap<SessionRequestIdentity, RequestPosition>,
+}
+#[derive(Clone, Debug, Default)]
+struct RequestPosition {
+    group_id: Option<String>,
+    order: i64,
+}
+impl From<&DomainLocation> for RequestPosition {
+    fn from(location: &DomainLocation) -> Self {
+        Self {
+            group_id: location.group_id.clone(),
+            order: location.order,
+        }
+    }
 }
 struct EnvironmentSave {
     environment: crate::domain::DomainEnvironment,
@@ -561,17 +574,19 @@ impl WorkspaceOperations {
                             .iter()
                             .any(|r| r.request.id == request.request.id)
                 }) {
-                    state
-                        .removed_requests
-                        .insert((collection.id.clone(), request.request.id.clone()));
+                    state.removed_requests.insert(SessionRequestIdentity::new(
+                        &collection.id,
+                        &request.request.id,
+                    ));
                 }
             }
         }
         for collection in &plan.collections {
             for request in &collection.requests {
-                state
-                    .removed_requests
-                    .remove(&(collection.id.clone(), request.request.id.clone()));
+                state.removed_requests.remove(&SessionRequestIdentity::new(
+                    &collection.id,
+                    &request.request.id,
+                ));
             }
         }
     }
@@ -656,6 +671,7 @@ impl WorkspaceOperations {
         self.workspace.commit(plan.clone());
         self.remember_request_positions(&plan.collections);
         self.move_history(&plan.effects).await;
+        self.reconcile_current_history();
         secrets.observe(plan.observed_secrets.clone());
         if failed {
             self.fail(crate::response::ResponseFailureKind::Workspace);
@@ -723,21 +739,26 @@ impl WorkspaceOperations {
         self.saved_request(&location);
         location
     }
+    fn reconcile_current_history(&self) {
+        if let Some(history) = lock(&self.history).as_ref() {
+            history.reconcile_history(&lock(&self.workspace.workspace));
+        }
+    }
     fn remember_request_positions(&self, collections: &[crate::domain::DomainCollection]) {
         let mut state = lock(&self.state);
         for collection in collections {
             for request in &collection.requests {
                 state.request_positions.insert(
-                    (collection.id.clone(), request.request.id.clone()),
-                    (request.group_id.clone(), request.order),
+                    SessionRequestIdentity::new(&collection.id, &request.request.id),
+                    RequestPosition::from(request),
                 );
             }
         }
     }
     fn saved_request(&self, location: &DomainLocation) {
         lock(&self.state).request_positions.insert(
-            (location.collection_id.clone(), location.request.id.clone()),
-            (location.group_id.clone(), location.order),
+            SessionRequestIdentity::new(&location.collection_id, &location.request.id),
+            RequestPosition::from(location),
         );
         if let Some(c) = lock(&self.workspace.workspace)
             .collections
@@ -754,6 +775,7 @@ impl WorkspaceOperations {
                 c.requests.push(location.clone());
             }
         }
+        self.reconcile_current_history();
     }
     pub async fn save(
         &self,
@@ -787,7 +809,10 @@ impl WorkspaceOperations {
             && saved.is_none()
             && lock(&self.state)
                 .removed_requests
-                .contains(&(collection_id.clone(), result.draft.id.clone()))
+                .contains(&SessionRequestIdentity::new(
+                    &collection_id,
+                    &result.draft.id,
+                ))
         {
             self.fail_reason(
                 "The saved request has moved or been deleted. Reopen it before saving.".into(),
@@ -805,20 +830,23 @@ impl WorkspaceOperations {
         }
         result.draft.authentication = authentication;
         secrets.observe(request_references(&result.draft).into_iter().collect());
-        let (group_id, order) = saved.map_or_else(
+        let position = saved.map_or_else(
             || {
                 lock(&self.state)
                     .request_positions
-                    .get(&(collection_id.clone(), result.draft.id.clone()))
+                    .get(&SessionRequestIdentity::new(
+                        &collection_id,
+                        &result.draft.id,
+                    ))
                     .cloned()
                     .unwrap_or_default()
             },
-            |request| (request.group_id, request.order),
+            |request| RequestPosition::from(&request),
         );
         let location = DomainLocation {
             collection_id,
-            group_id,
-            order,
+            group_id: position.group_id,
+            order: position.order,
             request: result.draft.clone(),
         };
         if let Some(reason) = commands(

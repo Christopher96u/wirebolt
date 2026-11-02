@@ -4,7 +4,9 @@
 
 `icon.png` is exported from the app's existing `AppIcon.icns`.
 
-Screenshots show Wirebolt at source revision `324d11a`, using a disposable Catalog API workspace and local fixtures. Overview, notes, environments, WebSocket and Git images were captured from the running app window. The proxy image was rendered from the same native settings view and omits the surrounding window. These are actual app views, not design mockups or generated artwork.
+The environment inspector image was refreshed for the pre-rc2 integration on November 2, 2026, using the `environment-screenshots` native workload and `NativeTestSupport.capture`. It renders the current inspector in process with literal fixture variables, disposable preferences and isolated history/cookies; it does not open a real workspace or access Keychain.
+
+The other screenshots show Wirebolt at source revision `324d11a`, using a disposable Catalog API workspace and local fixtures. Overview, notes, WebSocket and Git images were captured from the running app window. The proxy image was rendered from the same native settings view and omits the surrounding window. These are actual app views, not design mockups or generated artwork.
 
 | Image | Demonstrates |
 | --- | --- |
