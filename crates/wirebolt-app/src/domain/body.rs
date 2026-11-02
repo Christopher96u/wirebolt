@@ -98,10 +98,8 @@ pub const fn can_format(body: &DomainBody) -> bool {
 
 #[must_use]
 pub const fn kind_can_format(kind: DomainBodyKind) -> bool {
-    matches!(
-        kind,
-        DomainBodyKind::Json | DomainBodyKind::Xml | DomainBodyKind::Html
-    )
+    // XML/HTML whitespace can be significant without a schema or rendering context.
+    matches!(kind, DomainBodyKind::Json)
 }
 
 /// The native adapter supplies Foundation's numeric, case-insensitive, forced
@@ -115,12 +113,6 @@ pub fn formatted(body: DomainBody, ordering: &dyn BodyKeyOrdering) -> DomainBody
     match body {
         DomainBody::Json { value } => DomainBody::Json {
             value: format_json(&value, ordering).unwrap_or(value),
-        },
-        DomainBody::Xml { value } => DomainBody::Xml {
-            value: value.replace("><", ">\n<"),
-        },
-        DomainBody::Html { value } => DomainBody::Html {
-            value: value.replace("><", ">\n<"),
         },
         other => other,
     }

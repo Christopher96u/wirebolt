@@ -28,6 +28,7 @@ Changes under **Unreleased** are on `main` but not in a published build yet. Dow
 
 ### Fixed
 
+- XML and HTML payloads stay unchanged by Format, which is now disabled for these types because inserted whitespace can change their content.
 - OAuth sign-in preserves literal plus signs and consistently decodes spaces in authorization parameters and callbacks.
 - **Copy cURL** now encodes query parameters the same way as Send, including literal plus signs, punctuation and Unicode.
 - Query and form fields marked sensitive are redacted in Sent Request and History while their values are still sent.
