@@ -1,0 +1,14 @@
+schema_version = 6
+name = "Compatibility fixture"
+
+[proxy]
+mode = "direct"
+
+[transport]
+validate_tls = true
+follow_redirects = false
+maximum_redirects = 10
+total_timeout_ms = 30000
+read_timeout_ms = 10000
+client_certificate_reference = "fixture.client-certificate"
+custom_ca_path = "/fixture/ca.pem"

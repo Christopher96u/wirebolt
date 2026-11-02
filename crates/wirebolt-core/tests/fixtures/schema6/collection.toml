@@ -1,0 +1,15 @@
+schema_version = 6
+id = "api"
+name = "API"
+order = 2
+
+[[groups]]
+id = "parent"
+name = "Parent"
+order = 0
+
+[[groups]]
+id = "child"
+name = "Child"
+parent_id = "parent"
+order = 1

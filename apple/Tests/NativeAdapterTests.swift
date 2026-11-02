@@ -99,6 +99,7 @@ private struct AdapterRunner: RequestRunner {
             try? FileManager.default.removeItem(at: root)
         }
         try await CustomThemeNativeTests.run(root: root, defaults: defaults)
+        try await EnvironmentInspectorTests.run(root: root, defaults: defaults)
         typingAssignmentsAvoidDraftWork()
         lastTabDirtyConfirmAndReopen(root: root, defaults: defaults)
     }

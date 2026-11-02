@@ -70,7 +70,7 @@ warmup and the core version handshake (ABI revision 5).
 | File | What remains and why |
 | --- | --- |
 | `WireboltApp/EditorFind.swift` | Native search-field focus, keyboard handling and editor selection presentation over Rust search results. |
-| `WireboltApp/EnvironmentEditor.swift` | SwiftUI form buffers, focus and save/dismiss presentation; credential storage policy is Rust. |
+| `WireboltApp/EnvironmentEditor.swift` | SwiftUI field buffers and inspector presentation, plus AppKit end-editing notifications, truncation and accessibility; typed field commits, validation, secret storage and undo policy are Rust. |
 | `WireboltApp/FieldTextInput.swift` | Native text editing, selection, focus, accessibility and UTF-16 completion presentation. |
 | `WireboltApp/IndexedResponseEditor.swift` | Native viewport drawing, selection and clipboard integration; worker cancellation forwards to Rust through the response task adapter. |
 | `WireboltApp/IndexedTextLine.swift` | Native attributed-text layout, selection and drawing. |
