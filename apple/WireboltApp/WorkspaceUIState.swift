@@ -193,7 +193,7 @@ final class WorkspaceUIState {
     var collectionsExpanded = true
     var isShowingEnvironmentInspector = false
     var hasEnvironmentEdits = false
-    @ObservationIgnored var saveEnvironmentEdits: (@MainActor () async -> Bool)?
+    @ObservationIgnored var closeEnvironmentInspector: (@MainActor () async -> Bool)?
     var environmentCloseTrigger = 0
 
     func toggleEnvironmentInspector() {
@@ -307,7 +307,7 @@ final class WorkspaceUIState {
         closeRevision += 1
         isShowingEnvironmentInspector = false
         hasEnvironmentEdits = false
-        saveEnvironmentEdits = nil
+        closeEnvironmentInspector = nil
         pendingURLFocusID = nil
         presentationByTabID = [:]
         responseLayoutsByGroupID = [:]

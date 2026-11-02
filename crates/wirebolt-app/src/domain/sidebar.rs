@@ -577,7 +577,7 @@ pub fn move_collections(collections: &[DomainSidebarCollection], identifier: &st
 #[must_use]
 pub fn selectable_environments(environments: &[DomainEnvironment]) -> Vec<u64> {
     let mut indices: Vec<_> = (0..environments.len())
-        .filter(|&i| environments[i].id != "global")
+        .filter(|&i| environments[i].id != wirebolt_core::GLOBAL_ENVIRONMENT_ID)
         .collect();
     indices.sort_by(|&a, &b| canonical_compare(&environments[a].name, &environments[b].name));
     indices.into_iter().map(|i| i as u64).collect()

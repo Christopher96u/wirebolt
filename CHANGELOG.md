@@ -15,8 +15,7 @@ Changes under **Unreleased** are on `main` but not in a published build yet. Dow
 
 ### Changed
 
-- Environments save as you edit, with undo and redo for names, variables and secrets. Globals appears once, and long names and values stay on one line.
-
+- Environments save as you edit, with undo and redo for names, variables and secrets. Globals appears once, and long names and values stay on one line. Browsing the inspector leaves the active environment unchanged; **Use for Requests** switches it explicitly.
 - Find in large responses is faster and uses less memory; closing tabs no longer copies every open request.
 - Sidebar requests show URL paths, folders are quieter, activity columns align, and History shows the active request's entry count.
 - Redesigned sidebar, request composer and response bar. Environments are edited in a side inspector instead of a sheet.
@@ -34,7 +33,7 @@ Changes under **Unreleased** are on `main` but not in a published build yet. Dow
 - Large multipart file uploads stream from disk instead of loading the complete upload into memory before Send. Bodies up to 64 KiB can still be resent on redirects.
 - Bulk Edit accepts pasted CRLF and CR line endings in headers, query parameters and form fields without adding carriage returns to values.
 - XML and HTML payloads stay unchanged by Format, which is now disabled for these types because inserted whitespace can change their content.
-- OAuth sign-in preserves literal plus signs and consistently decodes spaces in authorization parameters and callbacks.
+- OAuth sign-in preserves literal plus signs and valueless URL parameters, and uses form encoding for authorization parameters and callbacks (spaces encode as `+`, as required by RFC 6749).
 - **Copy cURL** now encodes query parameters the same way as Send, including literal plus signs, punctuation and Unicode.
 - Query and form fields marked sensitive are redacted in Sent Request and History while their values are still sent.
 - Cookie expiry now gives valid `Max-Age` precedence over `Expires`, regardless of attribute order, and ignores invalid expiry attributes.

@@ -80,7 +80,7 @@ its workspace. Runtime storage remains outside Git-visible workspace files.
   typed history orchestration, workspace load/switch/save/import/Git transitions, named undo
   payloads, sidebar/dirty-close workflows and direct workspace/transport execution in
   `wirebolt-app::session`. Its runtime commands own send/cancel orchestration,
-  per-run cookie scoping, history/activity revisions, environment selection, secret
+  per-run cookie scoping, history/activity revisions, independent inspector browsing and active environment selection, secret
   editing/release, proxy/transport writes, OAuth acquisition and cURL coordination.
 - Rust domain modules separate stable identities (`identity`), editable URL/query state
   (`url`), native chrome labels (`chrome`), import summaries (`imports`) and Git

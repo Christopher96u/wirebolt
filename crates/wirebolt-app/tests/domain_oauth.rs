@@ -185,7 +185,7 @@ fn existing_authorization_query_keeps_form_values_flags_and_duplicates() {
     let mut c = configuration();
     c.authorization_url = "https://auth.example/authorize?tenant=a+b&flag&key=one&key=two".into();
     let (url, _) = authorization_url(&c, "challenge", "state").unwrap();
-    assert!(url.contains("tenant=a+b&flag=&key=one&key=two&response_type=code"));
+    assert!(url.contains("tenant=a+b&flag&key=one&key=two&response_type=code"));
 }
 
 fn read_request(stream: &mut std::net::TcpStream) -> String {
@@ -708,4 +708,17 @@ fn callback_form_decoding_distinguishes_spaces_and_literal_plus() {
         .unwrap(),
         "code + café"
     );
+}
+
+#[test]
+fn authorization_preserves_valueless_parameters_and_form_spaces() {
+    let mut config = configuration();
+    config.authorization_url = "https://auth.example/authorize?flag&empty=&tenant=a+b&flag".into();
+    config.scopes = "read write".into();
+    let (address, _) = authorization_url(&config, "challenge", "state").unwrap();
+    assert!(
+        address.contains("?flag&empty=&tenant=a+b&flag&"),
+        "{address}"
+    );
+    assert!(address.contains("scope=read+write"));
 }

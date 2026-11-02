@@ -38,9 +38,7 @@ pub(super) fn prepare_multipart<R: SecretResolver + ?Sized>(
     };
     let byte_count = body.byte_count();
     if let Ok(body) = body.into_prepared() {
-        headers
-            .entry(CONTENT_LENGTH)
-            .or_insert_with(|| HeaderValue::from(byte_count));
+        headers.insert(CONTENT_LENGTH, HeaderValue::from(byte_count));
         body
     } else {
         resolver.issue(

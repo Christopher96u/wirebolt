@@ -8,9 +8,7 @@
 2. Select **Globals**, or create a named environment with **New Environment**.
 3. Click **New Entry**, then edit the variable name and value. Keep the row checked to enable it. Click the lock button to make the value a secret.
 4. Finish a field with Return, Tab or by moving focus. Each change saves immediately and can be undone with **⌘Z** or redone with **⇧⌘Z**. Closing the inspector also saves the field you are editing. Invalid names stay visible with an inline explanation; correct them before closing or switching environments.
-5. Select the desired environment in the toolbar.
-
-![Environment variables for the local demo API](assets/screenshots/environments.png)
+5. Choose **Use for Requests** for the environment you are editing, or select it in the composer’s environment picker. Browsing the inspector, including Globals, never changes the active environment. The active environment is marked **Active**.
 
 Use variables in request fields with double braces:
 
@@ -20,8 +18,7 @@ Use variables in request fields with double braces:
 
 Outside editing, the URL shows each reference as a chip with just the variable name, red when no active environment defines it; click the URL to edit the raw `{{name}}` text. Global variables apply across environments. The selected environment overrides matching Global keys. A disabled row is omitted from resolution. If a variable fails to resolve, check spelling, enabled state and the selected environment before sending again.
 
-Selecting an environment in the inspector finishes the current edit and chooses the environment requests use. Globals always appears once, at the top. Use an environment’s context menu to rename or delete it. Long names and values use one line; hover or focus a field to read the full text.
-
+Selecting an environment in the inspector finishes the current edit and chooses what you edit next. Use **Use for Requests** or the composer’s environment picker to change the active environment. Globals always appears once, at the top. Use an environment’s context menu to rename or delete it. Long names and values use one line; hover or focus a field to read the full text.
 
 ## Credentials and secret references
 

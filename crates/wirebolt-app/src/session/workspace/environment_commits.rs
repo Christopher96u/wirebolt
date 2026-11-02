@@ -2,6 +2,7 @@ use super::{
     DomainWorkspace, EnvironmentSave, HashMap, NamedEdit, SessionSecretPlatform, SessionSecrets,
     SessionWorkspaceEdit, WorkspaceMutation, WorkspaceOperations, WorkspacePlatform, actions,
 };
+use crate::session::workspace::SessionEnvironmentRestoreSelection;
 type PreparedCommit = (NamedEdit, HashMap<String, String>);
 type PreparedResult = Result<Option<PreparedCommit>, String>;
 use crate::domain::{DomainEnvironment, DomainValueSource, DomainVariable};
@@ -86,18 +87,14 @@ impl WorkspaceOperations {
             .find(|e| e.id == id)
             .cloned()
             .or_else(|| {
-                (id == "global").then(|| DomainEnvironment {
-                    id: "global".into(),
-                    name: "Global Environment".into(),
-                    ..Default::default()
-                })
+                (id == wirebolt_core::GLOBAL_ENVIRONMENT_ID).then(environment::global_environment)
             })
             .ok_or("This environment no longer exists.")?;
         let original = environment.clone();
         let mut values = HashMap::new();
         let label = match commit {
             C::Rename { name } => {
-                if id == "global" {
+                if id == wirebolt_core::GLOBAL_ENVIRONMENT_ID {
                     return Err("Globals cannot be renamed.".into());
                 }
                 environment.name = name;
@@ -140,14 +137,14 @@ impl WorkspaceOperations {
                 "Delete Variables"
             }
             C::Delete => {
-                if id == "global" {
+                if id == wirebolt_core::GLOBAL_ENVIRONMENT_ID {
                     return Err("Globals cannot be deleted.".into());
                 }
                 return Ok(Some((
                     NamedEdit {
                         edit: SessionWorkspaceEdit::RemoveEnvironment {
                             id: id.into(),
-                            is_creation: false,
+                            selection: SessionEnvironmentRestoreSelection::Preserve,
                         },
                         name: "Delete Environment".into(),
                         created_id: None,
@@ -160,10 +157,7 @@ impl WorkspaceOperations {
         if original == environment && values.is_empty() {
             return Ok(None);
         }
-        Ok(Some((
-            environment::restore(&workspace, environment, label),
-            values,
-        )))
+        Ok(Some((environment::save_edit(environment, label), values)))
     }
 }
 
@@ -175,7 +169,7 @@ fn create_environment(workspace: &DomainWorkspace) -> PreparedCommit {
         environment.name = format!("New Environment {suffix}");
     }
     (
-        environment::restore(workspace, environment, "Add Environment"),
+        environment::save_edit(environment, "Add Environment"),
         HashMap::new(),
     )
 }

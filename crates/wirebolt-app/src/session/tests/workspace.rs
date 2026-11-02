@@ -114,7 +114,6 @@ fn environment_edits_and_deletion_restore_position_and_secret_references() {
         None,
         Edit::RestoreEnvironment {
             environment: changed.clone(),
-            index: 0,
             selection: SessionEnvironmentRestoreSelection::SelectCreated,
         },
     )
@@ -128,7 +127,6 @@ fn environment_edits_and_deletion_restore_position_and_secret_references() {
         workspace.clone(),
         Edit::RestoreEnvironment {
             environment: changed,
-            index: 0,
             selection: SessionEnvironmentRestoreSelection::SelectCreated,
         },
     );
@@ -136,7 +134,7 @@ fn environment_edits_and_deletion_restore_position_and_secret_references() {
         workspace,
         Edit::RemoveEnvironment {
             id: "local".into(),
-            is_creation: false,
+            selection: SessionEnvironmentRestoreSelection::Preserve,
         },
     );
 }
@@ -345,7 +343,6 @@ fn global_environment_save_does_not_select_it() {
                 id: "global".into(),
                 ..Default::default()
             },
-            index: 0,
             selection: SessionEnvironmentRestoreSelection::SelectCreated,
         },
     )

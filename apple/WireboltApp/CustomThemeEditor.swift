@@ -87,7 +87,7 @@ struct CustomThemeEditor: View {
 struct ThemeSample: View {
     @Environment(\.wireboltTheme) private var theme
     var body: some View {
-        let d = theme.definition
+        let definition = theme.definition
         VStack(alignment: .leading, spacing: 16) {
             HStack {
                 Text("Preview").font(.headline)
@@ -99,36 +99,36 @@ struct ThemeSample: View {
                 Spacer()
             }
             HStack {
-                Text("{{base_url}}").foregroundStyle(d.variableForeground.color)
-                    .padding(5).background(d.variableBackground.color, in: .rect(cornerRadius: 4))
+                Text("{{base_url}}").foregroundStyle(definition.variableForeground.color)
+                    .padding(5).background(definition.variableBackground.color, in: .rect(cornerRadius: 4))
                 Text("/v1/example").foregroundStyle(theme.primary.color)
                 Spacer()
-                Text("Send").foregroundStyle(d.sendForeground.color).padding(.horizontal, 14).padding(.vertical, 5)
-                    .background(d.sendBackground.color, in: .rect(cornerRadius: 6))
+                Text("Send").foregroundStyle(definition.sendForeground.color).padding(.horizontal, 14).padding(.vertical, 5)
+                    .background(definition.sendBackground.color, in: .rect(cornerRadius: 6))
             }
             VStack(alignment: .leading, spacing: 5) {
-                Text("// A response in your theme").foregroundStyle(d.dim.color)
-                Text("{").foregroundStyle(d.syntaxPunctuation.color)
+                Text("// A response in your theme").foregroundStyle(definition.dim.color)
+                Text("{").foregroundStyle(definition.syntaxPunctuation.color)
                 HStack(spacing: 0) {
-                    Text("  \"message\": ").foregroundStyle(d.syntaxKey.color)
-                    Text("\"Hello, Wirebolt\"").foregroundStyle(d.syntaxString.color)
-                    Text(",").foregroundStyle(d.syntaxPunctuation.color)
+                    Text("  \"message\": ").foregroundStyle(definition.syntaxKey.color)
+                    Text("\"Hello, Wirebolt\"").foregroundStyle(definition.syntaxString.color)
+                    Text(",").foregroundStyle(definition.syntaxPunctuation.color)
                 }
                 HStack(spacing: 0) {
-                    Text("  \"count\": ").foregroundStyle(d.syntaxKey.color)
-                    Text("42").foregroundStyle(d.syntaxNumber.color)
-                    Text(", \"ready\": ").foregroundStyle(d.syntaxKey.color)
-                    Text("true").foregroundStyle(d.syntaxKeyword.color)
+                    Text("  \"count\": ").foregroundStyle(definition.syntaxKey.color)
+                    Text("42").foregroundStyle(definition.syntaxNumber.color)
+                    Text(", \"ready\": ").foregroundStyle(definition.syntaxKey.color)
+                    Text("true").foregroundStyle(definition.syntaxKeyword.color)
                 }
-                Text("}").foregroundStyle(d.syntaxPunctuation.color)
+                Text("}").foregroundStyle(definition.syntaxPunctuation.color)
             }.font(.system(size: 13, design: .monospaced))
             HStack(spacing: 20) {
-                Label("200 OK", systemImage: "checkmark.circle.fill").foregroundStyle(d.success.color)
-                Label("Warning", systemImage: "exclamationmark.triangle.fill").foregroundStyle(d.warning.color)
-                Label("Error", systemImage: "xmark.octagon.fill").foregroundStyle(d.error.color)
+                Label("200 OK", systemImage: "checkmark.circle.fill").foregroundStyle(definition.success.color)
+                Label("Warning", systemImage: "exclamationmark.triangle.fill").foregroundStyle(definition.warning.color)
+                Label("Error", systemImage: "xmark.octagon.fill").foregroundStyle(definition.error.color)
             }.font(.caption)
         }
-        .padding(20).background(d.card.color, in: .rect(cornerRadius: 12))
+        .padding(20).background(definition.card.color, in: .rect(cornerRadius: 12))
         .overlay { RoundedRectangle(cornerRadius: 12).strokeBorder(theme.cardBorder.color) }
         .accessibilityElement(children: .contain).accessibilityLabel("Theme live preview")
     }

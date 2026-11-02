@@ -66,18 +66,9 @@ pub(super) fn row_mut<'a>(
         .ok_or_else(|| "This variable no longer exists.".into())
 }
 
-pub(super) fn restore(
-    workspace: &DomainWorkspace,
-    environment: DomainEnvironment,
-    name: &str,
-) -> NamedEdit {
+pub(super) fn save_edit(environment: DomainEnvironment, name: &str) -> NamedEdit {
     NamedEdit {
         edit: SessionWorkspaceEdit::RestoreEnvironment {
-            index: workspace
-                .environments
-                .iter()
-                .position(|e| e.id == environment.id)
-                .unwrap_or(workspace.environments.len()) as u64,
             environment,
             selection: SessionEnvironmentRestoreSelection::SelectCreated,
         },
@@ -102,16 +93,41 @@ impl std::fmt::Debug for EnvironmentCommit {
 pub fn inspector_environments(mut environments: Vec<DomainEnvironment>) -> Vec<DomainEnvironment> {
     let global = environments
         .iter()
-        .position(|e| e.id == "global")
-        .map_or_else(
-            || DomainEnvironment {
-                id: "global".into(),
-                name: "Global Environment".into(),
-                ..Default::default()
-            },
-            |index| environments.remove(index),
-        );
+        .position(|e| e.id == wirebolt_core::GLOBAL_ENVIRONMENT_ID)
+        .map_or_else(global_environment, |index| environments.remove(index));
     environments.sort_by(|left, right| left.id.cmp(&right.id));
+    let mut global = global;
+    global.name = global_environment().name;
     environments.insert(0, global);
     environments
+}
+
+#[must_use]
+pub fn global_environment() -> DomainEnvironment {
+    DomainEnvironment {
+        id: wirebolt_core::GLOBAL_ENVIRONMENT_ID.into(),
+        name: "Globals".into(),
+        ..Default::default()
+    }
+}
+
+/// Inspector browsing is independent of the runtime's active environment.
+#[derive(Clone, Debug)]
+pub struct EnvironmentInspector {
+    pub editing_id: String,
+}
+impl EnvironmentInspector {
+    #[must_use]
+    pub fn new(active: Option<String>) -> Self {
+        Self {
+            editing_id: active.unwrap_or_else(|| wirebolt_core::GLOBAL_ENVIRONMENT_ID.into()),
+        }
+    }
+    pub fn browse(&mut self, id: String) {
+        self.editing_id = id;
+    }
+    #[must_use]
+    pub fn use_for_requests(&self) -> Option<String> {
+        (self.editing_id != wirebolt_core::GLOBAL_ENVIRONMENT_ID).then(|| self.editing_id.clone())
+    }
 }

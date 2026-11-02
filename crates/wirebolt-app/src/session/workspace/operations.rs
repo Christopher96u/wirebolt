@@ -185,7 +185,7 @@ impl WorkspaceOperations {
                 workspace
                     .environments
                     .iter()
-                    .find(|e| e.id != "global")
+                    .find(|e| e.id != wirebolt_core::GLOBAL_ENVIRONMENT_ID)
                     .map(|e| e.id.clone())
             });
         let select = workspace

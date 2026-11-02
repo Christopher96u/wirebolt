@@ -19,7 +19,7 @@ struct AppearanceSettingsView: View {
     /// Following the system still marks the preset currently in use, so one card is always selected.
     private var selectedPreset: ThemePreset? { activeCustom == nil ? theme.definition.preset : nil }
 
-    private var activeCustom: CustomTheme? { store.customThemes.first { $0.id == selection } }
+    private var activeCustom: CustomTheme? { store.appearance(selection: selection).custom }
 
     var body: some View {
         SettingsPage(title: "Appearance", subtitle: "Choose a contrast-checked theme. Text ≥ 7:1, muted text ≥ 4.5:1.") {
@@ -75,7 +75,7 @@ struct AppearanceSettingsView: View {
                     Label(String(format: "Text %.1f:1 · Muted %.1f:1", primary, muted), systemImage: "checkmark")
                         .foregroundStyle(theme.definition.success.color)
                 }
-                SettingsRow(title: "VS Code theme", detail: "Import a .json colour theme, or drop it here. Comments and trailing commas are accepted.") {
+                SettingsRow(title: "VS Code theme", detail: "Import a .json color theme, or drop it here. Comments and trailing commas are accepted.") {
                     Button(readingImport ? "Importing…" : "Import…", systemImage: "doc.text") { store.clearError(); importing = true }
                         .disabled(readingImport || !store.isWritable)
                 }
@@ -165,7 +165,7 @@ struct AppearanceSettingsView: View {
         .buttonStyle(.plain)
         .disabled(!store.isWritable)
         .accessibilityLabel("Custom theme from 2 colors")
-        .help("Derive a complete theme from a background and an accent colour.")
+        .help("Derive a complete theme from a background and an accent color.")
     }
 
     private func swatch(_ color: PaletteColor) -> some View {

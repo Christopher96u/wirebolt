@@ -829,3 +829,26 @@ fn multipart_upload_stays_file_backed() {
         prepared.body_byte_count().to_string()
     );
 }
+
+#[test]
+fn multipart_replaces_stale_user_content_length() {
+    let mut request = Request::new(
+        DocumentId::new("upload").unwrap(),
+        "Upload",
+        "POST",
+        "http://localhost/",
+    );
+    request.headers = serde_json::from_value(
+        serde_json::json!([{"id":"length", "name":"Content-Length", "value":"1", "enabled":true}]),
+    )
+    .unwrap();
+    request.body =
+        serde_json::from_value(serde_json::json!({"kind":"multipart","parts":[]})).unwrap();
+    let prepared = RequestPipeline::new(None, &wirebolt_core::NoSecrets)
+        .prepare(&request)
+        .unwrap();
+    assert_eq!(
+        prepared.headers()["content-length"].to_str().unwrap(),
+        prepared.body_byte_count().to_string()
+    );
+}

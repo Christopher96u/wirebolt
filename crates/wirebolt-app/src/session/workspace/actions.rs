@@ -394,7 +394,6 @@ pub fn action(workspace: &DomainWorkspace, command: WorkspaceAction) -> Option<N
             named(
                 Edit::RestoreEnvironment {
                     environment,
-                    index: index.unwrap_or(workspace.environments.len()) as u64,
                     selection: SessionEnvironmentRestoreSelection::SelectCreated,
                 },
                 "Edit Environment",
@@ -403,7 +402,7 @@ pub fn action(workspace: &DomainWorkspace, command: WorkspaceAction) -> Option<N
         A::DeleteEnvironment { id } => named(
             Edit::RemoveEnvironment {
                 id,
-                is_creation: false,
+                selection: SessionEnvironmentRestoreSelection::Preserve,
             },
             "Delete Environment",
         ),

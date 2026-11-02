@@ -243,15 +243,15 @@ Read [CONTEXT.md](../CONTEXT.md) for workspace vocabulary, ownership and invaria
 ## Custom themes
 
 Settings → Appearance can derive a theme **From 2 colors** or import a VS Code
-`.json` colour theme through **Import…** or a file drop. Both paths show a preview
+`.json` color theme through **Import…** or a file drop. Both paths show a preview
 before saving. The preview lists contrast adjustments; mid-tone backgrounds may
 move toward light or dark so all text remains readable. Increase Contrast also
-applies to custom syntax, variable, status and method colours. Geometry uses the
+applies to custom syntax, variable, status and method colors. Geometry uses the
 same Rust-owned tokens as built-in themes.
 
 VS Code import accepts UTF-8 JSONC (comments, trailing commas and an optional BOM),
 up to **1 MiB**. It maps editor, sidebar, list, input, button, diagnostic and token
-scope colours, composites alpha colours over the canvas, and derives missing
+scope colors, composites alpha colors over the canvas, and derives missing
 tokens. Parent `include` files are reported in the preview and are not resolved.
 
 Rust persists up to **64** custom palettes in version 1 of
@@ -267,14 +267,17 @@ recovery. `CustomThemeTests` exercises the typed native facade under the strict
 cooperative pool. `CustomThemeNativeTests` hosts the production Appearance page
 with temporary storage and preferences, sends events only to its own window, and
 checks picker selection, preview saving, deletion and visible import errors. Run
-it with `scripts/native-adapter-tests.sh`, or capture in-process PNGs with:
+it with `scripts/native-adapter-tests.sh`. To capture fixture-only in-process PNGs:
 
 ```sh
-./scripts/native-performance.sh build
-build/native-performance/workloads themes-ui 1 build/native-performance/themes-ui.json
+mkdir -p build/review-screenshots
+WIREBOLT_NATIVE_CAPTURE_DIRECTORY="$PWD/build/review-screenshots" scripts/native-adapter-tests.sh
 ```
 
-The PNGs are written under `build/native-performance/theme-screenshots/`.
+This optional variable controls captures from both native suites. No real
+workspace, preferences or Keychain is used. The benchmark-only
+`environment-screenshots` mode writes `environment-inspector.png` beside its
+output JSON; it also uses disposable fixtures.
 
 ## Documentation changes
 

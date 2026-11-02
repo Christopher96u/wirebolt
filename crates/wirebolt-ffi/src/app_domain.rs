@@ -382,6 +382,8 @@ pub struct DomainMethodChip {
 
 #[uniffi::remote(Record)]
 pub struct ResolvedTokens {
+    pub is_dark: bool,
+    pub statuses: std::collections::HashMap<DomainStatusClass, RgbColor>,
     pub definition: ThemeTokens,
     pub primary: RgbColor,
     pub muted: RgbColor,

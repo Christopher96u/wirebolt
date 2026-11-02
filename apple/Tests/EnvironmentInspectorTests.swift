@@ -2,10 +2,6 @@ import AppKit
 import Foundation
 import SwiftUI
 
-private struct InspectorRunner: RequestRunner {
-    func events(for input: RunInput, runID: RunID) -> AsyncThrowingStream<RunEvent, any Error> { AsyncThrowingStream { $0.finish() } }
-    func cancel(runID: RunID) {}
-}
 private actor InspectorStore: WorkspacePersistence {
     func load() async throws -> WorkspaceDraft { WorkspaceDraft(name: "Fixture") }
     func save(request: RequestDraft, in collectionID: String) async throws {}
@@ -17,50 +13,23 @@ private actor InspectorStore: WorkspacePersistence {
     static func fields(_ view: NSView) -> [NSTextField] {
         (view as? NSTextField).map { [$0] } ?? view.subviews.flatMap(fields)
     }
-    static func accessibility(_ object: Any, depth: Int = 0) -> [(String, String)] {
-        guard depth < 40, let object = object as? NSObject else { return [] }
-        func value(_ name: String) -> Any? {
-            let selector = NSSelectorFromString(name)
-            return object.responds(to: selector) ? object.perform(selector)?.takeUnretainedValue() : nil
-        }
-        let name = ["accessibilityLabel", "accessibilityTitle", "accessibilityValue"].compactMap { value($0) as? String }.first(where: { !$0.isEmpty }) ?? ""
-        return [(value("accessibilityRole") as? String ?? "", name)] + (value("accessibilityChildren") as? [Any] ?? []).flatMap { accessibility($0, depth: depth + 1) }
-    }
-    @discardableResult
-    static func press(_ object: Any, named name: String, depth: Int = 0) -> Bool {
-        guard depth < 40, let object = object as? NSObject else { return false }
-        let label = NSSelectorFromString("accessibilityLabel")
-        let action = NSSelectorFromString("accessibilityPerformPress")
-        if object.responds(to: label), object.responds(to: action),
-           object.perform(label)?.takeUnretainedValue() as? String == name {
-            _ = object.perform(action)
-            return true
-        }
-        let children = NSSelectorFromString("accessibilityChildren")
-        guard object.responds(to: children) else { return false }
-        return (object.perform(children)?.takeUnretainedValue() as? [Any] ?? []).contains { press($0, named: name, depth: depth + 1) }
-    }
-
-    static func settle(_ host: NSView) async throws {
-        for _ in 0..<10 {
-            try await Task.sleep(for: .milliseconds(10))
-            host.layoutSubtreeIfNeeded()
-        }
-    }
+    static func accessibility(_ object: Any) -> [(String, String)] { NativeTestSupport.elements(object).map { ($0.role, $0.name) } }
+    static func press(_ object: Any, named name: String) -> Bool { NativeTestSupport.press(object, named: name) }
+    static func settle(_ host: NSView) async throws { await NativeTestSupport.settle(host) }
     static func replace(_ field: NSTextField, with text: String, window: NSWindow) {
         window.makeFirstResponder(field)
         guard let editor = field.currentEditor() as? NSTextView else { preconditionFailure("Field must accept native focus") }
         editor.insertText(text, replacementRange: NSRange(location: 0, length: editor.string.utf16.count))
     }
     static func run(root: URL, defaults: UserDefaults) async throws {
-        let model = WireboltModel(runner: InspectorRunner(), persistence: InspectorStore(),
+        let model = WireboltModel(runner: FixtureRunner(), persistence: InspectorStore(),
             history: HistoryRepository(root: root.appending(path: "inspector-history")),
             cookieJar: CookieJar(storageURL: root.appending(path: "inspector-cookies")),
             proxyPreferences: ProxyPreferences(defaults: defaults))
         let longName = "service_base_url_for_integration_and_staging"
         let longValue = "http://192.168.100.200:8080/api/v1/integration/resources?include=metadata"
         model.workspace.environments = [EnvironmentDraft(id: "local", name: "Local", variables: [
-            EnvironmentVariableDraft(id: "url", key: longName, value: .literal(longValue))])]
+            EnvironmentVariableDraft(id: "url", key: longName, value: .literal(longValue))]), EnvironmentDraft(id: "production", name: "Production")]
         model.selectedEnvironmentID = "local"
         let interface = WorkspaceUIState(defaults: defaults)
         var closeCount = 0
@@ -72,8 +41,8 @@ private actor InspectorStore: WorkspacePersistence {
         model.undoManager = undoManager
         window.orderFront(nil)
         defer { window.close() }
-        NSApp.accessibilitySetValue(true, forAttribute: NSAccessibility.Attribute(rawValue: "AXEnhancedUserInterface"))
-        NSApp.accessibilitySetValue(true, forAttribute: NSAccessibility.Attribute(rawValue: "AXManualAccessibility"))
+        let restoreAccessibility = NativeTestSupport.enableAccessibility()
+        defer { restoreAccessibility() }
         try await settle(host)
         let tree = accessibility(host)
         precondition(tree.filter { $0.0 == "AXButton" && $0.1 == "Globals" }.count == 1, "Globals appears once")
@@ -86,6 +55,24 @@ private actor InspectorStore: WorkspacePersistence {
             precondition(field.toolTip == full && field.accessibilityValue() == full, "Hover and VoiceOver expose the entire value")
         }
         print("inspectorGlobalsOnceAndFullAccessibilityValues: passed")
+        precondition(press(host, named: "Production"))
+        try await settle(host)
+        precondition(model.selectedEnvironmentID == "local", "Browsing production never activates it")
+        precondition(press(host, named: "Use for Requests"))
+        try await settle(host)
+        precondition(model.selectedEnvironmentID == "production", "Explicit use activates the edited environment")
+        precondition(NativeTestSupport.elements(host).contains { $0.object.responds(to: NSSelectorFromString("accessibilityValue")) && $0.object.value(forKey: "accessibilityValue") as? String == "Active" }, "The active environment is marked")
+        precondition(press(host, named: "Globals"))
+        try await settle(host)
+        precondition(model.selectedEnvironmentID == "production", "Browsing Globals never clears the active environment")
+        precondition(press(host, named: "Local"))
+        try await settle(host)
+        precondition(press(host, named: "Use for Requests"))
+        try await settle(host)
+        key = fields(host).first { $0.accessibilityLabel() == "Variable name" }!
+        value = fields(host).first { $0.accessibilityLabel() == "Value for \(longName)" }!
+        print("inspectorBrowsingPreservesActiveAndExplicitUseActivates: passed")
+
 
         replace(value, with: "http://localhost:8080", window: window)
         try await settle(host)
@@ -113,7 +100,7 @@ private actor InspectorStore: WorkspacePersistence {
         replace(value, with: "switch-value", window: window)
         precondition(press(host, named: "Globals"))
         try await settle(host)
-        precondition(model.selectedEnvironmentID == nil && model.workspace.environments[0].variables[0].value == .literal("switch-value"), "Switching commits the active field")
+        precondition(model.selectedEnvironmentID == "local" && model.workspace.environments[0].variables[0].value == .literal("switch-value"), "Switching commits the active field")
         precondition(press(host, named: "Local"))
         try await settle(host)
         key = fields(host).first { $0.accessibilityLabel() == "Variable name" }!
@@ -127,7 +114,7 @@ private actor InspectorStore: WorkspacePersistence {
         precondition(press(host, named: "Globals"))
         try await settle(host)
         precondition(model.selectedEnvironmentID == "local" && key.stringValue == "bad name", "Invalid text blocks switching without disappearing")
-        guard let close = interface.saveEnvironmentEdits else { preconditionFailure("Inspector installs its close handler") }
+        guard let close = interface.closeEnvironmentInspector else { preconditionFailure("Inspector installs its close handler") }
         let invalidClosed = await close()
         precondition(!invalidClosed && closeCount == 0)
         precondition(model.workspace.environments[0].variables[0].key == "tab_key")
@@ -151,6 +138,11 @@ private actor InspectorStore: WorkspacePersistence {
         try await layoutFixtures(model: model, defaults: defaults)
     }
     static func layoutFixtures(model: WireboltModel, defaults: UserDefaults) async throws {
+        model.workspace.environments = [
+            EnvironmentDraft(id: "local", name: "Local", variables: [EnvironmentVariableDraft(id: "local-url", key: "base_url", value: .literal("https://local.example.invalid/api"))]),
+            EnvironmentDraft(id: "production", name: "Production", variables: [EnvironmentVariableDraft(id: "production-url", key: "base_url", value: .literal("https://api.example.invalid/v1/resources"))])
+        ]
+        model.selectedEnvironmentID = "local"
         for density in [InterfaceDensity.compact, .comfortable] {
             for size in [DynamicTypeSize.large, .accessibility3] {
                 let interface = WorkspaceUIState(defaults: defaults)
@@ -163,6 +155,9 @@ private actor InspectorStore: WorkspacePersistence {
                 window.contentView = host
                 window.orderFront(nil)
                 try await settle(host)
+                precondition(press(host, named: "Production"))
+                try await settle(host)
+                precondition(model.selectedEnvironmentID == "local")
                 let inputs = fields(host).filter { $0.accessibilityLabel() == "Variable name" || $0.accessibilityLabel() == "Value for \(model.workspace.environments[0].variables[0].key)" }
                 precondition(inputs.count == 2)
                 for input in inputs {
@@ -171,7 +166,7 @@ private actor InspectorStore: WorkspacePersistence {
                     precondition(input.bounds.height >= (input.font?.pointSize ?? 0), "Text is not clipped vertically")
                 }
                 precondition(!inputs[0].convert(inputs[0].bounds, to: host).intersects(inputs[1].convert(inputs[1].bounds, to: host)), "Name and value never overlap")
-                if let directory = ProcessInfo.processInfo.environment["WIREBOLT_INSPECTOR_CAPTURE_DIRECTORY"] {
+                if let directory = ProcessInfo.processInfo.environment["WIREBOLT_NATIVE_CAPTURE_DIRECTORY"] {
                     guard let bitmap = host.bitmapImageRepForCachingDisplay(in: host.bounds) else { preconditionFailure("Inspector capture failed") }
                     host.cacheDisplay(in: host.bounds, to: bitmap)
                     let name = "inspector-\(density)-\(size).png"

@@ -17,7 +17,7 @@ pub const METHOD_COUNT: usize = MethodChipKind::ALL.len();
 #[must_use]
 pub fn derive(background: RgbColor, accent: RgbColor) -> ThemePreview {
     let dark = background.luminance() < 0.179;
-    let mut d = theme(if dark {
+    let mut tokens = theme(if dark {
         DomainThemePreset::Black
     } else {
         DomainThemePreset::Paper
@@ -27,51 +27,50 @@ pub fn derive(background: RgbColor, accent: RgbColor) -> ThemePreview {
     } else {
         RgbColor::hex(0)
     };
-    d.window = background;
-    d.sidebar = mix(background, step, 0.025);
-    d.card = mix(background, step, 0.055);
-    d.selected = mix(background, accent, 0.15);
-    d.tab_active = mix(background, step, 0.04);
-    d.overlay = mix(background, step, 0.03);
-    d.hairline = mix(background, step, 0.18);
-    d.card_border = mix(background, step, 0.24);
+    tokens.window = background;
+    tokens.sidebar = mix(background, step, 0.025);
+    tokens.card = mix(background, step, 0.055);
+    tokens.selected = mix(background, accent, 0.15);
+    tokens.tab_active = mix(background, step, 0.04);
+    tokens.overlay = mix(background, step, 0.03);
     let text = if dark {
         RgbColor::hex(0x00f5_f5f5)
     } else {
         RgbColor::hex(0x0018_1818)
     };
-    d.primary = text;
-    d.secondary = mix(background, text, 0.85);
-    d.muted = mix(background, text, 0.65);
-    d.dim = mix(background, text, 0.5);
-    d.line_number = d.dim;
-    d.send_background = accent;
-    d.send_foreground = text;
-    d.variable_background = mix(background, accent, 0.1);
-    d.variable_foreground = accent;
+    tokens.primary = text;
+    tokens.secondary = mix(background, text, 0.85);
+    tokens.muted = mix(background, text, 0.65);
+    tokens.dim = mix(background, text, 0.5);
+    tokens.line_number = tokens.dim;
+    tokens.send_background = neutral_action(dark);
+    tokens.send_foreground = best_text(tokens.send_background);
+    tokens.variable_background = mix(background, accent, 0.1);
+    tokens.variable_foreground = accent;
     // Small hue rotation harmonizes with the accent without reversing semantic meanings.
     let rotation = (hue(accent) % 30.0 - 15.0) * 0.5;
     let hues = [
         140.0, 210.0, 24.0, 280.0, 0.0, 175.0, 330.0, 65.0, 95.0, 245.0,
     ];
-    d.method_foregrounds = hues
+    tokens.method_foregrounds = hues
         .map(|h| hsl(h + rotation, 0.72, if dark { 0.68 } else { 0.32 }))
         .to_vec();
-    d.method_foregrounds[8] = RgbColor::hex(if dark { 0x00bb_bbbb } else { 0x0044_4444 });
-    d.method_backgrounds = d
+    tokens.method_foregrounds[method_index(MethodChipKind::Custom)] =
+        RgbColor::hex(if dark { 0x00bb_bbbb } else { 0x0044_4444 });
+    tokens.method_backgrounds = tokens
         .method_foregrounds
         .iter()
-        .map(|c| mix(background, *c, 0.08))
+        .map(|color| mix(background, *color, 0.08))
         .collect();
-    d.success = d.method_foregrounds[0];
-    d.warning = d.method_foregrounds[7];
-    d.error = d.method_foregrounds[4];
-    d.syntax_key = accent;
-    d.syntax_string = d.method_foregrounds[0];
-    d.syntax_number = d.method_foregrounds[2];
-    d.syntax_keyword = d.method_foregrounds[3];
-    d.syntax_punctuation = d.secondary;
-    let (tokens, notices) = checked(d, false);
+    tokens.success = tokens.method_foregrounds[method_index(MethodChipKind::Get)];
+    tokens.warning = tokens.method_foregrounds[method_index(MethodChipKind::Query)];
+    tokens.error = tokens.method_foregrounds[method_index(MethodChipKind::Delete)];
+    tokens.syntax_key = accent;
+    tokens.syntax_string = tokens.method_foregrounds[method_index(MethodChipKind::Get)];
+    tokens.syntax_number = tokens.method_foregrounds[method_index(MethodChipKind::Put)];
+    tokens.syntax_keyword = tokens.method_foregrounds[method_index(MethodChipKind::Patch)];
+    tokens.syntax_punctuation = tokens.secondary;
+    let (tokens, notices) = checked(tokens, false);
     ThemePreview {
         name: "My theme".into(),
         tokens,
@@ -108,90 +107,114 @@ pub fn validate(tokens: &ThemeTokens) -> Result<(), String> {
 }
 
 #[must_use]
-pub fn checked(mut d: ThemeTokens, increased: bool) -> (ThemeTokens, Vec<String>) {
-    let dark = d.preset != DomainThemePreset::Paper;
+pub fn checked(mut tokens: ThemeTokens, increased: bool) -> (ThemeTokens, Vec<String>) {
+    let dark = tokens.preset != DomainThemePreset::Paper;
     let mut notices = Vec::new();
+    let action = neutral_action(dark);
+    if tokens.send_background != action {
+        tokens.send_background = action;
+        notices.push("Action color made neutral to match other controls.".into());
+    }
+    tokens.send_foreground = best_text(action);
     for (name, value) in [
-        ("surface/window", &mut d.window),
-        ("surface/sidebar", &mut d.sidebar),
-        ("surface/card", &mut d.card),
-        ("surface/selected", &mut d.selected),
-        ("surface/tab", &mut d.tab_active),
-        ("surface/overlay", &mut d.overlay),
-        ("variable/background", &mut d.variable_background),
+        ("Window background", &mut tokens.window),
+        ("Sidebar background", &mut tokens.sidebar),
+        ("Group background", &mut tokens.card),
+        ("Selection color", &mut tokens.selected),
+        ("Tab background", &mut tokens.tab_active),
+        ("Panel background", &mut tokens.overlay),
+        ("Variable background", &mut tokens.variable_background),
     ] {
         adjusted(name, surface(*value, dark), value, &mut notices);
     }
-    for value in &mut d.method_backgrounds {
+    for value in &mut tokens.method_backgrounds {
         *value = surface(*value, dark);
     }
-    let s = text_surfaces(&d);
+    // Borders are neutral and based on repaired surfaces, never on the accent.
+    let neutral = RgbColor::hex(if dark { 0x00ff_ffff } else { 0 });
+    tokens.hairline = mix(neutral_gray(tokens.window), neutral, 0.18);
+    tokens.card_border = mix(neutral_gray(tokens.card), neutral, 0.24);
+    let surfaces = text_surfaces(&tokens);
     let ratio = if increased { 7.0 } else { 4.5 };
     adjusted(
-        "text/primary",
-        strengthen(d.primary, &s, 7.0),
-        &mut d.primary,
+        "Primary text color",
+        strengthen(tokens.primary, &surfaces, 7.0),
+        &mut tokens.primary,
         &mut notices,
     );
     for (name, value) in [
-        ("text/secondary", &mut d.secondary),
-        ("text/muted", &mut d.muted),
-        ("syntax/comment", &mut d.dim),
-        ("text/line-number", &mut d.line_number),
-        ("syntax/key", &mut d.syntax_key),
-        ("syntax/string", &mut d.syntax_string),
-        ("syntax/number", &mut d.syntax_number),
-        ("syntax/keyword", &mut d.syntax_keyword),
-        ("syntax/punctuation", &mut d.syntax_punctuation),
-        ("status/success", &mut d.success),
-        ("status/warning", &mut d.warning),
-        ("status/error", &mut d.error),
+        ("Secondary text color", &mut tokens.secondary),
+        ("Muted text color", &mut tokens.muted),
+        ("Comment color", &mut tokens.dim),
+        ("Line number color", &mut tokens.line_number),
+        ("Property color", &mut tokens.syntax_key),
+        ("String color", &mut tokens.syntax_string),
+        ("Number color", &mut tokens.syntax_number),
+        ("Keyword color", &mut tokens.syntax_keyword),
+        ("Punctuation color", &mut tokens.syntax_punctuation),
+        ("Success color", &mut tokens.success),
+        ("Warning color", &mut tokens.warning),
+        ("Error color", &mut tokens.error),
     ] {
-        adjusted(name, strengthen(*value, &s, ratio), value, &mut notices);
+        adjusted(
+            name,
+            strengthen(*value, &surfaces, ratio),
+            value,
+            &mut notices,
+        );
     }
     adjusted(
-        "variable/foreground",
-        strengthen(d.variable_foreground, &s, ratio),
-        &mut d.variable_foreground,
+        "Variable text color",
+        strengthen(tokens.variable_foreground, &surfaces, ratio),
+        &mut tokens.variable_foreground,
         &mut notices,
     );
     // A filled accent action also needs room for AAA when Increase Contrast is on.
-    if increased && best_text(d.send_background).contrast(d.send_background) < 7.0 {
+    if increased && best_text(tokens.send_background).contrast(tokens.send_background) < 7.0 {
         adjusted(
-            "action/background",
-            surface(d.send_background, dark),
-            &mut d.send_background,
+            "Action background",
+            surface(tokens.send_background, dark),
+            &mut tokens.send_background,
             &mut notices,
         );
     }
-    if d.send_foreground.contrast(d.send_background) < ratio {
+    if tokens.send_foreground.contrast(tokens.send_background) < ratio {
         adjusted(
-            "action/foreground",
-            best_text(d.send_background),
-            &mut d.send_foreground,
+            "Action text color",
+            best_text(tokens.send_background),
+            &mut tokens.send_foreground,
             &mut notices,
         );
     }
-    for (foreground, background) in d.method_foregrounds.iter_mut().zip(&d.method_backgrounds) {
-        let mut surfaces = s.to_vec();
+    for (foreground, background) in tokens
+        .method_foregrounds
+        .iter_mut()
+        .zip(&tokens.method_backgrounds)
+    {
+        let mut surfaces = surfaces.to_vec();
         surfaces.push(*background);
         *foreground = strengthen(*foreground, &surfaces, ratio);
     }
-    d.control = RgbColor::hex(0x0076_7676);
-    (d, notices)
+    tokens.control = RgbColor::hex(0x0076_7676);
+    (tokens, notices)
 }
 
 fn adjusted(name: &str, candidate: RgbColor, value: &mut RgbColor, notices: &mut Vec<String>) {
     if *value != candidate {
+        let direction = if candidate.luminance() < value.luminance() {
+            "darkened"
+        } else {
+            "lightened"
+        };
         *value = candidate;
-        notices.push(format!("Adjusted {name} for contrast."));
+        notices.push(format!("{name} {direction} so text stays readable."));
     }
 }
 
 #[must_use]
 pub fn resolve(tokens: ThemeTokens, increased: bool) -> ResolvedTokens {
-    let (d, _) = checked(tokens, increased);
-    let surfaces = text_surfaces(&d);
+    let (tokens, _) = checked(tokens, increased);
+    let surfaces = text_surfaces(&tokens);
     let chips = MethodChipKind::ALL
         .into_iter()
         .enumerate()
@@ -199,27 +222,41 @@ pub fn resolve(tokens: ThemeTokens, increased: bool) -> ResolvedTokens {
             (
                 kind,
                 DomainMethodChip {
-                    background: d.method_backgrounds.get(i).copied().unwrap_or(d.tab_active),
-                    foreground: d.method_foregrounds.get(i).copied().unwrap_or(d.primary),
+                    background: tokens
+                        .method_backgrounds
+                        .get(i)
+                        .copied()
+                        .unwrap_or(tokens.tab_active),
+                    foreground: tokens
+                        .method_foregrounds
+                        .get(i)
+                        .copied()
+                        .unwrap_or(tokens.primary),
                 },
             )
         })
         .collect();
     ResolvedTokens {
-        primary: d.primary,
-        muted: d.muted,
+        is_dark: tokens.preset != DomainThemePreset::Paper,
+        statuses: super::resolved_statuses(&tokens, &chips, increased, false),
+        primary: tokens.primary,
+        muted: tokens.muted,
         hairline: if increased {
-            strengthen(d.hairline, &surfaces, 3.0)
+            strengthen(tokens.hairline, &surfaces, 3.0)
         } else {
-            d.hairline
+            tokens.hairline
         },
         card_border: if increased {
-            strengthen(d.card_border, &surfaces, 3.0)
+            strengthen(tokens.card_border, &surfaces, 3.0)
         } else {
-            d.card_border
+            tokens.card_border
         },
-        focus_border: strengthen(d.card_border, &surfaces, if increased { 4.5 } else { 3.0 }),
-        definition: d,
+        focus_border: strengthen(
+            tokens.card_border,
+            &surfaces,
+            if increased { 4.5 } else { 3.0 },
+        ),
+        definition: tokens,
         chips,
     }
 }
@@ -236,6 +273,10 @@ fn text_surfaces(tokens: &ThemeTokens) -> [RgbColor; 7] {
         tokens.overlay,
         tokens.variable_background,
     ]
+}
+
+fn neutral_action(dark: bool) -> RgbColor {
+    RgbColor::hex(if dark { 0x00d4_d4d4 } else { 0x003f_3f3f })
 }
 
 fn best_text(background: RgbColor) -> RgbColor {
@@ -266,16 +307,16 @@ pub fn mix(a: RgbColor, b: RgbColor, amount: f64) -> RgbColor {
         blue: channel(a.blue, b.blue),
     }
 }
-fn hue(c: RgbColor) -> f64 {
-    let [r, g, b] = [c.red, c.green, c.blue].map(f64::from);
-    let max = c.red.max(c.green).max(c.blue);
-    let delta = f64::from(max - c.red.min(c.green).min(c.blue));
+fn hue(color: RgbColor) -> f64 {
+    let [r, g, b] = [color.red, color.green, color.blue].map(f64::from);
+    let max = color.red.max(color.green).max(color.blue);
+    let delta = f64::from(max - color.red.min(color.green).min(color.blue));
     if delta == 0.0 {
         return 0.0;
     }
-    let sector = if max == c.red {
+    let sector = if max == color.red {
         (g - b) / delta
-    } else if max == c.green {
+    } else if max == color.green {
         (b - r) / delta + 2.0
     } else {
         (r - g) / delta + 4.0
@@ -304,5 +345,28 @@ fn hsl(hue: f64, saturation: f64, lightness: f64) -> RgbColor {
         red: channel(red),
         green: channel(green),
         blue: channel(blue),
+    }
+}
+
+fn method_index(kind: MethodChipKind) -> usize {
+    MethodChipKind::ALL
+        .iter()
+        .position(|candidate| *candidate == kind)
+        .expect("all method kinds have a palette entry")
+}
+
+fn neutral_gray(surface: RgbColor) -> RgbColor {
+    // Weighted encoded channels keep the border visually near its surface.
+    let gray = u8::try_from(
+        (u32::from(surface.red) * 2126
+            + u32::from(surface.green) * 7152
+            + u32::from(surface.blue) * 722)
+            / 10000,
+    )
+    .expect("weighted byte average");
+    RgbColor {
+        red: gray,
+        green: gray,
+        blue: gray,
     }
 }
