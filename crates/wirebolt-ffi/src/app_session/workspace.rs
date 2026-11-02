@@ -439,6 +439,9 @@ impl AppWorkspaceOperations {
             ),
         })
     }
+    pub fn connect_history(&self, runtime: Arc<super::runtime::AppSessionRuntime>) {
+        self.inner.connect_history(runtime.state.clone());
+    }
     pub fn presentation(&self) -> WorkspacePresentation {
         self.inner.presentation()
     }

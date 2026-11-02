@@ -3,13 +3,13 @@ use crate::{
     domain::{DomainEnvironment, DomainValueSource},
     response::{ResponseCookieJar, RunHistory, StoredCookie, cookie_storage_path, reference_time},
     session::{
-        history::{self, SessionHistoryEntry, SessionRequestIdentity},
+        history::{SessionHistoryEntry, SessionRequestIdentity},
         run::{DocumentRun, SessionRunSnapshot},
     },
 };
 use std::{
     collections::HashMap,
-    path::{Path, PathBuf},
+    path::Path,
     sync::{
         Arc, Mutex,
         atomic::{AtomicU64, Ordering},
@@ -62,6 +62,7 @@ impl RuntimeState {
         }
     }
     pub fn configure_history_workspace(&self, path: Option<&str>) {
+        lock(&self.history_context).moves.clear();
         let Some(path) = path else {
             lock(&self.history_context).workspace =
                 format!("session:{}", crate::domain::identity::unique_id());
@@ -90,6 +91,18 @@ impl RuntimeState {
     ) -> SessionRequestIdentity {
         self.request_identity(document.collection_id.as_deref(), &document.request_id)
     }
+    pub fn reconcile_history(&self, workspace: &crate::domain::DomainWorkspace) {
+        let mut context = lock(&self.history_context);
+        context.moves.retain(|from, _| {
+            !workspace.collections.iter().any(|collection| {
+                collection.id == from.collection_id
+                    && collection
+                        .requests
+                        .iter()
+                        .any(|location| location.request.id == from.request_id)
+            })
+        });
+    }
     /// # Errors
     /// Returns an I/O error if the history index cannot be saved.
     pub fn apply_workspace_effects(
@@ -106,6 +119,7 @@ impl RuntimeState {
             {
                 let from = self.request_identity(Some(collection_id), request_id);
                 let to = self.request_identity(Some(destination), request_id);
+                let mut history = lock(&self.history);
                 let mut context = lock(&self.history_context);
                 // Redirect in-flight completions too; undo reverses the mapping.
                 context.moves.remove(&to);
@@ -115,14 +129,20 @@ impl RuntimeState {
                     }
                 }
                 context.moves.insert(from.clone(), to.clone());
-                lock(&self.history).relocate(&from, &to)?;
+                drop(context);
+                history.relocate(&from, &to)?;
+                let entries = history.list(&to)?;
+                let context = lock(&self.history_context);
+                if to.workspace != context.workspace {
+                    continue;
+                }
                 let mut snapshot = lock(&self.snapshot);
                 if let Some(activity) = snapshot.request_activity.remove(&from.activity_key()) {
                     snapshot
                         .request_activity
                         .insert(to.activity_key(), activity);
                 }
-                snapshot.history_entries = lock(&self.history).list(&to)?;
+                snapshot.history_entries = entries;
                 snapshot.history_revision += 1;
             }
         }
@@ -228,8 +248,11 @@ impl RuntimeState {
         let Some(prepared) = snapshot.prepared else {
             return;
         };
-        let context = lock(&self.history_context);
-        let id = context.moves.get(id).unwrap_or(id);
+        let mut history = lock(&self.history);
+        let id = {
+            let context = lock(&self.history_context);
+            context.moves.get(id).unwrap_or(id).clone()
+        };
         let entry = SessionHistoryEntry {
             id: run_id.into(),
             request_id: id.request_id.clone(),
@@ -241,10 +264,16 @@ impl RuntimeState {
             failure: snapshot.failure,
             body_path: String::new(),
         };
-        let _ = lock(&self.history).record(entry, &lock(body));
-        let Ok(entries) = self.history_entries(id) else {
+        if history.record(entry, &lock(body)).is_err() {
+            return;
+        }
+        let Ok(entries) = history.list(&id) else {
             return;
         };
+        let context = lock(&self.history_context);
+        if id.workspace != context.workspace {
+            return;
+        }
         let mut state = lock(&self.snapshot);
         state.history_entries = entries;
         state.request_activity.insert(
@@ -258,14 +287,15 @@ impl RuntimeState {
     }
     pub fn reset_workspace(&self) {
         self.select_environment(None);
+        lock(&self.history_context).moves.clear();
         let mut state = lock(&self.snapshot);
         self.generation.fetch_add(1, Ordering::AcqRel);
         state.history_entries.clear();
         state.request_activity.clear();
     }
     pub fn restore(&self, entry: SessionHistoryEntry, run: &Mutex<DocumentRun>) {
-        let (snapshot, path) = history_snapshot(entry);
-        lock(run).restore(snapshot, &path);
+        let (snapshot, body) = history_snapshot(entry);
+        lock(run).restore(snapshot, body);
     }
     pub async fn restore_latest(
         self: Arc<Self>,
@@ -282,13 +312,13 @@ impl RuntimeState {
                 status: entry.response_head.as_ref().map(|head| head.status),
             };
             let id = entry.identity.as_ref()?.activity_key();
-            let (snapshot, path) = history_snapshot(entry);
-            Some((id, activity, snapshot, path))
+            let (snapshot, body) = history_snapshot(entry);
+            Some((id, activity, snapshot, body))
         })
         .await
         .ok()
         .flatten();
-        let Some((id, activity, snapshot, path)) = restored else {
+        let Some((id, activity, snapshot, body)) = restored else {
             return;
         };
         // The native identity check occurs after all filesystem work, just as in the original facade.
@@ -305,17 +335,25 @@ impl RuntimeState {
         {
             return;
         }
-        run.restore(snapshot, &path);
+        run.restore(snapshot, body);
         state.request_activity.insert(id, activity);
     }
 }
-fn history_snapshot(entry: SessionHistoryEntry) -> (SessionRunSnapshot, PathBuf) {
-    let viewport = history::viewport(&entry.body_path);
+fn history_snapshot(
+    entry: SessionHistoryEntry,
+) -> (SessionRunSnapshot, Option<crate::response::BodyStore>) {
+    let body = crate::response::BodyStore::retained(Path::new(&entry.body_path)).ok();
+    let viewport = body
+        .as_ref()
+        .and_then(|body| {
+            body.viewport(0, crate::response::VIEWPORT_BYTES as u64)
+                .ok()
+        })
+        .unwrap_or_default();
     let bytes = entry
         .completion
         .as_ref()
         .map_or(viewport.len() as u64, |c| c.bytes_received);
-    let path = PathBuf::from(&entry.body_path);
     (
         SessionRunSnapshot {
             head: entry.response_head,
@@ -329,6 +367,6 @@ fn history_snapshot(entry: SessionHistoryEntry) -> (SessionRunSnapshot, PathBuf)
             body_path: Some(entry.body_path),
             ..SessionRunSnapshot::default()
         },
-        path,
+        body,
     )
 }

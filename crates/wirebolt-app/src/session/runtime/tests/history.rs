@@ -330,3 +330,123 @@ async fn history_follows_moves_undo_and_in_flight_completions() {
     assert_eq!(reloaded.count(&source).unwrap(), 2);
     assert_eq!(reloaded.count(&destination).unwrap(), 0);
 }
+
+#[tokio::test]
+async fn late_history_record_does_not_publish_into_another_workspace() {
+    let root = tempfile::tempdir().unwrap();
+    let state = state(root.path());
+    let run = Arc::new(Mutex::new(DocumentRun::default()));
+    RuntimeRuns::default()
+        .send(command(
+            state.clone(),
+            document("same"),
+            run.clone(),
+            Arc::new(Transport {
+                body: b"old workspace".to_vec(),
+                ..Default::default()
+            }),
+            root.path(),
+        ))
+        .await;
+    let original = key(&state, "same");
+    let snapshot = lock(&run).snapshot();
+    let body = lock(&run).body().unwrap();
+    state.configure_history_workspace(Some(root.path().join("other-workspace").to_str().unwrap()));
+    state.reset_workspace();
+    state.record(&original, "late", snapshot, &body);
+    assert_eq!(state.history_count(&original).unwrap(), 2);
+    assert_eq!(state.history_count(&key(&state, "same")).unwrap(), 0);
+    assert!(state.snapshot().history_entries.is_empty());
+    assert!(state.snapshot().request_activity.is_empty());
+}
+
+#[tokio::test]
+async fn replacement_workspace_reconciles_old_move_aliases() {
+    use crate::session::workspace::SessionDocumentEffect::Relocate;
+    let root = tempfile::tempdir().unwrap();
+    let state = state(root.path());
+    let run = Arc::new(Mutex::new(DocumentRun::default()));
+    RuntimeRuns::default()
+        .send(command(
+            state.clone(),
+            document("same"),
+            run.clone(),
+            Arc::new(Transport {
+                body: b"fixture".to_vec(),
+                ..Default::default()
+            }),
+            root.path(),
+        ))
+        .await;
+    let original = key(&state, "same");
+    let moved = state.request_identity(Some("other"), "same");
+    state
+        .apply_workspace_effects(&[Relocate {
+            collection_id: "api".into(),
+            request_id: "same".into(),
+            destination: "other".into(),
+        }])
+        .unwrap();
+    state.reconcile_history(&DomainWorkspace {
+        collections: vec![DomainCollection {
+            id: "api".into(),
+            requests: vec![DomainLocation {
+                collection_id: "api".into(),
+                request: DomainRequestDraft {
+                    id: "same".into(),
+                    ..Default::default()
+                },
+                ..Default::default()
+            }],
+            ..Default::default()
+        }],
+        ..Default::default()
+    });
+    let snapshot = lock(&run).snapshot();
+    let body = lock(&run).body().unwrap();
+    state.record(&original, "after-reload", snapshot, &body);
+    assert_eq!(state.history_count(&original).unwrap(), 1);
+    assert_eq!(state.history_count(&moved).unwrap(), 1);
+    state.reset_workspace();
+    let snapshot = lock(&run).snapshot();
+    state.record(&original, "after-reset", snapshot, &body);
+    assert_eq!(state.history_count(&original).unwrap(), 2);
+}
+
+#[tokio::test]
+async fn latest_restore_retains_body_before_observer_gate() {
+    let root = tempfile::tempdir().unwrap();
+    let state = state(root.path());
+    RuntimeRuns::default()
+        .send(command(
+            state.clone(),
+            document("a"),
+            Arc::new(Mutex::new(DocumentRun::default())),
+            Arc::new(Transport {
+                body: b"fixture".to_vec(),
+                ..Default::default()
+            }),
+            root.path(),
+        ))
+        .await;
+    let run = Arc::new(Mutex::new(DocumentRun::default()));
+    let gate = Arc::new(RestoreGate::default());
+    let state_for_task = state.clone();
+    let run_for_task = run.clone();
+    let observer = gate.clone();
+    let task = tokio::spawn(async move {
+        state_for_task
+            .clone()
+            .restore_latest(key(&state_for_task, "a"), run_for_task, observer.as_ref())
+            .await;
+    });
+    gate.ready.notified().await;
+    state.clear_history(&key(&state, "a")).unwrap();
+    gate.release.notify_one();
+    task.await.unwrap();
+    assert_eq!(
+        lock(&lock(&run).body().unwrap()).viewport(0, 7).unwrap(),
+        b"fixture"
+    );
+    assert!(lock(&run).snapshot().failure.is_none());
+}

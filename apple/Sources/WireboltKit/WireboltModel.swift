@@ -252,6 +252,7 @@ public final class WireboltModel {
         self.sessions = sessions ?? DocumentSessionStore()
         runtime = AppSessionRuntime(history: history.rust, cookies: cookieJar.rust)
         runtime.configureHistoryWorkspace(path: persistence?.location?.standardizedFileURL.path)
+        rustOperations.connectHistory(runtime: runtime)
         self.cookieDirectory = cookieDirectory
         self.oauth2 = oauth2 ?? OAuth2Service()
     }
@@ -637,7 +638,7 @@ public final class WireboltModel {
         let result = await rustOperations.saveEnvironment(
             environment: environment.domain, values: secrets, selected: selectedEnvironmentID,
             platform: persistence.sessionWorkspacePlatform, secrets: rustSecrets, secretPlatform: persistence.sessionSecretPlatform)
-        await finishMutation(result)
+        finishMutation(result)
         return result.succeeded
     }
 
@@ -1063,12 +1064,11 @@ extension WireboltModel {
         let result = await rustOperations.mutate(
             command: command, selected: selectedEnvironmentID,
             platform: persistence.sessionWorkspacePlatform, secrets: rustSecrets, secretPlatform: persistence.sessionSecretPlatform)
-        await finishMutation(result)
+        finishMutation(result)
         return result
     }
 
-    private func finishMutation(_ result: WorkspaceMutation) async {
-        if let plan = result.plan { await applyHistoryEffects(plan) }
+    private func finishMutation(_ result: WorkspaceMutation) {
         mirrorSecretEdits()
         applyMutation(result)
         mirrorWorkspacePresentation()
@@ -1101,17 +1101,10 @@ extension WireboltModel {
                 platform: persistence.sessionWorkspacePlatform, secrets: self.rustSecrets, secretPlatform: persistence.sessionSecretPlatform
             )
             self.mirrorSecretEdits()
-            if let plan = result.plan { await self.applyHistoryEffects(plan) }
             self.applyMutation(result)
             self.mirrorWorkspacePresentation()
             if !result.succeeded { self.undoManager?.removeAllActions(withTarget: self) }
         }
-    }
-
-    private func applyHistoryEffects(_ plan: SessionWorkspacePlan) async {
-        do { try await runtime.applyWorkspaceEffects(effects: plan.effects) }
-        catch { operationFailure = RunFailure(kind: .storage, issues: []) }
-        mirrorRuntime()
     }
 
     private func applyMutation(_ result: WorkspaceMutation) {

@@ -100,6 +100,7 @@ pub struct WorkspaceOperations {
     state: Mutex<State>,
     edits: tokio::sync::Mutex<()>,
     reorders: tokio::sync::Mutex<()>,
+    history: Mutex<Option<Arc<crate::session::runtime::RuntimeState>>>,
 }
 #[allow(
     clippy::needless_pass_by_value,
@@ -113,6 +114,29 @@ impl WorkspaceOperations {
             state: Mutex::default(),
             edits: tokio::sync::Mutex::new(()),
             reorders: tokio::sync::Mutex::new(()),
+            history: Mutex::default(),
+        }
+    }
+    pub fn connect_history(&self, history: Arc<crate::session::runtime::RuntimeState>) {
+        *lock(&self.history) = Some(history);
+    }
+    async fn move_history(&self, effects: &[super::SessionDocumentEffect]) {
+        if !effects
+            .iter()
+            .any(|effect| matches!(effect, super::SessionDocumentEffect::Relocate { .. }))
+        {
+            return;
+        }
+        let history = lock(&self.history).clone();
+        if let Some(history) = history {
+            let effects = effects.to_vec();
+            if !matches!(
+                tokio::task::spawn_blocking(move || history.apply_workspace_effects(&effects))
+                    .await,
+                Ok(Ok(()))
+            ) {
+                self.fail(crate::response::ResponseFailureKind::Storage);
+            }
         }
     }
     #[must_use]
@@ -160,6 +184,9 @@ impl WorkspaceOperations {
             .flat_map(|c| &c.requests)
             .next()
             .cloned();
+        if let Some(history) = lock(&self.history).as_ref() {
+            history.reconcile_history(&workspace);
+        }
         self.workspace.replace(workspace.clone());
         WorkspaceLoad {
             workspace,
@@ -504,6 +531,7 @@ impl WorkspaceOperations {
             }
         }
         self.workspace.commit(plan.clone());
+        self.move_history(&plan.effects).await;
         secrets.observe(plan.observed_secrets.clone());
         if failed {
             self.fail(crate::response::ResponseFailureKind::Workspace);

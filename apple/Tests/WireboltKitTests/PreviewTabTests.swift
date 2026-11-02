@@ -37,7 +37,7 @@ struct PreviewTabTests {
     }
 
     @Test("Restoring history leaves an untouched preview replaceable")
-    @MainActor func historyRestorationStaysPreview() throws {
+    @MainActor func historyRestorationStaysPreview() async throws {
         let store = DocumentSessionStore()
         let first = store.openPreview(draft: Self.location("a").request, collectionID: "api")
         let path = FileManager.default.temporaryDirectory.appending(path: "wirebolt-preview-history-\(UUID().uuidString)")
@@ -48,7 +48,7 @@ struct PreviewTabTests {
             body: PreparedBodySnapshot(byteCount: 0, contentType: nil, textPreview: nil, redacted: false), transport: TransportSettings())
         let entry = RunHistoryEntry(id: RunID().description, requestID: first.requestID, createdAt: Date(), prepared: prepared,
             responseHead: ResponseHead(status: 200, version: "HTTP/2", headers: [], timeToHeadersNS: 1), completion: nil, failure: nil, bodyPath: path.path)
-        first.restore(entry, viewport: data)
+        await first.restore(entry, viewport: data)
         #expect(!first.isTouched)
         #expect(store.isPreview(tabID: first.id))
         let next = store.openPreview(draft: Self.location("b").request, collectionID: "api")

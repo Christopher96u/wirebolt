@@ -227,25 +227,6 @@ impl AppSessionRuntime {
         let document = lock(&document.document);
         self.state.document_identity(&document)
     }
-    pub async fn legacy_history(&self, request_id: String) -> Vec<SessionHistoryEntry> {
-        let state = self.state.clone();
-        tokio::task::spawn_blocking(move || state.legacy_history(&request_id))
-            .await
-            .unwrap_or_default()
-    }
-    pub async fn apply_workspace_effects(
-        &self,
-        effects: Vec<wirebolt_app::session::workspace::SessionDocumentEffect>,
-    ) -> Result<(), wirebolt_app::response::ResponseError> {
-        let state = self.state.clone();
-        tokio::task::spawn_blocking(move || state.apply_workspace_effects(&effects))
-            .await
-            .unwrap_or_else(|error| {
-                Err(wirebolt_app::response::ResponseError::Io {
-                    reason: error.to_string(),
-                })
-            })
-    }
     pub fn cookie_revision(&self) -> u64 {
         self.state.cookie_revision()
     }
@@ -293,6 +274,12 @@ impl AppSessionRuntime {
 
 #[uniffi::export(async_runtime = "tokio")]
 impl AppSessionRuntime {
+    pub async fn legacy_history(&self, request_id: String) -> Vec<SessionHistoryEntry> {
+        let state = self.state.clone();
+        tokio::task::spawn_blocking(move || state.legacy_history(&request_id))
+            .await
+            .unwrap_or_default()
+    }
     pub async fn send(
         &self,
         document: Arc<AppDocumentSession>,

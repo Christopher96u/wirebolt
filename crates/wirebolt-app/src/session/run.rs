@@ -283,13 +283,11 @@ impl DocumentRun {
         self.memory_preview.clone_from(&source.memory_preview);
         self.storage_failed = source.storage_failed;
     }
-    pub fn restore(&mut self, mut snapshot: SessionRunSnapshot, path: &Path) {
+    pub fn restore(&mut self, mut snapshot: SessionRunSnapshot, body: Option<BodyStore>) {
         snapshot.active_run_id = None;
         snapshot.started_at = None;
         snapshot.awaiting_head = false;
-        self.body = BodyStore::retained(path)
-            .ok()
-            .map(|body| Arc::new(Mutex::new(body)));
+        self.body = body.map(|body| Arc::new(Mutex::new(body)));
         snapshot.body_path = self
             .body
             .as_ref()

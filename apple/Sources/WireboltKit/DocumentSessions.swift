@@ -218,9 +218,9 @@ public final class DocumentSession: Identifiable {
         mirror()
     }
 
-    public func restore(_ entry: RunHistoryEntry, viewport: Data) {
+    public func restore(_ entry: RunHistoryEntry, viewport: Data) async {
         let bytes = entry.completion?.bytesReceived ?? UInt64(viewport.count)
-        rust.restore(
+        await rust.restore(
             snapshot: SessionRunSnapshot(
                 head: entry.responseHead, prepared: entry.prepared.sessionRecord,
                 text: String(decoding: viewport, as: UTF8.self), data: viewport, bytes: bytes, truncated: bytes > UInt64(viewport.count),

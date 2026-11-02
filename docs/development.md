@@ -88,7 +88,11 @@ The local history `index.json` is version 2: an object with `version` and `entri
 Each new entry carries `identity` (workspace namespace, collection ID and request
 ID). The namespace uses the same canonical-path hash as workspace cookies;
 unsaved workspaces use a per-runtime namespace. Moves and Undo migrate scoped
-entries and redirect in-flight completions to their current collection.
+entries within the serialized Rust workspace operation and redirect in-flight
+completions to their current collection. Replacement loads reconcile redirects;
+late completions from another workspace are stored without changing the current
+workspace’s history presentation. Body copies are prepared on workers before
+taking presentation locks.
 
 Version 1 was an unversioned array containing only `requestID`. Reading it retains
 all entries; the next write atomically wraps them in the version 2 index. Entries

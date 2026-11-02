@@ -877,22 +877,6 @@ impl SessionPersistence {
                 group_id,
                 order,
             } => {
-                if from_collection_id != to_collection_id {
-                    let destination = self
-                        .store
-                        .root()
-                        .join("collections")
-                        .join(document_id(to_collection_id.clone())?.as_str())
-                        .join("requests")
-                        .join(format!("{}.toml", document_id(request_id.clone())?));
-                    if destination.try_exists().map_err(|_| {
-                        WorkspaceError::operation("move destination could not be inspected")
-                    })? {
-                        return Err(WorkspaceError::operation(
-                            "The destination already contains a request with this ID. Duplicate the source request before moving it.",
-                        ));
-                    }
-                }
                 let mut request = self.request(&from_collection_id, &request_id)?;
                 request.group_id = group_id.map(document_id).transpose()?;
                 request.order = order;
@@ -903,11 +887,10 @@ impl SessionPersistence {
                         &destination,
                         &request,
                     )
-                    .map_err(|_| {
-                        WorkspaceError::operation(
-                            "request could not be moved without replacing another request",
-                        )
-                    })?;
+                    .map_err(|error| WorkspaceError::operation(match error {
+                        wirebolt_core::StorageError::AlreadyExists {..} => "The destination already contains a request with this ID. Duplicate the source request before moving it.",
+                        _ => "The request could not be moved without replacing another request.",
+                    }))?;
                 Ok((
                     SessionWorkspaceNodeKind::Request,
                     vec![from_collection_id, to_collection_id, request_id],
