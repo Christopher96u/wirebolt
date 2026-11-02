@@ -67,6 +67,8 @@ struct FixtureRunner: RequestRunner {
         host.cacheDisplay(in: host.bounds, to: bitmap)
         try bitmap.representation(using: .png, properties: [:])!.write(to: directory.appending(path: name + ".png"))
     }
+    // These process-local AX flags have no NSAccessibilityProtocol equivalents.
+    // Preserve them through the legacy attribute API used to enable SwiftUI's tree.
     static func enableAccessibility() -> () -> Void {
         let attributes = ["AXEnhancedUserInterface", "AXManualAccessibility"].map { NSAccessibility.Attribute(rawValue: $0) }
         let previous = attributes.map { NSApp.accessibilityAttributeValue($0) }

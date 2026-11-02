@@ -32,7 +32,7 @@ import SwiftUI
         }
         let store = ThemeStore(libraryURL: root.appending(path: "custom-themes.json"))
         let preview = domainDeriveTheme(background: PaletteColor(hex: 0x101923), accent: PaletteColor(hex: 0x64cec7))
-        guard let custom = await store.save(name: "Harbour", preview: preview) else { fatalError("Could not save theme: \(store.errorMessage ?? "no error")") }
+        guard let custom = await store.save(name: "Harbour", preview: preview) else { preconditionFailure("Could not save theme: \(store.errorMessage ?? "no error")") }
         defaults.set("black", forKey: "interfaceAppearance")
         let window = ThemeWindow(contentRect: NSRect(x: 30, y: 30, width: 1040, height: 1120),
             styleMask: [.titled, .closable], backing: .buffered, defer: false)
@@ -50,11 +50,11 @@ import SwiftUI
         try capture(host, directory: screenshots, name: "01-two-color-appearance", isDark: store.resolved.isDark)
 
         await press("Custom theme from 2 colors", window: window)
-        guard let sheet = window.attachedSheet, let sheetHost = sheet.contentView else { fatalError("Missing custom theme preview sheet: \(NSApp.windows.map { $0.title }); page \(elements(host).map(\.name))") }
+        guard let sheet = window.attachedSheet, let sheetHost = sheet.contentView else { preconditionFailure("Missing custom theme preview sheet: \(NSApp.windows.map { $0.title }); page \(elements(host).map(\.name))") }
         await settle(sheetHost)
-        guard elements(sheetHost).contains(where: { $0.name == "Theme live preview" }) else { fatalError("Missing live preview: \(elements(sheetHost).map(\.name))") }
-        guard elements(sheetHost).contains(where: { $0.name == "Background" }) else { fatalError("Missing Background: \(elements(sheetHost).map(\.name))") }
-        guard elements(sheetHost).contains(where: { $0.name == "Accent" }) else { fatalError("Missing Accent: \(elements(sheetHost).map(\.name))") }
+        guard elements(sheetHost).contains(where: { $0.name == "Theme live preview" }) else { preconditionFailure("Missing live preview: \(elements(sheetHost).map(\.name))") }
+        guard elements(sheetHost).contains(where: { $0.name == "Background" }) else { preconditionFailure("Missing Background: \(elements(sheetHost).map(\.name))") }
+        guard elements(sheetHost).contains(where: { $0.name == "Accent" }) else { preconditionFailure("Missing Accent: \(elements(sheetHost).map(\.name))") }
         try capture(sheetHost, directory: screenshots, name: "03-live-preview", isDark: store.resolved.isDark)
         await press("Save Theme", window: sheet)
         await settle(host)
@@ -82,7 +82,7 @@ import SwiftUI
         """
         try Data(source.utf8).write(to: importedURL)
         guard let imported = await store.importTheme(from: importedURL),
-              let importedTheme = await store.save(name: imported.name, preview: imported) else { fatalError("Could not import fixture") }
+              let importedTheme = await store.save(name: imported.name, preview: imported) else { preconditionFailure("Could not import fixture") }
         await settle(host)
         await press("Linen theme", window: window)
         precondition(store.resolved.customID == importedTheme.id && !store.resolved.isDark)
