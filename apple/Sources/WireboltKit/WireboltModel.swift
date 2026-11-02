@@ -982,7 +982,19 @@ public final class WireboltModel {
         }
     }
 
+    /// The inspector supplies its native field-buffer guard while mounted.
+    @ObservationIgnored public var finishEnvironmentEditing: (@MainActor () async -> Bool)?
+
     private func performGitOperation(_ action: WorkspaceGitAction) async {
+        switch action {
+        case .pull, .abort:
+            guard await finishEnvironmentEditing?() != false else {
+                operationFailure = RunFailure(kind: .workspace, issues: [])
+                operationFailureMessage = "Finish or discard the environment inspector edits before replacing workspace files."
+                return
+            }
+        default: break
+        }
         let begin = rustOperations.beginGit(configured: gitCollaboration != nil, action: action, dirty: hasUnsavedRequestChanges)
         mirrorWorkspacePresentation()
         guard begin, let gitCollaboration else { return }

@@ -79,6 +79,27 @@ struct GitMergeRecoveryTests {
         #expect(await collaboration.calls == ["abort", "initialize"])
     }
 
+    @Test("Workspace replacement checks the native inspector before Git or loading")
+    @MainActor
+    func inspectorGuardBlocksPullAndAbortBeforeReplacement() async {
+        let collaboration = MergeRecorder()
+        let persistence = RenamingPersistence()
+        let model = WireboltModel(runner: SilentRunner(), persistence: persistence, gitCollaboration: collaboration)
+        await model.loadWorkspace()
+        var guards = 0
+        model.finishEnvironmentEditing = { guards += 1; return false }
+        await model.pullGit()
+        await model.abortGitMerge()
+        #expect(guards == 2)
+        #expect(await collaboration.calls.isEmpty)
+        #expect(model.workspace.name == "Conflicted")
+        #expect(model.operationFailureMessage?.contains("environment inspector") == true)
+        model.finishEnvironmentEditing = { guards += 1; return true }
+        await model.abortGitMerge()
+        #expect(model.workspace.name == "Reloaded")
+        #expect(await collaboration.calls == ["abort"])
+    }
+
     @Test("Persistence without Git recovery reports the action as unsupported")
     @MainActor
     func unsupportedRecovery() async {

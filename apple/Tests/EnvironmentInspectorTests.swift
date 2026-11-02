@@ -62,6 +62,13 @@ private actor InspectorStore: WorkspacePersistence {
         precondition(NativeTestSupport.press(host, named: "Globals"))
         await NativeTestSupport.settle(host)
         precondition(model.selectedEnvironmentID == "production", "Browsing Globals never clears the active environment")
+        precondition(NativeTestSupport.press(host, named: "Use Globals Only"))
+        await NativeTestSupport.settle(host)
+        precondition(model.selectedEnvironmentID == nil)
+        let globals = NativeTestSupport.elements(host).first { $0.role == "AXButton" && $0.name == "Globals" }!
+        precondition(globals.object.value(forKey: "accessibilityValue") as? String == "Active")
+        if let screenshots { try NativeTestSupport.capture(host, directory: screenshots, name: "audit-inspector-globals-active") }
+        print("inspectorGlobalsActivationAndActiveMarker: passed")
         precondition(NativeTestSupport.press(host, named: "Local"))
         await NativeTestSupport.settle(host)
         precondition(NativeTestSupport.press(host, named: "Use for Requests"))
@@ -132,8 +139,37 @@ private actor InspectorStore: WorkspacePersistence {
         await NativeTestSupport.settle(host)
         precondition(closeCount == 3 && model.workspace.environments[0].variables[0].key == "escape_key", "Escape closes without dropping the active field")
         print("inspectorEscapeCommits: passed")
+        try await removedDrafts(model: model, interface: interface, window: window, host: host)
         try await layoutFixtures(model: model, defaults: defaults, screenshots: screenshots)
     }
+    static func removedDrafts(model: WireboltModel, interface: WorkspaceUIState, window: NSWindow, host: NSView) async throws {
+        for removesEnvironment in [false, true] {
+            model.workspace.environments = [EnvironmentDraft(id: "local", name: "Local", variables: [EnvironmentVariableDraft(id: "removed", key: "base_url", value: .literal("fixture"))])]
+            model.selectedEnvironmentID = "local"
+            await NativeTestSupport.settle(host)
+            precondition(NativeTestSupport.press(host, named: "Local"))
+            await NativeTestSupport.settle(host)
+            let key = fields(host).first { $0.accessibilityLabel() == "Variable name" }!
+            replace(key, with: "bad name", window: window)
+            window.makeFirstResponder(nil)
+            await NativeTestSupport.settle(host)
+            precondition(interface.hasEnvironmentEdits)
+            if removesEnvironment { model.workspace.environments = [] }
+            else { model.workspace.environments[0].variables = [] }
+            await NativeTestSupport.settle(host)
+            precondition(!fields(host).contains { $0.accessibilityLabel() == "Variable name" })
+            let blocked = await interface.closeEnvironmentInspector!()
+            precondition(!blocked)
+            precondition(NativeTestSupport.press(host, named: "Discard Removed Edits"), "Orphaned edits have a visible recovery action")
+            await NativeTestSupport.settle(host)
+            precondition(NativeTestSupport.press(host, named: "Globals"))
+            await NativeTestSupport.settle(host)
+            let closed = await interface.closeEnvironmentInspector!()
+            precondition(closed && !interface.hasEnvironmentEdits, "Discarding removed fields unblocks switching, closing and quit")
+        }
+        print("inspectorRemovedRowsAndEnvironmentsExposeDiscardAndUnblockClose: passed")
+    }
+
     static func layoutFixtures(model: WireboltModel, defaults: UserDefaults, screenshots: URL?) async throws {
         model.workspace.environments = [
             EnvironmentDraft(id: "local", name: "Local", variables: [EnvironmentVariableDraft(id: "local-url", key: "base_url", value: .literal("https://local.example.invalid/api"))]),
