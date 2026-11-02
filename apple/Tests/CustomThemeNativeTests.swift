@@ -4,62 +4,13 @@ import SwiftUI
 /// Production Appearance views hosted inside this process, with disposable preferences/storage.
 @MainActor enum CustomThemeNativeTests {
     private final class ThemeWindow: NSWindow { override var canBecomeKey: Bool { true } }
-    private static func check(_ condition: Bool, _ message: String = "Theme assertion failed", line: UInt = #line) {
-        if !condition { fatalError("\(message), line \(line)") }
-    }
-    private struct Element {
-        let object: NSObject
-        let role: String
-        let name: String
-        let frame: NSRect
-    }
-    private static func elements(_ object: Any, depth: Int = 0) -> [Element] {
-        guard depth < 40, let object = object as? NSObject else { return [] }
-        func value(_ key: String) -> Any? {
-            object.responds(to: NSSelectorFromString(key)) ? object.value(forKey: key) : nil
-        }
-        func text(_ key: String) -> String {
-            let raw = value(key)
-            return (raw as? NSAttributedString)?.string ?? (raw as? String) ?? ""
-        }
-        let name = ["accessibilityLabel", "accessibilityTitle", "accessibilityValue"].map(text).first { !$0.isEmpty } ?? ""
-        let current = Element(object: object, role: text("accessibilityRole"), name: name, frame: (value("accessibilityFrame") as? NSValue)?.rectValue ?? .zero)
-        return [current] + (value("accessibilityChildren") as? [Any] ?? []).flatMap { elements($0, depth: depth + 1) }
-    }
-    private static func flush(_ host: NSView) {
-        RunLoop.current.run(until: Date().addingTimeInterval(0.08))
-        host.layoutSubtreeIfNeeded(); host.displayIfNeeded()
-    }
-    private static func settle(_ host: NSView) async {
-        try? await Task.sleep(for: .milliseconds(120))
-        flush(host)
-    }
-    private static func press(_ name: String, window: NSWindow, accessibility: Bool = false) async {
-        guard let host = window.contentView,
-              let item = (elements(window) + elements(host)).first(where: { ["AXButton", "AXMenuItem"].contains($0.role) && $0.name == name }) else {
-            fatalError("Missing theme action \(name): \(elements(window.contentView!).map(\.name))")
-        }
-        if accessibility {
-            // SwiftUI AX nodes implement the action selector without declaring
-            // NSAccessibilityProtocol conformance. Invoke that known BOOL ABI locally.
-            let selector = NSSelectorFromString("accessibilityPerformPress")
-            check(item.object.responds(to: selector), "Missing press selector on \(type(of: item.object)): \(name)")
-            typealias Press = @convention(c) (AnyObject, Selector) -> Bool
-            let action = unsafeBitCast(item.object.method(for: selector), to: Press.self)
-            if let button = item.object as? NSButton { button.performClick(nil) }
-            else { _ = action(item.object, selector) }
-            await settle(host)
-            return
-        }
-        window.makeKey()
-        let frame = window.convertFromScreen(item.frame)
-        for type in [NSEvent.EventType.leftMouseDown, .leftMouseUp] {
-            let event = NSEvent.mouseEvent(with: type, location: NSPoint(x: frame.midX, y: frame.midY), modifierFlags: [],
-                timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber, context: nil,
-                eventNumber: 1, clickCount: 1, pressure: type == .leftMouseDown ? 1 : 0)!
-            window.sendEvent(event)
-        }
-        await settle(host)
+    private static func elements(_ object: Any) -> [NativeTestSupport.Element] { NativeTestSupport.elements(object) }
+    private static func settle(_ host: NSView) async { await NativeTestSupport.settle(host) }
+    private static func press(_ name: String, window: NSWindow) async {
+        let pressed = NativeTestSupport.press(window.contentView!, named: name) || NativeTestSupport.press(window, named: name)
+        if !pressed { FileHandle.standardError.write(Data("Missing theme action \(name): \(elements(window).map(\.name))\n".utf8)) }
+        precondition(pressed, "Missing theme action \(name)")
+        await settle(window.contentView!)
     }
     private static func capture(_ host: NSView, directory: URL?, name: String, isDark: Bool) throws {
         guard let directory else { return }
@@ -68,14 +19,17 @@ import SwiftUI
         let appearance = NSAppearance(named: isDark ? .darkAqua : .aqua)
         host.window?.appearance = appearance
         host.appearance = appearance
-        flush(host)
-        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        guard let bitmap = host.bitmapImageRepForCachingDisplay(in: host.bounds) else { fatalError("Could not capture Appearance") }
-        host.cacheDisplay(in: host.bounds, to: bitmap)
-        try bitmap.representation(using: .png, properties: [:])!.write(to: directory.appending(path: name + ".png"))
+        NativeTestSupport.flush(host)
+        try NativeTestSupport.capture(host, directory: directory, name: name)
     }
 
     static func run(root: URL, defaults: UserDefaults, screenshots: URL? = nil) async throws {
+        let previousAppearance = defaults.object(forKey: "interfaceAppearance")
+        let restoreAccessibility = NativeTestSupport.enableAccessibility()
+        defer {
+            defaults.set(previousAppearance, forKey: "interfaceAppearance")
+            restoreAccessibility()
+        }
         let store = ThemeStore(libraryURL: root.appending(path: "custom-themes.json"))
         let preview = domainDeriveTheme(background: PaletteColor(hex: 0x101923), accent: PaletteColor(hex: 0x64cec7))
         guard let custom = await store.save(name: "Harbour", preview: preview) else { fatalError("Could not save theme: \(store.errorMessage ?? "no error")") }
@@ -88,14 +42,12 @@ import SwiftUI
         window.contentView = host
         window.orderFront(nil)
         window.makeKey()
-        NSApp.accessibilitySetValue(true, forAttribute: NSAccessibility.Attribute(rawValue: "AXEnhancedUserInterface"))
-        NSApp.accessibilitySetValue(true, forAttribute: NSAccessibility.Attribute(rawValue: "AXManualAccessibility"))
         defer { window.close() }
         await settle(host)
-        check(elements(host).contains { $0.name == "Harbour theme" }, "Custom themes must be in the picker")
+        precondition(elements(host).contains { $0.name == "Harbour theme" }, "Custom themes must be in the picker")
         await press("Harbour theme", window: window)
-        check(defaults.string(forKey: "interfaceAppearance") == custom.id && store.resolved.customID == custom.id)
-        try capture(host, directory: screenshots, name: "01-two-colour-appearance", isDark: store.resolved.isDark)
+        precondition(defaults.string(forKey: "interfaceAppearance") == custom.id && store.resolved.customID == custom.id)
+        try capture(host, directory: screenshots, name: "01-two-color-appearance", isDark: store.resolved.isDark)
 
         await press("Custom theme from 2 colors", window: window)
         guard let sheet = window.attachedSheet, let sheetHost = sheet.contentView else { fatalError("Missing custom theme preview sheet: \(NSApp.windows.map { $0.title }); page \(elements(host).map(\.name))") }
@@ -106,19 +58,19 @@ import SwiftUI
         try capture(sheetHost, directory: screenshots, name: "03-live-preview", isDark: store.resolved.isDark)
         await press("Save Theme", window: sheet)
         await settle(host)
-        check(store.customThemes.count == 2, "The preview must save into the picker")
+        precondition(store.customThemes.count == 2, "The preview must save into the picker")
         let saved = store.customThemes.last!
-        check(defaults.string(forKey: "interfaceAppearance") == saved.id)
-        await press("Delete…", window: window, accessibility: true)
+        precondition(defaults.string(forKey: "interfaceAppearance") == saved.id)
+        await press("Delete…", window: window)
         await settle(host)
         let confirmation = NSApp.windows.first { candidate in
             elements(candidate).contains { $0.name == "Delete Theme" }
         } ?? window
 
-        await press("Delete Theme", window: confirmation, accessibility: true)
+        await press("Delete Theme", window: confirmation)
         await settle(host)
-        check(store.customThemes.count == 1 && !store.customThemes.contains { $0.id == saved.id })
-        check(defaults.string(forKey: "interfaceAppearance") == "system", "Deleting the active theme must follow the system")
+        precondition(store.customThemes.count == 1 && !store.customThemes.contains { $0.id == saved.id })
+        precondition(defaults.string(forKey: "interfaceAppearance") == "system", "Deleting the active theme must follow the system")
 
         let importedURL = root.appending(path: "linen.json")
         let source = """
@@ -133,15 +85,15 @@ import SwiftUI
               let importedTheme = await store.save(name: imported.name, preview: imported) else { fatalError("Could not import fixture") }
         await settle(host)
         await press("Linen theme", window: window)
-        check(store.resolved.customID == importedTheme.id && !store.resolved.isDark)
+        precondition(store.resolved.customID == importedTheme.id && !store.resolved.isDark)
         try capture(host, directory: screenshots, name: "02-imported-appearance", isDark: store.resolved.isDark)
         let invalid = root.appending(path: "invalid.json")
         try Data("{bad input".utf8).write(to: invalid)
         let invalidPreview = await store.importTheme(from: invalid)
-        check(invalidPreview == nil)
+        precondition(invalidPreview == nil)
         await settle(host)
-        check(elements(host).contains { $0.name.contains("Invalid VS Code theme") }, "Import errors must be visible on Appearance")
+        precondition(elements(host).contains { $0.name.contains("Invalid VS Code theme") }, "Import errors must be visible on Appearance")
         try capture(host, directory: screenshots, name: "04-import-error", isDark: store.resolved.isDark)
-        print("custom_theme_picker_select_preview_save_delete_import_errors=passed")
+        print("customThemePickerSelectPreviewSaveDeleteImportErrors: passed")
     }
 }

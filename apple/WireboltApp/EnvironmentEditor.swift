@@ -176,6 +176,7 @@ struct EnvironmentEditor: View {
                             .buttonStyle(.plain)
                             .help(environment.name)
                             .accessibilityLabel(environment.name)
+                            .accessibilityValue(model.selectedEnvironmentID == environment.id ? "Active" : "")
                             .accessibilityAddTraits(selectedID == environment.id ? .isSelected : [])
                         }
                     }

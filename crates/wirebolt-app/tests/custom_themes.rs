@@ -66,14 +66,14 @@ fn assert_contrast(tokens: &ThemeTokens) {
                     .zip([b.red, b.green, b.blue])
                     .map(|(a, b)| (i32::from(a) - i32::from(b)).pow(2))
                     .sum();
-                assert!(distance >= 24 * 24, "method colours too close: {a:?} {b:?}");
+                assert!(distance >= 24 * 24, "method colors too close: {a:?} {b:?}");
             }
         }
     }
 }
 
 #[test]
-fn derived_palettes_meet_contrast_and_distinguish_methods_across_colour_pairs() {
+fn derived_palettes_meet_contrast_and_distinguish_methods_across_color_pairs() {
     let values = [
         0,
         0x00ff_ffff,
@@ -108,7 +108,7 @@ fn derived_palettes_meet_contrast_and_distinguish_methods_across_colour_pairs() 
 }
 
 #[test]
-fn vscode_jsonc_maps_colours_scopes_and_reports_repairs_and_parent() {
+fn vscode_jsonc_maps_colors_scopes_and_reports_repairs_and_parent() {
     let tidal = vscode::parse(include_bytes!("fixtures/themes/tidal.json")).unwrap();
     assert_eq!(tidal.name, "Tidal");
     assert_eq!(tidal.tokens.window, RgbColor::hex(0x0007_171f));
