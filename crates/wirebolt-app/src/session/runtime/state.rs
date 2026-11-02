@@ -44,7 +44,7 @@ pub struct RuntimeState {
     selected: Mutex<Option<String>>,
     generation: AtomicU64,
     history_context: Mutex<HistoryContext>,
-    history_problem: Mutex<Option<String>>,
+    storage_problem: Mutex<Option<String>>,
 }
 impl RuntimeState {
     #[must_use]
@@ -56,7 +56,7 @@ impl RuntimeState {
             snapshot: Mutex::default(),
             selected: Mutex::default(),
             generation: AtomicU64::new(0),
-            history_problem: Mutex::default(),
+            storage_problem: Mutex::default(),
             history_context: Mutex::new(HistoryContext {
                 requests: None,
                 moves: HashMap::new(),
@@ -64,7 +64,7 @@ impl RuntimeState {
         }
     }
     /// # Errors
-    /// Reports backed-up damage once after recovery, or a failed read/migration.
+    /// Reports damaged data once, or a failed read.
     pub fn load_workspace_history(
         &self,
         workspace: &crate::domain::DomainWorkspace,
@@ -78,15 +78,12 @@ impl RuntimeState {
             state.request_activity.clear();
             state.history_revision += 1;
         }
-        history.migrate_legacy(workspace)?;
         let entries = history.workspace_entries(workspace)?;
         let mut state = lock(&self.snapshot);
         state.history_entries.clear();
         state.request_activity.clear();
         for entry in entries {
-            let Some(identity) = entry.identity else {
-                continue;
-            };
+            let identity = entry.identity;
             let activity = RequestActivity {
                 date: entry.created_at,
                 status: entry.response_head.map(|head| head.status),
@@ -194,17 +191,16 @@ impl RuntimeState {
         }
         Ok(())
     }
-    /// Reads only the retained notice; history disk work stays on workers.
-    pub fn take_history_problem(&self) -> Option<String> {
-        lock(&self.history_problem).take()
+    /// Reads only retained notices; this does not load files.
+    pub fn take_storage_problem(&self) -> Option<String> {
+        lock(&self.storage_problem)
+            .take()
+            .or_else(|| lock(&self.cookie_jar()).take_load_problem())
     }
     fn collect_history_problem(&self, history: &mut RunHistory) {
         if let Err(error) = history.take_load_problem() {
-            *lock(&self.history_problem) = Some(error.to_string());
+            *lock(&self.storage_problem) = Some(error.to_string());
         }
-    }
-    pub fn legacy_history(&self, id: &str) -> Vec<SessionHistoryEntry> {
-        lock(&self.history).legacy_list(id).unwrap_or_default()
     }
     pub fn select_environment(&self, id: Option<String>) {
         *lock(&self.selected) = id;
@@ -231,7 +227,6 @@ impl RuntimeState {
     pub fn configure_cookies(&self, workspace: Option<&str>, directory: Option<&str>) {
         *lock(&self.cookies) = if let (Some(workspace), Some(directory)) = (workspace, directory) {
             let storage = cookie_storage_path(Path::new(workspace), Path::new(directory));
-            let _ = std::fs::remove_file(Path::new(directory).join("cookies.json"));
             Arc::new(Mutex::new(ResponseCookieJar::new(Some(storage))))
         } else {
             self.default_cookies.clone()
@@ -330,8 +325,7 @@ impl RuntimeState {
         };
         let entry = SessionHistoryEntry {
             id: run_id.into(),
-            request_id: id.request_id.clone(),
-            identity: Some(id.clone()),
+            identity: id.clone(),
             created_at: reference_time(),
             prepared,
             response_head: snapshot.head.clone(),
@@ -392,7 +386,7 @@ impl RuntimeState {
                 date: entry.created_at,
                 status: entry.response_head.as_ref().map(|head| head.status),
             };
-            let id = entry.identity.as_ref()?.activity_key();
+            let id = entry.identity.activity_key();
             let (snapshot, body) = history_snapshot(entry);
             Some((id, activity, snapshot, body))
         })

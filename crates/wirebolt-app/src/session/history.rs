@@ -1,5 +1,4 @@
-//! Typed history orchestration over the response repository. The storage format
-//! keeps the existing Foundation reference-date timestamps and snapshot keys.
+//! Typed history orchestration over the response repository.
 use super::run::{SessionCompletion, SessionFailure, SessionHead, SessionPrepared};
 use crate::response::VIEWPORT_BYTES;
 use serde::{Deserialize, Serialize};
@@ -8,6 +7,7 @@ use std::io::Read;
 /// Collection and request IDs survive workspace relocation. Copies share history.
 /// Unlocated requests use an empty collection ID, stable across launches.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SessionRequestIdentity {
     pub collection_id: String,
     pub request_id: String,
@@ -26,14 +26,10 @@ impl SessionRequestIdentity {
     }
 }
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct SessionHistoryEntry {
     pub id: String,
-    #[serde(rename = "requestID")]
-    pub request_id: String,
-    /// Absent only for legacy entries whose collection is unknown.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub identity: Option<SessionRequestIdentity>,
+    pub identity: SessionRequestIdentity,
     pub created_at: f64,
     pub prepared: SessionPrepared,
     #[serde(skip_serializing_if = "Option::is_none")]

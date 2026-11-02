@@ -281,16 +281,15 @@ pub(super) fn find_bytes(haystack: &[u8], needle: &[u8]) -> Option<usize> {
 }
 
 /// Shared session records are persisted directly; the repository owns ordering,
-/// quotas and disk I/O while preserving the existing history file format.
+/// quotas and disk I/O.
 pub use crate::session::history::SessionHistoryEntry as HistoryEntry;
 use crate::session::history::SessionRequestIdentity;
 
-const PREVIOUS_HISTORY_INDEX_VERSION: u32 = 2;
 pub const HISTORY_LOAD_FAILURE: &str = "History could not be loaded.";
 
-#[derive(Deserialize)]
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct HistoryIndex {
-    version: u32,
     entries: Vec<HistoryEntry>,
 }
 #[derive(Debug)]
@@ -319,23 +318,10 @@ impl RunHistory {
             let entries = match fs::read(&path) {
                 Ok(data) => match decode_history_index(&data) {
                     Ok(entries) => Ok(entries),
-                    Err(error) => match backup_history_index(&self.root, &data) {
-                        Ok(backup) => {
-                            self.load_problem = Some(ResponseError::Io {
-                                reason: format!(
-                                    "{} A backup is kept as {}. New history will be recorded in a fresh index.",
-                                    error,
-                                    backup.file_name().unwrap_or_default().to_string_lossy()
-                                ),
-                            });
-                            Ok(Vec::new())
-                        }
-                        Err(backup_error) => Err(ResponseError::Io {
-                            reason: format!(
-                                "{error} A backup could not be saved: {backup_error}. The original index is still unchanged."
-                            ),
-                        }),
-                    },
+                    Err(error) => {
+                        self.load_problem = Some(error);
+                        Ok(Vec::new())
+                    }
                 },
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(Vec::new()),
                 Err(error) => Err(error.into()),
@@ -348,9 +334,9 @@ impl RunHistory {
             .as_mut()
             .map_err(|error| error.clone())
     }
-    /// Consume a recovered-index notice once; unrecoverable storage errors remain errors.
+    /// Consume a damaged-index notice once; unrecoverable storage errors remain errors.
     /// # Errors
-    /// Reports the backed-up damage or an unreadable index.
+    /// Reports the damaged data or an unreadable index.
     pub fn take_load_problem(&mut self) -> ResponseResult<()> {
         self.entries()?;
         self.load_problem.take().map_or(Ok(()), Err)
@@ -364,14 +350,13 @@ impl RunHistory {
         body.export(&destination)?;
         entry.body_path = destination.to_string_lossy().into_owned();
         let identity = entry.identity.clone();
-        let request_id = entry.request_id.clone();
         let mut entries = self.entries()?.clone();
         entries.retain(|previous| previous.id != entry.id);
         entries.push(entry);
         entries.sort_by(|a, b| b.created_at.total_cmp(&a.created_at));
         let mut matching = 0;
         entries.retain(|entry| {
-            if entry.identity == identity && entry.request_id == request_id {
+            if entry.identity == identity {
                 matching += 1;
                 matching <= self.maximum_entries
             } else {
@@ -406,7 +391,7 @@ impl RunHistory {
         let mut entries: Vec<_> = self
             .entries()?
             .iter()
-            .filter(|e| e.identity.as_ref() == Some(identity))
+            .filter(|e| &e.identity == identity)
             .cloned()
             .collect();
         entries.sort_by(|a, b| b.created_at.total_cmp(&a.created_at));
@@ -418,7 +403,7 @@ impl RunHistory {
         Ok(count(
             self.entries()?
                 .iter()
-                .filter(|e| e.identity.as_ref() == Some(identity))
+                .filter(|e| &e.identity == identity)
                 .count(),
         ))
     }
@@ -428,29 +413,13 @@ impl RunHistory {
         let entries = self
             .entries()?
             .iter()
-            .filter(|entry| {
-                entry.identity.as_ref() != Some(identity)
-                    && !(entry.identity.is_none() && entry.request_id == identity.request_id)
-            })
+            .filter(|entry| &entry.identity != identity)
             .cloned()
             .collect();
         self.replace_entries(entries)
     }
-    /// Entries without a complete identity are available separately for recovery.
     /// # Errors
-    /// Returns an error for an unsupported or damaged versioned index.
-    pub fn legacy_list(&mut self, request_id: &str) -> ResponseResult<Vec<HistoryEntry>> {
-        let mut entries: Vec<_> = self
-            .entries()?
-            .iter()
-            .filter(|entry| entry.identity.is_none() && entry.request_id == request_id)
-            .cloned()
-            .collect();
-        entries.sort_by(|a, b| b.created_at.total_cmp(&a.created_at));
-        Ok(entries)
-    }
-    /// # Errors
-    /// Returns an I/O error if the migrated index cannot be saved.
+    /// Returns an I/O error if the index cannot be saved.
     pub fn relocate(
         &mut self,
         from: &SessionRequestIdentity,
@@ -458,51 +427,14 @@ impl RunHistory {
     ) -> ResponseResult<()> {
         let mut entries = self.entries()?.clone();
         for entry in &mut entries {
-            if entry.identity.as_ref() == Some(from) {
-                entry.identity = Some(to.clone());
-                entry.request_id.clone_from(&to.request_id);
+            if &entry.identity == from {
+                entry.identity = to.clone();
             }
         }
         self.replace_entries(entries)
     }
-    /// Assign legacy IDs only when this workspace has exactly one matching request.
     /// # Errors
-    /// Returns an error if the index cannot be read or migration cannot be saved.
-    pub fn migrate_legacy(
-        &mut self,
-        workspace: &crate::domain::DomainWorkspace,
-    ) -> ResponseResult<()> {
-        let mut matches = std::collections::HashMap::new();
-        for collection in &workspace.collections {
-            for location in &collection.requests {
-                matches
-                    .entry(location.request.id.as_str())
-                    .and_modify(|value| *value = None)
-                    .or_insert_with(|| {
-                        Some(SessionRequestIdentity {
-                            collection_id: collection.id.clone(),
-                            request_id: location.request.id.clone(),
-                        })
-                    });
-            }
-        }
-        let mut changed = false;
-        let mut entries = self.entries()?.clone();
-        for entry in &mut entries {
-            if entry.identity.is_none()
-                && let Some(Some(identity)) = matches.get(entry.request_id.as_str())
-            {
-                entry.identity = Some(identity.clone());
-                changed = true;
-            }
-        }
-        if changed {
-            self.replace_entries(entries)?;
-        }
-        Ok(())
-    }
-    /// # Errors
-    /// Returns a storage error if reading, backing up or writing the index fails.
+    /// Returns a storage error if reading, writing the index fails.
     pub fn clear_all(&mut self) -> ResponseResult<()> {
         self.replace_entries(Vec::new())
     }
@@ -516,14 +448,13 @@ impl RunHistory {
             .entries()?
             .iter()
             .filter(|entry| {
-                entry.identity.as_ref().is_some_and(|identity| {
-                    crate::session::workspace::location(
-                        workspace,
-                        &identity.collection_id,
-                        &identity.request_id,
-                    )
-                    .is_some()
-                })
+                let identity = &entry.identity;
+                crate::session::workspace::location(
+                    workspace,
+                    &identity.collection_id,
+                    &identity.request_id,
+                )
+                .is_some()
             })
             .cloned()
             .collect())
@@ -531,7 +462,9 @@ impl RunHistory {
     fn replace_entries(&mut self, entries: Vec<HistoryEntry>) -> ResponseResult<()> {
         // Persist before unlinking anything: failed writes keep every old body.
         let previous = self.entries()?.clone();
-        let data = serde_json::to_vec(&entries).map_err(|e| json_io(&e))?;
+        let index = HistoryIndex { entries };
+        let data = serde_json::to_vec(&index).map_err(|e| json_io(&e))?;
+        let entries = index.entries;
         atomic_write(&self.root.join("index.json"), &data)?;
         let retained_paths: std::collections::HashSet<_> = entries
             .iter()
@@ -550,37 +483,9 @@ fn decode_history_index(data: &[u8]) -> ResponseResult<Vec<HistoryEntry>> {
     let unreadable = || ResponseError::Io {
         reason: HISTORY_LOAD_FAILURE.into(),
     };
-    let value: serde_json::Value = serde_json::from_slice(data).map_err(|_| unreadable())?;
-    if value.is_array() {
-        return serde_json::from_value(value).map_err(|_| unreadable());
-    }
-    let index: HistoryIndex = serde_json::from_value(value).map_err(|_| unreadable())?;
-    if index.version != PREVIOUS_HISTORY_INDEX_VERSION {
-        return Err(unreadable());
-    }
-    Ok(index.entries)
-}
-
-fn backup_history_index(root: &Path, data: &[u8]) -> std::io::Result<PathBuf> {
-    let destination = root.join("index.json.backup");
-    if fs::read(&destination).ok().as_deref() == Some(data) {
-        return Ok(destination);
-    }
-    let mut backup = tempfile::Builder::new()
-        .prefix("index.json.backup-")
-        .tempfile_in(root)?;
-    backup.write_all(data)?;
-    backup.as_file().sync_all()?;
-    // Never replace a previous backup. If its name is occupied (or exclusive
-    // rename is unsupported), keep the already exclusive temporary name instead.
-    match backup.persist_noclobber(&destination) {
-        Ok(_) => Ok(destination),
-        Err(error) => error
-            .file
-            .keep()
-            .map(|(_, path)| path)
-            .map_err(|error| error.error),
-    }
+    serde_json::from_slice::<HistoryIndex>(data)
+        .map(|index| index.entries)
+        .map_err(|_| unreadable())
 }
 
 struct RetainedRoot {
@@ -650,7 +555,7 @@ pub fn unix_time() -> f64 {
         .unwrap_or_default()
         .as_secs_f64()
 }
-/// Legacy history/session timestamps retain their existing persisted representation.
+/// Native session dates use Foundation reference-date seconds.
 #[must_use]
 pub fn reference_time() -> f64 {
     unix_time() - 978_307_200.0
@@ -667,8 +572,7 @@ pub struct StoredCookie {
     pub secure: bool,
     pub http_only: bool,
     pub same_site: String,
-    /// Unix seconds in memory; legacy cookie files use the original reference epoch.
-    #[serde(default, with = "legacy_cookie_expiry")]
+    /// Unix seconds in memory and on disk.
     pub expires_at: Option<f64>,
 }
 impl StoredCookie {
@@ -682,10 +586,16 @@ pub struct ResponseHeaderValue {
     pub name: String,
     pub value: String,
 }
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CookieFile {
+    cookies: Vec<StoredCookie>,
+}
 #[derive(Debug)]
 pub struct ResponseCookieJar {
     storage: Option<PathBuf>,
     cookies: Option<Vec<StoredCookie>>,
+    load_problem: Option<String>,
 }
 impl ResponseCookieJar {
     #[must_use]
@@ -693,19 +603,45 @@ impl ResponseCookieJar {
         Self {
             storage,
             cookies: None,
+            load_problem: None,
         }
     }
     fn cookies(&mut self) -> &mut Vec<StoredCookie> {
-        self.cookies.get_or_insert_with(|| {
-            self.storage
-                .as_ref()
-                .and_then(|p| fs::read(p).ok())
-                .and_then(|data| serde_json::from_slice::<Vec<StoredCookie>>(&data).ok())
-                .unwrap_or_default()
-                .into_iter()
-                .filter(|c| c.expires_at.is_some())
-                .collect()
-        })
+        if self.cookies.is_none() {
+            let result =
+                self.storage
+                    .as_ref()
+                    .map_or(Ok(Vec::new()), |path| match fs::read(path) {
+                        Ok(data) => serde_json::from_slice::<CookieFile>(&data)
+                            .map(|file| file.cookies)
+                            .map_err(|_| {
+                                "Cookies could not be loaded: the cookie file is invalid."
+                                    .to_owned()
+                            }),
+                        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                            Ok(Vec::new())
+                        }
+                        Err(_) => Err(
+                            "Cookies could not be loaded: the cookie file could not be read."
+                                .to_owned(),
+                        ),
+                    });
+            let cookies = result.unwrap_or_else(|reason| {
+                self.load_problem = Some(reason);
+                Vec::new()
+            });
+            self.cookies = Some(
+                cookies
+                    .into_iter()
+                    .filter(|cookie| cookie.expires_at.is_some())
+                    .collect(),
+            );
+        }
+        self.cookies.as_mut().expect("cookies were loaded")
+    }
+    /// Takes a load diagnostic already produced by a cookie operation, without disk I/O.
+    pub fn take_load_problem(&mut self) -> Option<String> {
+        self.load_problem.take()
     }
     #[must_use]
     pub fn store(
@@ -786,7 +722,8 @@ impl ResponseCookieJar {
                 .iter()
                 .filter(|c| c.expires_at.is_some())
                 .collect();
-            if let Ok(data) = serde_json::to_vec(&cookies) {
+            let cookies = cookies.into_iter().cloned().collect();
+            if let Ok(data) = serde_json::to_vec(&CookieFile { cookies }) {
                 let _ = atomic_write(&path, &data);
             }
         }
@@ -927,23 +864,6 @@ fn cookie_host(url: &Url, source: &str) -> String {
         .to_lowercase()
 }
 
-mod legacy_cookie_expiry {
-    use serde::{Deserialize, Deserializer, Serialize, Serializer};
-    const OFFSET: f64 = 978_307_200.0;
-    #[expect(
-        clippy::ref_option,
-        reason = "Serde field serializers receive a borrowed field."
-    )]
-    pub fn serialize<S: Serializer>(value: &Option<f64>, serializer: S) -> Result<S::Ok, S::Error> {
-        value.map(|v| v - OFFSET).serialize(serializer)
-    }
-    pub fn deserialize<'de, D: Deserializer<'de>>(
-        deserializer: D,
-    ) -> Result<Option<f64>, D::Error> {
-        Option::<f64>::deserialize(deserializer).map(|value| value.map(|v| v + OFFSET))
-    }
-}
-
 #[cfg(test)]
 mod retention_tests {
     use super::*;
@@ -961,97 +881,5 @@ mod retention_tests {
         cleanup_retained_bodies(root.path(), &root.path().join("active"));
         assert!(!crashed.exists());
         assert!(live.exists());
-    }
-    #[test]
-    fn legacy_history_counts_toward_byte_quota() {
-        let root = tempfile::tempdir().unwrap();
-        let mut history = RunHistory::new(root.path().into());
-        history.maximum_bytes = 1;
-        let legacy_path = root.path().join("legacy.body");
-        fs::write(&legacy_path, b"legacy body").unwrap();
-        let entry = crate::session::history::SessionHistoryEntry {
-            id: "legacy".into(),
-            request_id: "old".into(),
-            identity: None,
-            created_at: 0.0,
-            prepared: crate::session::run::SessionPrepared {
-                method: "GET".into(),
-                url: "https://example.com".into(),
-                headers: vec![],
-                proxy: None,
-                body: crate::session::run::SessionPreparedBody {
-                    byte_count: 0,
-                    content_type: None,
-                    text_preview: None,
-                    redacted: false,
-                },
-                transport: crate::domain::DomainTransport::default(),
-            },
-            response_head: None,
-            completion: None,
-            failure: None,
-            body_path: legacy_path.to_string_lossy().into_owned(),
-        };
-        fs::write(
-            root.path().join("index.json"),
-            serde_json::to_vec(&vec![entry.clone()]).unwrap(),
-        )
-        .unwrap();
-        let mut body = BodyStore::new("source", root.path()).unwrap();
-        body.append(b"x").unwrap();
-        body.finish().unwrap();
-        history
-            .record(
-                HistoryEntry {
-                    id: "new".into(),
-                    created_at: 1.0,
-                    identity: Some(SessionRequestIdentity {
-                        collection_id: "api".into(),
-                        request_id: "new".into(),
-                    }),
-                    ..entry
-                },
-                &body,
-            )
-            .unwrap();
-        assert!(history.legacy_list("old").unwrap().is_empty());
-        assert!(!legacy_path.exists());
-    }
-}
-
-#[cfg(test)]
-mod history_backup_tests {
-    use super::*;
-    #[test]
-    fn damaged_history_reuses_identical_backups_and_preserves_distinct_damage() {
-        let root = tempfile::tempdir().unwrap();
-        let first = backup_history_index(root.path(), b"first damaged index").unwrap();
-        assert_eq!(first, root.path().join("index.json.backup"));
-        assert_eq!(
-            backup_history_index(root.path(), b"first damaged index").unwrap(),
-            first
-        );
-        let second = backup_history_index(root.path(), b"second damaged index").unwrap();
-        assert_ne!(second, first);
-        assert_eq!(fs::read(first).unwrap(), b"first damaged index");
-        assert_eq!(fs::read(second).unwrap(), b"second damaged index");
-    }
-    #[test]
-    fn damaged_history_reports_backup_failure_without_claiming_success() {
-        use std::os::unix::fs::PermissionsExt;
-        let root = tempfile::tempdir().unwrap();
-        fs::write(root.path().join("index.json"), b"damaged").unwrap();
-        let permissions = fs::metadata(root.path()).unwrap().permissions();
-        fs::set_permissions(root.path(), fs::Permissions::from_mode(0o500)).unwrap();
-        let mut history = RunHistory::new(root.path().into());
-        let result = history.entries().map(|_| ());
-        fs::set_permissions(root.path(), permissions).unwrap();
-        let reason = result.unwrap_err().to_string();
-        assert!(reason.contains("backup could not be saved"));
-        assert!(!reason.contains("backup is kept"));
-        assert_eq!(
-            fs::read(root.path().join("index.json")).unwrap(),
-            b"damaged"
-        );
     }
 }

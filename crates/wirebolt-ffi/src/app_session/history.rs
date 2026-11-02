@@ -10,8 +10,7 @@ use super::{
 #[uniffi::remote(Record)]
 pub struct SessionHistoryEntry {
     pub id: String,
-    pub request_id: String,
-    pub identity: Option<SessionRequestIdentity>,
+    pub identity: SessionRequestIdentity,
     pub created_at: f64,
     pub prepared: SessionPrepared,
     pub response_head: Option<SessionHead>,

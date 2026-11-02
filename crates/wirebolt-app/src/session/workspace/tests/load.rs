@@ -91,6 +91,6 @@ async fn damaged_history_is_reported_during_workspace_load_without_hiding_reques
         Some(crate::response::ResponseFailureKind::Storage)
     );
     let reason = ops.presentation().operation_failure_reason.unwrap();
-    assert!(reason.contains("index.json.backup") && reason.contains("fresh index"));
+    assert!(reason.contains("History could not be loaded."));
     assert_eq!(std::fs::read(index).unwrap(), b"damaged index");
 }

@@ -1,7 +1,7 @@
 use super::{persistence_fixtures::*, *};
 
 #[tokio::test]
-async fn workspace_move_and_undo_migrate_history_before_returning() {
+async fn workspace_move_and_undo_relocate_history_before_returning() {
     use crate::response::{BodyStore, ResponseCookieJar, RunHistory};
     use crate::session::{run::*, runtime::RuntimeState};
     let (root, store) = persistence();

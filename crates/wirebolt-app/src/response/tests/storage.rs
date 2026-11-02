@@ -51,8 +51,7 @@ fn history_survives_recreation_and_evicts_past_quota() {
             .record(
                 HistoryEntry {
                     id: format!("run-{index}"),
-                    request_id: "health".into(),
-                    identity: Some(identity("health")),
+                    identity: identity("health"),
                     created_at: f64::from(index),
                     prepared: crate::session::run::SessionPrepared {
                         proxy: None,
@@ -170,17 +169,6 @@ fn cookie_domain_delete_and_dates() {
 }
 
 #[test]
-fn history_keeps_legacy_acronyms_and_omits_absent_optional_fields() {
-    let source=br#"{"id":"run","requestID":"health","createdAt":42,"prepared":{"proxy":null,"method":"GET","url":"https://example.com","headers":[],"body":{"byte_count":0,"content_type":null,"text_preview":null,"redacted":false},"transport":{"validate_tls":true,"follow_redirects":true,"maximum_redirects":10,"total_timeout_ms":0,"read_timeout_ms":0,"client_certificate_reference":null,"custom_ca_path":null}},"bodyPath":"/runtime/body"}"#;
-    let entry: HistoryEntry = serde_json::from_slice(source).unwrap();
-    let encoded = serde_json::to_value(entry).unwrap();
-    assert_eq!(encoded["requestID"], "health");
-    assert!(encoded.get("requestId").is_none());
-    for key in ["responseHead", "completion", "failure"] {
-        assert!(encoded.get(key).is_none());
-    }
-}
-#[test]
 fn cookie_paths_preserve_encoded_urls_and_ignore_empty_attributes() {
     let mut jar = ResponseCookieJar::new(None);
     let received = jar.store(
@@ -282,7 +270,7 @@ fn cookie_max_age_precedes_expires_and_invalid_attributes_do_not_erase_expiry() 
 fn ipv6_cookies_keep_unbracketed_hosts_and_read_saved_files() {
     let root = tempfile::tempdir().unwrap();
     let path = root.path().join("cookies.json");
-    std::fs::write(&path, r#"[{"name":"saved","value":"old","domain":"::1","hostOnly":true,"path":"/","secure":false,"httpOnly":false,"sameSite":"","expiresAt":1000}]"#).unwrap();
+    std::fs::write(&path, r#"{"cookies":[{"name":"saved","value":"old","domain":"::1","hostOnly":true,"path":"/","secure":false,"httpOnly":false,"sameSite":"","expiresAt":1000}]}"#).unwrap();
     let mut jar = ResponseCookieJar::new(Some(path.clone()));
     assert_eq!(
         jar.header("http://[::1]/", 0.0).as_deref(),
@@ -364,7 +352,7 @@ fn cookie_dates_preserve_pre_epoch_expiry_two_digit_years_and_named_timezones() 
 #[test]
 fn damaged_history_is_reported_once_then_recording_and_clearing_resume() {
     for original in [
-        br#"[{"id":"broken","requestID":"health","prepared":false}]"#.as_slice(),
+        br#"[{"id":"broken","identity":{"collection_id":"api","request_id":"health"},"prepared":false}]"#.as_slice(),
         br#"{"version":2,"entries":[{"id":"broken"}]}"#,
         b"invalid JSON",
         br#"{"version":3,"entries":[]}"#,
@@ -375,7 +363,6 @@ fn damaged_history_is_reported_once_then_recording_and_clearing_resume() {
         let mut history = RunHistory::new(root.path().into());
         let error = history.take_load_problem().unwrap_err().to_string();
         assert!(error.starts_with("History could not be loaded."));
-        assert!(error.contains("A backup is kept as"));
         assert_eq!(std::fs::read(&index).unwrap(), original);
         assert!(history.list(&identity("health")).unwrap().is_empty());
         history.take_load_problem().unwrap();
@@ -383,7 +370,7 @@ fn damaged_history_is_reported_once_then_recording_and_clearing_resume() {
         body.finish().unwrap();
         history
             .record(
-                history_fixture("new", Some(identity("health")), String::new()),
+                history_fixture("new", identity("health"), String::new()),
                 &body,
             )
             .unwrap();
@@ -395,10 +382,7 @@ fn damaged_history_is_reported_once_then_recording_and_clearing_resume() {
                 .unwrap()
                 .is_empty()
         );
-        assert_eq!(
-            std::fs::read(root.path().join("index.json.backup")).unwrap(),
-            original
-        );
+
     }
 }
 
@@ -415,8 +399,8 @@ fn unreadable_history_index_remains_an_error_for_this_repository() {
 }
 
 #[test]
-fn history_preserves_typed_failures_and_unknown_legacy_codes() {
-    let source = r#"{"id":"run","requestID":"health","createdAt":42,"prepared":{"proxy":null,"method":"GET","url":"https://example.com","headers":[],"body":{"byte_count":0,"content_type":null,"text_preview":null,"redacted":false},"transport":{"validate_tls":true,"follow_redirects":true,"maximum_redirects":10,"total_timeout_ms":0,"read_timeout_ms":0,"client_certificate_reference":null,"custom_ca_path":null}},"failure":{"kind":"future_failure","issues":[]},"bodyPath":"/runtime/body"}"#;
+fn history_preserves_typed_failures_and_unknown_platform_codes() {
+    let source = r#"{"id":"run","identity":{"collection_id":"api","request_id":"health"},"createdAt":42,"prepared":{"proxy":null,"method":"GET","url":"https://example.com","headers":[],"body":{"byte_count":0,"content_type":null,"text_preview":null,"redacted":false},"transport":{"validate_tls":true,"follow_redirects":true,"maximum_redirects":10,"total_timeout_ms":0,"read_timeout_ms":0,"client_certificate_reference":null,"custom_ca_path":null}},"failure":{"kind":"future_failure","issues":[]},"bodyPath":"/runtime/body"}"#;
     let entry: HistoryEntry = serde_json::from_str(source).unwrap();
     assert_eq!(
         entry.failure.as_ref().unwrap().kind,
@@ -503,14 +487,9 @@ fn response_export_to_itself_preserves_body() {
     assert_eq!(body.viewport(0, 9).unwrap(), b"response!");
 }
 
-fn history_fixture(
-    id: &str,
-    identity: Option<SessionRequestIdentity>,
-    body_path: String,
-) -> HistoryEntry {
+fn history_fixture(id: &str, identity: SessionRequestIdentity, body_path: String) -> HistoryEntry {
     HistoryEntry {
         id: id.into(),
-        request_id: "same".into(),
         identity,
         created_at: 42.0,
         body_path,
@@ -548,10 +527,7 @@ fn history_identity_isolates_collections_and_requests() {
     body.finish().unwrap();
     for (id, identity) in [("a", &a), ("b", &b), ("c", &c)] {
         history
-            .record(
-                history_fixture(id, Some(identity.clone()), String::new()),
-                &body,
-            )
+            .record(history_fixture(id, identity.clone(), String::new()), &body)
             .unwrap();
     }
     history.clear(&b).unwrap();
@@ -559,65 +535,6 @@ fn history_identity_isolates_collections_and_requests() {
     assert_eq!(reloaded.list(&a).unwrap()[0].id, "a");
     assert!(reloaded.list(&b).unwrap().is_empty());
     assert_eq!(reloaded.list(&c).unwrap()[0].id, "c");
-}
-
-#[test]
-fn history_migration_preserves_scoped_and_ambiguous_legacy_entries() {
-    let root = tempfile::tempdir().unwrap();
-    let key = identity("same");
-    let entries: Vec<_> = ["legacy-a", "legacy-b", "scoped"]
-        .into_iter()
-        .map(|id| {
-            let path = root.path().join(format!("{id}.body"));
-            std::fs::write(&path, b"fixture").unwrap();
-            history_fixture(
-                id,
-                (id == "scoped").then(|| key.clone()),
-                path.to_string_lossy().into_owned(),
-            )
-        })
-        .collect();
-    std::fs::write(
-        root.path().join("index.json"),
-        serde_json::to_vec(&entries).unwrap(),
-    )
-    .unwrap();
-    let mut history = RunHistory::new(root.path().into());
-    assert_eq!(history.list(&key).unwrap().len(), 1);
-    assert_eq!(history.legacy_list("same").unwrap().len(), 2);
-    history.clear(&key).unwrap();
-    let mut reloaded = RunHistory::new(root.path().into());
-    assert!(reloaded.list(&key).unwrap().is_empty());
-    let legacy = reloaded.legacy_list("same").unwrap();
-    assert!(legacy.is_empty());
-    let index: serde_json::Value =
-        serde_json::from_slice(&std::fs::read(root.path().join("index.json")).unwrap()).unwrap();
-    assert_eq!(index, serde_json::json!([]));
-}
-
-#[test]
-fn previous_v2_history_reads_then_writes_an_rc1_array() {
-    let root = tempfile::tempdir().unwrap();
-    let legacy = history_fixture("legacy", None, String::new());
-    std::fs::write(
-        root.path().join("index.json"),
-        serde_json::to_vec(&serde_json::json!({"version":2,"entries":[legacy]})).unwrap(),
-    )
-    .unwrap();
-    let mut history = RunHistory::new(root.path().into());
-    assert_eq!(history.legacy_list("same").unwrap().len(), 1);
-    let mut body = BodyStore::new("new", root.path()).unwrap();
-    body.append(b"fixture").unwrap();
-    body.finish().unwrap();
-    history
-        .record(
-            history_fixture("new", Some(identity("same")), String::new()),
-            &body,
-        )
-        .unwrap();
-    let entries: Vec<HistoryEntry> =
-        serde_json::from_slice(&std::fs::read(root.path().join("index.json")).unwrap()).unwrap();
-    assert_eq!(entries.len(), 2);
 }
 
 #[test]
@@ -681,16 +598,40 @@ fn retained_body_clone_cost_and_release() {
 }
 
 #[test]
-fn development_history_namespace_is_ignored_when_reading_identity() {
+fn cookie_files_reject_foreign_shapes_and_report_damage_once() {
     let root = tempfile::tempdir().unwrap();
-    let entry = history_fixture("development", Some(identity("health")), String::new());
-    let mut value = serde_json::to_value(&entry).unwrap();
-    value["identity"]["workspace"] = "old-path-sha256.json".into();
-    std::fs::write(
-        root.path().join("index.json"),
-        serde_json::to_vec(&vec![value]).unwrap(),
-    )
-    .unwrap();
-    let mut history = RunHistory::new(root.path().into());
-    assert_eq!(history.list(&identity("health")).unwrap(), [entry]);
+    let path = root.path().join("cookies.json");
+    for source in ["[]", "invalid JSON", r#"{"cookies":[{}]}"#] {
+        std::fs::write(&path, source).unwrap();
+        let mut jar = ResponseCookieJar::new(Some(path.clone()));
+        assert!(jar.all(0.0).is_empty());
+        assert!(
+            jar.take_load_problem()
+                .unwrap()
+                .contains("cookie file is invalid")
+        );
+        assert!(jar.take_load_problem().is_none());
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), source);
+    }
+}
+
+#[test]
+fn history_rejects_incomplete_and_foreign_identities() {
+    let root = tempfile::tempdir().unwrap();
+    let entry = history_fixture("current", identity("health"), String::new());
+    for invalid_identity in [
+        serde_json::json!({"request_id":"health"}),
+        serde_json::json!({"collection_id":"api","request_id":"health","workspace":"foreign"}),
+    ] {
+        let mut value = serde_json::to_value(&entry).unwrap();
+        value["identity"] = invalid_identity;
+        std::fs::write(
+            root.path().join("index.json"),
+            serde_json::to_vec(&serde_json::json!({"entries":[value]})).unwrap(),
+        )
+        .unwrap();
+        let mut history = RunHistory::new(root.path().into());
+        assert!(history.list(&identity("health")).unwrap().is_empty());
+        assert!(history.take_load_problem().is_err());
+    }
 }

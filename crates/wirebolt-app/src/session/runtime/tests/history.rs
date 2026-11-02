@@ -199,7 +199,7 @@ async fn latest_restore_checks_membership_after_io_and_rejects_departed_workspac
 }
 
 #[tokio::test]
-async fn corrupt_history_recovers_recording_and_clearing_without_losing_backup() {
+async fn corrupt_history_reports_damage_then_records_and_clears() {
     let root = tempfile::tempdir().unwrap();
     let directory = root.path().join("history");
     std::fs::create_dir(&directory).unwrap();
@@ -221,18 +221,14 @@ async fn corrupt_history_recovers_recording_and_clearing_without_losing_backup()
     assert_eq!(state.history_count(&key(&state, "health")).unwrap(), 1);
     assert!(
         state
-            .take_history_problem()
+            .take_storage_problem()
             .unwrap()
-            .contains("index.json.backup")
+            .contains("History could not be loaded.")
     );
-    assert!(state.take_history_problem().is_none());
+    assert!(state.take_storage_problem().is_none());
     state.clear_all_history().unwrap();
     assert!(state.snapshot().history_entries.is_empty());
-    assert_eq!(std::fs::read(index).unwrap(), b"[]");
-    assert_eq!(
-        std::fs::read(directory.join("index.json.backup")).unwrap(),
-        b"corrupt index"
-    );
+    assert_eq!(std::fs::read(index).unwrap(), br#"{"entries":[]}"#);
 }
 
 #[tokio::test]
@@ -448,97 +444,6 @@ async fn latest_restore_retains_body_before_observer_gate() {
         b"fixture"
     );
     assert!(lock(&run).snapshot().failure.is_none());
-}
-
-#[tokio::test]
-async fn workspace_load_migrates_unique_legacy_history_and_restores_activity_and_response() {
-    let root = tempfile::tempdir().unwrap();
-    let original = state(root.path());
-    for id in ["unique", "ambiguous", "missing"] {
-        RuntimeRuns::default()
-            .send(command(
-                original.clone(),
-                document(id),
-                Arc::new(Mutex::new(DocumentRun::default())),
-                Arc::new(Transport {
-                    body: b"legacy response".to_vec(),
-                    ..Default::default()
-                }),
-                root.path(),
-            ))
-            .await;
-    }
-    let index = root.path().join("history/index.json");
-    let mut entries: Vec<crate::session::history::SessionHistoryEntry> =
-        serde_json::from_slice(&std::fs::read(&index).unwrap()).unwrap();
-    for entry in &mut entries {
-        entry.identity = None;
-    }
-    std::fs::write(&index, serde_json::to_vec(&entries).unwrap()).unwrap();
-    let workspace = DomainWorkspace {
-        collections: [
-            ("api", vec!["unique", "ambiguous"]),
-            ("other", vec!["ambiguous"]),
-        ]
-        .into_iter()
-        .map(|(collection, ids)| DomainCollection {
-            id: collection.into(),
-            requests: ids
-                .into_iter()
-                .map(|id| DomainLocation {
-                    collection_id: collection.into(),
-                    request: DomainRequestDraft {
-                        id: id.into(),
-                        ..Default::default()
-                    },
-                    ..Default::default()
-                })
-                .collect(),
-            ..Default::default()
-        })
-        .collect(),
-        ..Default::default()
-    };
-    let reloaded = state(root.path());
-    reloaded.load_workspace_history(&workspace).unwrap();
-    assert_eq!(
-        reloaded.history_count(&key(&reloaded, "unique")).unwrap(),
-        1
-    );
-    assert!(
-        reloaded
-            .snapshot()
-            .request_activity
-            .contains_key("api/unique")
-    );
-    assert_eq!(reloaded.legacy_history("ambiguous").len(), 1);
-    assert_eq!(reloaded.legacy_history("missing").len(), 1);
-    let run = Arc::new(Mutex::new(DocumentRun::default()));
-    reloaded
-        .clone()
-        .restore_latest(key(&reloaded, "unique"), run.clone(), &Changes::default())
-        .await;
-    assert_eq!(lock(&run).snapshot().text, "legacy response");
-    let persisted: Vec<crate::session::history::SessionHistoryEntry> =
-        serde_json::from_slice(&std::fs::read(index).unwrap()).unwrap();
-    assert!(
-        persisted
-            .iter()
-            .find(|entry| entry.request_id == "unique")
-            .unwrap()
-            .identity
-            .is_some()
-    );
-    reloaded
-        .clear_history(&key(&reloaded, "ambiguous"))
-        .unwrap();
-    assert!(reloaded.legacy_history("ambiguous").is_empty());
-    reloaded.clear_all_history().unwrap();
-    assert!(reloaded.legacy_history("missing").is_empty());
-    assert_eq!(
-        reloaded.history_count(&key(&reloaded, "unique")).unwrap(),
-        0
-    );
 }
 
 #[tokio::test]

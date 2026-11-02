@@ -230,8 +230,8 @@ impl AppSessionRuntime {
     pub fn snapshot(&self) -> RuntimeSnapshot {
         self.state.snapshot()
     }
-    pub fn take_history_problem(&self) -> Option<String> {
-        self.state.take_history_problem()
+    pub fn take_storage_problem(&self) -> Option<String> {
+        self.state.take_storage_problem()
     }
     pub fn select_environment(&self, id: Option<String>) {
         self.state.select_environment(id);
@@ -274,12 +274,6 @@ impl AppSessionRuntime {
 
 #[uniffi::export(async_runtime = "tokio")]
 impl AppSessionRuntime {
-    pub async fn legacy_history(&self, request_id: String) -> Vec<SessionHistoryEntry> {
-        let state = self.state.clone();
-        tokio::task::spawn_blocking(move || state.legacy_history(&request_id))
-            .await
-            .unwrap_or_default()
-    }
     pub async fn send(
         &self,
         document: Arc<AppDocumentSession>,

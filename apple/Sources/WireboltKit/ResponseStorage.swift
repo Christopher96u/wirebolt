@@ -102,14 +102,14 @@ public actor ResponseBodyStore {
 
 public struct RunHistoryEntry: Equatable, Identifiable, Sendable {
     public let id: String
-    public let requestID: String
+    public var requestID: String { identity.requestId }
     public let createdAt: Date
     public let prepared: PreparedRunSnapshot
     public let responseHead: ResponseHead?
     public let completion: RunCompletion?
     public let failure: RunFailure?
     public let bodyPath: String
-    public var identity: SessionRequestIdentity? = nil
+    public let identity: SessionRequestIdentity
 }
 
 public actor HistoryRepository {
@@ -128,7 +128,7 @@ public actor HistoryRepository {
         completion: RunCompletion?, failure: RunFailure?, body: ResponseBodyStore
     ) async throws {
         let entry = RunHistoryEntry(
-            id: runID.description, requestID: identity.requestId, createdAt: Date(), prepared: prepared,
+            id: runID.description, createdAt: Date(), prepared: prepared,
             responseHead: responseHead, completion: completion, failure: failure, bodyPath: "", identity: identity)
         try await body.flushIngress()
         try rust.recordTyped(entry: entry.sessionRecord, body: body.rust)
@@ -188,13 +188,13 @@ extension CookieSnapshot {
 extension RunHistoryEntry {
     var sessionRecord: SessionHistoryEntry {
         SessionHistoryEntry(
-            id: id, requestId: requestID, identity: identity, createdAt: createdAt.timeIntervalSinceReferenceDate,
+            id: id, identity: identity, createdAt: createdAt.timeIntervalSinceReferenceDate,
             prepared: prepared.sessionRecord, responseHead: responseHead, completion: completion,
             failure: failure, bodyPath: bodyPath)
     }
     init(_ record: SessionHistoryEntry) {
         self.init(
-            id: record.id, requestID: record.requestId, createdAt: Date(timeIntervalSinceReferenceDate: record.createdAt),
+            id: record.id, createdAt: Date(timeIntervalSinceReferenceDate: record.createdAt),
             prepared: PreparedRunSnapshot(record.prepared), responseHead: record.responseHead,
             completion: record.completion, failure: record.failure, bodyPath: record.bodyPath, identity: record.identity)
     }

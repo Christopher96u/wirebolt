@@ -138,30 +138,6 @@ struct ResponseStorageTests {
         #expect(entries.allSatisfy { FileManager.default.fileExists(atPath: $0.bodyPath) })
     }
 
-    @Test("New history indexes decode with rc.1's exact Codable entry shape")
-    func rc1HistoryIndexCompatibility() async throws {
-        let root = temporaryDirectory()
-        defer { try? FileManager.default.removeItem(at: root) }
-        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
-        let repository = HistoryRepository(root: root)
-        let body = try ResponseBodyStore(runID: RunID(), directory: root)
-        try await body.append(Data("compatible response".utf8))
-        try await body.finish()
-        let prepared = PreparedRunSnapshot(proxy: .resolve(request: .direct, workspace: nil, app: .system),
-            method: "GET", url: "https://example.com", headers: [PreparedHeaderSnapshot(name: "Accept", value: "text/plain", redacted: false)],
-            body: PreparedBodySnapshot(byteCount: 0, contentType: nil, textPreview: nil, redacted: false), transport: TransportSettings())
-        try await repository.record(runID: RunID(), identity: SessionRequestIdentity(collectionId: "api", requestId: "health"),
-            prepared: prepared, responseHead: ResponseHead(status: 200, version: "HTTP/1.1", headers: [], timeToHeadersNS: 1),
-            completion: RunCompletion(bytesReceived: 19, totalTimeNS: 2), failure: RunFailure(kind: .storage, issues: []), body: body)
-        let data = try Data(contentsOf: root.appending(path: "index.json"))
-        let entries = try JSONDecoder().decode([RC1History.RunHistoryEntry].self, from: data)
-        #expect(entries.count == 1)
-        #expect(entries[0].requestID == "health")
-        #expect(entries[0].responseHead?.status == 200)
-        #expect(entries[0].prepared.proxy?.source == .request)
-        #expect(entries[0].failure?.kind == "storage")
-        #expect(try Data(contentsOf: URL(fileURLWithPath: entries[0].bodyPath)) == Data("compatible response".utf8))
-    }
 
     @Test("Replacing an export preserves extended attributes")
     func exportPreservesExtendedAttributes() async throws {
