@@ -930,6 +930,14 @@ fn insomnia_long_parent_chain_is_bounded() {
 
 #[test]
 fn insomnia_workspace_parent_ids_and_placeholders_remain_compatible() {
+    for path in [
+        "insomnia-v4-workspace-placeholder.json",
+        "insomnia-v4-workspace-parent.json",
+    ] {
+        let parsed =
+            ImportEngine::parse_import(ImportFormat::Insomnia, &fixture(path), None).unwrap();
+        assert_eq!(parsed.workspace.collections[0].requests.len(), 1);
+    }
     for parent in [
         serde_json::Value::Null,
         serde_json::json!("__WORKSPACE_ID__"),

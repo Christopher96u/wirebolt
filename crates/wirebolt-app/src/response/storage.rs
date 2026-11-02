@@ -314,16 +314,8 @@ impl RunHistory {
             let _ = retained_root();
             let path = self.root.join("index.json");
             let entries = match fs::read(&path) {
-                Ok(data) => decode_history_index(&data).inspect_err(|_| {
-                    // Never replace damaged data. Keep an exclusive backup too.
-                    if let Ok(mut backup) = File::options()
-                        .write(true)
-                        .create_new(true)
-                        .open(self.root.join("index.json.backup"))
-                    {
-                        let _ = backup.write_all(&data).and_then(|()| backup.sync_all());
-                    }
-                }),
+                Ok(data) => decode_history_index(&data)
+                    .map_err(|error| history_backup_error(&self.root, &data, &error)),
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(Vec::new()),
                 Err(error) => Err(error.into()),
             };
@@ -508,11 +500,12 @@ impl RunHistory {
         let previous = self.entries()?.clone();
         let data = serde_json::to_vec(&entries).map_err(|e| json_io(&e))?;
         atomic_write(&self.root.join("index.json"), &data)?;
+        let retained_paths: std::collections::HashSet<_> = entries
+            .iter()
+            .map(|entry| entry.body_path.as_str())
+            .collect();
         for entry in previous {
-            if !entries
-                .iter()
-                .any(|retained| retained.body_path == entry.body_path)
-            {
+            if !retained_paths.contains(entry.body_path.as_str()) {
                 let _ = fs::remove_file(&entry.body_path);
             }
         }
@@ -521,10 +514,8 @@ impl RunHistory {
     }
 }
 fn decode_history_index(data: &[u8]) -> ResponseResult<Vec<HistoryEntry>> {
-    let unreadable = || {
-        ResponseError::Io {
-        reason: "The history index could not be read; it has been left unchanged. A backup is kept as index.json.backup.".into(),
-    }
+    let unreadable = || ResponseError::Io {
+        reason: "The history index could not be read; it has been left unchanged.".into(),
     };
     let value: serde_json::Value = serde_json::from_slice(data).map_err(|_| unreadable())?;
     if value.is_array() {
@@ -535,6 +526,42 @@ fn decode_history_index(data: &[u8]) -> ResponseResult<Vec<HistoryEntry>> {
         return Err(unreadable());
     }
     Ok(index.entries)
+}
+
+fn history_backup_error(root: &Path, data: &[u8], error: &ResponseError) -> ResponseError {
+    let message = match backup_history_index(root, data) {
+        Ok(path) => format!(
+            "A backup is kept as {}.",
+            path.file_name().unwrap_or_default().to_string_lossy()
+        ),
+        Err(backup_error) => format!(
+            "A backup could not be saved: {backup_error}. The original index is still unchanged."
+        ),
+    };
+    ResponseError::Io {
+        reason: format!("{error} {message}"),
+    }
+}
+fn backup_history_index(root: &Path, data: &[u8]) -> std::io::Result<PathBuf> {
+    let destination = root.join("index.json.backup");
+    if fs::read(&destination).ok().as_deref() == Some(data) {
+        return Ok(destination);
+    }
+    let mut backup = tempfile::Builder::new()
+        .prefix("index.json.backup-")
+        .tempfile_in(root)?;
+    backup.write_all(data)?;
+    backup.as_file().sync_all()?;
+    // Never replace a previous backup. If its name is occupied (or exclusive
+    // rename is unsupported), keep the already exclusive temporary name instead.
+    match backup.persist_noclobber(&destination) {
+        Ok(_) => Ok(destination),
+        Err(error) => error
+            .file
+            .keep()
+            .map(|(_, path)| path)
+            .map_err(|error| error.error),
+    }
 }
 
 struct RetainedRoot {
@@ -974,5 +1001,38 @@ mod retention_tests {
             .unwrap();
         assert!(history.legacy_list("old").unwrap().is_empty());
         assert!(!legacy_path.exists());
+    }
+}
+
+#[cfg(test)]
+mod history_backup_tests {
+    use super::*;
+    #[test]
+    fn damaged_history_reuses_identical_backups_and_preserves_distinct_damage() {
+        let root = tempfile::tempdir().unwrap();
+        let first = backup_history_index(root.path(), b"first damaged index").unwrap();
+        assert_eq!(first, root.path().join("index.json.backup"));
+        assert_eq!(
+            backup_history_index(root.path(), b"first damaged index").unwrap(),
+            first
+        );
+        let second = backup_history_index(root.path(), b"second damaged index").unwrap();
+        assert_ne!(second, first);
+        assert_eq!(fs::read(first).unwrap(), b"first damaged index");
+        assert_eq!(fs::read(second).unwrap(), b"second damaged index");
+    }
+    #[test]
+    fn damaged_history_reports_backup_failure_without_claiming_success() {
+        let root = tempfile::tempdir().unwrap();
+        let error = history_backup_error(
+            &root.path().join("missing"),
+            b"damaged",
+            &ResponseError::Io {
+                reason: "The index is unchanged.".into(),
+            },
+        );
+        let reason = error.to_string();
+        assert!(reason.contains("backup could not be saved"));
+        assert!(!reason.contains("backup is kept"));
     }
 }

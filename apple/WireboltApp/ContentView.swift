@@ -2726,7 +2726,7 @@ private struct RequestActionsMenu: View {
                     }
                     if loaded.documentID == session.id && !loaded.legacy.isEmpty {
                         Menu("Unassigned Legacy History") {
-                            Text("Workspace and collection were not recorded. These entries are kept when clearing this request.")
+                            Text("Workspace and collection were not recorded. Clearing this request also deletes these entries.")
                             ForEach(loaded.legacy) { entry in
                                 Button("\(entry.createdAt.formatted()) · \(entry.prepared.url)") {
                                     Task { await model.restoreHistory(entry, into: session) }
@@ -2759,9 +2759,10 @@ private struct RequestActionsMenu: View {
                 let session = session
                 Task {
                     await model.clearHistory(for: session)
-                    if loaded.documentID == session.id { loaded.entries = [] }
                 }
             }
+        } message: {
+            Text("Stored responses for this request, including unassigned legacy entries with the same request ID, will be deleted.")
         }
     }
 }

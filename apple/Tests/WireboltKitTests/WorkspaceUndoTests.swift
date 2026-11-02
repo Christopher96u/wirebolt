@@ -254,6 +254,27 @@ struct WorkspaceUndoTests {
         #expect(model.workspace.collections[0].orderedChildren(parentID: nil) == ["request:root", "group:parent"])
     }
 
+    @Test("Refused moves present the same Rust reason from menu and drop actions")
+    func moveRefusalIsPresentedForMenuAndDropActions() async throws {
+        let (model, persistence, _) = makeModel()
+        let source = nested.requests[0]
+        model.workspace.collections = [nested, CollectionDraft(id: "other", name: "Other", requests: [
+            RequestLocation(collectionID: "other", request: source.request)])]
+        let identifier = "request|api|\(source.request.id)"
+        guard case .refused(_, let reason) = model.moveEligibility(identifier, toCollectionID: "other", parentID: nil) else {
+            Issue.record("A legacy ID collision must be refused")
+            return
+        }
+        model.showMoveRefusal(reason)
+        #expect(model.operationFailure?.kind == .workspace)
+        #expect(model.operationFailureMessage == reason)
+        model.operationFailure = nil
+        await model.moveSidebarItem(identifier, toCollectionID: "other", parentID: nil)
+        #expect(model.operationFailure?.kind == .workspace)
+        #expect(model.operationFailureMessage == reason)
+        #expect(await persistence.commands.isEmpty)
+    }
+
     @Test("Move To rejects a folder's own subtree, other collections and its current place")
     func moveToValidation() {
         let (model, _, _) = makeModel()

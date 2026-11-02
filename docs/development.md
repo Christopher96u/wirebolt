@@ -89,7 +89,8 @@ The local history `index.json` remains a JSON array compatible with rc.1's Swift
 namespace, collection ID and request ID); rc.1 ignores these keys. The short-lived
 version 2 envelope is accepted on read, but every write uses an array. Both damaged
 arrays and damaged or unsupported envelopes are left unchanged, backed up as
-`index.json.backup`, and reported as storage errors. An unreadable index is never
+`index.json.backup` (or a distinct `index.json.backup-*` file if occupied), and
+reported as storage errors. A failed backup is reported accurately. An unreadable index is never
 silently replaced with empty history.
 
 `workspace_namespace()` derives history's namespace from the canonical workspace
