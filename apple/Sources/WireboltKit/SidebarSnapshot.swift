@@ -134,7 +134,7 @@ public extension WorkspaceDraft {
         }
     }
     var selectableEnvironments: [EnvironmentDraft] {
-        domainSelectableEnvironments(environments: environments.map { DomainEnvironment(id: $0.id, name: $0.name, variables: []) }).compactMap {
+        domainSelectableEnvironments(environments: environments.map { DomainEnvironment(id: $0.id, name: $0.name, order: $0.domain.order, variables: []) }).compactMap {
             let index = Int(clamping: $0)
             return environments.indices.contains(index) ? environments[index] : nil
         }

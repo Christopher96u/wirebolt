@@ -123,26 +123,11 @@ func confirmUnsavedChanges(model: WireboltModel, in window: NSWindow?, quitting:
     }
 }
 
-/// Staged inspector edits have the same exit protection as request documents.
+/// Finish the active environment field before switching workspaces or closing.
 @MainActor
 func confirmEnvironmentEdits(interface: WorkspaceUIState, in window: NSWindow?) async -> Bool {
-    guard interface.hasEnvironmentEdits else { return true }
-    let alert = NSAlert()
-    alert.messageText = "Apply your environment changes?"
-    alert.informativeText = "Unapplied variables and secret edits will be lost if you continue."
-    alert.addButton(withTitle: "Apply")
-    alert.addButton(withTitle: "Cancel")
-    alert.addButton(withTitle: "Discard Changes")
-    switch await present(alert, in: window) {
-    case .alertFirstButtonReturn:
-        return await interface.saveEnvironmentEdits?() ?? false
-    case .alertThirdButtonReturn:
-        interface.isShowingEnvironmentInspector = false
-        interface.hasEnvironmentEdits = false
-        interface.saveEnvironmentEdits = nil
-        return true
-    default: return false
-    }
+    guard let commit = interface.saveEnvironmentEdits else { return true }
+    return await commit()
 }
 
 /// The window close button and File ▸ Close Window route here so unsaved edits are confirmed.
@@ -256,7 +241,7 @@ struct WireboltHelpView: View {
     private let topics: [(String, String)] = [
         ("Workspaces & collections", "Use File → New Workspace or Open Workspace to choose where requests and environments are stored. New Collection creates a top-level container. The + menu creates requests and folders. Drag items to reorder siblings or move requests between folders and collections. Save edits with ⌘S. Workspace → Rename Workspace changes the name in the window title. Workspace → Cookies lists this workspace’s cookies; session cookies last until Wirebolt quits."),
         ("Requests & tabs", "Choose an HTTP method and URL, then Send (⌘Return). Params, Headers, Body and Auth configure the request; Auth supports Basic, Bearer Token, API Key and OAuth 2.0, with credentials stored in Keychain per request. Cancel stops an active send. Use Navigate → Split Right to compare requests. Closing a dirty tab asks before discarding changes."),
-        ("Variables & secrets", "Choose Configure Environments… from the environment menu. Global variables apply to every request; the selected environment overrides matching names. Use {{name}} in URLs and fields. Disable a row to omit it. Click a variable’s lock button to make it secret: Save stores the value in this Mac’s Keychain and the workspace keeps only a reference, so sharing or exporting does not share the value."),
+        ("Variables & secrets", "Choose Configure Environments… from the environment menu. Global variables apply to every request; the selected environment overrides matching names. Use {{name}} in URLs and fields. Disable a row to omit it. Changes save when editing ends; use ⌘Z to undo. Click a variable’s lock button to make it secret: Finishing an edit stores the value in this Mac’s Keychain and the workspace keeps only a reference, so sharing or exporting does not share the value."),
         ("Proxy & transport", "Settings → Network sets the app default. Workspace Settings overrides it for a workspace; a request’s Settings tab can override that again. Inherit follows the parent, Direct bypasses proxies, System uses macOS settings, Manual uses your routes. Test connection sends a HEAD request without request headers, body or cookies. In Workspace Settings, Save keeps proxy and transport edits and Cancel discards them. In a request’s Settings tab, click Apply to request for proxy edits (transport edits apply to the draft directly), then save the request with ⌘S. Timeouts, redirects & TLS also sets a client certificate for mutual TLS, stored in Keychain, and a custom CA file. Reconnect WebSockets after changing settings."),
         ("Import & export", "The + menu imports cURL, HAR, Postman Collection v2.0 and v2.1, Insomnia (v4 JSON or v5 YAML), Bruno (a collection folder or exported JSON) and Wirebolt / Legacy Collection v1 JSON. After an import, a summary lists what was created and anything that couldn’t be carried over, such as scripts. Postman collection variables and Insomnia and Bruno environments become Wirebolt environments; credentials go to Keychain. Export writes saved requests, so save edits first. API Key and OAuth use Wirebolt-specific authentication metadata: reimport with Wirebolt to preserve it. Other clients may not support these extensions. Referenced credentials must be configured on the destination Mac; response history is not exported."),
         ("WebSocket", "Create a WebSocket request, enter ws:// or wss:// and Connect. Choose Text, JSON, Binary (Hex/Base64) or File for messages. Send transmits the selected representation. Disconnect ends the connection; reconnect applies updated settings."),

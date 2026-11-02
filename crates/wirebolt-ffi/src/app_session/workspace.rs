@@ -21,6 +21,29 @@ use crate::lock;
 use wirebolt_app::session::workspace::{
     SessionEnvironmentRestoreSelection, operations::WorkspaceImportSource,
 };
+use wirebolt_app::session::workspace::{
+    environment::EnvironmentCommit, operations::EnvironmentCommitOutcome,
+};
+#[uniffi::remote(Enum)]
+pub enum EnvironmentCommit {
+    Rename { name: String },
+    VariableName { id: String, name: String },
+    VariableValue { id: String, value: String },
+    VariableEnabled { id: String, enabled: bool },
+    VariableSecret { id: String, secret: bool },
+    AddVariable,
+    DeleteVariable { id: String },
+    ClearVariables,
+    Create,
+    Delete,
+    Move { offset: i64 },
+}
+#[uniffi::remote(Record)]
+pub struct EnvironmentCommitOutcome {
+    pub mutation: WorkspaceMutation,
+    pub problem: Option<String>,
+}
+
 #[uniffi::remote(Enum)]
 pub enum SessionEnvironmentRestoreSelection {
     SelectCreated,
@@ -29,6 +52,9 @@ pub enum SessionEnvironmentRestoreSelection {
 }
 #[uniffi::remote(Enum)]
 pub enum SessionWorkspaceEdit {
+    RestoreEnvironments {
+        environments: Vec<DomainEnvironment>,
+    },
     RestoreEnvironment {
         environment: DomainEnvironment,
         index: u64,
@@ -505,6 +531,26 @@ impl AppWorkspaceOperations {
     ) -> Option<String> {
         self.inner.rename(proposed, platform.as_ref()).await
     }
+    pub async fn commit_environment(
+        &self,
+        id: String,
+        commit: EnvironmentCommit,
+        selected: Option<String>,
+        platform: Arc<AppWorkspacePlatform>,
+        secrets: Arc<AppSessionSecrets>,
+        secret_platform: Arc<AppSecretPlatform>,
+    ) -> EnvironmentCommitOutcome {
+        self.inner
+            .commit_environment(
+                id,
+                commit,
+                selected,
+                platform.as_ref(),
+                &secrets.inner,
+                secret_platform.as_ref(),
+            )
+            .await
+    }
     pub async fn save_environment(
         &self,
         environment: DomainEnvironment,
@@ -838,4 +884,11 @@ pub enum WorkspaceImportSource {
     BrunoFolder {
         bundle: wirebolt_core::BrunoFolderBundle,
     },
+}
+
+#[uniffi::export]
+pub fn workspace_environment_inspector(
+    environments: Vec<DomainEnvironment>,
+) -> Vec<DomainEnvironment> {
+    wirebolt_app::session::workspace::environment::inspector_environments(environments)
 }

@@ -624,6 +624,19 @@ public final class WireboltModel {
         return result.succeeded
     }
 
+    /// Returns a Rust-owned inline validation/save problem; native controls retain
+    /// their text until this field commit succeeds.
+    public func commitEnvironment(id: String, commit: EnvironmentCommit) async -> String? {
+        await undoWork?.value
+        guard let persistence else { return "No workspace is open." }
+        synchronizeWorkspace()
+        let result = await rustOperations.commitEnvironment(
+            id: id, commit: commit, selected: selectedEnvironmentID,
+            platform: persistence.sessionWorkspacePlatform, secrets: rustSecrets, secretPlatform: persistence.sessionSecretPlatform)
+        finishMutation(result.mutation)
+        return result.problem
+    }
+
     public func makeProxyConnectionTest() -> ProxyConnectionTest { ProxyConnectionTest(runner: runner) }
 
     public func effectiveProxy(for draft: RequestDraft) -> EffectiveProxy {

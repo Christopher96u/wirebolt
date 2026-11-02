@@ -832,7 +832,7 @@ impl SessionPersistence {
             }
             super::workspace::SessionWorkspaceCommand::SaveEnvironment { environment } => {
                 let id = environment.id.clone();
-                let environment = Environment::from_rows(
+                let mut stored = Environment::from_rows(
                     document_id(environment.id)?,
                     environment.name,
                     environment
@@ -841,8 +841,9 @@ impl SessionPersistence {
                         .map(variable_to_core)
                         .collect::<Result<_, _>>()?,
                 );
+                stored.order = environment.order;
                 self.store
-                    .save(&WorkspaceDocument::Environment(environment))
+                    .save(&WorkspaceDocument::Environment(stored))
                     .map_err(|_| WorkspaceError::operation("environment could not be saved"))?;
                 Ok((SessionWorkspaceNodeKind::Environment, vec![id]))
             }

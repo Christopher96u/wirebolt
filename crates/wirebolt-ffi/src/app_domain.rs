@@ -178,6 +178,7 @@ pub struct DomainVariable {
 pub struct DomainEnvironment {
     pub id: String,
     pub name: String,
+    pub order: i64,
     pub variables: Vec<DomainVariable>,
 }
 

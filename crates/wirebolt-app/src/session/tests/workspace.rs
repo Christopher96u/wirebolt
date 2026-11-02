@@ -86,6 +86,7 @@ fn roundtrip(mut workspace: DomainWorkspace, step: Edit) {
 #[test]
 fn environment_edits_and_deletion_restore_position_and_secret_references() {
     let environment = DomainEnvironment {
+        order: 0,
         id: "local".into(),
         name: "Local".into(),
         variables: vec![DomainVariable {

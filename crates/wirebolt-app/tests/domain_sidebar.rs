@@ -431,6 +431,7 @@ fn environment_picker_excludes_globals_and_stably_orders_canonical_names() {
     let environments: Vec<_> = names
         .into_iter()
         .map(|(id, name)| DomainEnvironment {
+            order: 0,
             id: id.into(),
             name: name.into(),
             variables: vec![],

@@ -471,60 +471,18 @@ final class ProbeWindow: NSWindow { override var canBecomeKey: Bool { true } }
         precondition(model.sessions.session(id: other.id) === other && other.isDirty, "Save and Close must leave unrelated dirty tabs intact")
         precondition(model.workspace.location(collectionID: first.collectionID!, requestID: first.requestID)?.request.url == first.draft.url)
         print("new_request_url_focus_and_scoped_save_close=passed")
-        func fields(_ view: NSView) -> [NSTextField] {
-            (view as? NSTextField).map { [$0] } ?? view.subviews.flatMap { fields($0) }
+        interface.isShowingEnvironmentInspector = true
+        for _ in 0..<100 where interface.saveEnvironmentEdits == nil {
+            try await Task.sleep(for: .milliseconds(5)); flush(host)
         }
-        func stageVariable(_ key: String) async throws {
-            interface.isShowingEnvironmentInspector = true
-            for _ in 0..<100 where interface.saveEnvironmentEdits == nil {
-                try await Task.sleep(for: .milliseconds(5)); flush(host)
-            }
-            guard let field = fields(host).first(where: { $0.placeholderString == "New key" }) else {
-                preconditionFailure("Inspector's new-key field must remain reachable")
-            }
-            for label in ["Sidebar width", "Environment inspector width"] {
-                // Split dividers deliberately keep a narrow grab strip so they do not
-                // cover adjacent editor controls; their full-height AX target is named.
-                precondition(elements(host).contains { $0.name == label && $0.frame.width > 0 && $0.frame.height >= 28 },
-                    "Resize dividers must expose a named, full-height accessibility target")
-            }
-            window.makeFirstResponder(field)
-            guard let editor = field.currentEditor() as? NSTextView else { preconditionFailure("Variable entry must accept keyboard focus") }
-            editor.insertText(key, replacementRange: NSRange(location: 0, length: 0))
-            for _ in 0..<100 where !interface.hasEnvironmentEdits {
-                try await Task.sleep(for: .milliseconds(5)); flush(host)
-            }
-            precondition(interface.hasEnvironmentEdits, "Staged inspector edits must participate in exit protection")
+        for label in ["Sidebar width", "Environment inspector width"] {
+            precondition(elements(host).contains { $0.name == label && $0.frame.width > 0 && $0.frame.height >= 28 },
+                "Resize dividers must expose a named, full-height accessibility target")
         }
-        try await stageVariable("preview_only")
-        precondition(model.workspace.environments.isEmpty, "Typing must not persist staged variables")
-        guard let save = interface.saveEnvironmentEdits else { preconditionFailure("Inspector apply action must be installed") }
-        let applied = await save()
-        precondition(applied, "Inspector must apply valid staged edits")
-        flush(host)
-        precondition(model.workspace.environments.first?.variables.first?.key == "preview_only")
-        model.undoManager?.undo()
-        await model.finishUndoWork()
-        precondition(model.workspace.environments.isEmpty, "Applying environments must support workspace undo")
-        // Let the old inspector detach before opening a fresh editing session.
-        try await Task.sleep(for: .milliseconds(20)); flush(host)
-        try await stageVariable("discard_me")
-        for (response, expected) in [(NSApplication.ModalResponse.alertSecondButtonReturn, false), (.alertThirdButtonReturn, true)] {
-            let decision = Task { await confirmEnvironmentEdits(interface: interface, in: window) }
-            for _ in 0..<100 where window.attachedSheet == nil {
-                try await Task.sleep(for: .milliseconds(5))
-            }
-            guard let sheet = window.attachedSheet else { preconditionFailure("Pending environment edits must show an exit decision") }
-            window.endSheet(sheet, returnCode: response)
-            spin(0.04)
-            let result = await decision.value
-            precondition(result == expected)
-            if !expected { precondition(interface.hasEnvironmentEdits && interface.isShowingEnvironmentInspector) }
-            try await Task.sleep(for: .milliseconds(20)); flush(host)
-        }
-        precondition(!interface.hasEnvironmentEdits && !interface.isShowingEnvironmentInspector)
-        precondition(model.workspace.environments.isEmpty, "Discarding must not persist a staged variable")
-        print("environment_staging_undo_exit_guards=passed")
+        precondition(!elements(host).contains { $0.role == "AXButton" && ["Apply", "Cancel"].contains($0.name) })
+        let closed = await confirmEnvironmentEdits(interface: interface, in: window)
+        precondition(closed && !interface.isShowingEnvironmentInspector)
+        print("environment_live_exit_guard=passed")
 
     }
 
@@ -672,6 +630,29 @@ final class ProbeWindow: NSWindow { override var canBecomeKey: Bool { true } }
                 }
             }
         }
+    }
+
+    static func environmentScreenshots(root: URL) throws {
+        let model = WireboltModel(runner: OfflineRunner(),
+            history: HistoryRepository(root: root.appending(path: "history")),
+            cookieJar: CookieJar(storageURL: root.appending(path: "cookies.json")),
+            proxyPreferences: ProxyPreferences(defaults: fixtureDefaults))
+        model.workspace.environments = [
+            EnvironmentDraft(id: "global", name: "Global Environment", variables: [
+                EnvironmentVariableDraft(id: "global-url", key: "shared_api_url", value: .literal("http://192.168.100.200:8080/api/v1/shared/configuration"))]),
+            EnvironmentDraft(id: "staging", name: "Staging integration environment with a long name", variables: [
+                EnvironmentVariableDraft(id: "url", key: "service_base_url_for_integration", value: .literal("http://192.168.100.200:8080/api/v1/integration/resources?include=metadata")),
+                EnvironmentVariableDraft(id: "region", key: "region", value: .literal("Australia/Sydney"))])]
+        model.selectedEnvironmentID = "staging"
+        let interface = WorkspaceUIState(defaults: fixtureDefaults)
+        let (window, host, _) = mount(EnvironmentEditor(model: model, interface: interface, closeTrigger: 0, onClose: {}), width: 380, height: 820)
+        defer { window.close() }
+        spin(0.2); flush(host)
+        guard let bitmap = host.bitmapImageRepForCachingDisplay(in: host.bounds) else { preconditionFailure("Could not render inspector") }
+        host.cacheDisplay(in: host.bounds, to: bitmap)
+        let name = ProcessInfo.processInfo.environment["WIREBOLT_INSPECTOR_CAPTURE"] ?? "environment-inspector"
+        try bitmap.representation(using: .png, properties: [:])!.write(to: root.deletingLastPathComponent().appending(path: name + ".png"))
+        print("environment_inspector_screenshot=written")
     }
 
     static func proxyScreenshots(root: URL) throws {
@@ -1212,6 +1193,7 @@ final class ProbeWindow: NSWindow { override var canBecomeKey: Bool { true } }
         }
         else if mode=="request-click" { try requestClicks(root: root) }
         else if mode=="sidebar-reorder" { try sidebarReorder(root: root) }
+        else if mode=="environment-screenshots" { try environmentScreenshots(root: root) }
         else if mode=="proxy-screenshots" { try proxyScreenshots(root: root) }
         else if mode=="proxy-settings" { try proxySettings(root: root) }
         else if mode=="settings-ui" { try settingsUI(root: root) }

@@ -465,7 +465,7 @@ impl WorkspaceStore {
                 Err(error) => problems.push(DocumentProblem::new(&self.root, &error)),
             }
         }
-        environments.sort_by(|left, right| left.id.cmp(&right.id));
+        environments.sort_by(|left, right| (left.order, &left.id).cmp(&(right.order, &right.id)));
 
         Ok((
             WorkspaceSnapshot {

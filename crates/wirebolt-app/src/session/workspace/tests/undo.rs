@@ -209,6 +209,7 @@ async fn secret_only_environment_edit_undo_redo_retains_values_and_selection() {
     let platform = EnvironmentSecrets::default();
     lock(&platform.0).insert("env.local.token".into(), "old-token".into());
     let original = DomainEnvironment {
+        order: 0,
         id: "local".into(),
         name: "Local".into(),
         variables: vec![DomainVariable {
@@ -319,6 +320,7 @@ fn assert_environment_files_keep_only_references(commands: Vec<SessionWorkspaceC
 #[tokio::test]
 async fn environment_undo_and_redo_preserve_position_and_secret_rows() {
     let original = DomainEnvironment {
+        order: 0,
         id: "local".into(),
         name: "Local".into(),
         variables: vec![DomainVariable {

@@ -567,6 +567,8 @@ pub struct Environment {
     pub name: String,
     #[serde(default, deserialize_with = "deserialize_environment_variables")]
     pub variables: Vec<EnvironmentVariable>,
+    #[serde(default)]
+    pub order: i64,
 }
 
 impl Environment {
@@ -597,6 +599,7 @@ impl Environment {
             id,
             name,
             variables,
+            order: 0,
         }
     }
 
@@ -611,6 +614,7 @@ impl Environment {
             id,
             name,
             variables,
+            order: 0,
         }
     }
 

@@ -66,6 +66,7 @@ async fn environment_secret_save_keeps_material_outside_workspace_and_reports_fa
         .await
         .unwrap();
     let env = DomainEnvironment {
+        order: 0,
         id: "staging".into(),
         name: "Staging".into(),
         variables: vec![DomainVariable {

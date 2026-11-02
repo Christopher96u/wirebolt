@@ -87,7 +87,7 @@ private struct AdapterRunner: RequestRunner {
         print("lastTabDirtyConfirmAndReopen: passed")
     }
 
-    static func main() throws {
+    static func main() async throws {
         _ = NSApplication.shared
         NSApp.setActivationPolicy(.prohibited)
         let root = FileManager.default.temporaryDirectory.appending(path: "wirebolt-adapters-\(UUID().uuidString)")
@@ -98,6 +98,7 @@ private struct AdapterRunner: RequestRunner {
             defaults.removePersistentDomain(forName: domain)
             try? FileManager.default.removeItem(at: root)
         }
+        try await EnvironmentInspectorTests.run(root: root, defaults: defaults)
         typingAssignmentsAvoidDraftWork()
         lastTabDirtyConfirmAndReopen(root: root, defaults: defaults)
     }

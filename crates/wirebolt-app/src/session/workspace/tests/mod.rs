@@ -14,6 +14,7 @@ use std::{
     collections::VecDeque,
     sync::{Arc, Mutex},
 };
+mod environment;
 mod files;
 mod imports_git;
 mod interface;

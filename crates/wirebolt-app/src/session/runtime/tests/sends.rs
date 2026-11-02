@@ -392,6 +392,7 @@ fn global_variables_apply_without_selection_and_selected_values_override() {
     };
     let environments = vec![
         DomainEnvironment {
+            order: 0,
             id: "global".into(),
             name: "Global".into(),
             variables: vec![
@@ -400,6 +401,7 @@ fn global_variables_apply_without_selection_and_selected_values_override() {
             ],
         },
         DomainEnvironment {
+            order: 0,
             id: "local".into(),
             name: "Local".into(),
             variables: vec![

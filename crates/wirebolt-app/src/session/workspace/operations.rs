@@ -1,5 +1,9 @@
 //! Application orchestration. Undo payloads and busy/error transitions live here;
 //! the native `UndoManager` holds only opaque tokens and action names.
+#[path = "environment_commits.rs"]
+mod environment_commits;
+pub use environment_commits::EnvironmentCommitOutcome;
+
 use super::actions::{self, NamedEdit, WorkspaceAction};
 use super::io::{
     WorkspaceExport, WorkspaceFailure, WorkspaceGitAction, WorkspaceGitOperation,
@@ -91,6 +95,11 @@ struct State {
     undo: HashMap<u64, (Option<SessionWorkspaceEdit>, String)>,
     search: HashMap<(String, String), (String, String)>,
     redo_tokens: HashSet<u64>,
+}
+struct EnvironmentSave {
+    environment: crate::domain::DomainEnvironment,
+    values: HashMap<String, String>,
+    name: Option<String>,
 }
 #[derive(Debug)]
 pub struct WorkspaceOperations {
@@ -255,7 +264,7 @@ impl WorkspaceOperations {
     }
     pub async fn save_environment(
         &self,
-        mut environment: crate::domain::DomainEnvironment,
+        environment: crate::domain::DomainEnvironment,
         values: HashMap<String, String>,
         selected: Option<String>,
         platform: &dyn WorkspacePlatform,
@@ -263,6 +272,32 @@ impl WorkspaceOperations {
         secret_platform: &dyn SessionSecretPlatform,
     ) -> WorkspaceMutation {
         let _guard = self.edits.lock().await;
+        self.save_environment_locked(
+            EnvironmentSave {
+                environment,
+                values,
+                name: None,
+            },
+            selected,
+            platform,
+            secrets,
+            secret_platform,
+        )
+        .await
+    }
+    async fn save_environment_locked(
+        &self,
+        save: EnvironmentSave,
+        selected: Option<String>,
+        platform: &dyn WorkspacePlatform,
+        secrets: &SessionSecrets,
+        secret_platform: &dyn SessionSecretPlatform,
+    ) -> WorkspaceMutation {
+        let EnvironmentSave {
+            mut environment,
+            values,
+            name,
+        } = save;
         // Keep prior Keychain items alive for undo, just as deleted request credentials are.
         let mut replacements = HashMap::new();
         let mut material = HashMap::new();
@@ -294,14 +329,17 @@ impl WorkspaceOperations {
                 ..Default::default()
             };
         }
-        self.mutate_locked(
+        let Some(mut edit) = actions::action(
+            &self.workspace.snapshot(),
             WorkspaceAction::SaveEnvironment { environment },
-            selected,
-            platform,
-            secrets,
-            secret_platform,
-        )
-        .await
+        ) else {
+            return WorkspaceMutation::default();
+        };
+        if let Some(name) = name {
+            edit.name = name;
+        }
+        self.commit_named(edit, selected, platform, secrets, secret_platform)
+            .await
     }
     async fn mutate_locked(
         &self,
@@ -346,9 +384,22 @@ impl WorkspaceOperations {
             };
         };
         let mut result = self
-            .apply_named(edit, selected, platform, secrets, secret_platform)
+            .commit_named(edit, selected, platform, secrets, secret_platform)
             .await;
         result.root = root;
+        result
+    }
+    async fn commit_named(
+        &self,
+        edit: NamedEdit,
+        selected: Option<String>,
+        platform: &dyn WorkspacePlatform,
+        secrets: &SessionSecrets,
+        secret_platform: &dyn SessionSecretPlatform,
+    ) -> WorkspaceMutation {
+        let result = self
+            .apply_named(edit, selected, platform, secrets, secret_platform)
+            .await;
         if result.succeeded {
             let mut state = lock(&self.state);
             let redo = std::mem::take(&mut state.redo_tokens);

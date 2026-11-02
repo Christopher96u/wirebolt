@@ -2,6 +2,7 @@
 //! after persistence succeeds; native `UndoManager` only schedules these opaque steps.
 pub mod actions;
 pub mod documents;
+pub mod environment;
 pub mod files;
 pub mod interface;
 pub mod io;
@@ -27,6 +28,9 @@ pub enum SessionEnvironmentRestoreSelection {
     reason = "Typed edits carry the existing request record across UniFFI."
 )]
 pub enum SessionWorkspaceEdit {
+    RestoreEnvironments {
+        environments: Vec<DomainEnvironment>,
+    },
     RestoreEnvironment {
         environment: DomainEnvironment,
         index: u64,
@@ -268,6 +272,18 @@ pub fn plan_edit(
         observed_secrets: vec![],
     };
     match step {
+        E::RestoreEnvironments { environments } => {
+            plan.inverse = E::RestoreEnvironments {
+                environments: workspace.environments.clone(),
+            };
+            plan.commands.extend(
+                environments
+                    .iter()
+                    .cloned()
+                    .map(|environment| C::SaveEnvironment { environment }),
+            );
+            plan.environments = Some(environments);
+        }
         E::RestoreEnvironment {
             environment,
             index,

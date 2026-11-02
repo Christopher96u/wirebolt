@@ -407,7 +407,7 @@ extension WorkspaceDraft {
 }
 
 public struct EnvironmentDraft: Identifiable, Equatable, Sendable {
-    var domain: DomainEnvironment = DomainEnvironment(id: "", name: "", variables: [])
+    var domain: DomainEnvironment = DomainEnvironment(id: "", name: "", order: 0, variables: [])
     private var projectedVariables: [EnvironmentVariableDraft] = []
     init(domain: DomainEnvironment) {
         self.domain = domain
