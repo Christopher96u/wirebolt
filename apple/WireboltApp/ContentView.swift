@@ -2266,7 +2266,7 @@ private struct RequestWorkspace: View {
     }
 }
 
-struct WebSocketRequestWorkspace: View {
+private struct WebSocketRequestWorkspace: View {
     @Bindable var model: WireboltModel
     @Bindable var interface: DocumentPresentationState
     @Bindable var session: DocumentSession
@@ -2337,10 +2337,8 @@ struct WebSocketRequestWorkspace: View {
             if let error = session.socket.errorMessage {
                 Label(error, systemImage: "exclamationmark.triangle")
                     .font(.callout).foregroundStyle(.red)
-                    .textSelection(.enabled)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(WireboltTheme.Spacing.large)
-                    .accessibilityLabel("Message error: \(error)")
             }
             content
         }
@@ -2398,7 +2396,7 @@ struct WebSocketRequestWorkspace: View {
     }
 }
 
-struct RequestURLBar: View {
+private struct RequestURLBar: View {
     @Bindable var model: WireboltModel
     @Bindable var interface: WorkspaceUIState
     @Bindable var session: DocumentSession

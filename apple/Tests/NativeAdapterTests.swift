@@ -260,10 +260,7 @@ extension NativeAdapterTests {
         let interface = WorkspaceUIState(defaults: defaults)
         interface.synchronizeSelection(model: model)
         interface.requestSection = .body
-        let (window, host) = await NativeTestSupport.mount(VStack {
-            RequestURLBar(model: model, interface: interface, session: session, groupID: model.sessions.activeGroupID)
-            WebSocketRequestWorkspace(model: model, interface: interface.presentation(for: session), session: session)
-        }, defaults: defaults)
+        let (window, host) = await NativeTestSupport.mount(ContentView(model: model, interface: interface, loadsWorkspace: false), defaults: defaults)
         defer { session.socket.disconnect(); window.close() }
         let socket = FixtureSocket()
         session.socket.connect(input: RunInput(draft: draft, variables: [:]), connector: FixtureConnector(socket: socket))

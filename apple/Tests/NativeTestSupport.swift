@@ -52,9 +52,8 @@ private final class FixtureWindow: NSWindow { override var canBecomeKey: Bool { 
             let raw = value(key)
             return (raw as? NSAttributedString)?.string ?? (raw as? String) ?? ""
         }
-        let role = text("accessibilityRole")
         let name = ["accessibilityLabel", "accessibilityTitle", "accessibilityValue"].map(text).first { !$0.isEmpty } ?? ""
-        return [Element(object: object, role: role, name: name,
+        return [Element(object: object, role: text("accessibilityRole"), name: name,
             frame: (value("accessibilityFrame") as? NSValue)?.rectValue ?? .zero)]
             + (value("accessibilityChildren") as? [Any] ?? []).flatMap { elements($0, depth: depth + 1) }
     }

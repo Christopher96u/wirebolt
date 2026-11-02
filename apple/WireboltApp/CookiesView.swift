@@ -49,10 +49,9 @@ struct CookiesView: View {
                 }
             }
             if let errorMessage {
-                Label(errorMessage, systemImage: "exclamationmark.triangle")
-                    .foregroundStyle(.red).textSelection(.enabled)
+                Label("Cookie error: \(errorMessage)", systemImage: "exclamationmark.triangle")
+                    .foregroundStyle(.red)
                     .frame(maxWidth: .infinity, alignment: .leading).padding(12)
-                    .accessibilityLabel("Cookie error: \(errorMessage)")
             }
             Divider()
             HStack {
