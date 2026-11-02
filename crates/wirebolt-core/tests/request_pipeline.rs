@@ -801,3 +801,31 @@ fn sensitive_query_and_form_rows_redact_diagnostics_but_keep_transport_values() 
         assert!(!format!("{prepared:?}").contains("fixture-secret"));
     }
 }
+
+#[test]
+fn multipart_upload_stays_file_backed() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("payload.bin");
+    File::create(&path)
+        .unwrap()
+        .set_len(32 * 1024 * 1024)
+        .unwrap();
+    let mut request = Request::new(id("upload"), "Upload", "POST", "http://localhost/");
+    request.body = serde_json::from_value(serde_json::json!({
+        "kind": "multipart", "parts": [{"id":"file", "name":"file", "kind":"file", "value":"", "file_path":path, "enabled":true}]
+    })).unwrap();
+    let prepared = RequestPipeline::new(None, &wirebolt_core::NoSecrets)
+        .prepare(&request)
+        .unwrap();
+    assert!(
+        prepared.body().len() <= 64 * 1024,
+        "Prepared multipart retained {} bytes",
+        prepared.body().len()
+    );
+    assert!(prepared.body_is_file_backed());
+    assert!(prepared.body_byte_count() > 32 * 1024 * 1024);
+    assert_eq!(
+        prepared.headers()["content-length"],
+        prepared.body_byte_count().to_string()
+    );
+}

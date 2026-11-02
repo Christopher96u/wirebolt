@@ -28,6 +28,7 @@ Changes under **Unreleased** are on `main` but not in a published build yet. Dow
 
 ### Fixed
 
+- Large multipart file uploads stream from disk instead of loading the complete upload into memory before Send. Bodies up to 64 KiB can still be resent on redirects.
 - Bulk Edit accepts pasted CRLF and CR line endings in headers, query parameters and form fields without adding carriage returns to values.
 - XML and HTML payloads stay unchanged by Format, which is now disabled for these types because inserted whitespace can change their content.
 - OAuth sign-in preserves literal plus signs and consistently decodes spaces in authorization parameters and callbacks.
