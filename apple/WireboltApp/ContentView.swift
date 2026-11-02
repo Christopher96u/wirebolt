@@ -2469,16 +2469,8 @@ private struct RequestURLBar: View {
                 set: { session.draft.editURL($0) }
             ))
         }
-        .alert("Custom HTTP Method", isPresented: $isEnteringCustomMethod) {
-            TextField("METHOD", text: $customMethod)
-            Button("Cancel", role: .cancel) {}
-            Button("Set") {
-                if let method = HTTPMethod(rawValue: customMethod) {
-                    session.draft.method = method
-                }
-            }
-        } message: {
-            Text("Use an RFC token such as PROPFIND or REPORT.")
+        .sheet(isPresented: $isEnteringCustomMethod) {
+            CustomHTTPMethodEditor(method: $session.draft.method, text: customMethod)
         }
     }
 
@@ -3494,14 +3486,16 @@ private final class SectionStripGeometry {
     }
 }
 
-private struct BulkFieldEditor: View {
+struct BulkFieldEditor: View {
     @Binding var fields: [RequestField]
     @Environment(\.dismiss) private var dismiss
     @State private var text: String
     @State private var originalFields: [RequestField]
+    @State private var projectedFields: [RequestField]
 
     init(fields: Binding<[RequestField]>) {
         _fields = fields
+        _projectedFields = State(initialValue: fields.wrappedValue)
         _originalFields = State(initialValue: fields.wrappedValue)
         _text = State(initialValue: fields.wrappedValue.map {
             "\($0.enabled ? "" : "# ")\($0.name): \($0.value.editableValue)"
@@ -3510,7 +3504,22 @@ private struct BulkFieldEditor: View {
 
     var body: some View {
         BodyTextEditor(text: $text)
-            .onChange(of: text) { fields = parse(text) }
+            .onChange(of: text) {
+                guard text != serialized(projectedFields) else { return }
+                let parsed = parse(text)
+                projectedFields = parsed
+                fields = parsed
+            }
+            .onChange(of: fields) {
+                guard fields != projectedFields else { return }
+                projectedFields = fields
+                originalFields = fields
+                text = serialized(fields)
+            }
+    }
+
+    private func serialized(_ fields: [RequestField]) -> String {
+        fields.map { "\($0.enabled ? "" : "# ")\($0.name): \($0.value.editableValue)" }.joined(separator: "\n")
     }
 
     private func parse(_ source: String) -> [RequestField] {
@@ -4246,7 +4255,7 @@ private struct BodyEditor: View {
 
 }
 
-private struct BodyTools: View {
+struct BodyTools: View {
     @Binding var requestBody: RequestBody
     var body: some View {
         HStack(spacing: 7) {
@@ -4271,7 +4280,7 @@ private struct BodyTools: View {
                 Button("Add Part", systemImage: "plus") { requestBody = .multipart(parts: parts + [MultipartPart()]) }
                     .labelStyle(.iconOnly).buttonStyle(.borderless)
                     .help("Add Part")
-            } else {
+            } else if requestBody.composerKind == .json {
                 Button("Format Body", systemImage: "wand.and.stars", action: formatBody)
                     .labelStyle(.iconOnly).buttonStyle(.borderless).disabled(!requestBody.canFormat)
                     .help("Format Body")
@@ -4413,7 +4422,7 @@ private struct MultipartRow: View {
     }
 }
 
-private struct MultipartPartEditor: View {
+struct MultipartPartEditor: View {
     @Binding var part: MultipartPart
     let remove: () -> Void
     @Environment(\.dismiss) private var dismiss
@@ -4444,11 +4453,17 @@ private struct MultipartPartEditor: View {
                 GridRow(alignment: .top) {
                     Text("Value:").padding(.top, WireboltTheme.Spacing.xSmall)
                     VStack(alignment: .leading, spacing: 8) {
-                        Text("<Double-click to edit>").padding(WireboltTheme.Spacing.xSmall)
+                        Button(action: editValue) {
+                            VStack(alignment: .leading, spacing: WireboltTheme.Spacing.small) {
+                                Text("Edit Value…")
+                                Text(String((part.filePath ?? part.value.editableValue).prefix(300)))
+                                    .font(.system(.body, design: .monospaced)).lineLimit(3)
+                                    .foregroundStyle(.secondary)
+                            }
                             .frame(maxWidth: .infinity, minHeight: 82, maxHeight: 82, alignment: .topLeading)
-                            .background(WireboltTheme.paneBackground).border(WireboltTheme.separator)
-                            .onTapGesture(count: 2, perform: editValue)
-                            .accessibilityAction(named: "Edit Value", editValue)
+                        }
+                        .accessibilityLabel("Edit Value…")
+                        .accessibilityValue(String(part.value.editableValue.prefix(300)))
                         Button("Select File…", action: selectFile).controlSize(.small)
                     }.padding(.top, WireboltTheme.Spacing.small)
                 }
@@ -4907,5 +4922,38 @@ private final class SidebarOutlineLayer: CALayer, @unchecked Sendable {
         }
         if let appearance { appearance.performAsCurrentDrawingAppearance(draw) } else { draw() }
         NSGraphicsContext.restoreGraphicsState()
+    }
+}
+
+
+struct CustomHTTPMethodEditor: View {
+    @Binding var method: HTTPMethod
+    @State var text: String
+    @State private var problem: String?
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: WireboltTheme.Spacing.large) {
+            Text("Custom HTTP Method").font(.headline)
+            Text("Use an HTTP token such as PROPFIND, REPORT or FOO_BAR.")
+            TextField("METHOD", text: $text).textFieldStyle(.roundedBorder)
+                .accessibilityLabel("Custom HTTP method")
+            if let problem { Text(problem).foregroundStyle(.red).accessibilityLabel(problem) }
+            HStack {
+                Spacer()
+                Button("Cancel") { dismiss() }.keyboardShortcut(.cancelAction)
+                Button("Set", action: setMethod).keyboardShortcut(.defaultAction)
+            }
+        }
+        .padding(WireboltTheme.Spacing.section).frame(width: 420)
+    }
+
+    private func setMethod() {
+        guard let value = HTTPMethod(rawValue: text) else {
+            problem = "Enter a valid HTTP method token without spaces or separators."
+            return
+        }
+        method = value
+        dismiss()
     }
 }

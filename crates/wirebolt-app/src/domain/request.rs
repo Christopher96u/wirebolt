@@ -14,11 +14,9 @@ use std::{
 
 #[must_use]
 pub fn normalize_method(value: &str) -> Option<String> {
-    let s = value.trim().to_uppercase();
-    (!s.is_empty()
-        && s.bytes()
-            .all(|b| b.is_ascii_uppercase() || b.is_ascii_digit() || b == b'-'))
-    .then_some(s)
+    wirebolt_core::parse_method(value)
+        .ok()
+        .map(|method| method.to_string())
 }
 #[must_use]
 pub fn credential_reference(role: &str, scope: &str) -> String {

@@ -229,7 +229,15 @@ fn auth_renames_preserve_sharing_within_one_copy() {
 }
 #[test]
 fn method_normalization_accepts_custom_tokens() {
-    for input in ["get", " GET ", "pRopFind", "QUERY", "X-42"] {
+    for input in [
+        "get",
+        " GET ",
+        "pRopFind",
+        "QUERY",
+        "X-42",
+        "FOO_BAR",
+        "!#$%&'*+-.^_`|~",
+    ] {
         assert!(normalize_method(input).is_some());
     }
     for input in ["", " \n", "BAD METHOD", "GET/", "💥"] {
@@ -429,4 +437,17 @@ fn bulk_fields_accept_crlf_cr_and_lf_without_changing_value_content() {
         assert_eq!(fields[1].value.editable(), "a  b\tc:d");
         assert!(!fields[2].enabled);
     }
+}
+
+#[test]
+fn custom_method_uses_transport_validation() {
+    for byte in 0..=127u8 {
+        let method = format!("FOO{}BAR", char::from(byte));
+        assert_eq!(
+            normalize_method(&method).is_some(),
+            wirebolt_core::parse_method(&method).is_ok(),
+            "{method:?}"
+        );
+    }
+    assert_eq!(normalize_method(" foo_bar ").as_deref(), Some("FOO_BAR"));
 }

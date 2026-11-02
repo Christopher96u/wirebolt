@@ -859,7 +859,10 @@ private struct ResponseKeyValueTable: View {
                 Text(title).foregroundStyle(.secondary)
                 Spacer(minLength: 4)
                 if isSearching { TextField("Find", text: $search).frame(width: 140) }
-                Button("Find", systemImage: "magnifyingglass") { isSearching.toggle() }
+                Button("Find", systemImage: "magnifyingglass") {
+                    isSearching.toggle()
+                    if !isSearching { search = "" }
+                }
                     .labelStyle(.iconOnly).buttonStyle(.borderless)
                     .help(isSearching ? "Hide Find" : "Find")
                 Button("Copy All", systemImage: "doc.on.doc") {

@@ -98,6 +98,7 @@ enum DraftWorkProbe {
         try await CustomThemeNativeTests.run(root: root, defaults: defaults, screenshots: captureDirectory)
         try await EnvironmentInspectorTests.run(root: root, defaults: defaults, screenshots: captureDirectory)
         try await auditNavigationAndSettings(root: root, defaults: defaults, screenshots: captureDirectory)
+        try await auditRequestEditors(defaults: defaults)
         typingAssignmentsAvoidDraftWork()
         lastTabDirtyConfirmAndReopen(root: root, defaults: defaults)
     }
@@ -166,6 +167,83 @@ extension NativeAdapterTests {
 }
 
 
+@MainActor @Observable private final class NativeEditorFixture {
+    var method = HTTPMethod.get
+    var fields = [RequestField(name: "X-Old", value: .literal("old"))]
+    var body = RequestBody.empty
+    var part = MultipartPart(name: "value", value: .literal("Current multipart value"))
+}
+
+extension NativeAdapterTests {
+    static func auditRequestEditors(defaults: UserDefaults) async throws {
+        let restoreAccessibility = NativeTestSupport.enableAccessibility()
+        defer { restoreAccessibility() }
+        let fixture = NativeEditorFixture()
+        let (methodWindow, methodHost) = await NativeTestSupport.mount(
+            CustomHTTPMethodEditor(method: Binding(get: { fixture.method }, set: { fixture.method = $0 }), text: "bad method"), defaults: defaults, width: 500, height: 250)
+        precondition(NativeTestSupport.press(methodHost, named: "Set"))
+        await NativeTestSupport.settle(methodHost)
+        precondition(fixture.method == .get && NativeTestSupport.elements(methodHost).contains { $0.name.contains("Enter a valid HTTP method") })
+        let methodField = EnvironmentInspectorTests.fields(methodHost).first { $0.accessibilityLabel() == "Custom HTTP method" }!
+        EnvironmentInspectorTests.replace(methodField, with: "FOO_BAR", window: methodWindow)
+        precondition(NativeTestSupport.press(methodHost, named: "Set"))
+        await NativeTestSupport.settle(methodHost)
+        precondition(fixture.method.rawValue == "FOO_BAR")
+        methodWindow.close()
+        print("customMethodKeepsInvalidInputAndAcceptsTransportToken: passed")
+
+        let (bulkWindow, bulkHost) = await NativeTestSupport.mount(
+            BulkFieldEditor(fields: Binding(get: { fixture.fields }, set: { fixture.fields = $0 })), defaults: defaults)
+        let bulk = NativeTestSupport.textViews(bulkHost).first { $0.string.contains("X-Old: old") }!
+        fixture.fields = []
+        await NativeTestSupport.settle(bulkHost)
+        precondition(bulk.string.isEmpty, "Clear All clears the native bulk buffer")
+        bulk.insertText("X-New: new", replacementRange: NSRange(location: 0, length: 0))
+        await NativeTestSupport.settle(bulkHost)
+        precondition(fixture.fields.map(\.name) == ["X-New"], "Typing cannot resurrect a cleared row")
+        fixture.fields = [RequestField(name: "X-Replacement", value: .literal("external"))]
+        await NativeTestSupport.settle(bulkHost)
+        precondition(bulk.string == "X-Replacement: external")
+        bulk.insertText("\nX-Another: new", replacementRange: NSRange(location: bulk.string.utf16.count, length: 0))
+        await NativeTestSupport.settle(bulkHost)
+        precondition(fixture.fields.map(\.name) == ["X-Replacement", "X-Another"])
+        bulkWindow.close()
+        print("bulkClearAndExternalReplacementNeverResurrectRows: passed")
+
+        let (headersWindow, headersHost) = await NativeTestSupport.mount(ResponseHeadersTable(headers: [ResponseHeader(name: "A-One", value: "one"), ResponseHeader(name: "B-Two", value: "two")]), defaults: defaults)
+        precondition(NativeTestSupport.press(headersHost, named: "Find"))
+        await NativeTestSupport.settle(headersHost)
+        let find = EnvironmentInspectorTests.fields(headersHost).first { $0.placeholderString == "Find" }!
+        EnvironmentInspectorTests.replace(find, with: "A-One", window: headersWindow)
+        await NativeTestSupport.settle(headersHost)
+        precondition(!NativeTestSupport.elements(headersHost).contains { $0.name == "B-Two" })
+        precondition(NativeTestSupport.press(headersHost, named: "Find"))
+        await NativeTestSupport.settle(headersHost)
+        precondition(NativeTestSupport.elements(headersHost).contains { $0.name == "B-Two" })
+        headersWindow.close()
+        print("closingHeaderFindClearsHiddenFilter: passed")
+
+        let (partWindow, partHost) = await NativeTestSupport.mount(MultipartPartEditor(part: Binding(get: { fixture.part }, set: { fixture.part = $0 }), remove: {}), defaults: defaults, width: 560, height: 400)
+        let edit = NativeTestSupport.elements(partHost).first { $0.role == "AXButton" && $0.name == "Edit Value…" }!
+        precondition(edit.object.value(forKey: "accessibilityValue") as? String == "Current multipart value")
+        precondition(NativeTestSupport.press(partHost, named: "Edit Value…"))
+        await NativeTestSupport.settle(partHost)
+        precondition(partWindow.attachedSheet != nil, "The value editor is reachable through a standard button")
+        if let sheet = partWindow.attachedSheet { precondition(NativeTestSupport.press(sheet, named: "Cancel")) }
+        await NativeTestSupport.settle(partHost)
+        partWindow.close()
+        print("multipartValueHasAccessibleEditButtonAndPreview: passed")
+
+        let (toolsWindow, toolsHost) = await NativeTestSupport.mount(BodyTools(requestBody: Binding(get: { fixture.body }, set: { fixture.body = $0 })), defaults: defaults)
+        for body in [RequestBody.empty, .raw(contentType: nil, value: "text"), .xml(value: "<a/>"), .html(value: "<p>a</p>"), .formURLEncoded(fields: []), .file(path: "fixture", contentType: nil), .multipart(parts: []), .json(value: "{}") ] {
+            fixture.body = body
+            await NativeTestSupport.settle(toolsHost)
+            precondition(NativeTestSupport.elements(toolsHost).contains { $0.name == "Format Body" } == (body.composerKind == .json))
+        }
+        toolsWindow.close()
+        print("formatBodyAppearsOnlyForJSON: passed")
+    }
+}
 
 
 
