@@ -112,11 +112,25 @@ pub fn global_environment() -> DomainEnvironment {
 }
 
 /// Inspector browsing is independent of the runtime's active environment.
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct EnvironmentInspector {
     pub editing_id: String,
     drafts: Vec<EnvironmentFieldDraft>,
     notice: Option<String>,
+}
+impl std::fmt::Debug for EnvironmentInspector {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("EnvironmentInspector")
+            .field("editing_id", &self.editing_id)
+            .field("drafts", &self.drafts)
+            .field("has_notice", &self.notice.is_some())
+            .finish()
+    }
+}
+fn available_active_id(environments: &[DomainEnvironment], active: Option<String>) -> String {
+    active
+        .filter(|id| environments.iter().any(|e| e.id == *id))
+        .unwrap_or_else(|| wirebolt_core::GLOBAL_ENVIRONMENT_ID.into())
 }
 impl EnvironmentInspector {
     #[must_use]
@@ -126,6 +140,9 @@ impl EnvironmentInspector {
             drafts: Vec::new(),
             notice: None,
         }
+    }
+    pub fn browse_active(&mut self, environments: Vec<DomainEnvironment>, active: Option<String>) {
+        self.editing_id = available_active_id(&inspector_environments(environments), active);
     }
     pub fn browse(&mut self, id: String) {
         self.editing_id = id;
@@ -245,9 +262,7 @@ impl EnvironmentInspector {
             false
         });
         if !environments.iter().any(|e| e.id == self.editing_id) {
-            self.editing_id = active
-                .filter(|id| environments.iter().any(|e| e.id == *id))
-                .unwrap_or_else(|| wirebolt_core::GLOBAL_ENVIRONMENT_ID.into());
+            self.editing_id = available_active_id(&environments, active);
         }
         if notices.is_empty() {
             return None;

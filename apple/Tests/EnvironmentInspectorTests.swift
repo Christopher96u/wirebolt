@@ -139,10 +139,10 @@ private actor InspectorStore: WorkspacePersistence {
         await NativeTestSupport.settle(host)
         precondition(closeCount == 3 && model.workspace.environments[0].variables[0].key == "escape_key", "Escape closes without dropping the active field")
         print("inspectorEscapeCommits: passed")
-        try await removedDrafts(model: model, interface: interface, window: window, host: host, screenshots: screenshots)
+        try await removedDrafts(model: model, interface: interface, window: window, host: host, defaults: defaults, screenshots: screenshots)
         try await layoutFixtures(model: model, defaults: defaults, screenshots: screenshots)
     }
-    static func removedDrafts(model: WireboltModel, interface: WorkspaceUIState, window: NSWindow, host: NSView, screenshots: URL?) async throws {
+    static func removedDrafts(model: WireboltModel, interface: WorkspaceUIState, window: NSWindow, host: NSView, defaults: UserDefaults, screenshots: URL?) async throws {
         for removesEnvironment in [false, true] {
             model.workspace.environments = [EnvironmentDraft(id: "local", name: "Local", variables: [EnvironmentVariableDraft(id: "removed", key: "base_url", value: .literal("fixture"))])]
             model.selectedEnvironmentID = "local"
@@ -169,6 +169,13 @@ private actor InspectorStore: WorkspacePersistence {
             precondition(closed && !model.environmentEditing.hasEdits, "Orphaned fields never block switching or closing")
             let canQuit = await model.finishEnvironmentEditing()
             precondition(canQuit, "Quit uses the model-owned flush path")
+            if removesEnvironment {
+                let (reopenedWindow, reopenedHost) = await NativeTestSupport.mount(
+                    EnvironmentEditor(model: model, interface: interface, closeTrigger: 0, onClose: {}), defaults: defaults)
+                precondition(NativeTestSupport.elements(reopenedHost).contains { $0.name == "Use Globals Only" }, "Remount reconciles a removed active environment through Rust")
+                precondition(!NativeTestSupport.elements(reopenedHost).contains { $0.name == "Use for Requests" })
+                reopenedWindow.close()
+            }
         }
         model.environmentEditing.edit(.name(environmentId: "removed"), text: "workspace switch fixture")
         let canSwitch = await finishEnvironmentEditing(model: model, interface: interface, in: window)

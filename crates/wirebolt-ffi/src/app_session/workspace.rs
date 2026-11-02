@@ -874,6 +874,15 @@ impl AppEnvironmentInspector {
             ),
         })
     }
+    pub fn browse_active(
+        &self,
+        environments: Vec<DomainEnvironment>,
+        active: Option<String>,
+    ) -> String {
+        let mut inspector = crate::lock(&self.inner);
+        inspector.browse_active(environments, active);
+        inspector.editing_id.clone()
+    }
     pub fn browse(&self, id: String) -> String {
         let mut inspector = crate::lock(&self.inner);
         inspector.browse(id);

@@ -67,7 +67,7 @@ struct EnvironmentEditor: View {
         }
         .onAppear {
             editing.reconcile()
-            selectedID = inspector.browse(id: model.selectedEnvironmentID ?? WorkspaceDraft.globalEnvironmentID)
+            selectedID = inspector.browseActive(environments: model.workspace.environments.map(\.domain), active: model.selectedEnvironmentID)
             interface.closeEnvironmentInspector = close
         }
         .onDisappear { interface.closeEnvironmentInspector = nil }
@@ -84,7 +84,7 @@ struct EnvironmentEditor: View {
                 Spacer()
                 Button("New Environment", systemImage: "plus") {
                     perform(.create) {
-                        selectedID = inspector.browse(id: model.selectedEnvironmentID ?? WorkspaceDraft.globalEnvironmentID)
+                        selectedID = inspector.browseActive(environments: model.workspace.environments.map(\.domain), active: model.selectedEnvironmentID)
                         editingNameID = selectedID
                     }
                 }.labelStyle(.iconOnly).buttonStyle(GhostIconStyle())

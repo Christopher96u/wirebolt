@@ -628,3 +628,29 @@ fn orphaned_inspector_drafts_are_discarded_with_copyable_text_and_browse_reconci
     assert_eq!(environment_use_label("global"), "Use Globals Only");
     assert_eq!(environment_use_label("local"), "Use for Requests");
 }
+
+#[test]
+fn inspector_debug_redacts_drafts_and_discard_notices() {
+    use super::super::environment::{EnvironmentField, EnvironmentInspector};
+    let secret = "fixture-secret-never-in-diagnostics";
+    let mut inspector = EnvironmentInspector::new(Some("local".into()));
+    inspector.edit(
+        EnvironmentField::Value {
+            environment_id: "local".into(),
+            id: "token".into(),
+        },
+        secret.into(),
+    );
+    assert!(!format!("{inspector:?}").contains(secret));
+    assert!(inspector.reconcile(vec![], None).unwrap().contains(secret));
+    assert!(!format!("{inspector:?}").contains(secret));
+}
+#[test]
+fn reopening_inspector_browses_only_an_existing_active_environment() {
+    use super::super::environment::EnvironmentInspector;
+    let mut inspector = EnvironmentInspector::new(Some("removed".into()));
+    inspector.browse_active(fixture().environments, Some("removed".into()));
+    assert_eq!(inspector.editing_id, "global");
+    inspector.browse_active(fixture().environments, Some("other".into()));
+    assert_eq!(inspector.editing_id, "other");
+}

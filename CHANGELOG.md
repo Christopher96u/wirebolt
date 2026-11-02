@@ -50,7 +50,7 @@ Changes under **Unreleased** are on `main` but not in a published build yet. Dow
 - Closing Find in headers or cookies clears its filter.
 - WebSocket message errors stay visible beside the composer. **Copy Message** copies the complete message as Text or Hex, and Disconnect stays available when the URL is cleared.
 - Globals has **Use Globals Only** and shows **Active** when no named environment is selected.
-- Abandoned client identities are cleaned up with other credentials. Cancelled and replaced choices in Workspace Settings stay out of Keychain until Save.
+- Abandoned client identities are cleaned up with other credentials. Canceled and replaced choices in Workspace Settings stay out of Keychain until Save.
 - Switching workspaces retains each workspace's session cookies until quit. Failed cookie deletion restores the previous jar and shows the error in Cookies.
 - Removed environment fields automatically discard unfinished edits and show their text in a copyable notice without blocking close, switch, quit or Git replacement. Git replacement still finishes edits to existing fields first.
 
@@ -108,7 +108,7 @@ First release candidate for Wirebolt 1.0. It collects everything since 0.1.0-bet
 - An import summary lists what was imported, the environment created and anything skipped.
 - Insomnia (v4 JSON, v5 YAML) and Bruno (collection folder, `.bru` file or JSON export) import, including folders, bodies, authentication and environments.
 - Response pane: elapsed time and Cancel while sending, the previous response stays visible until the new one arrives, and failures explain the cause with Retry, Network Settings and View Request.
-- VoiceOver announcements for finished, failed and cancelled requests; clearer labels for credential, multipart and key-value fields, checkboxes and sidebar rows; help tags on icon-only buttons.
+- VoiceOver announcements for finished, failed and canceled requests; clearer labels for credential, multipart and key-value fields, checkboxes and sidebar rows; help tags on icon-only buttons.
 - Local Markdown Edit/Preview for request notes, Git Collaboration commands, in-app help in its own window, user documentation and a local quick-start API example.
 
 ### Changed
@@ -119,7 +119,7 @@ First release candidate for Wirebolt 1.0. It collects everything since 0.1.0-bet
 - New workspaces are named after their folder. Cookies are kept per workspace and session cookies are no longer saved.
 
 - Native Send, Cancel, Connect and Disconnect buttons in title case; an unavailable Send or Connect looks disabled.
-- The URL bar keeps a fixed-width status that shows the response status, **Failed** or **Cancelled**, and collapses to icons in narrow split editors so the URL stays readable.
+- The URL bar keeps a fixed-width status that shows the response status, **Failed** or **Canceled**, and collapses to icons in narrow split editors so the URL stays readable.
 - Method and status colors are adaptive and meet 4.5:1 contrast in light and dark appearances; each method has its own color.
 - Durations, sizes and status lines read naturally (“<0.1 ms”, “1.23 s”, “18.6 KB”, “302 Found”).
 - Invisible characters are hidden by default. JSON can decode Unicode escapes for display.

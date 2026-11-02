@@ -175,7 +175,7 @@ impl SessionSecrets {
         Ok(copied)
     }
     /// Commits only the selected identity from a settings editor. Replaced and
-    /// cancelled choices remain memory-only and disappear with that editor.
+    /// canceled choices remain memory-only and disappear with that editor.
     /// # Errors
     /// Returns a platform credential error, preserving staged material for retry.
     pub async fn commit_identity(
