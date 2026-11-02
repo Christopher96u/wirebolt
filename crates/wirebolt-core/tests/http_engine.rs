@@ -1880,3 +1880,67 @@ async fn cancels_a_streamed_multipart_upload_under_backpressure() {
     server.abort();
     assert!(server.await.unwrap_err().is_cancelled());
 }
+
+async fn changed_multipart_file_is_rejected(change: &str) {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("payload.bin");
+    std::fs::write(&path, vec![b'x'; 128 * 1024]).unwrap();
+    let prepared = multipart_request(address, &path);
+    match change {
+        "removed" => std::fs::remove_file(&path).unwrap(),
+        "truncated" => std::fs::File::options()
+            .write(true)
+            .open(&path)
+            .unwrap()
+            .set_len(1)
+            .unwrap(),
+        "grown" => std::fs::File::options()
+            .write(true)
+            .open(&path)
+            .unwrap()
+            .set_len(256 * 1024)
+            .unwrap(),
+        _ => unreachable!(),
+    }
+    let server = tokio::spawn(async move {
+        let (mut socket, _) = listener.accept().await.unwrap();
+        let mut received = Vec::new();
+        socket.read_to_end(&mut received).await.unwrap();
+        received
+    });
+    let result = tokio::time::timeout(
+        Duration::from_secs(3),
+        following_engine().run(
+            prepared,
+            RunOptions::default(),
+            &RunCancellation::new(),
+            |_| StreamControl::Continue,
+        ),
+    )
+    .await
+    .expect("upload must fail promptly");
+    let error = result.expect_err("changed upload must fail");
+    assert_eq!(error.kind(), RunErrorKind::Request);
+    let source = std::error::Error::source(&error).unwrap().to_string();
+    assert!(source.contains("Upload file"), "{source}");
+    // Validation happens before handing any body to the transport.
+    if server.is_finished() {
+        assert!(server.await.unwrap().is_empty());
+    } else {
+        server.abort();
+    }
+}
+#[tokio::test]
+async fn multipart_removed_between_preparation_and_send_fails_cleanly() {
+    changed_multipart_file_is_rejected("removed").await;
+}
+#[tokio::test]
+async fn multipart_truncated_between_preparation_and_send_fails_cleanly() {
+    changed_multipart_file_is_rejected("truncated").await;
+}
+#[tokio::test]
+async fn multipart_grown_between_preparation_and_send_fails_cleanly() {
+    changed_multipart_file_is_rejected("grown").await;
+}

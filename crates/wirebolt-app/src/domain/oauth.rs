@@ -122,7 +122,9 @@ pub fn authorization_url(
         .map_err(|_| DomainOAuthError::InvalidConfiguration)?
         .scheme()
         .to_owned();
-    let mut items: Vec<(String, String)> = url.query_pairs().into_owned().collect();
+    // Retain the existing wire representation, including flags without '='.
+    let existing = url.query().unwrap_or_default().to_owned();
+    let mut items: Vec<(String, String)> = Vec::new();
     items.extend(
         [
             ("response_type", "code"),
@@ -140,7 +142,14 @@ pub fn authorization_url(
     if !c.audience.is_empty() {
         items.push(("audience".into(), c.audience.clone()));
     }
-    url.query_pairs_mut().clear().extend_pairs(&items);
+    let encoded = url::form_urlencoded::Serializer::new(String::new())
+        .extend_pairs(&items)
+        .finish();
+    url.set_query(Some(&if existing.is_empty() {
+        encoded
+    } else {
+        format!("{existing}&{encoded}")
+    }));
     Ok((url.into(), callback))
 }
 /// # Errors

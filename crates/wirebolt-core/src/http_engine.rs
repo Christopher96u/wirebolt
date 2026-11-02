@@ -568,6 +568,7 @@ impl HttpEngine {
                 Ok(reqwest::Body::wrap_stream(stream))
             }
             PreparedBodySource::Multipart(body) => {
+                body.validate_files().await.map_err(RunError::upload)?;
                 let stream = body
                     .into_stream()
                     .inspect_ok(move |_chunk| progress.touch());

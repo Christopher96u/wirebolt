@@ -73,6 +73,16 @@ impl MultipartBody {
         Ok(PreparedBodySource::Bytes(output))
     }
 
+    /// Validate every file before transport receives any body bytes.
+    pub(crate) async fn validate_files(&self) -> io::Result<()> {
+        for segment in &self.segments {
+            if let MultipartSegment::File { path, byte_count } = segment {
+                checked_file(path, *byte_count).await?;
+            }
+        }
+        Ok(())
+    }
+
     pub(crate) fn into_stream(self) -> impl Stream<Item = io::Result<Bytes>> + Send {
         let state = MultipartUpload {
             segments: self.segments.into_iter(),
@@ -87,6 +97,13 @@ impl MultipartBody {
                 }
                 if let Some(file) = &mut state.file {
                     if file.limit() == 0 {
+                        let mut extra = [0; 1];
+                        if file.get_mut().read(&mut extra).await? != 0 {
+                            return Err(io::Error::new(
+                                io::ErrorKind::InvalidData,
+                                "Upload file size changed after preparation",
+                            ));
+                        }
                         state.file = None;
                         continue;
                     }
@@ -104,7 +121,7 @@ impl MultipartBody {
                 match state.segments.next() {
                     Some(MultipartSegment::Bytes(bytes)) => state.bytes = Bytes::from(bytes),
                     Some(MultipartSegment::File { path, byte_count }) => {
-                        state.file = Some(tokio::fs::File::open(path).await?.take(byte_count));
+                        state.file = Some(checked_file(&path, byte_count).await?.take(byte_count));
                     }
                     None => return Ok(None),
                 }
@@ -117,6 +134,20 @@ struct MultipartUpload {
     segments: std::vec::IntoIter<MultipartSegment>,
     bytes: Bytes,
     file: Option<Take<tokio::fs::File>>,
+}
+
+async fn checked_file(path: &std::path::Path, byte_count: u64) -> io::Result<tokio::fs::File> {
+    let file = tokio::fs::File::open(path).await.map_err(|error| {
+        io::Error::new(error.kind(), format!("Upload file is unavailable: {error}"))
+    })?;
+    let metadata = file.metadata().await?;
+    if !metadata.is_file() || metadata.len() != byte_count {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "Upload file size changed after preparation; prepare the request again",
+        ));
+    }
+    Ok(file)
 }
 
 #[cfg(test)]
@@ -214,7 +245,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn multipart_stream_rejects_truncated_files_and_limits_growing_files() {
+    async fn multipart_stream_rejects_truncated_and_growing_files() {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("payload.bin");
         std::fs::write(&path, b"old").unwrap();
@@ -224,8 +255,13 @@ mod tests {
         }])
         .unwrap();
         std::fs::write(&path, b"old and new").unwrap();
-        let chunks: Vec<_> = body.clone().into_stream().try_collect().await.unwrap();
-        assert_eq!(chunks.concat(), b"old");
+        assert!(
+            body.clone()
+                .into_stream()
+                .try_collect::<Vec<_>>()
+                .await
+                .is_err()
+        );
         assert!(body.clone().into_prepared().is_err());
         std::fs::write(&path, b"x").unwrap();
         let error = body
@@ -233,6 +269,6 @@ mod tests {
             .try_collect::<Vec<_>>()
             .await
             .unwrap_err();
-        assert_eq!(error.kind(), io::ErrorKind::UnexpectedEof);
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
     }
 }
