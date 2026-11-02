@@ -186,6 +186,6 @@ extension SidebarSnapshotTests {
         ])
         #expect(workspace.moveCollections(for: "request|c|r").map(\.id) == ["a", "c"])
         #expect(workspace.moveCollections(for: "group|c|folder").map(\.id) == ["c"])
-        #expect(workspace.selectableEnvironments.map(\.id) == ["a", "z"])
+        #expect(workspace.selectableEnvironments.map(\.id) == ["z", "a"])
     }
 }
