@@ -53,7 +53,7 @@ struct WorkspaceIdentityTests {
         let revision = model.cookieRevision
         let session = try #require(await model.cookies().first { $0.name == "session" })
 
-        try await model.deleteCookie(id: session.id)
+        try await model.deleteCookies(ids: [session.id])
         #expect(await model.cookies().map(\.name) == ["remember"])
         try await model.clearCookies()
         #expect(await model.cookies().isEmpty)

@@ -97,7 +97,7 @@ struct CookiesView: View {
         guard !ids.isEmpty else { return }
         Task {
             do {
-                for id in ids { try await model.deleteCookie(id: id) }
+                try await model.deleteCookies(ids: Array(ids))
                 errorMessage = nil
             } catch { errorMessage = error.localizedDescription }
         }

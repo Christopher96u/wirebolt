@@ -98,7 +98,7 @@ enum DraftWorkProbe {
         try await CustomThemeNativeTests.run(root: root, defaults: defaults, screenshots: captureDirectory)
         try await EnvironmentInspectorTests.run(root: root, defaults: defaults, screenshots: captureDirectory)
         try await auditNavigationAndSettings(root: root, defaults: defaults, screenshots: captureDirectory)
-        try await auditRequestEditors(defaults: defaults)
+        try await auditRequestEditors(root: root, defaults: defaults)
         try await auditWebSocketComposer(root: root, defaults: defaults)
         try await auditCookieRemovalFailure(root: root, defaults: defaults)
         try await auditPreparedRequestCopy(defaults: defaults)
@@ -135,7 +135,15 @@ extension NativeAdapterTests {
         precondition(field.currentEditor() === window.firstResponder, "Filter reveals and focuses the previously unmounted search field")
         let sidebar = NativeTestSupport.elements(host)
         precondition(!sidebar.contains { $0.role == "AXButton" && ["Filter Requests", "Network Settings"].contains($0.name) })
+        window.makeFirstResponder(nil)
+        interface.columnVisibility = .detailOnly
+        await NativeTestSupport.settle(host)
+        interface.columnVisibility = .all
+        await NativeTestSupport.settle(host)
+        let remountedSearch = EnvironmentInspectorTests.fields(host).first { $0.placeholderString == "Search" }!
+        precondition(remountedSearch.currentEditor() == nil, "Show Sidebar must not replay an old search request")
         window.close()
+        print("showSidebarDoesNotReplayConsumedSearchFocus: passed")
         print("filterRequestsRevealsSidebarAndFocusesSearch: passed")
         print("sidebarOmitsRedundantFilterAndNetworkControls: passed")
 
@@ -150,10 +158,11 @@ extension NativeAdapterTests {
         precondition(NativeTestSupport.press(settingsHost, named: "Clear All History…"))
         func historyConfirmation() -> NSWindow? {
             NSApp.windows.first { candidate in
-                candidate.isVisible && NativeTestSupport.elements(candidate).contains { $0.role == "AXButton" && $0.name == "Clear All" }
+                candidate.isVisible && NativeTestSupport.elements(candidate).contains { $0.role == "AXButton" &&  $0.name == "Clear All History" }
             }
         }
         await NativeTestSupport.wait(settingsHost) { historyConfirmation() != nil }
+        precondition(NativeTestSupport.elements(historyConfirmation()!).contains { $0.name.contains("Responses already open in tabs stay available") })
         precondition(NativeTestSupport.press(historyConfirmation()!, named: "Cancel"))
         await NativeTestSupport.wait(settingsHost) { historyConfirmation() == nil }
         precondition(model.settingsTab == "general" && model.isShowingAppSettings)
@@ -184,12 +193,11 @@ extension NativeAdapterTests {
 @MainActor @Observable private final class NativeEditorFixture {
     var method = HTTPMethod.get
     var fields = [RequestField(name: "X-Old", value: .literal("old"))]
-    var body = RequestBody.empty
     var part = MultipartPart(name: "value", value: .literal("Current multipart value"))
 }
 
 extension NativeAdapterTests {
-    static func auditRequestEditors(defaults: UserDefaults) async throws {
+    static func auditRequestEditors(root: URL, defaults: UserDefaults) async throws {
         let restoreAccessibility = NativeTestSupport.enableAccessibility()
         defer { restoreAccessibility() }
         let fixture = NativeEditorFixture()
@@ -206,21 +214,26 @@ extension NativeAdapterTests {
         methodWindow.close()
         print("customMethodKeepsInvalidInputAndAcceptsTransportToken: passed")
 
-        let (bulkWindow, bulkHost) = await NativeTestSupport.mount(
-            BulkFieldEditor(fields: Binding(get: { fixture.fields }, set: { fixture.fields = $0 })), defaults: defaults)
+        let model = auditModel(root: root, defaults: defaults)
+        let session = model.sessions.open(draft: RequestDraft(id: "editor", headers: fixture.fields))
+        let interface = WorkspaceUIState(defaults: defaults)
+        interface.synchronizeSelection(model: model)
+        interface.requestSection = .headers
+        interface.isBulkEditing = true
+        let (bulkWindow, bulkHost) = await NativeTestSupport.mount(ContentView(model: model, interface: interface, loadsWorkspace: false), defaults: defaults)
         let bulk = NativeTestSupport.textViews(bulkHost).first { $0.string.contains("X-Old: old") }!
-        fixture.fields = []
+        session.draft.headers = []
         await NativeTestSupport.settle(bulkHost)
         precondition(bulk.string.isEmpty, "Clear All clears the native bulk buffer")
         bulk.insertText("X-New: new", replacementRange: NSRange(location: 0, length: 0))
         await NativeTestSupport.settle(bulkHost)
-        precondition(fixture.fields.map(\.name) == ["X-New"], "Typing cannot resurrect a cleared row")
-        fixture.fields = [RequestField(name: "X-Replacement", value: .literal("external"))]
+        precondition(session.draft.headers.map(\.name) == ["X-New"], "Typing cannot resurrect a cleared row")
+        session.draft.headers = [RequestField(name: "X-Replacement", value: .literal("external"))]
         await NativeTestSupport.settle(bulkHost)
         precondition(bulk.string == "X-Replacement: external")
         bulk.insertText("\nX-Another: new", replacementRange: NSRange(location: bulk.string.utf16.count, length: 0))
         await NativeTestSupport.settle(bulkHost)
-        precondition(fixture.fields.map(\.name) == ["X-Replacement", "X-Another"])
+        precondition(session.draft.headers.map(\.name) == ["X-Replacement", "X-Another"])
         bulkWindow.close()
         print("bulkClearAndExternalReplacementNeverResurrectRows: passed")
 
@@ -237,24 +250,29 @@ extension NativeAdapterTests {
         headersWindow.close()
         print("closingHeaderFindClearsHiddenFilter: passed")
 
-        let (partWindow, partHost) = await NativeTestSupport.mount(MultipartPartEditor(part: Binding(get: { fixture.part }, set: { fixture.part = $0 }), remove: {}), defaults: defaults, width: 560, height: 400)
-        let edit = NativeTestSupport.elements(partHost).first { $0.role == "AXButton" && $0.name == "Edit Value…" }!
-        precondition(edit.object.value(forKey: "accessibilityValue") as? String == "Current multipart value")
-        precondition(NativeTestSupport.press(partHost, named: "Edit Value…"))
-        await NativeTestSupport.settle(partHost)
-        precondition(partWindow.attachedSheet != nil, "The value editor is reachable through a standard button")
-        if let sheet = partWindow.attachedSheet { precondition(NativeTestSupport.press(sheet, named: "Cancel")) }
-        await NativeTestSupport.settle(partHost)
-        partWindow.close()
-        print("multipartValueHasAccessibleEditButtonAndPreview: passed")
-
-        let (toolsWindow, toolsHost) = await NativeTestSupport.mount(BodyTools(requestBody: Binding(get: { fixture.body }, set: { fixture.body = $0 })), defaults: defaults)
+        interface.isBulkEditing = false
+        interface.requestSection = .body
+        let (toolsWindow, toolsHost) = await NativeTestSupport.mount(ContentView(model: model, interface: interface, loadsWorkspace: false), defaults: defaults)
         for body in [RequestBody.empty, .raw(contentType: nil, value: "text"), .xml(value: "<a/>"), .html(value: "<p>a</p>"), .formURLEncoded(fields: []), .file(path: "fixture", contentType: nil), .multipart(parts: []), .json(value: "{}") ] {
-            fixture.body = body
+            session.draft.body = body
             await NativeTestSupport.settle(toolsHost)
-            precondition(NativeTestSupport.elements(toolsHost).contains { $0.name == "Format Body" } == (body.composerKind == .json))
+            precondition(NativeTestSupport.elements(toolsHost).contains { $0.name == "Format Body" } == body.canFormat)
+        }
+        for file in [false, true] {
+            var part = fixture.part
+            if file { part.kind = .file; part.filePath = "/fixture/upload.txt"; part.fileName = "upload.txt" }
+            session.draft.body = .multipart(parts: [part])
+            await NativeTestSupport.settle(toolsHost)
+            precondition(NativeTestSupport.press(toolsHost, named: "Edit"))
+            await NativeTestSupport.settle(toolsHost)
+            let popover = NSApp.windows.first { $0.isVisible && NativeTestSupport.elements($0).contains { $0.name == "Edit Value…" } }!
+            let edit = NativeTestSupport.elements(popover).first { $0.role == "AXButton" && $0.name == "Edit Value…" }!
+            precondition(edit.object.value(forKey: "accessibilityValue") as? String == (file ? "/fixture/upload.txt" : "Current multipart value"))
+            precondition(NativeTestSupport.press(popover, named: "OK"))
+            await NativeTestSupport.settle(toolsHost)
         }
         toolsWindow.close()
+        print("multipartTextAndFileAccessibilityMatchVisiblePreview: passed")
         print("formatBodyAppearsOnlyForJSON: passed")
     }
 }
@@ -288,8 +306,15 @@ extension NativeAdapterTests {
         for body in [RequestBody.json(value: "{"), .webSocketMessage(.binary).editingMessage("not base64"), .file(path: root.appending(path: "missing-message").path, contentType: nil)] {
             await session.socket.send(body: body)
             await NativeTestSupport.settle(host)
-            let error = session.socket.errorMessage!
-            precondition(NativeTestSupport.elements(host).contains { $0.name.contains(error) }, "Message errors remain beside the composer while connected")
+            let error = session.socket.sendErrorMessage!
+            precondition(NativeTestSupport.elements(host).filter { $0.name == error }.count == 1, "Send error appears once beside Message")
+            for section in [RequestPanelSection.params, .headers, .auth, .note, .settings] {
+                interface.requestSection = section
+                await NativeTestSupport.settle(host)
+                precondition(!NativeTestSupport.elements(host).contains { $0.name == error }, "Send error stays out of other sections")
+            }
+            interface.requestSection = .body
+            await NativeTestSupport.settle(host)
         }
         socket.acceptsMessages = false
         await session.socket.send(body: .raw(contentType: nil, value: "fixture"))
@@ -299,6 +324,14 @@ extension NativeAdapterTests {
         precondition(NativeTestSupport.press(host, named: "Disconnect"))
         await NativeTestSupport.settle(host)
         precondition(session.socket.status == .disconnected)
+        let failedSocket = FixtureSocket()
+        session.socket.connect(input: RunInput(draft: draft, variables: [:]), connector: FixtureConnector(socket: failedSocket))
+        failedSocket.continuation.finish(throwing: WebSocketUIError("fixture connection failed"))
+        await NativeTestSupport.wait(host) { session.socket.errorMessage != nil }
+        session.socket.clearMessages()
+        await NativeTestSupport.settle(host)
+        precondition(NativeTestSupport.elements(host).filter { $0.name == "fixture connection failed" }.count == 1)
+        print("webSocketConnectionFailureAppearsOnce: passed")
         print("webSocketSendErrorsRemainVisibleAcrossMessageStates: passed")
         print("disconnectRemainsEnabledWithoutURLWhileConnectingAndConnected: passed")
     }
@@ -365,11 +398,9 @@ extension NativeAdapterTests {
             proxyPreferences: ProxyPreferences(defaults: defaults))
         let name = CredentialReference.unique(role: "client-identity", scope: "tls")
         model.workspace.transport.clientCertificateReference = name
-        let staged = AppSessionSecrets()
-        staged.edit(name: name, value: "fixture private key")
         var closeCount = 0
         let (window, host) = await NativeTestSupport.mount(NetworkSettingsPage(model: model, scope: .workspace,
-            onClose: { closeCount += 1 }, stagedIdentities: staged), defaults: defaults, width: 700, height: 1100)
+            onClose: { closeCount += 1 }), defaults: defaults, width: 700, height: 1100)
         defer { store.gate.release(); window.close() }
         precondition(NativeTestSupport.press(host, named: "Timeouts, redirects & TLS"))
         await NativeTestSupport.settle(host)
@@ -390,7 +421,7 @@ extension NativeAdapterTests {
         await NativeTestSupport.wait(host) { closeCount == 1 }
         precondition(model.workspace.transport.clientCertificateReference == name && !model.workspace.transport.validateTLS)
         let saved = await store.saved
-        precondition(saved == [name])
-        print("workspaceIdentitySaveFreezesSelectionUntilKeychainCommit: passed")
+        precondition(saved.isEmpty)
+        print("workspaceNetworkSaveFreezesControlsUntilTransportCommit: passed")
     }
 }

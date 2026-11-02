@@ -737,7 +737,7 @@ final class ProbeWindow: NSWindow { override var canBecomeKey: Bool { true } }
         precondition(NativeTestSupport.press(host, named: "Clear All History…"))
         func historyConfirmation() -> NSWindow? {
             NSApp.windows.first { candidate in
-                candidate.isVisible && NativeTestSupport.elements(candidate).contains { $0.role == "AXButton" && $0.name == "Clear All" }
+                candidate.isVisible && NativeTestSupport.elements(candidate).contains { $0.role == "AXButton" && $0.name == "Clear All History" }
             }
         }
         await NativeTestSupport.wait(host) { historyConfirmation() != nil }

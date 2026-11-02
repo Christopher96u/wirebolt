@@ -81,7 +81,7 @@ final class WireboltAppDelegate: NSObject, NSApplicationDelegate {
         model.knownWorkspaceLocations = {
             RecentWorkspaces.shared.urls + [RustWorkspacePersistence.builtInWorkspaceURL]
         }
-        // In-app tabs own ⌘T; native window tabs would stack a second tab bar on top.
+        // Keep the workspace in one window without a second native tab bar.
         NSWindow.allowsAutomaticWindowTabbing = false
         ThemeStore.shared.loadLibrary(at: FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
             .appending(path: "Wirebolt/custom-themes.json"))
@@ -125,13 +125,13 @@ final class WireboltAppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
-        guard model.hasUnsavedRequestChanges || model.hasReleasableSecrets || interface.hasEnvironmentEdits else {
+        guard model.hasUnsavedRequestChanges || model.hasReleasableSecrets || model.environmentEditing.hasEdits else {
             interface.persistSessionLayout(model: model)
             return .terminateNow
         }
         let window = WorkspaceWindowRegistry.primary.flatMap { $0.isVisible ? $0 : nil } ?? NSApp.mainWindow
         Task {
-            var proceed = await finishEnvironmentEditing(interface: interface, in: window)
+            var proceed = await finishEnvironmentEditing(model: model, interface: interface, in: window)
             if proceed && model.hasUnsavedRequestChanges {
                 proceed = await confirmUnsavedChanges(model: model, in: window, quitting: true)
             }
@@ -271,7 +271,7 @@ struct WireboltCommands: Commands {
                 if session.socket.status == .disconnected { Task { await model.connectWebSocket(session) } }
                 else { session.socket.disconnect() }
             }.keyboardShortcut(.return, modifiers: [.command, .control])
-                .disabled(noWorkspace || state.activeKind != .webSocket || (state.socketStatus == .disconnected && !state.hasURL))
+                .disabled(noWorkspace || state.activeKind != .webSocket || !sessionSocketCanToggle(status: state.socketStatus, hasUrl: state.hasURL))
             Divider()
             // Reorders the request or folder selected in the focused sidebar.
             Button("Move Up") {

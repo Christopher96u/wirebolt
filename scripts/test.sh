@@ -39,6 +39,7 @@ swiftc \
   apple/Sources/WireboltKit/CollectionImportSources.swift \
   apple/Sources/WireboltKit/RuntimeAdapters.swift \
   apple/Sources/WireboltKit/WireboltModel.swift \
+  apple/Sources/WireboltKit/EnvironmentInspectorEditing.swift \
   apple/Sources/WireboltKit/WorkspaceOperations.swift \
   apple/Sources/WireboltKit/SidebarSnapshot.swift \
   apple/Tests/WireboltKitTests/RuntimeRunFixture.swift \

@@ -542,8 +542,8 @@ impl AppCookieJar {
     pub fn all(&self) -> Vec<StoredCookie> {
         lock(&self.inner).all(unix_time())
     }
-    pub fn delete(&self, id: String) -> ResponseResult<()> {
-        lock(&self.inner).delete(&id)
+    pub fn delete(&self, ids: Vec<String>) -> ResponseResult<()> {
+        lock(&self.inner).delete(&ids)
     }
     pub fn remove_all(&self) -> ResponseResult<()> {
         lock(&self.inner).remove_all()

@@ -471,3 +471,27 @@ fn tls_identity_references_belong_to_requests_and_workspaces() {
     };
     assert!(workspace_references(&workspace).contains(&name));
 }
+
+#[test]
+fn bulk_serialization_round_trips_disabled_rows_secrets_and_metadata() {
+    let mut rows = vec![
+        field("X-Enabled", "value: with colon"),
+        field("X-Disabled", "off"),
+    ];
+    rows[1].enabled = false;
+    rows.push(DomainField {
+        id: "secret".into(),
+        name: "Authorization".into(),
+        value: DomainValueSource::Secret {
+            secret: "fixture.token".into(),
+        },
+        enabled: true,
+        ..Default::default()
+    });
+    let text = serialize_bulk(&rows);
+    assert_eq!(
+        text,
+        "X-Enabled: value: with colon\n# X-Disabled: off\nAuthorization: fixture.token"
+    );
+    assert_eq!(parse_bulk(&text, rows.clone()), rows);
+}

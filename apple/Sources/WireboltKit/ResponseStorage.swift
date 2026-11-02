@@ -166,7 +166,7 @@ public actor CookieJar {
     }
     public func header(for url: URL) -> String? { rust.header(url: url.absoluteString) }
     public func all() -> [CookieSnapshot] { rust.all().map(CookieSnapshot.init) }
-    public func delete(id: CookieSnapshot.ID) throws { try rust.delete(id: id) }
+    public func delete(ids: [CookieSnapshot.ID]) throws { try rust.delete(ids: ids) }
     public func removeAll() throws { try rust.removeAll() }
 }
 extension CookieSnapshot {

@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 struct WorkspaceLoadNotice: View {
@@ -18,5 +19,24 @@ struct WorkspaceLoadNotice: View {
         .padding(12)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(.regularMaterial)
+    }
+}
+
+struct EnvironmentEditNotice: View {
+    let message: String
+    let dismiss: () -> Void
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(message).font(.callout).textSelection(.enabled).lineLimit(4).help(message)
+            HStack {
+                Button("Copy Discarded Edits") {
+                    NSPasteboard.general.clearContents()
+                    NSPasteboard.general.setString(message, forType: .string)
+                }
+                Spacer()
+                Button("Dismiss", action: dismiss)
+            }
+        }
+        .padding(12).frame(maxWidth: .infinity, alignment: .leading).background(.regularMaterial)
     }
 }

@@ -112,7 +112,7 @@ fn cookies_are_sorted_deleted_cleared_and_scoped_per_workspace() {
         cookies.iter().map(|c| c.name.as_str()).collect::<Vec<_>>(),
         ["a", "z"]
     );
-    state.delete_cookie(&cookies[0].id()).unwrap();
+    state.delete_cookies(&[cookies[0].id()]).unwrap();
     assert_eq!(state.cookies().len(), 1);
     state.configure_cookies(Some("/work/b"), Some(root.path().to_str().unwrap()));
     assert!(state.cookies().is_empty());

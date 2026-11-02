@@ -16,7 +16,7 @@ private enum SettingsSection: String, CaseIterable, Identifiable {
     var keywords: String {
         switch self {
         case .general: "workspace folder editor word wrap invisible characters scroll beyond history clear responses"
-        case .appearance: "theme black paper ember colors canvas accent density font reduce motion"
+        case .appearance: "theme black paper ember colors accent density font reduce motion"
         case .network: "proxy connection manual system direct authentication credentials routes"
         case .keyboard: "shortcuts keybindings commands navigation"
         }

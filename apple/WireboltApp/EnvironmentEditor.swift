@@ -1,99 +1,6 @@
 import AppKit
 import SwiftUI
 
-/// Native field buffers survive failed commits. Rust owns validation, mutations,
-/// secret storage and undo; this object only serializes end-editing callbacks.
-@MainActor @Observable
-final class EnvironmentInspectorEditing {
-    enum Field: Hashable {
-        case name(String)
-        case key(String, String)
-        case value(String, String)
-
-        var environmentID: String {
-            switch self {
-            case .name(let id), .key(let id, _), .value(let id, _): id
-            }
-        }
-        func commit(_ text: String) -> EnvironmentCommit {
-            switch self {
-            case .name: .rename(name: text)
-            case .key(_, let id): .variableName(id: id, name: text)
-            case .value(_, let id): .variableValue(id: id, value: text)
-            }
-        }
-    }
-    var drafts: [Field: String] = [:]
-    var problems: [Field: String] = [:]
-    var removedDrafts: [Field: String] = [:]
-    var commandProblem: String?
-    private var work: Task<Bool, Never>?
-    private var pendingCommits = 0
-    let model: WireboltModel
-    var hasEdits: Bool { !drafts.isEmpty || !removedDrafts.isEmpty || pendingCommits > 0 }
-
-    init(model: WireboltModel) { self.model = model }
-
-    func commit(_ field: Field) {
-        guard let text = drafts[field] else { return }
-        let previous = work
-        pendingCommits += 1
-        work = Task { @MainActor in
-            _ = await previous?.value
-            defer { pendingCommits -= 1 }
-            reconcile()
-            guard drafts[field] != nil else { return removedDrafts[field] == nil }
-            let problem = await model.commitEnvironment(id: field.environmentID, commit: field.commit(text))
-            problems[field] = problem
-            if problem == nil, drafts[field] == text { drafts.removeValue(forKey: field) }
-            return problem == nil
-        }
-    }
-
-    func perform(id: String, commit action: EnvironmentCommit, completion: @escaping () -> Void) {
-        for field in Array(drafts.keys) { commit(field) }
-        let previous = work
-        pendingCommits += 1
-        work = Task { @MainActor in
-            _ = await previous?.value
-            defer { pendingCommits -= 1 }
-            guard drafts.isEmpty else { return false }
-            commandProblem = await model.commitEnvironment(id: id, commit: action)
-            if commandProblem == nil { completion() }
-            return commandProblem == nil
-        }
-    }
-
-    func reconcile() {
-        let environments = workspaceEnvironmentInspector(environments: model.workspace.environments.map(\.domain))
-        for field in Array(drafts.keys) {
-            let environment = environments.first { $0.id == field.environmentID }
-            let exists: Bool
-            switch field {
-            case .name: exists = environment != nil
-            case .key(_, let id), .value(_, let id): exists = environment?.variables.contains { $0.id == id } == true
-            }
-            if !exists {
-                removedDrafts[field] = drafts.removeValue(forKey: field)
-                problems.removeValue(forKey: field)
-            }
-        }
-    }
-
-    func discardRemovedDrafts() { removedDrafts.removeAll() }
-
-    func flush() async -> Bool {
-        reconcile()
-        _ = await work?.value
-        for field in Array(drafts.keys) {
-            commit(field)
-            _ = await work?.value
-        }
-        reconcile()
-        return drafts.isEmpty && removedDrafts.isEmpty
-    }
-}
-
 struct EnvironmentEditor: View {
     @Bindable var model: WireboltModel
     let interface: WorkspaceUIState
@@ -112,8 +19,8 @@ struct EnvironmentEditor: View {
         self.interface = interface
         self.closeTrigger = closeTrigger
         self.onClose = onClose
-        _editing = State(initialValue: EnvironmentInspectorEditing(model: model))
-        _inspector = State(initialValue: AppEnvironmentInspector(active: model.selectedEnvironmentID))
+        _editing = State(initialValue: model.environmentEditing)
+        _inspector = State(initialValue: model.environmentEditing.inspector)
         _selectedID = State(initialValue: model.selectedEnvironmentID ?? WorkspaceDraft.globalEnvironmentID)
     }
 
@@ -130,14 +37,16 @@ struct EnvironmentEditor: View {
                 Button("Close Inspector", systemImage: "xmark") { Task { _ = await close() } }
                     .labelStyle(.iconOnly).buttonStyle(GhostIconStyle())
             }
+            if let message = model.environmentEditingNotice {
+                EnvironmentEditNotice(message: message) { model.dismissEnvironmentEditingNotice() }
+            }
             ScrollView {
                 VStack(alignment: .leading, spacing: WireboltTheme.Spacing.xLarge) {
                     environmentList
-                    Button(selectedID == WorkspaceDraft.globalEnvironmentID ? "Use Globals Only" : "Use for Requests") {
+                    Button(environmentUseLabel(id: selectedID)) {
                         Task { if await editing.flush() { model.selectedEnvironmentID = inspector.useForRequests() } }
                     }
                     .disabled(selectedID == activeID)
-                    removedEdits
                     variablesCard
                     if let problem = editing.commandProblem { inlineProblem(problem) }
                     Label("Secrets stay in this Mac’s Keychain.", systemImage: "key")
@@ -153,36 +62,20 @@ struct EnvironmentEditor: View {
         .onChange(of: closeTrigger) { Task { _ = await close() } }
         .onChange(of: model.workspace.environments) {
             editing.reconcile()
-            if !environments.contains(where: { $0.id == selectedID }) {
-                selectedID = inspector.browse(id: environments.contains(where: { $0.id == activeID }) ? activeID : WorkspaceDraft.globalEnvironmentID)
-                editingNameID = nil
-            }
+            if selectedID != inspector.editingId() { editingNameID = nil }
+            selectedID = inspector.editingId()
         }
         .onAppear {
+            editing.reconcile()
+            selectedID = inspector.browse(id: model.selectedEnvironmentID ?? WorkspaceDraft.globalEnvironmentID)
             interface.closeEnvironmentInspector = close
-            model.finishEnvironmentEditing = { await editing.flush() }
         }
-        .onChange(of: editing.hasEdits, initial: true) { interface.hasEnvironmentEdits = editing.hasEdits }
-        .onDisappear { interface.hasEnvironmentEdits = false; interface.closeEnvironmentInspector = nil; model.finishEnvironmentEditing = nil }
+        .onDisappear { interface.closeEnvironmentInspector = nil }
         .focusedValue(\.environmentAddRow, addRow)
         .onExitCommand { Task { _ = await close() } }
     }
 
     private var activeID: String { model.selectedEnvironmentID ?? WorkspaceDraft.globalEnvironmentID }
-
-    @ViewBuilder
-    private var removedEdits: some View {
-        if !editing.removedDrafts.isEmpty {
-            VStack(alignment: .leading, spacing: WireboltTheme.Spacing.medium) {
-                inlineProblem("Edited fields were removed from the workspace. Discard their unsaved edits to continue.")
-                Text("\(editing.removedDrafts.count) removed field edits")
-                    .font(WireboltTheme.Typography.detail)
-                Button("Discard Removed Edits") { editing.discardRemovedDrafts() }
-            }
-            .padding(WireboltTheme.Spacing.large)
-            .background(theme.definition.card.color, in: .rect(cornerRadius: theme.geometry.card))
-        }
-    }
 
     private var environmentList: some View {
         VStack(alignment: .leading, spacing: WireboltTheme.Spacing.xSmall) {
@@ -200,7 +93,7 @@ struct EnvironmentEditor: View {
                 VStack(alignment: .leading, spacing: WireboltTheme.Spacing.xSmall) {
                     HStack(spacing: WireboltTheme.Spacing.medium) {
                         if editingNameID == environment.id {
-                            field(.name(environment.id), text: environment.name, label: "Environment name")
+                            field(.name(environmentId: environment.id), text: environment.name, label: "Environment name")
                         } else {
                             Button {
                                 Task { await select(environment.id) }
@@ -225,13 +118,13 @@ struct EnvironmentEditor: View {
                             .accessibilityAddTraits(selectedID == environment.id ? .isSelected : [])
                         }
                     }
-                    if let problem = editing.problems[.name(environment.id)] { inlineProblem(problem) }
+                    if let problem = editing.problems[.name(environmentId: environment.id)] { inlineProblem(problem) }
                 }
                 .padding(.horizontal, WireboltTheme.Spacing.large)
                 .frame(minHeight: theme.density.controlHeight + WireboltTheme.Spacing.medium)
                 .background(selectedID == environment.id ? theme.definition.selected.color : .clear, in: .rect(cornerRadius: theme.geometry.row))
                 .contextMenu {
-                    Button(environment.id == WorkspaceDraft.globalEnvironmentID ? "Use Globals Only" : "Use for Requests") { Task { if await select(environment.id) { model.selectedEnvironmentID = inspector.useForRequests() } } }
+                    Button(environmentUseLabel(id: environment.id)) { Task { if await select(environment.id) { model.selectedEnvironmentID = inspector.useForRequests() } } }
                     Button("Rename") { Task { if await select(environment.id) { editingNameID = environment.id } } }
                         .disabled(environment.id == WorkspaceDraft.globalEnvironmentID)
                     Button("Delete", role: .destructive) { perform(.delete, environmentID: environment.id) }
@@ -273,9 +166,9 @@ struct EnvironmentEditor: View {
         VStack(alignment: .leading, spacing: WireboltTheme.Spacing.xSmall) {
             HStack(alignment: .center, spacing: WireboltTheme.Spacing.xSmall) {
                 FieldCheckbox(isOn: Binding(get: { variable.enabled }, set: { perform(.variableEnabled(id: variable.id, enabled: $0)) }), label: "Enable variable \(variable.key)")
-                field(.key(selectedID, variable.id), text: variable.key, label: "Variable name")
+                field(.key(environmentId: selectedID, id: variable.id), text: variable.key, label: "Variable name")
                     .frame(minWidth: 64, idealWidth: 96, maxWidth: 112)
-                field(.value(selectedID, variable.id), text: model.secretMaterial(for: variable.value), label: "Value for \(variable.key)", secret: variable.isSecret && !revealedSecretIDs.contains(variable.id))
+                field(.value(environmentId: selectedID, id: variable.id), text: model.secretMaterial(for: variable.value), label: "Value for \(variable.key)", secret: variable.isSecret && !revealedSecretIDs.contains(variable.id))
                     .frame(maxWidth: .infinity)
                 if variable.isSecret {
                     Button(revealedSecretIDs.contains(variable.id) ? "Hide Value" : "Show Value", systemImage: revealedSecretIDs.contains(variable.id) ? "eye.slash" : "eye") {
@@ -300,12 +193,12 @@ struct EnvironmentEditor: View {
 
     @ViewBuilder
     private func variableProblems(_ variable: EnvironmentVariableDraft) -> some View {
-        if let problem = editing.problems[.key(selectedID, variable.id)] { inlineProblem(problem) }
-        if let problem = editing.problems[.value(selectedID, variable.id)] { inlineProblem(problem) }
+        if let problem = editing.problems[.key(environmentId: selectedID, id: variable.id)] { inlineProblem(problem) }
+        if let problem = editing.problems[.value(environmentId: selectedID, id: variable.id)] { inlineProblem(problem) }
     }
 
-    private func field(_ id: EnvironmentInspectorEditing.Field, text: String, label: String, secret: Bool = false) -> some View {
-        EnvironmentInspectorField(text: Binding(get: { editing.drafts[id] ?? text }, set: { editing.drafts[id] = $0 }), label: label, secret: secret,
+    private func field(_ id: EnvironmentField, text: String, label: String, secret: Bool = false) -> some View {
+        EnvironmentInspectorField(text: Binding(get: { editing.text(for: id) ?? text }, set: { editing.edit(id, text: $0) }), label: label, secret: secret,
             font: .monospacedSystemFont(ofSize: theme.typography.field * fieldScale, weight: .regular)) { editing.commit(id) }
             .id(secret)
             .frame(minHeight: max(theme.density.controlHeight, theme.typography.field * fieldScale + 8))

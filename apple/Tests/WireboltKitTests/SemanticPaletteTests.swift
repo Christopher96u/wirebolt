@@ -12,12 +12,12 @@ struct SemanticPaletteTests {
     func contrast() {
         for (name, color) in Self.colors {
             for background in SemanticPalette.lightBackgrounds {
-                #expect(color.light.contrast(with: background) >= 4.5, "\(name) light")
-                #expect(color.lightHighContrast.contrast(with: background) >= 7, "\(name) light, increased contrast")
+                #expect(domainContrast(color: color.light, other: background) >= 4.5, "\(name) light")
+                #expect(domainContrast(color: color.lightHighContrast, other: background) >= 7, "\(name) light, increased contrast")
             }
             for background in SemanticPalette.darkBackgrounds {
-                #expect(color.dark.contrast(with: background) >= 4.5, "\(name) dark")
-                #expect(color.darkHighContrast.contrast(with: background) >= 7, "\(name) dark, increased contrast")
+                #expect(domainContrast(color: color.dark, other: background) >= 4.5, "\(name) dark")
+                #expect(domainContrast(color: color.darkHighContrast, other: background) >= 7, "\(name) dark, increased contrast")
             }
         }
     }
@@ -43,7 +43,7 @@ struct SemanticPaletteTests {
     @Test("Contrast math matches WCAG reference values")
     func wcagReference() {
         let black = PaletteColor(hex: 0x000000), white = PaletteColor(hex: 0xFFFFFF)
-        #expect(abs(black.contrast(with: white) - 21) < 0.001)
-        #expect(abs(PaletteColor(hex: 0x777777).contrast(with: white) - 4.48) < 0.01)
+        #expect(abs(domainContrast(color: black, other: white) - 21) < 0.001)
+        #expect(abs(domainContrast(color: PaletteColor(hex: 0x777777), other: white) - 4.48) < 0.01)
     }
 }

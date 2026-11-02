@@ -34,13 +34,13 @@ struct CustomThemeTests {
         for increased in [false, true] {
             let theme = ResolvedTheme(custom: CustomTheme(id: "preview", name: preview.name, tokens: preview.tokens), increasedContrast: increased)
             for surface in [theme.definition.window, theme.definition.sidebar, theme.definition.card] {
-                #expect(theme.primary.contrast(with: surface) >= 7)
-                #expect(theme.muted.contrast(with: surface) >= (increased ? 7 : 4.5))
+                #expect(domainContrast(color: theme.primary, other: surface) >= 7)
+                #expect(domainContrast(color: theme.muted, other: surface) >= (increased ? 7 : 4.5))
             }
             #expect(Set(HTTPMethod.allCases.map { theme.method($0).foreground }).count == HTTPMethod.allCases.count)
             for method in HTTPMethod.allCases {
                 let colors = theme.method(method)
-                #expect(colors.foreground.contrast(with: colors.background) >= (increased ? 7 : 4.5))
+                #expect(domainContrast(color: colors.foreground, other: colors.background) >= (increased ? 7 : 4.5))
             }
         }
     }

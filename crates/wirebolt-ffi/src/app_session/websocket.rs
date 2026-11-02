@@ -44,6 +44,7 @@ pub struct SessionSocketSnapshot {
     status: SessionSocketStatus,
     messages: Vec<SessionSocketMessage>,
     error: Option<String>,
+    send_error: Option<String>,
     headers: Vec<ResponseHeaderValue>,
 }
 
@@ -91,8 +92,8 @@ impl AppSessionSocket {
     pub fn clear(&self) {
         lock(&self.inner).clear();
     }
-    pub fn set_error(&self, error: Option<String>) {
-        lock(&self.inner).set_error(error);
+    pub fn set_send_error(&self, error: Option<String>) {
+        lock(&self.inner).set_send_error(error);
     }
 }
 
@@ -177,6 +178,11 @@ pub fn session_socket_message_bytes() -> u64 {
 
 #[uniffi::export]
 #[must_use]
-pub fn session_socket_message_text(data: Vec<u8>, hex: bool) -> String {
-    wirebolt_app::session::websocket::message_text(&data, hex)
+pub fn session_encode_binary(data: Vec<u8>, encoding: SessionBinaryEncoding) -> String {
+    encoding.encode(&data)
+}
+#[uniffi::export]
+#[must_use]
+pub fn session_socket_can_toggle(status: SessionSocketStatus, has_url: bool) -> bool {
+    wirebolt_app::session::websocket::can_toggle(&status, has_url)
 }

@@ -69,7 +69,7 @@ fn failed_cookie_delete_and_clear_restore_memory_and_disk() {
         let result = if clear {
             jar.remove_all()
         } else {
-            jar.delete(&before[0].id())
+            jar.delete(&[before[0].id()])
         };
         assert!(result.is_err());
         assert_eq!(jar.all(unix_time()), before);
@@ -79,7 +79,7 @@ fn failed_cookie_delete_and_clear_restore_memory_and_disk() {
         if clear {
             jar.remove_all().unwrap();
         } else {
-            jar.delete(&before[0].id()).unwrap();
+            jar.delete(&[before[0].id()]).unwrap();
         }
         assert!(
             ResponseCookieJar::new(Some(path))
@@ -87,4 +87,43 @@ fn failed_cookie_delete_and_clear_restore_memory_and_disk() {
                 .is_empty()
         );
     }
+}
+
+#[test]
+fn multi_cookie_delete_is_atomic_on_failure_and_persists_one_complete_selection() {
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("jar.json");
+    let mut jar = ResponseCookieJar::new(Some(path.clone()));
+    let _ = jar.store(
+        &[
+            header("first=1; Max-Age=600"),
+            header("second=2; Max-Age=600"),
+            header("keep=3; Max-Age=600"),
+        ],
+        "https://example.invalid/",
+        unix_time(),
+    );
+    let previous = jar.all(unix_time());
+    let bytes = std::fs::read(&path).unwrap();
+    let ids = previous[..2]
+        .iter()
+        .map(wirebolt_app::response::StoredCookie::id)
+        .collect::<Vec<_>>();
+    std::fs::remove_file(&path).unwrap();
+    std::fs::create_dir(&path).unwrap();
+    assert!(jar.delete(&ids).is_err());
+    assert_eq!(
+        jar.all(unix_time()),
+        previous,
+        "Every selected cookie is restored"
+    );
+    std::fs::remove_dir(&path).unwrap();
+    std::fs::write(&path, &bytes).unwrap();
+    assert_eq!(std::fs::read(&path).unwrap(), bytes);
+    jar.delete(&ids).unwrap();
+    assert_eq!(jar.all(unix_time()), previous[2..]);
+    assert_eq!(
+        ResponseCookieJar::new(Some(path)).all(unix_time()),
+        previous[2..]
+    );
 }

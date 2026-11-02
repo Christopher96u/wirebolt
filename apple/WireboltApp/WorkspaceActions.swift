@@ -42,7 +42,7 @@ func openRecentWorkspace(_ url: URL, model: WireboltModel, interface: WorkspaceU
 
 @MainActor
 private func confirmDiscardingForWorkspaceSwitch(model: WireboltModel, interface: WorkspaceUIState, in window: NSWindow?) async -> Bool {
-    guard await finishEnvironmentEditing(interface: interface, in: window) else { return false }
+    guard await finishEnvironmentEditing(model: model, interface: interface, in: window) else { return false }
     guard model.hasUnsavedRequestChanges else { return true }
     let alert = NSAlert()
     alert.messageText = "Discard unsaved request changes?"
@@ -125,7 +125,8 @@ func confirmUnsavedChanges(model: WireboltModel, in window: NSWindow?, quitting:
 
 /// Finish the active environment field before switching workspaces or closing.
 @MainActor
-func finishEnvironmentEditing(interface: WorkspaceUIState, in window: NSWindow?) async -> Bool {
+func finishEnvironmentEditing(model: WireboltModel, interface: WorkspaceUIState, in window: NSWindow?) async -> Bool {
+    guard await model.finishEnvironmentEditing() else { return false }
     guard let commit = interface.closeEnvironmentInspector else { return true }
     return await commit()
 }
@@ -134,7 +135,7 @@ func finishEnvironmentEditing(interface: WorkspaceUIState, in window: NSWindow?)
 @MainActor
 func requestWorkspaceWindowClose(_ window: NSWindow, model: WireboltModel, interface: WorkspaceUIState) {
     Task {
-        guard await finishEnvironmentEditing(interface: interface, in: window) else { return }
+        guard await finishEnvironmentEditing(model: model, interface: interface, in: window) else { return }
         guard await confirmUnsavedChanges(model: model, in: window, quitting: false) else { return }
         interface.persistSessionLayout(model: model)
         window.close()

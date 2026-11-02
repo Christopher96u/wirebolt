@@ -197,7 +197,7 @@ impl RuntimeState {
     pub fn take_storage_problem(&self) -> Option<String> {
         lock(&self.storage_problem)
             .take()
-            .or_else(|| lock(&self.cookie_jar()).take_load_problem())
+            .or_else(|| lock(&self.cookie_jar()).take_storage_problem())
     }
     fn collect_history_problem(&self, history: &mut RunHistory) {
         if let Err(error) = history.take_load_problem() {
@@ -246,8 +246,8 @@ impl RuntimeState {
     }
     /// # Errors
     /// Returns a storage error without removing the cookie on failure.
-    pub fn delete_cookie(&self, id: &str) -> crate::response::ResponseResult<()> {
-        lock(&self.cookie_jar()).delete(id)?;
+    pub fn delete_cookies(&self, ids: &[String]) -> crate::response::ResponseResult<()> {
+        lock(&self.cookie_jar()).delete(ids)?;
         lock(&self.snapshot).cookie_revision += 1;
         Ok(())
     }

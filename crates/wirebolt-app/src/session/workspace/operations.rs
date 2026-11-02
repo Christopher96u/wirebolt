@@ -887,15 +887,11 @@ async fn commands(
 )]
 impl WorkspaceOperations {
     #[must_use]
-    pub fn begin_git(
-        &self,
-        configured: bool,
-        action: WorkspaceGitAction,
-        dirty: bool,
-        inspector_ready: bool,
-    ) -> bool {
+    pub fn begin_git(&self, action: WorkspaceGitAction, readiness: WorkspaceGitReadiness) -> bool {
         let mut s = lock(&self.state);
-        if action.replaces_workspace() && !inspector_ready {
+        if action.replaces_workspace()
+            && readiness.inspector == EnvironmentEditingReadiness::Unfinished
+        {
             s.presentation.git_failure = Some(WorkspaceFailure {
                 kind: super::io::WorkspaceFailureKind::Workspace,
                 reason: "Finish or discard the environment inspector edits before replacing workspace files.".into(),
@@ -903,7 +899,7 @@ impl WorkspaceOperations {
             });
             return false;
         }
-        if action == WorkspaceGitAction::Pull && dirty {
+        if action == WorkspaceGitAction::Pull && readiness.dirty_requests {
             s.presentation.git_failure = Some(WorkspaceFailure {
                 kind: crate::session::workspace::io::WorkspaceFailureKind::UnsavedRequest,
                 reason: "Save or discard request edits before pulling.".into(),
@@ -914,7 +910,7 @@ impl WorkspaceOperations {
         if s.presentation.git_busy {
             return false;
         }
-        if !configured {
+        if !readiness.configured {
             s.presentation.git_failure = Some(WorkspaceFailure {
                 kind: super::io::WorkspaceFailureKind::NotConfigured,
                 reason: "Open a workspace before using Git collaboration.".into(),
@@ -1204,4 +1200,17 @@ impl WorkspaceOperations {
             .first()
             .map(|c| c.id.clone())
     }
+}
+
+/// Native field flushing reports readiness without exposing a callback to the view.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum EnvironmentEditingReadiness {
+    Ready,
+    Unfinished,
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct WorkspaceGitReadiness {
+    pub configured: bool,
+    pub dirty_requests: bool,
+    pub inspector: EnvironmentEditingReadiness,
 }

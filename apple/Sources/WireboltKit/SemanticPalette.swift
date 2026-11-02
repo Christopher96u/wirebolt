@@ -4,7 +4,6 @@ public typealias PaletteColor = RgbColor
 extension RgbColor {
     public init(hex: UInt32) { self.init(red: UInt8((hex >> 16) & 255), green: UInt8((hex >> 8) & 255), blue: UInt8(hex & 255)) }
     public var relativeLuminance: Double { domainLuminance(color: self) }
-    public func contrast(with other: PaletteColor) -> Double { domainContrast(color: self, other: other) }
 }
 public typealias AdaptivePaletteColor = AdaptiveColor
 public typealias HTTPStatusClass = DomainStatusClass

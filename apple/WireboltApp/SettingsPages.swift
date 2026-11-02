@@ -41,11 +41,11 @@ struct GeneralSettingsPage: View {
                 }
             }
         }
-        .alert("Clear All History?", isPresented: $clearingHistory) {
+        .alert("Clear All History", isPresented: $clearingHistory) {
             Button("Cancel", role: .cancel) {}
-            Button("Clear All", role: .destructive) { Task { await model.clearAllHistory() } }
+            Button("Clear All History", role: .destructive) { Task { await model.clearAllHistory() } }
         } message: {
-            Text("This removes stored responses from every workspace.")
+            Text("This removes stored responses from every workspace. Responses already open in tabs stay available.")
         }
     }
 }

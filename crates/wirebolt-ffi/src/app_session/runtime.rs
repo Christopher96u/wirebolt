@@ -249,8 +249,11 @@ impl AppSessionRuntime {
     pub fn cookies(&self) -> Vec<StoredCookie> {
         self.state.cookies()
     }
-    pub fn delete_cookie(&self, id: String) -> Result<(), wirebolt_app::response::ResponseError> {
-        self.state.delete_cookie(&id)
+    pub fn delete_cookies(
+        &self,
+        ids: Vec<String>,
+    ) -> Result<(), wirebolt_app::response::ResponseError> {
+        self.state.delete_cookies(&ids)
     }
     pub fn clear_cookies(&self) -> Result<(), wirebolt_app::response::ResponseError> {
         self.state.clear_cookies()

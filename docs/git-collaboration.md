@@ -40,4 +40,4 @@ When a pull stops with conflicts, Git Collaboration lists the conflicted files a
 
 Git authentication failures come from your Git/remote setup, which is separate from request authentication and API proxy settings.
 
-Pull and Abort Merge finish environment inspector edits before replacing workspace files. Correct any invalid field or use **Discard Removed Edits** if an external change removed its row or environment.
+Pull and Abort Merge finish environment inspector edits before replacing workspace files. Correct any invalid field that still exists. Edits to removed rows or environments are discarded automatically with a copyable notice and never block replacement.

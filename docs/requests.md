@@ -21,7 +21,7 @@ Switch panels with **⌥⌘1** – **⌥⌘6** (**Navigate → Request Section**
 
 **Format Body** appears only for JSON.
 
-For multipart uploads, choose text or file parts and select the local files. Use **Edit Value…** to edit a part’s value from the keyboard. File bodies refer to local paths: sharing a workspace does not upload the file or make that path exist on another Mac.
+For multipart uploads, choose text or file parts and select the local files. Use **Edit Value…** to edit a part's value from the keyboard. File bodies refer to local paths: sharing a workspace does not upload the file or make that path exist on another Mac.
 
 ## Send and cancel
 

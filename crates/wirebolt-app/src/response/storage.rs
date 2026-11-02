@@ -595,7 +595,7 @@ struct CookieFile {
 pub struct ResponseCookieJar {
     storage: Option<PathBuf>,
     cookies: Option<Vec<StoredCookie>>,
-    load_problem: Option<String>,
+    storage_problem: Option<String>,
 }
 impl ResponseCookieJar {
     #[must_use]
@@ -603,7 +603,7 @@ impl ResponseCookieJar {
         Self {
             storage,
             cookies: None,
-            load_problem: None,
+            storage_problem: None,
         }
     }
     fn cookies(&mut self) -> &mut Vec<StoredCookie> {
@@ -627,7 +627,7 @@ impl ResponseCookieJar {
                         ),
                     });
             let cookies = result.unwrap_or_else(|reason| {
-                self.load_problem = Some(reason);
+                self.storage_problem = Some(reason);
                 Vec::new()
             });
             self.cookies = Some(
@@ -639,9 +639,9 @@ impl ResponseCookieJar {
         }
         self.cookies.as_mut().expect("cookies were loaded")
     }
-    /// Takes a load diagnostic already produced by a cookie operation, without disk I/O.
-    pub fn take_load_problem(&mut self) -> Option<String> {
-        self.load_problem.take()
+    /// Takes a storage diagnostic already produced by a cookie operation, without disk I/O.
+    pub fn take_storage_problem(&mut self) -> Option<String> {
+        self.storage_problem.take()
     }
     #[must_use]
     pub fn store(
@@ -669,7 +669,7 @@ impl ResponseCookieJar {
         }
         self.expire(now);
         if let Err(error) = self.persist() {
-            self.load_problem = Some(error.to_string());
+            self.storage_problem = Some(error.to_string());
         }
         received
     }
@@ -707,9 +707,9 @@ impl ResponseCookieJar {
     }
     /// # Errors
     /// Returns a persistence error and restores the previous jar on failure.
-    pub fn delete(&mut self, id: &str) -> ResponseResult<()> {
+    pub fn delete(&mut self, ids: &[String]) -> ResponseResult<()> {
         let previous = self.cookies().clone();
-        self.cookies().retain(|c| c.id() != id);
+        self.cookies().retain(|c| !ids.contains(&c.id()));
         self.finish_removal(previous)
     }
     /// # Errors

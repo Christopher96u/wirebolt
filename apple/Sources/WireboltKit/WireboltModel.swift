@@ -562,8 +562,8 @@ public final class WireboltModel {
         mirrorRuntime()
         return values
     }
-    public func deleteCookie(id: CookieSnapshot.ID) async throws {
-        try runtime.deleteCookie(id: id)
+    public func deleteCookies(ids: [CookieSnapshot.ID]) async throws {
+        try runtime.deleteCookies(ids: ids)
         mirrorRuntime()
     }
     public func clearCookies() async throws {
@@ -639,6 +639,19 @@ public final class WireboltModel {
             }
             runner.proxySettingsChanged()
         } catch { throw runtimeError(error) }
+    }
+
+    /// The workspace Save action owns ordering and freezes its inputs across awaits.
+    public func saveNetworkSettings(
+        proxy: ProxyFormDraft?, scope: ProxyScope, session: DocumentSession?,
+        transport: TransportSettings?, stagedIdentities: AppSessionSecrets
+    ) async throws {
+        if let proxy { try await applyProxy(proxy.document(), scope: scope, session: session, secrets: proxy.secrets) }
+        if let transport {
+            try await commitStagedIdentity(stagedIdentities, reference: transport.clientCertificateReference)
+            try await runtime.saveTransport(value: transport.domain, platform: runtimeSettings())
+            workspace.transport = transport
+        }
     }
 
     public func updateWorkspaceTransport(_ value: TransportSettings) {
@@ -751,15 +764,6 @@ public final class WireboltModel {
         guard let persistence else { throw WorkspaceMutationError.unsupported }
         try await staged.commitIdentity(reference: reference, target: rustSecrets, platform: persistence.sessionSecretPlatform)
         mirrorSecretEdits()
-    }
-
-    public func saveSecret(name: String, value: String) async {
-        guard let persistence else { return }
-        do {
-            try await rustSecrets.saveMaterial(name: name, value: value, platform: persistence.sessionSecretPlatform)
-        } catch {
-            operationFailure = RunFailure(kind: .keychain, issues: [])
-        }
     }
 
     public func importExternalFile(_ url: URL, preferred: ImportFormat? = nil) async {
@@ -982,15 +986,21 @@ public final class WireboltModel {
         }
     }
 
-    /// The inspector supplies its native field-buffer guard while mounted.
-    @ObservationIgnored public var finishEnvironmentEditing: (@MainActor () async -> Bool)?
+    @ObservationIgnored public lazy var environmentEditing = EnvironmentInspectorEditing(model: self)
+    public private(set) var environmentEditingNotice: String?
+    public func recordEnvironmentEditingNotice(_ notice: String) { environmentEditingNotice = notice }
+    public func dismissEnvironmentEditingNotice() {
+        environmentEditing.inspector.dismissNotice()
+        environmentEditingNotice = nil
+    }
+    public func finishEnvironmentEditing() async -> Bool { await environmentEditing.flush() }
 
     private func performGitOperation(_ action: WorkspaceGitAction) async {
         let inspectorReady = if workspaceGitReplacesWorkspace(action: action) {
-            await finishEnvironmentEditing?() != false
+            await finishEnvironmentEditing()
         } else { true }
-        let begin = rustOperations.beginGit(configured: gitCollaboration != nil, action: action,
-            dirty: hasUnsavedRequestChanges, inspectorReady: inspectorReady)
+        let begin = rustOperations.beginGit(action: action, readiness: WorkspaceGitReadiness(configured: gitCollaboration != nil,
+            dirtyRequests: hasUnsavedRequestChanges, inspector: inspectorReady ? .ready : .unfinished))
         mirrorWorkspacePresentation()
         guard begin, let gitCollaboration else { return }
         if case .pull = action { await flushWorkspaceTransport() }

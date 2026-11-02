@@ -46,10 +46,10 @@ struct NetworkSettingsPage: View {
     @State private var isConfirmingDiscard = false
     @State private var isConfirmingAppSettings = false
 
-    init(model: WireboltModel, scope: ProxyScope, session: DocumentSession? = nil, onClose: (() -> Void)? = nil, isActive: Bool = true, stagedIdentities: AppSessionSecrets = AppSessionSecrets()) {
+    init(model: WireboltModel, scope: ProxyScope, session: DocumentSession? = nil, onClose: (() -> Void)? = nil, isActive: Bool = true) {
         self.model = model; self.scope = scope; self.session = session; self.onClose = onClose
         self.isActive = isActive
-        _stagedIdentities = State(initialValue: stagedIdentities)
+        _stagedIdentities = State(initialValue: AppSessionSecrets())
         _transport = State(initialValue: model.workspace.transport)
         _transportBaseline = State(initialValue: model.workspace.transport)
         _test = State(initialValue: model.makeProxyConnectionTest())
@@ -267,14 +267,9 @@ struct NetworkSettingsPage: View {
         guard !saving else { return }
         saving = true; saveError = nil
         defer { saving = false }
-        let selectedTransport = transport
         do {
-            if changed { try await applyProxy() }
-            if transportChanged {
-                try await model.commitStagedIdentity(stagedIdentities, reference: selectedTransport.clientCertificateReference)
-                model.updateWorkspaceTransport(selectedTransport)
-                await model.flushWorkspaceTransport()
-            }
+            try await model.saveNetworkSettings(proxy: changed ? form : nil, scope: scope, session: session,
+                transport: transportChanged ? transport : nil, stagedIdentities: stagedIdentities)
             onClose?()
         } catch { saveError = "Could not save. Check workspace and Keychain access, then retry." }
     }

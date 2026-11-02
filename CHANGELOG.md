@@ -37,7 +37,7 @@ Changes under **Unreleased** are on `main` but not in a published build yet. Dow
 ### Removed
 
 - The duplicate **New Tab** command; **New Request** (⌘N) creates a request tab.
-- The sidebar’s Filter icon and redundant Network Settings entry. **Filter Requests** (⇧⌘F) and the toolbar’s **Workspace Settings** remain available.
+- The sidebar's Filter icon and redundant Network Settings entry. **Filter Requests** (⇧⌘F) and the toolbar's **Workspace Settings** remain available.
 - The Privacy settings page and Privacy Policy sheet. **Clear All History…** is under **General → History**.
 - The static color swatches and contrast diagnostic rows in Appearance. Theme cards, previews and import notices remain.
 
@@ -51,8 +51,8 @@ Changes under **Unreleased** are on `main` but not in a published build yet. Dow
 - WebSocket message errors stay visible beside the composer. **Copy Message** copies the complete message as Text or Hex, and Disconnect stays available when the URL is cleared.
 - Globals has **Use Globals Only** and shows **Active** when no named environment is selected.
 - Abandoned client identities are cleaned up with other credentials. Cancelled and replaced choices in Workspace Settings stay out of Keychain until Save.
-- Switching workspaces retains each workspace’s session cookies until quit. Failed cookie deletion restores the previous jar and shows the error in Cookies.
-- Removed environment fields expose their unsaved edits with a discard action instead of silently blocking the inspector. Git replacement finishes inspector editing first.
+- Switching workspaces retains each workspace's session cookies until quit. Failed cookie deletion restores the previous jar and shows the error in Cookies.
+- Removed environment fields automatically discard unfinished edits and show their text in a copyable notice without blocking close, switch, quit or Git replacement. Git replacement still finishes edits to existing fields first.
 
 - Large multipart file uploads stream from disk instead of loading the complete upload into memory before Send. Bodies up to 64 KiB can still be resent on redirects. A user-set multipart **Content-Length** is replaced with the computed length.
 - Bulk Edit accepts pasted CRLF and CR line endings in headers, query parameters and form fields without adding carriage returns to values.

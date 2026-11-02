@@ -41,7 +41,7 @@ App defaults remain local to the Mac. Workspace and request proxy definitions ca
 
 ## Timeouts, redirects and TLS
 
-Expand **Timeouts, redirects & TLS** in workspace settings. Workspace transport edits are saved together with the proxy policy when you click **Save**. In a request, disable **Inherit workspace transport settings** to override them, then save the request.
+Expand **Timeouts, redirects & TLS** in Workspace Settings. Workspace transport edits are saved together with the proxy policy when you click **Save**. In a request, disable **Inherit workspace transport settings** to override them, then save the request.
 
 - **Total timeout** limits the total execution; **Read timeout** controls the read deadline. Values are milliseconds; `0` disables that deadline.
 - **Follow redirects** enables redirect following up to **Maximum redirects**. A 303 continues with `GET`; a 307 or 308 (and a 301 or 302 for methods other than POST, such as PUT or QUERY) repeats the request with its content. Content over 64 KiB, and file bodies, can't be sent again: Wirebolt stops at that redirect and shows it.
@@ -51,6 +51,6 @@ Expand **Timeouts, redirects & TLS** in workspace settings. Workspace transport 
 
 If the certificate or the CA file can't be loaded, the request fails with a TLS configuration error before it connects. **Copy cURL** includes `--cacert` with the CA path, and `--cert` and `--key` that read the certificate and key from Keychain with `security find-generic-password` when the command runs. The copied command never contains the key, and it works only on a Mac whose Keychain holds that item.
 
-In the workspace settings sheet, **Save** (Return) applies every edit and **Cancel** (Esc) discards them after confirmation.
+In the Workspace Settings sheet, **Save** (Return) applies every edit and **Cancel** (Esc) discards them after confirmation.
 
 Client identity choices in Workspace Settings stay in memory until **Save**. **Cancel**, replacement and removal discard unused choices without creating Keychain items. Saved identities remain available while saved requests or undo can reference them; abandoned identities are removed at workspace replacement or quit.

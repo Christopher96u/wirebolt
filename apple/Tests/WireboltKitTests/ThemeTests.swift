@@ -17,10 +17,10 @@ struct ThemeTests {
             for increased in [false, true] {
                 let theme = ResolvedTheme(preset: preset, increasedContrast: increased)
                 for surface in [theme.definition.window, theme.definition.sidebar, theme.definition.card] {
-                    #expect(theme.primary.contrast(with: surface) >= 7)
-                    #expect(theme.muted.contrast(with: surface) >= (increased ? 7 : 4.5))
-                    #expect(theme.focusBorder.contrast(with: surface) >= (increased ? 4.5 : 3))
-                    if increased { #expect(theme.hairline.contrast(with: surface) >= 3) }
+                    #expect(domainContrast(color: theme.primary, other: surface) >= 7)
+                    #expect(domainContrast(color: theme.muted, other: surface) >= (increased ? 7 : 4.5))
+                    #expect(domainContrast(color: theme.focusBorder, other: surface) >= (increased ? 4.5 : 3))
+                    if increased { #expect(domainContrast(color: theme.hairline, other: surface) >= 3) }
                 }
             }
         }
@@ -33,10 +33,10 @@ struct ThemeTests {
             let definition = ThemeDefinition.preset(preset)
             let control = definition.control
             for surface in [definition.window, definition.sidebar, definition.card] {
-                #expect(control.contrast(with: surface) >= 3)
+                #expect(domainContrast(color: control, other: surface) >= 3)
             }
             // Checkmarks, selected segment labels and default button titles are white.
-            #expect(white.contrast(with: control) >= 4.5)
+            #expect(domainContrast(color: white, other: control) >= 4.5)
             // Monochrome: no channel strays far from the others, unlike the variable accent.
             let channels = [control.red, control.green, control.blue].map(Int.init)
             #expect(channels.max()! - channels.min()! <= 32)
@@ -67,7 +67,7 @@ struct ThemeTests {
             #expect(theme.method(.get, webSocket: true).foreground != theme.method(.get).foreground)
             for method in HTTPMethod.allCases {
                 let chip = theme.method(method)
-                #expect(chip.foreground.contrast(with: chip.background) >= 4.5)
+                #expect(domainContrast(color: chip.foreground, other: chip.background) >= 4.5)
             }
         }
     }

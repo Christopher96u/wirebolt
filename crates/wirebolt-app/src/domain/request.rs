@@ -159,6 +159,22 @@ pub fn new_auth(kind: DomainAuthenticationKind) -> DomainAuthentication {
         DomainAuthenticationKind::None => DomainAuthentication::None,
     }
 }
+/// The editable bulk representation uses the same value projection as its parser.
+#[must_use]
+pub fn serialize_bulk(fields: &[DomainField]) -> String {
+    fields
+        .iter()
+        .map(|field| {
+            format!(
+                "{}{}: {}",
+                if field.enabled { "" } else { "# " },
+                field.name,
+                field.value.editable()
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
 #[must_use]
 pub fn parse_bulk(source: &str, previous: Vec<DomainField>) -> Vec<DomainField> {
     let mut unused = previous;

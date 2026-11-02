@@ -139,10 +139,10 @@ actor FixtureIdentityStore: WorkspacePersistence {
     func save(request: RequestDraft, in collectionID: String) async throws {}
     func save(environment: EnvironmentDraft) async throws {}
     func saveSecret(name: String, value: String) async throws {
-        await gate.wait()
         saved.append(name)
     }
     func apply(_ command: SessionWorkspaceCommand) async throws -> WorkspaceDelta {
-        WorkspaceDelta(version: 1, kind: .workspace, affectedIDs: [])
+        await gate.wait()
+        return WorkspaceDelta(version: 1, kind: .workspace, affectedIDs: [])
     }
 }

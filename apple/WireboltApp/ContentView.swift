@@ -117,6 +117,9 @@ struct ContentView: View {
         let groupCount = model.sessions.groupCount
         return workspacePanels
         .safeAreaInset(edge: .top, spacing: 0) {
+            if let message = model.environmentEditingNotice, !interface.isShowingEnvironmentInspector {
+                EnvironmentEditNotice(message: message) { model.dismissEnvironmentEditingNotice() }
+            }
             if let message = model.workspaceLoadNotice {
                 WorkspaceLoadNotice(message: message) { model.workspaceLoadNotice = nil }
             }
@@ -579,9 +582,8 @@ private struct WorkspaceSidebar: View {
         }
         .background(WireboltTheme.sidebarBackground)
         .task(id: interface.focusSearchTrigger) {
-            guard interface.focusSearchTrigger > 0 else { return }
             await Task.yield()
-            guard !Task.isCancelled else { return }
+            guard !Task.isCancelled, interface.consumeSearchFocusRequest() else { return }
             filterIsFocused = true
         }
 
@@ -2334,7 +2336,7 @@ private struct WebSocketRequestWorkspace: View {
             .background(WireboltTheme.barBackground)
             Divider()
 
-            if let error = session.socket.errorMessage {
+            if interface.requestSection == .body, let error = session.socket.sendErrorMessage {
                 Label(error, systemImage: "exclamationmark.triangle")
                     .font(.callout).foregroundStyle(.red)
                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -2551,7 +2553,7 @@ private struct RequestURLBar: View {
                 Button(session.socket.status == .disconnected ? "Connect" : "Disconnect", action: toggleConnection)
                     .buttonStyle(.plain)
                     .frame(minHeight: theme.density.controlHeight)
-                    .disabled(session.socket.status == .disconnected && session.draft.url.isEmpty)
+                    .disabled(!sessionSocketCanToggle(status: session.socket.status, hasUrl: !session.draft.url.isEmpty))
             }
             Button(action: { if session.isRunning { cancel() } else { send() } }) {
                 Image(systemName: session.isRunning ? "stop.fill" : "arrow.up")
@@ -2888,7 +2890,7 @@ private struct WebSocketResponseView: View {
         guard let selected else { return "" }
         if !hex && selected.data.count <= DocumentSession.previewByteLimit { return selected.text }
         let data = selected.data.prefix(DocumentSession.previewByteLimit)
-        return sessionSocketMessageText(data: Data(data), hex: hex)
+        return hex ? sessionEncodeBinary(data: Data(data), encoding: .hex) : String(decoding: data, as: UTF8.self)
     }
     private static func icon(for message: WebSocketMessage) -> (symbol: String, color: Color, label: String) {
         switch message.notice {
@@ -3497,7 +3499,7 @@ private final class SectionStripGeometry {
     }
 }
 
-struct BulkFieldEditor: View {
+private struct BulkFieldEditor: View {
     @Binding var fields: [RequestField]
     @Environment(\.dismiss) private var dismiss
     @State private var text: String
@@ -3508,15 +3510,13 @@ struct BulkFieldEditor: View {
         _fields = fields
         _projectedFields = State(initialValue: fields.wrappedValue)
         _originalFields = State(initialValue: fields.wrappedValue)
-        _text = State(initialValue: fields.wrappedValue.map {
-            "\($0.enabled ? "" : "# ")\($0.name): \($0.value.editableValue)"
-        }.joined(separator: "\n"))
+        _text = State(initialValue: domainSerializeBulk(fields: fields.wrappedValue))
     }
 
     var body: some View {
         BodyTextEditor(text: $text)
             .onChange(of: text) {
-                guard text != serialized(projectedFields) else { return }
+                guard text != domainSerializeBulk(fields: projectedFields) else { return }
                 let parsed = parse(text)
                 projectedFields = parsed
                 fields = parsed
@@ -3525,12 +3525,8 @@ struct BulkFieldEditor: View {
                 guard fields != projectedFields else { return }
                 projectedFields = fields
                 originalFields = fields
-                text = serialized(fields)
+                text = domainSerializeBulk(fields: fields)
             }
-    }
-
-    private func serialized(_ fields: [RequestField]) -> String {
-        fields.map { "\($0.enabled ? "" : "# ")\($0.name): \($0.value.editableValue)" }.joined(separator: "\n")
     }
 
     private func parse(_ source: String) -> [RequestField] {
@@ -4266,7 +4262,7 @@ private struct BodyEditor: View {
 
 }
 
-struct BodyTools: View {
+private struct BodyTools: View {
     @Binding var requestBody: RequestBody
     var body: some View {
         HStack(spacing: 7) {
@@ -4291,9 +4287,9 @@ struct BodyTools: View {
                 Button("Add Part", systemImage: "plus") { requestBody = .multipart(parts: parts + [MultipartPart()]) }
                     .labelStyle(.iconOnly).buttonStyle(.borderless)
                     .help("Add Part")
-            } else if requestBody.composerKind == .json {
+            } else if requestBody.canFormat {
                 Button("Format Body", systemImage: "wand.and.stars", action: formatBody)
-                    .labelStyle(.iconOnly).buttonStyle(.borderless).disabled(!requestBody.canFormat)
+                    .labelStyle(.iconOnly).buttonStyle(.borderless)
                     .help("Format Body")
             }
             Menu("Body Actions", systemImage: "ellipsis") {
@@ -4433,7 +4429,7 @@ private struct MultipartRow: View {
     }
 }
 
-struct MultipartPartEditor: View {
+private struct MultipartPartEditor: View {
     @Binding var part: MultipartPart
     let remove: () -> Void
     @Environment(\.dismiss) private var dismiss
@@ -4467,14 +4463,14 @@ struct MultipartPartEditor: View {
                         Button(action: editValue) {
                             VStack(alignment: .leading, spacing: WireboltTheme.Spacing.small) {
                                 Text("Edit Value…")
-                                Text(String((part.filePath ?? part.value.editableValue).prefix(300)))
+                                Text(valuePreview)
                                     .font(.system(.body, design: .monospaced)).lineLimit(3)
                                     .foregroundStyle(.secondary)
                             }
                             .frame(maxWidth: .infinity, minHeight: 82, maxHeight: 82, alignment: .topLeading)
                         }
                         .accessibilityLabel("Edit Value…")
-                        .accessibilityValue(String(part.value.editableValue.prefix(300)))
+                        .accessibilityValue(valuePreview)
                         Button("Select File…", action: selectFile).controlSize(.small)
                     }.padding(.top, WireboltTheme.Spacing.small)
                 }
@@ -4503,6 +4499,9 @@ struct MultipartPartEditor: View {
                     }
                 }.padding(WireboltTheme.Spacing.xLarge).frame(width: 566, height: 362)
             }
+    }
+    private var valuePreview: String {
+        String((part.kind == .file ? (part.filePath ?? part.fileName ?? "") : part.value.editableValue).prefix(300))
     }
     private func optional(_ keyPath: WritableKeyPath<MultipartPart, String?>) -> Binding<String> {
         Binding(get: { part[keyPath: keyPath] ?? "" }, set: { part[keyPath: keyPath] = $0.isEmpty ? nil : $0 })
@@ -4933,38 +4932,5 @@ private final class SidebarOutlineLayer: CALayer, @unchecked Sendable {
         }
         if let appearance { appearance.performAsCurrentDrawingAppearance(draw) } else { draw() }
         NSGraphicsContext.restoreGraphicsState()
-    }
-}
-
-
-struct CustomHTTPMethodEditor: View {
-    @Binding var method: HTTPMethod
-    @State var text: String
-    @State private var problem: String?
-    @Environment(\.dismiss) private var dismiss
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: WireboltTheme.Spacing.large) {
-            Text("Custom HTTP Method").font(.headline)
-            Text("Use an HTTP token such as PROPFIND, REPORT or FOO_BAR.")
-            TextField("METHOD", text: $text).textFieldStyle(.roundedBorder)
-                .accessibilityLabel("Custom HTTP method")
-            if let problem { Text(problem).foregroundStyle(.red).accessibilityLabel(problem) }
-            HStack {
-                Spacer()
-                Button("Cancel") { dismiss() }.keyboardShortcut(.cancelAction)
-                Button("Set", action: setMethod).keyboardShortcut(.defaultAction)
-            }
-        }
-        .padding(WireboltTheme.Spacing.section).frame(width: 420)
-    }
-
-    private func setMethod() {
-        guard let value = HTTPMethod(rawValue: text) else {
-            problem = "Enter a valid HTTP method token without spaces or separators."
-            return
-        }
-        method = value
-        dismiss()
     }
 }

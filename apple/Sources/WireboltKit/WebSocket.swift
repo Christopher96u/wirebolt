@@ -59,7 +59,7 @@ public struct WebSocketMessage: Identifiable, Sendable {
 
     /// The clipboard uses the retained message, independently of the viewport limit.
     public func copyText(hex: Bool) -> String {
-        hex ? sessionSocketMessageText(data: data, hex: true) : text
+        hex ? sessionEncodeBinary(data: data, encoding: .hex) : text
     }
 
     public func matches(_ query: String) -> Bool {
@@ -116,6 +116,7 @@ public final class WebSocketDocumentState {
     public private(set) var status = WebSocketStatus.disconnected
     public private(set) var messages: [WebSocketMessage] = []
     public private(set) var errorMessage: String?
+    public private(set) var sendErrorMessage: String?
     public private(set) var headers: [ResponseHeader] = []
     @ObservationIgnored private let rust = AppSessionSocket()
     @ObservationIgnored private var connection: (any WebSocketTransport)?
@@ -179,9 +180,9 @@ public final class WebSocketDocumentState {
             guard connection.send(value.data, binary: value.binary) else {
                 throw WebSocketUIError("The message could not be queued. Check the connection and try again.")
             }
-            rust.setError(error: nil)
-        } catch let WorkspaceBridgeError.OperationFailed(reason) { rust.setError(error: Self.localizedFailure(reason, body: body)) } catch {
-            rust.setError(error: error.localizedDescription)
+            rust.setSendError(error: nil)
+        } catch let WorkspaceBridgeError.OperationFailed(reason) { rust.setSendError(error: Self.localizedFailure(reason, body: body)) } catch {
+            rust.setSendError(error: error.localizedDescription)
         }
         mirror()
     }
@@ -197,6 +198,7 @@ public final class WebSocketDocumentState {
         let next = state.status
         if status != next { status = next }
         if errorMessage != state.error { errorMessage = state.error }
+        if sendErrorMessage != state.sendError { sendErrorMessage = state.sendError }
         let nextHeaders = state.headers.map { ResponseHeader(name: $0.name, value: $0.value) }
         if headers != nextHeaders { headers = nextHeaders }
         let removed = min(messages.count, Int(clamping: state.firstSequence - firstSequence))
