@@ -875,3 +875,56 @@ fn bruno_export_rejects_other_json() {
     assert!(ImportEngine::parse(ImportFormat::Bruno, r#"{"version": 1, "nodes": []}"#).is_err());
     assert!(ImportEngine::parse(ImportFormat::Bruno, "not json").is_err());
 }
+
+#[test]
+fn insomnia_invalid_graph_is_rejected_without_crash() {
+    const CHILD: &str = "WIREBOLT_INSOMNIA_GRAPH_CHILD";
+    if std::env::var_os(CHILD).is_none() {
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "insomnia_invalid_graph_is_rejected_without_crash",
+                "--nocapture",
+            ])
+            .env(CHILD, "1")
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        return;
+    }
+    for resources in [
+        serde_json::json!([{"_type":"workspace","_id":"wrk"},{"_type":"request_group","_id":"wrk","parentId":"wrk"}]),
+        serde_json::json!([{"_type":"request_group","_id":"a","parentId":"b"},{"_type":"request_group","_id":"b","parentId":"a"}]),
+        serde_json::json!([{"_type":"request","_id":"","url":"https://example.com"}]),
+        serde_json::json!([{"_type":"request","_id":"r","parentId":"missing","url":"https://example.com"}]),
+        serde_json::json!([{"_type":"request","_id":"r","url":"https://example.com"},{"_type":"request_group","_id":"g","parentId":"r"}]),
+    ] {
+        let source = serde_json::json!({"__export_format":4,"resources":resources}).to_string();
+        assert!(ImportEngine::parse_import(ImportFormat::Insomnia, &source, None).is_err());
+    }
+}
+
+#[test]
+fn insomnia_long_parent_chain_is_bounded() {
+    for depth in [64, 1024] {
+        let mut resources = vec![serde_json::json!({"_type":"workspace","_id":"wrk"})];
+        let mut parent = "wrk".to_owned();
+        for index in 0..depth {
+            let id = format!("g{index}");
+            resources.push(serde_json::json!({"_type":"request_group","_id":id,"parentId":parent,"name":"Folder"}));
+            parent = id;
+        }
+        resources.push(serde_json::json!({"_type":"request","_id":"r","parentId":parent,"name":"Get","url":"https://example.com","method":"GET"}));
+        let source = serde_json::json!({"__export_format":4,"resources":resources}).to_string();
+        let result = ImportEngine::parse_import(ImportFormat::Insomnia, &source, None);
+        if depth == 64 {
+            assert_eq!(result.unwrap().workspace.collections[0].groups.len(), depth);
+        } else {
+            assert!(result.is_err());
+        }
+    }
+}

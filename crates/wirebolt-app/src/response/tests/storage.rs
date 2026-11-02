@@ -414,3 +414,29 @@ fn cookies_ignore_blank_trailing_segments_without_panicking() {
     assert_eq!(received.len(), 1);
     assert_eq!(jar.header("https://example.com/", 0.0), Some("a=b".into()));
 }
+
+#[test]
+fn failed_response_export_preserves_destination() {
+    let directory = tempfile::tempdir().unwrap();
+    let source = directory.path().join("source.body");
+    let destination = directory.path().join("saved.body");
+    std::fs::write(&source, "response").unwrap();
+    std::fs::write(&destination, "previous export").unwrap();
+    let body = BodyStore::existing(source.clone()).unwrap();
+    std::fs::remove_file(source).unwrap();
+    assert!(body.export(&destination).is_err());
+    assert_eq!(
+        std::fs::read_to_string(destination).unwrap(),
+        "previous export"
+    );
+}
+
+#[test]
+fn response_export_to_itself_preserves_body() {
+    let directory = tempfile::tempdir().unwrap();
+    let mut body = BodyStore::new("run", directory.path()).unwrap();
+    body.append(b"response").unwrap();
+    body.finish().unwrap();
+    body.export(&body.path()).unwrap();
+    assert_eq!(body.viewport(0, 8).unwrap(), b"response");
+}

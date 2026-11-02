@@ -28,6 +28,10 @@ Changes under **Unreleased** are on `main` but not in a published build yet. Dow
 
 ### Fixed
 
+- Malformed Insomnia folder IDs could crash import. Invalid parent links, cycles and hierarchies deeper than 128 levels now report an error.
+- A failed response export deleted the previous destination. Export now replaces it only after the body has been copied successfully.
+- Saving a request larger than the 16 MiB document limit made it disappear on reopen. Save now rejects oversized documents and keeps the previous file.
+
 - A response body write failure left the download running in the background. It now cancels the transfer and keeps the Storage failure visible.
 - The response preview stayed blank when its temporary file could not be created. It now keeps a bounded preview in memory and reports the storage failure.
 - Undoing and redoing an environment edit lost its previous Keychain values and changed the active environment.

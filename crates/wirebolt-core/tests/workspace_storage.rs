@@ -512,3 +512,39 @@ fn round_trips_workspace_and_request_proxy_overrides_without_secret_values() {
     assert!(workspace_toml.contains("CORP_PROXY_PASSWORD"));
     assert!(!workspace_toml.contains("super-secret"));
 }
+
+#[test]
+fn oversized_save_preserves_readable_request() {
+    let directory = tempdir().unwrap();
+    let store = WorkspaceStore::create(directory.path(), &Workspace::new("Fixture")).unwrap();
+    store
+        .save(&WorkspaceDocument::Collection(Collection::new(
+            id("api"),
+            "API".into(),
+        )))
+        .unwrap();
+    let mut request = Request::new(id("request"), "Original", "POST", "https://example.com");
+    store
+        .save(&WorkspaceDocument::Request {
+            collection_id: id("api"),
+            request: request.clone(),
+        })
+        .unwrap();
+    request.body = RequestBody::Text {
+        content_type: None,
+        value: "x".repeat(16 * 1024 * 1024),
+    };
+    assert!(matches!(
+        store.save(&WorkspaceDocument::Request {
+            collection_id: id("api"),
+            request
+        }),
+        Err(StorageError::DocumentTooLarge { .. })
+    ));
+    let snapshot = WorkspaceStore::open(directory.path())
+        .unwrap()
+        .load()
+        .unwrap();
+    assert!(snapshot.problems.is_empty());
+    assert_eq!(snapshot.collections[0].requests[0].name, "Original");
+}

@@ -217,10 +217,17 @@ impl BodyStore {
         if let Some(writer) = &self.writer {
             writer.sync_all()?;
         }
-        if destination.exists() {
-            fs::remove_file(destination)?;
-        }
-        fs::copy(&self.path, destination)?;
+        let parent = destination
+            .parent()
+            .filter(|path| !path.as_os_str().is_empty())
+            .unwrap_or_else(|| Path::new("."));
+        let mut temporary = tempfile::NamedTempFile::new_in(parent)?;
+        let mut source = File::open(&self.path)?;
+        std::io::copy(&mut source, &mut temporary)?;
+        temporary.as_file().sync_all()?;
+        temporary
+            .persist(destination)
+            .map_err(|error| ResponseError::from(error.error))?;
         Ok(())
     }
     pub fn remove(&mut self) {

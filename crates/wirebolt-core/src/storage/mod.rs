@@ -867,6 +867,13 @@ fn write_document<T: Serialize>(
     if !contents.ends_with('\n') {
         contents.push('\n');
     }
+    let bytes = contents.len() as u64;
+    if bytes > MAX_DOCUMENT_BYTES {
+        return Err(StorageError::DocumentTooLarge {
+            path: path.to_owned(),
+            bytes,
+        });
+    }
     atomic_write_if_changed(path, contents.as_bytes(), durability)
 }
 

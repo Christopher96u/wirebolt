@@ -5,7 +5,7 @@
 //! Both are normalised into one tree of folders and requests so they share the
 //! mapping of bodies, authentication, template tags and environments.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use serde_json::Value;
 
@@ -129,6 +129,7 @@ fn v4<'a>(
         .get("resources")
         .and_then(Value::as_array)
         .ok_or_else(|| ImportError::new("Insomnia export has no resources"))?;
+    validate_v4_graph(resources)?;
     let mut children = HashMap::<&str, Vec<&Value>>::new();
     for resource in resources {
         children
@@ -176,6 +177,71 @@ fn v4<'a>(
             }
         })
         .collect())
+}
+
+/// v4 stores a graph in a flat array, so JSON's nesting limit does not bound it.
+/// Validate every component, including ones unreachable from a workspace.
+fn validate_v4_graph(resources: &[Value]) -> Result<(), ImportError> {
+    const MAX_DEPTH: usize = 128;
+    let mut by_id = HashMap::new();
+    for resource in resources {
+        let id = text(resource, "_id");
+        if id.trim().is_empty() || by_id.insert(id, resource).is_some() {
+            return Err(ImportError::new(
+                "Insomnia resource IDs must be non-empty and unique.",
+            ));
+        }
+        if resource
+            .get("parentId")
+            .is_some_and(|parent| !parent.is_null() && !parent.is_string())
+        {
+            return Err(ImportError::new("An Insomnia parent ID is invalid."));
+        }
+    }
+    for resource in resources {
+        let parent = text(resource, "parentId");
+        if !parent.is_empty() {
+            let Some(parent_resource) = by_id.get(parent) else {
+                return Err(ImportError::new(
+                    "An Insomnia resource refers to a missing parent.",
+                ));
+            };
+            let valid_parent = match text(resource, "_type") {
+                "request_group" | "request" | "websocket_request" => matches!(
+                    text(parent_resource, "_type"),
+                    "workspace" | "request_group"
+                ),
+                "environment" => {
+                    matches!(text(parent_resource, "_type"), "workspace" | "environment")
+                }
+                "workspace" => false,
+                _ => true,
+            };
+            if !valid_parent {
+                return Err(ImportError::new(
+                    "An Insomnia resource has an invalid parent type.",
+                ));
+            }
+        }
+        let mut path = HashSet::new();
+        let mut current = text(resource, "_id");
+        while !current.is_empty() {
+            if !path.insert(current) {
+                return Err(ImportError::new(
+                    "The Insomnia folder hierarchy contains a cycle.",
+                ));
+            }
+            if path.len() > MAX_DEPTH {
+                return Err(ImportError::new(
+                    "The Insomnia folder hierarchy exceeds 128 levels.",
+                ));
+            }
+            current = by_id
+                .get(current)
+                .map_or("", |value| text(value, "parentId"));
+        }
+    }
+    Ok(())
 }
 
 fn v4_environment_resources<'a>(
