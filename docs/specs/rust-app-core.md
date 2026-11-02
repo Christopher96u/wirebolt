@@ -59,6 +59,13 @@ skipped; `=secure` is not a Secure attribute; and `a=b; ;` ignores blank trailin
 segments without crashing. Each case has a Rust regression test in
 `response/tests/storage.rs`.
 
+Cookie scoping intentionally follows RFC 6265 rather than Foundation parity:
+default paths and explicit `Path` matching use the encoded URI path, preserving
+encoded separators and trailing slashes. A response from `/admin/` defaults to
+`/admin`; explicit `Path=/admin/` matches that directory without widening scope.
+Valid `Max-Age` takes precedence over `Expires` regardless of attribute order;
+invalid expiry attributes do not override valid ones.
+
 ## What remains in Swift and why
 
 Each row identifies the native responsibility retained by that source. Rust owns
@@ -117,7 +124,7 @@ warmup and the core version handshake (ABI revision 5).
 | `WireboltKit/WorkspaceChrome.swift` | Typed label facades and Apple locale-aware numeric formatting of Rust-selected timeout units. |
 | `WireboltApp/ContentView.swift` | SwiftUI request/response composition, bindings, file panels, keyboard/focus actions and native drag hit-testing. Credential edit names, folder-drop eligibility, move-menu collections and environment ordering are Rust (`domain/request`, `domain/sidebar`). Body kinds, transitions and JSON/XML/HTML formatting are Rust (`domain/body`), as are WebSocket message kinds, binary encodings and their transitions (`session/websocket`); the view passes edited text and applies the result. |
 | `WireboltApp/GitCollaborationView.swift` | SwiftUI sheet/form state, native symbol/color styling and Finder reveal actions. Rust supplies porcelain diagnostics, operation labels and push help. |
-| `WireboltApp/AppearanceSettingsView.swift` and `CustomThemeEditor.swift` | SwiftUI appearance forms, colour pickers, file panels/drop URLs, local sheet state and live previews over Rust theme tokens. |
+| `WireboltApp/AppearanceSettingsView.swift` and `CustomThemeEditor.swift` | SwiftUI appearance forms, color pickers, file panels/drop URLs, local sheet state and live previews over Rust theme tokens. |
 | `WireboltApp/CookiesView.swift` | SwiftUI cookie table, selection, native dates and deletion controls over the Rust-owned cookie jar. |
 | `WireboltApp/ImportSummaryView.swift` | SwiftUI summary presentation and native dismiss/focus behavior over the typed import summary. |
 | `WireboltApp/SettingsModal.swift` | SwiftUI modal navigation, sizing and native presentation; native layout is committed before restoring the captured AppKit responder and selection. |
