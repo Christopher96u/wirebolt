@@ -117,7 +117,10 @@ async fn successful_import_publishes_summary_and_selects_created_environment_and
     ];
     lock(&h.store.replies).extend([
         WorkspaceReply::Imported { summary: summary() },
-        WorkspaceReply::Loaded { workspace: w },
+        WorkspaceReply::Loaded {
+            workspace: w,
+            diagnostics: crate::session::persistence::WorkspaceLoadDiagnostics::default(),
+        },
     ]);
     assert!(h.ops.begin_import(true, false));
     let loaded = h
@@ -211,7 +214,10 @@ async fn import_keeps_existing_environment_and_existing_tabs_selection_policy() 
     let h = Harness::new(w.clone());
     lock(&h.store.replies).extend([
         WorkspaceReply::Imported { summary: summary() },
-        WorkspaceReply::Loaded { workspace: w },
+        WorkspaceReply::Loaded {
+            workspace: w,
+            diagnostics: crate::session::persistence::WorkspaceLoadDiagnostics::default(),
+        },
     ]);
     let result = h
         .ops
@@ -335,7 +341,10 @@ async fn abort_reloads_and_initialize_clears_previous_operation() {
     w.name = "Reloaded".into();
     lock(&h.store.replies).extend([
         operation(WorkspaceGitOutcome::MergeAborted),
-        WorkspaceReply::Loaded { workspace: w },
+        WorkspaceReply::Loaded {
+            workspace: w,
+            diagnostics: crate::session::persistence::WorkspaceLoadDiagnostics::default(),
+        },
         WorkspaceReply::GitStatus {
             status: WorkspaceGitStatus {
                 upstream: None,
@@ -395,7 +404,10 @@ async fn git_runs_only_when_requested_and_pull_reloads_only_updated_outcome() {
     w.name = "Updated".into();
     lock(&h.store.replies).extend([
         operation(WorkspaceGitOutcome::Updated),
-        WorkspaceReply::Loaded { workspace: w },
+        WorkspaceReply::Loaded {
+            workspace: w,
+            diagnostics: crate::session::persistence::WorkspaceLoadDiagnostics::default(),
+        },
     ]);
     assert!(h.ops.begin_git(true, WorkspaceGitAction::Pull, false));
     assert_eq!(

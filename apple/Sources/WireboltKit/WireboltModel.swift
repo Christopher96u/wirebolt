@@ -24,6 +24,7 @@ extension RequestRunner {
 
 public protocol WorkspacePersistence: Sendable {
     func load() async throws -> WorkspaceDraft
+    func loadResult() async throws -> WorkspaceLoadResult
     func loadSession(_ application: AppWorkspaceSession) async throws -> WorkspaceDraft
     func save(request: RequestDraft, in collectionID: String) async throws
     func save(environment: EnvironmentDraft) async throws
@@ -47,6 +48,9 @@ public protocol WorkspacePersistence: Sendable {
 }
 
 extension WorkspacePersistence {
+    public func loadResult() async throws -> WorkspaceLoadResult {
+        WorkspaceLoadResult(workspace: try await load().domain, diagnostics: WorkspaceLoadDiagnostics(problems: [], omitted: 0, notice: nil))
+    }
     public var sessionWorkspacePlatform: AppWorkspacePlatform { .foreign(platform: WorkspacePlatformAdapter(persistence: self)) }
     public func loadSession(_ application: AppWorkspaceSession) async throws -> WorkspaceDraft {
         let workspace = try await load()
@@ -165,6 +169,7 @@ public final class WireboltModel {
     public private(set) var isLoadingWorkspace = false
     /// False until the first workspace load finishes; the window shows a skeleton meanwhile.
     public private(set) var hasLoadedWorkspace = false
+    public var workspaceLoadNotice: String?
     public private(set) var gitStatus: GitStatusSnapshot?
     public private(set) var gitOperation: GitOperationSnapshot?
     public private(set) var gitFailure: GitFailure?
@@ -210,7 +215,10 @@ public final class WireboltModel {
     @ObservationIgnored private let oauth2: any OAuth2Authorizing
     @ObservationIgnored private var transportSave: Task<Void, Never>?
     public private(set) var exportFailureMessage: String?
-    public var operationFailure: RunFailure?
+    public var operationFailure: RunFailure? {
+        didSet { if operationFailure == nil { operationFailureMessage = nil } }
+    }
+    public var operationFailureMessage: String?
     /// The window's undo manager; workspace mutations register their inverse here.
     @ObservationIgnored public weak var undoManager: UndoManager?
     /// Undo and redo run one at a time so each inverse sees the state its predecessor left.
@@ -951,6 +959,7 @@ public final class WireboltModel {
 
     private func applyLoadedWorkspace(_ loaded: WorkspaceLoad, restoring layout: SessionLayout? = nil) {
         mirroringWorkspace = true
+        workspaceLoadNotice = loaded.diagnostics.notice
         workspace = WorkspaceDraft(domain: loaded.workspace)
         mirroringWorkspace = false
         workspaceNeedsSynchronization = false
@@ -1036,7 +1045,10 @@ public final class WireboltModel {
         if gitOperation != operation { gitOperation = operation }
         let failure = value.gitFailure.map { GitFailure(kind: $0.kind, reason: $0.reason) }
         if gitFailure != failure { gitFailure = failure }
-        if let kind = rustOperations.takeFailure() { operationFailure = RunFailure(kind: kind, issues: []) }
+        if let kind = rustOperations.takeFailure() {
+            operationFailure = RunFailure(kind: kind, issues: [])
+            operationFailureMessage = value.operationFailureReason
+        }
         if let reason = value.exportFailure { exportFailureMessage = reason }
     }
 

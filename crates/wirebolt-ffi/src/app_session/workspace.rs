@@ -389,6 +389,7 @@ pub struct WorkspacePresentation {
     pub export_failure: Option<String>,
     pub import_summary: Option<WorkspaceImportSummary>,
     pub operation_failure: Option<wirebolt_app::response::ResponseFailureKind>,
+    pub operation_failure_reason: Option<String>,
 }
 
 #[uniffi::remote(Record)]
@@ -409,6 +410,7 @@ pub struct WorkspaceMutation {
 #[uniffi::remote(Record)]
 pub struct WorkspaceLoad {
     pub workspace: DomainWorkspace,
+    pub diagnostics: wirebolt_app::session::persistence::WorkspaceLoadDiagnostics,
     pub selected_environment_id: Option<String>,
     pub select: Option<DomainLocation>,
 }

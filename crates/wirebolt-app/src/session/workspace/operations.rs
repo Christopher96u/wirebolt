@@ -38,6 +38,7 @@ pub struct WorkspacePresentation {
     pub export_failure: Option<String>,
     pub import_summary: Option<WorkspaceImportSummary>,
     pub operation_failure: Option<crate::response::ResponseFailureKind>,
+    pub operation_failure_reason: Option<String>,
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum WorkspaceImportSource {
@@ -73,6 +74,7 @@ pub struct WorkspaceMutation {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct WorkspaceLoad {
     pub workspace: DomainWorkspace,
+    pub diagnostics: crate::session::persistence::WorkspaceLoadDiagnostics,
     pub selected_environment_id: Option<String>,
     pub select: Option<DomainLocation>,
 }
@@ -123,7 +125,13 @@ impl WorkspaceOperations {
         state.redo_tokens.clear();
     }
     fn fail(&self, kind: crate::response::ResponseFailureKind) {
-        lock(&self.state).presentation.operation_failure = Some(kind);
+        let mut state = lock(&self.state);
+        state.presentation.operation_failure = Some(kind);
+        state.presentation.operation_failure_reason = None;
+    }
+    fn fail_reason(&self, reason: String) {
+        self.fail(crate::response::ResponseFailureKind::Workspace);
+        lock(&self.state).presentation.operation_failure_reason = Some(reason);
     }
     #[must_use]
     pub fn begin_load(&self, configured: bool) -> bool {
@@ -155,22 +163,38 @@ impl WorkspaceOperations {
         self.workspace.replace(workspace.clone());
         WorkspaceLoad {
             workspace,
+            diagnostics: crate::session::persistence::WorkspaceLoadDiagnostics::default(),
             selected_environment_id,
             select,
         }
+    }
+    fn loaded_with_diagnostics(
+        &self,
+        workspace: DomainWorkspace,
+        selected: Option<String>,
+        diagnostics: crate::session::persistence::WorkspaceLoadDiagnostics,
+    ) -> WorkspaceLoad {
+        let mut loaded = self.loaded(workspace, selected);
+        loaded.diagnostics = diagnostics;
+        loaded
     }
     pub async fn load(
         &self,
         platform: &dyn WorkspacePlatform,
         switching: bool,
     ) -> Option<WorkspaceLoad> {
+        let _guard = self.edits.lock().await;
         let result = platform.execute(WorkspaceIO::Load).await;
         let mut state = lock(&self.state);
         state.presentation.loading = false;
         if !switching {
             state.presentation.loaded = true;
         }
-        if let WorkspaceReply::Loaded { workspace } = result {
+        if let WorkspaceReply::Loaded {
+            workspace,
+            diagnostics,
+        } = result
+        {
             if switching {
                 state.presentation = WorkspacePresentation {
                     loaded: true,
@@ -179,7 +203,7 @@ impl WorkspaceOperations {
                 state.undo.clear();
             }
             drop(state);
-            Some(self.loaded(workspace, None))
+            Some(self.loaded_with_diagnostics(workspace, None, diagnostics))
         } else {
             state.presentation.operation_failure =
                 Some(crate::response::ResponseFailureKind::Workspace);
@@ -580,6 +604,8 @@ impl WorkspaceOperations {
         secrets: &SessionSecrets,
         secret_platform: &dyn SessionSecretPlatform,
     ) -> WorkspaceSave {
+        let _guard = self.edits.lock().await;
+        let was_saved = document.saved_draft.is_some();
         let mut result = WorkspaceSave {
             original_authentication: document.draft.authentication.clone(),
             document_id: document.id,
@@ -591,6 +617,19 @@ impl WorkspaceOperations {
             self.fail(crate::response::ResponseFailureKind::Workspace);
             return result;
         };
+        if was_saved
+            && super::location(
+                &lock(&self.workspace.workspace),
+                &collection_id,
+                &result.draft.id,
+            )
+            .is_none()
+        {
+            self.fail_reason(
+                "The saved request has moved or been deleted. Reopen it before saving.".into(),
+            );
+            return result;
+        }
         if secrets.flush(secret_platform).await.is_err() {
             self.fail(crate::response::ResponseFailureKind::Workspace);
             return result;
@@ -614,7 +653,7 @@ impl WorkspaceOperations {
             order: saved.map_or(0, |r| r.order),
             request: result.draft.clone(),
         };
-        if commands(
+        if let Some(reason) = commands(
             platform,
             vec![SessionWorkspaceCommand::SaveRequest {
                 location: location.clone(),
@@ -622,9 +661,8 @@ impl WorkspaceOperations {
         )
         .await
         .failure_reason
-        .is_some()
         {
-            self.fail(crate::response::ResponseFailureKind::Workspace);
+            self.fail_reason(reason);
             return result;
         }
         self.saved_request(&location);
@@ -683,6 +721,11 @@ impl WorkspaceOperations {
         platform: &dyn WorkspacePlatform,
         persistence: Option<&dyn WorkspacePlatform>,
     ) -> Option<WorkspaceLoad> {
+        let _guard = if matches!(action, WorkspaceGitAction::Pull | WorkspaceGitAction::Abort) {
+            Some(self.edits.lock().await)
+        } else {
+            None
+        };
         let reply = platform
             .execute(WorkspaceIO::Git {
                 action: action.clone(),
@@ -727,8 +770,11 @@ impl WorkspaceOperations {
         let mut loaded = None;
         if reload && let Some(persistence) = persistence {
             match persistence.execute(WorkspaceIO::Load).await {
-                WorkspaceReply::Loaded { workspace } => {
-                    loaded = Some(self.loaded(workspace, None));
+                WorkspaceReply::Loaded {
+                    workspace,
+                    diagnostics,
+                } => {
+                    loaded = Some(self.loaded_with_diagnostics(workspace, None, diagnostics));
                     self.clear_undo();
                 }
                 _ => {
@@ -768,6 +814,7 @@ impl WorkspaceOperations {
         request: WorkspaceImport,
         platform: &dyn WorkspacePlatform,
     ) -> Option<WorkspaceLoad> {
+        let _guard = self.edits.lock().await;
         let WorkspaceImport {
             source,
             name,
@@ -792,7 +839,10 @@ impl WorkspaceOperations {
         };
         let outcome = platform.execute(request).await;
         if let WorkspaceReply::Imported { ref summary } = outcome
-            && let WorkspaceReply::Loaded { workspace } = platform.execute(WorkspaceIO::Load).await
+            && let WorkspaceReply::Loaded {
+                workspace,
+                diagnostics,
+            } = platform.execute(WorkspaceIO::Load).await
         {
             let environment = selected
                 .filter(|id| workspace.environments.iter().any(|e| &e.id == id))
@@ -803,7 +853,7 @@ impl WorkspaceOperations {
                         .find(|e| workspace.environments.iter().any(|v| v.id == e.id))
                         .map(|e| e.id.clone())
                 });
-            let mut loaded = self.loaded(workspace, environment);
+            let mut loaded = self.loaded_with_diagnostics(workspace, environment, diagnostics);
             loaded.select = loaded
                 .workspace
                 .collections

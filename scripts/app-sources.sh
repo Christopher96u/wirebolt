@@ -32,6 +32,7 @@ wirebolt_app_inputs=(
   apple/Sources/WireboltKit/WorkspaceChrome.swift
   apple/WireboltApp/WorkspaceUIState.swift
   apple/WireboltApp/ContentView.swift
+  apple/WireboltApp/WorkspaceLoadNotice.swift
   apple/WireboltApp/WorkspaceActions.swift
   apple/WireboltApp/ImportSummaryView.swift
   apple/WireboltApp/AppearanceSettingsView.swift

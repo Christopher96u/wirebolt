@@ -116,6 +116,11 @@ struct ContentView: View {
     private var workspaceSurface: some View {
         let groupCount = model.sessions.groupCount
         return workspacePanels
+        .safeAreaInset(edge: .top, spacing: 0) {
+            if let message = model.workspaceLoadNotice {
+                WorkspaceLoadNotice(message: message) { model.workspaceLoadNotice = nil }
+            }
+        }
         .disabled(model.isLoadingWorkspace)
         .background { WorkspaceWindowTitle(model: model) }
         .frame(minWidth: (groupCount > 1
@@ -211,11 +216,11 @@ struct ContentView: View {
         )) {
             Button("OK", role: .cancel) { model.operationFailure = nil }
         } message: {
-            Text(model.operationFailure?.kind == .keychain
+            Text(model.operationFailureMessage ?? (model.operationFailure?.kind == .keychain
                 ? "The credentials could not be read or saved in Keychain. Check access and try again."
                 : model.operationFailure?.kind == .export
                     ? (model.exportFailureMessage ?? "The saved request could not be exported.")
-                    : "The operation could not be completed. Check access to the workspace and try again.")
+                    : "The operation could not be completed. Check access to the workspace and try again."))
         }
         .sheet(item: $interface.workspaceNamePrompt) { prompt in
             WorkspaceNameEditor(prompt: prompt, model: model)

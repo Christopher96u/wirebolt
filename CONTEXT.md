@@ -21,7 +21,13 @@ never belong to the workspace document tree.
 
 Collections, groups, requests, and their sibling order form one hierarchical
 tree. Workspace mutations are expressed as commands and produce monotonically
-versioned deltas; a routine mutation must not reload the entire tree.
+versioned deltas; a routine mutation must not reload the entire tree. Save, edits,
+Undo, import and workspace replacement serialize through the same operation guard.
+A stale save cannot recreate a saved request that has moved or been deleted.
+Collection deletion removes only readable managed documents, stages removals before
+commit, and preserves unmanaged or unreadable files. Document writes enforce the
+same 16 MiB serialized-byte limit as reads. Partial loads retain readable records
+and expose bounded, content-free diagnostics for skipped files.
 
 ## Editing and execution
 

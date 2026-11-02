@@ -148,3 +148,274 @@ fn collection_delete_and_undo_preserve_attachments_and_requests() {
     assert_eq!(store.domain_snapshot().unwrap(), original);
     assert_eq!(std::fs::read(attachment).unwrap(), b"attachment");
 }
+
+#[test]
+fn partial_workspace_load_reports_skipped_files_without_contents() {
+    let (root, store) = persistence();
+    let original = imported_pair(&store);
+    let requests = root
+        .path()
+        .join("collections")
+        .join(&original.collections[0].id)
+        .join("requests");
+    std::fs::write(
+        requests.join("broken.toml"),
+        r#"name = "private-fixture-value"#,
+    )
+    .unwrap();
+    std::fs::write(
+        requests.join("future.toml"),
+        "schema_version = 4294967295\n",
+    )
+    .unwrap();
+    std::fs::File::create(requests.join("oversized.toml"))
+        .unwrap()
+        .set_len(16 * 1024 * 1024 + 1)
+        .unwrap();
+    let result = store.load_result().unwrap();
+    assert_eq!(result.workspace, original);
+    assert_eq!(result.diagnostics.problems.len(), 3);
+    for kind in [
+        crate::session::persistence::WorkspaceDocumentProblemKind::InvalidToml,
+        crate::session::persistence::WorkspaceDocumentProblemKind::UnsupportedSchema,
+        crate::session::persistence::WorkspaceDocumentProblemKind::DocumentTooLarge,
+    ] {
+        assert!(
+            result
+                .diagnostics
+                .problems
+                .iter()
+                .any(|problem| problem.kind == kind)
+        );
+    }
+    let reply = store.workspace_io(WorkspaceIO::Load);
+    let diagnostics = format!("{reply:?}");
+    for name in ["broken.toml", "future.toml", "oversized.toml"] {
+        assert!(diagnostics.contains(name));
+    }
+    assert!(!diagnostics.contains("private-fixture-value"));
+    for index in 0..20 {
+        std::fs::write(requests.join(format!("bad-{index}\n.toml")), "invalid = [").unwrap();
+    }
+    let result = store.load_result().unwrap();
+    assert_eq!(result.diagnostics.problems.len(), 10);
+    assert_eq!(result.diagnostics.omitted, 13);
+    assert!(
+        result
+            .diagnostics
+            .problems
+            .iter()
+            .all(|problem| !problem.path.chars().any(char::is_control))
+    );
+    let notice = result.diagnostics.notice.unwrap();
+    assert!(notice.len() < 4000 && notice.contains("13 more files"));
+}
+
+struct SaveGate {
+    store: Arc<SessionPersistence>,
+    ready: tokio::sync::Notify,
+    release: tokio::sync::Notify,
+    pause: std::sync::atomic::AtomicBool,
+}
+#[async_trait]
+impl WorkspacePlatform for SaveGate {
+    async fn execute(&self, request: WorkspaceIO) -> WorkspaceReply {
+        if matches!(&request, WorkspaceIO::Commands {commands} if commands.iter().any(|c| matches!(c, SessionWorkspaceCommand::SaveRequest {..})))
+            && self.pause.swap(false, std::sync::atomic::Ordering::Relaxed)
+        {
+            self.ready.notify_one();
+            self.release.notified().await;
+        }
+        self.store.workspace_io(request)
+    }
+}
+
+#[tokio::test]
+async fn save_and_delete_serialize_without_recreating_deleted_request() {
+    let (_root, store) = persistence();
+    let original = imported_pair(&store);
+    let source = original.collections[0].requests[0].clone();
+    let session = Arc::new(WorkspaceSession::default());
+    session.replace(original);
+    let ops = Arc::new(WorkspaceOperations::new(session.clone()));
+    let gate = Arc::new(SaveGate {
+        store: store.clone(),
+        ready: tokio::sync::Notify::default(),
+        release: tokio::sync::Notify::default(),
+        pause: std::sync::atomic::AtomicBool::new(true),
+    });
+    let mut draft = source.request.clone();
+    draft.note = "Edited".into();
+    let document = SessionDocument::new(
+        "tab".into(),
+        SessionKind::Http,
+        Some(source.collection_id.clone()),
+        None,
+        draft,
+        Some(source.request.clone()),
+        "",
+    );
+    let save_ops = ops.clone();
+    let save_gate = gate.clone();
+    let saving = tokio::spawn(async move {
+        save_ops
+            .save(
+                document,
+                None,
+                save_gate.as_ref(),
+                &SessionSecrets::default(),
+                &Secrets,
+            )
+            .await
+    });
+    gate.ready.notified().await;
+    let secrets = SessionSecrets::default();
+    let deleting = ops.mutate(
+        Action::DeleteRequest {
+            collection_id: source.collection_id.clone(),
+            id: source.request.id.clone(),
+        },
+        None,
+        gate.as_ref(),
+        &secrets,
+        &Secrets,
+    );
+    tokio::pin!(deleting);
+    let early = tokio::select! {biased; result = &mut deleting => Some(result), () = std::future::ready(()) => None};
+    let completed_early = early.is_some();
+    gate.release.notify_one();
+    assert!(saving.await.unwrap().succeeded);
+    let deleted = match early {
+        Some(result) => result,
+        None => deleting.await,
+    };
+    assert!(deleted.succeeded);
+    let disk = store.domain_snapshot().unwrap();
+    assert!(
+        !disk
+            .collections
+            .iter()
+            .flat_map(|c| &c.requests)
+            .any(|r| r.collection_id == source.collection_id && r.request.id == source.request.id),
+        "Save recreated a request after Delete completed"
+    );
+    assert_eq!(session.snapshot(), disk);
+    assert!(!completed_early, "Delete passed a paused Save");
+}
+
+#[tokio::test]
+async fn stale_save_after_move_or_delete_cannot_recreate_the_source() {
+    for move_request in [false, true] {
+        let (_root, store) = persistence();
+        let original = imported_pair(&store);
+        let source = original.collections[0].requests[0].clone();
+        let destination = original.collections[1].id.clone();
+        let session = Arc::new(WorkspaceSession::default());
+        session.replace(original);
+        let ops = WorkspaceOperations::new(session.clone());
+        let platform = SaveGate {
+            store: store.clone(),
+            ready: tokio::sync::Notify::default(),
+            release: tokio::sync::Notify::default(),
+            pause: std::sync::atomic::AtomicBool::new(false),
+        };
+        let action = if move_request {
+            Action::MoveRequest {
+                from_collection_id: source.collection_id.clone(),
+                id: source.request.id.clone(),
+                to_collection_id: destination,
+                group_id: None,
+                order: 1,
+            }
+        } else {
+            Action::DeleteRequest {
+                collection_id: source.collection_id.clone(),
+                id: source.request.id.clone(),
+            }
+        };
+        assert!(
+            ops.mutate(
+                action,
+                None,
+                &platform,
+                &SessionSecrets::default(),
+                &Secrets
+            )
+            .await
+            .succeeded
+        );
+        let before = store.domain_snapshot().unwrap();
+        let mut draft = source.request.clone();
+        draft.note = "Stale edit".into();
+        let document = SessionDocument::new(
+            "tab".into(),
+            SessionKind::Http,
+            Some(source.collection_id),
+            None,
+            draft,
+            Some(source.request),
+            "",
+        );
+        assert!(
+            !ops.save(
+                document,
+                None,
+                &platform,
+                &SessionSecrets::default(),
+                &Secrets
+            )
+            .await
+            .succeeded
+        );
+        assert_eq!(store.domain_snapshot().unwrap(), before);
+        assert_eq!(sorted(session.snapshot()), sorted(before));
+    }
+}
+
+#[tokio::test]
+async fn oversized_save_reports_limit_and_keeps_previous_request() {
+    let (_root, store) = persistence();
+    let original = imported_pair(&store);
+    let source = original.collections[0].requests[0].clone();
+    let session = Arc::new(WorkspaceSession::default());
+    session.replace(original.clone());
+    let ops = WorkspaceOperations::new(session);
+    let platform = SaveGate {
+        store: store.clone(),
+        ready: tokio::sync::Notify::default(),
+        release: tokio::sync::Notify::default(),
+        pause: std::sync::atomic::AtomicBool::new(false),
+    };
+    let mut draft = source.request.clone();
+    draft.body = DomainBody::Raw {
+        content_type: None,
+        value: "x".repeat(16 * 1024 * 1024),
+    };
+    let document = SessionDocument::new(
+        "tab".into(),
+        SessionKind::Http,
+        Some(source.collection_id),
+        None,
+        draft,
+        Some(source.request),
+        "",
+    );
+    assert!(
+        !ops.save(
+            document,
+            None,
+            &platform,
+            &SessionSecrets::default(),
+            &Secrets
+        )
+        .await
+        .succeeded
+    );
+    assert!(
+        ops.presentation()
+            .operation_failure_reason
+            .unwrap()
+            .contains("16 MiB")
+    );
+    assert_eq!(store.domain_snapshot().unwrap(), original);
+}

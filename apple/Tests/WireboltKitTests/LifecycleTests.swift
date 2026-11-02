@@ -187,6 +187,8 @@ private struct LifecycleRunner: RequestRunner {
 
 private struct LayoutPersistence: WorkspacePersistence {
     let workspace: WorkspaceDraft
+    var diagnostics = WorkspaceLoadDiagnostics(problems: [], omitted: 0, notice: nil)
+    func loadResult() async throws -> WorkspaceLoadResult { WorkspaceLoadResult(workspace: workspace.domain, diagnostics: diagnostics) }
     func load() async throws -> WorkspaceDraft { workspace }
     func save(request _: RequestDraft, in _: String) async throws {}
     func save(environment _: EnvironmentDraft) async throws {}
@@ -382,5 +384,22 @@ extension LifecycleTests {
         #expect(model.closeDocuments(.all, in: split, allowDirty: true).isEmpty)
         #expect(model.sessions.groupCount == 1)
         #expect(model.sessions.session(id: source.id) === source)
+    }
+}
+
+
+extension LifecycleTests {
+    @Test("Partial workspace loads keep requests and mirror a dismissible notice")
+    @MainActor func partialLoadNoticePreservesReadableRequests() async {
+        let request = RequestLocation(collectionID: "api", request: RequestDraft(id: "readable", name: "Readable"))
+        let workspace = WorkspaceDraft(name: "Partial", collections: [CollectionDraft(id: "api", name: "API", requests: [request])])
+        let diagnostics = WorkspaceLoadDiagnostics(problems: [WorkspaceLoadProblem(path: "collections/api/requests/broken.toml", kind: .invalidToml, reason: "Invalid TOML")], omitted: 0, notice: "Skipped broken.toml. The file remains on disk.")
+        let model = WireboltModel(runner: LifecycleRunner(), persistence: LayoutPersistence(workspace: workspace, diagnostics: diagnostics))
+        await model.loadWorkspace()
+        #expect(model.workspace.collections.first?.requests.first?.request.id == "readable")
+        #expect(model.workspaceLoadNotice == diagnostics.notice)
+        #expect(model.hasLoadedWorkspace && !model.isLoadingWorkspace)
+        model.workspaceLoadNotice = nil
+        #expect(model.workspace.collections.first?.requests.count == 1)
     }
 }

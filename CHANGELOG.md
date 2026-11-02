@@ -28,6 +28,9 @@ Changes under **Unreleased** are on `main` but not in a published build yet. Dow
 
 ### Fixed
 
+- Saving while deleting or moving a request could recreate stale files. Save now runs in order with workspace edits and refuses a saved target that has moved or disappeared.
+- Malformed, newer-version and oversized workspace files disappeared from the sidebar without explanation. Open now keeps readable requests and shows a dismissible notice naming skipped files.
+
 - Requests with the same ID shared history across collections and workspaces, so clearing one cleared another’s responses. History now follows the complete request identity and moves; older entries without enough identity information remain available under Unassigned Legacy History.
 
 - Clearing history or evicting old entries made a restored response unreadable. Displayed responses now keep their own temporary body until the last viewer releases it.

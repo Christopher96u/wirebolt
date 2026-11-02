@@ -1042,6 +1042,14 @@ impl WorkspaceBridge {
     ///
     /// # Errors
     /// Returns an error if the workspace cannot be read or projected.
+    pub fn load_result(
+        &self,
+    ) -> Result<wirebolt_app::session::persistence::WorkspaceLoadResult, crate::WorkspaceBridgeError>
+    {
+        self.inner.load_result()
+    }
+    /// # Errors
+    /// Returns an error if the workspace cannot be read or projected.
     pub fn domain_snapshot(&self) -> Result<DomainWorkspace, crate::WorkspaceBridgeError> {
         self.inner.domain_snapshot()
     }
