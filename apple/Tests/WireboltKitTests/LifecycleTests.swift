@@ -117,11 +117,10 @@ struct LifecycleTests {
         let prepared = PreparedRunSnapshot(method: "GET", url: "https://example.com/a", headers: [],
             body: PreparedBodySnapshot(byteCount: 0, contentType: nil, textPreview: nil, redacted: false), transport: TransportSettings())
 
-
         let a = RequestLocation(collectionID: "api", request: RequestDraft(id: "a", name: "A"))
         let workspace = WorkspaceDraft(name: "Layout", collections: [CollectionDraft(id: "api", name: "API", requests: [a])])
         let model = WireboltModel(runner: LifecycleRunner(), persistence: LayoutPersistence(workspace: workspace), history: history)
-        try await history.record(runID: RunID(), identity: model.historyIdentity(for: model.sessions.open(draft: RequestDraft(id: "a"), collectionID: "api")), prepared: prepared,
+        try await history.record(runID: RunID(), identity: model.historyIdentity(for: DocumentSession(collectionID: "api", draft: RequestDraft(id: "a"))), prepared: prepared,
             responseHead: ResponseHead(status: 200, version: "HTTP/1.1", headers: [], timeToHeadersNS: 1),
             completion: nil, failure: nil, body: body)
         await model.loadWorkspace(restoring: SessionLayout(groups: [.init(tabs: [.init(collectionID: "api", requestID: "a")], selectedIndex: 0)]))

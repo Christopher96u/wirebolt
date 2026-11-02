@@ -1137,6 +1137,7 @@ extension WireboltModel {
                     session.relocate(to: destination)
                 }
                 sessions.refreshActiveRequest()
+                mirrorRuntime()
             }
         }
     }

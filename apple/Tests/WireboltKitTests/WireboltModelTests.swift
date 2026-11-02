@@ -39,6 +39,28 @@ struct WireboltModelTests {
         #expect(await model.historyCount(for: second) == 1)
     }
 
+    @Test("Moving a request and Undo immediately relocate history activity")
+    @MainActor func movesMirrorHistoryActivity() async throws {
+        let root = FileManager.default.temporaryDirectory.appending(path: "wirebolt-history-move-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let model = WireboltModel(runner: InputCapturingRunner(), persistence: MutationRecorder(), history: HistoryRepository(root: root))
+        let request = RequestDraft(id: "a", url: "https://example.com/a")
+        model.workspace.collections = [CollectionDraft(id: "api", name: "API", requests: [RequestLocation(collectionID: "api", request: request)]), CollectionDraft(id: "other", name: "Other")]
+        let manager = UndoManager(); manager.groupsByEvent = false; model.undoManager = manager
+        let session = model.sessions.open(draft: request, collectionID: "api")
+        await model.send(session)
+        #expect(model.requestActivity["api/a"] != nil)
+        let revision = model.historyRevision
+        await model.moveRequest(fromCollectionID: "api", requestID: "a", toCollectionID: "other", groupID: nil, order: 0)
+        #expect(session.collectionID == "other")
+        #expect(model.requestActivity["api/a"] == nil && model.requestActivity["other/a"] != nil)
+        #expect(model.historyRevision > revision)
+        #expect(await model.historyCount(for: session) == 1)
+        manager.undo(); await model.finishUndoWork()
+        #expect(session.collectionID == "api")
+        #expect(model.requestActivity["api/a"] != nil && model.requestActivity["other/a"] == nil)
+    }
+
     @Test("A workspace that cannot load leaves the current documents and edits intact")
     @MainActor func failedWorkspaceOpenPreservesDraft() async throws {
         let model = WireboltModel(runner: StubRunner(), persistence: MutationRecorder())
