@@ -1477,7 +1477,7 @@ private struct SidebarRequestButton: View, @MainActor Equatable {
     private var identifier: String { "request|\(location.collectionID)|\(location.request.id)" }
 
     var body: some View {
-        let activity = model.requestActivity[location.request.id]
+        let activity = model.requestActivity["\(location.collectionID)/\(location.request.id)"]
         VStack(alignment: .leading, spacing: WireboltTheme.Spacing.xSmall) {
             if theme.density == .comfortable {
                 HStack(spacing: WireboltTheme.Spacing.medium) {
@@ -2659,6 +2659,7 @@ private struct RequestActionsMenu: View {
     private struct LoadedHistory {
         var documentID: String?
         var entries: [RunHistoryEntry] = []
+        var legacy: [RunHistoryEntry] = []
     }
 
     private struct LoadKey: Equatable {
@@ -2696,6 +2697,16 @@ private struct RequestActionsMenu: View {
                             }
                         }
                     }
+                    if loaded.documentID == session.id && !loaded.legacy.isEmpty {
+                        Menu("Unassigned Legacy History") {
+                            Text("Workspace and collection were not recorded. These entries are kept when clearing this request.")
+                            ForEach(loaded.legacy) { entry in
+                                Button("\(entry.createdAt.formatted()) · \(entry.prepared.url)") {
+                                    Task { await model.restoreHistory(entry, into: session) }
+                                }
+                            }
+                        }
+                    }
                     Divider()
                     Button("Clear History…") { isClearing = true }.disabled(entries.isEmpty)
                 }
@@ -2710,8 +2721,9 @@ private struct RequestActionsMenu: View {
             guard session.kind == .http else { return }
             let session = session
             let entries = await model.historyEntries(for: session)
+            let legacy = await model.legacyHistoryEntries(for: session)
             guard !Task.isCancelled else { return }
-            loaded = LoadedHistory(documentID: session.id, entries: entries)
+            loaded = LoadedHistory(documentID: session.id, entries: entries, legacy: legacy)
         }
         .onChange(of: session.id) { if isClearing { isClearing = false } }
         .alert("Clear History?", isPresented: $isClearing) {

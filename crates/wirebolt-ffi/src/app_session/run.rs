@@ -5,9 +5,9 @@
 )]
 use super::{
     AppResponseBody, Arc, DocumentRun, DomainRequestDraft, DomainTransport, Instant, Mutex, Path,
-    PathBuf, ResolvedDomainProxy, ResponseHeaderValue, SessionCompletion, SessionDocument,
-    SessionFailure, SessionHead, SessionKind, SessionPrepared, SessionPreparedBody,
-    SessionPreparedHeader, SessionRunEvent, SessionRunSnapshot, StoredCookie,
+    ResolvedDomainProxy, ResponseHeaderValue, SessionCompletion, SessionDocument, SessionFailure,
+    SessionHead, SessionKind, SessionPrepared, SessionPreparedBody, SessionPreparedHeader,
+    SessionRunEvent, SessionRunSnapshot, StoredCookie,
 };
 use crate::lock;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -209,7 +209,7 @@ impl AppDocumentSession {
         }
     }
     pub fn restore(&self, snapshot: SessionRunSnapshot, path: String) {
-        lock(&self.run).restore(snapshot, PathBuf::from(path));
+        lock(&self.run).restore(snapshot, std::path::Path::new(&path));
     }
 }
 

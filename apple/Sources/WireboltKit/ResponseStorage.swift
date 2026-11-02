@@ -109,6 +109,7 @@ public struct RunHistoryEntry: Equatable, Identifiable, Sendable {
     public let completion: RunCompletion?
     public let failure: RunFailure?
     public let bodyPath: String
+    public var identity: SessionRequestIdentity? = nil
 }
 
 public actor HistoryRepository {
@@ -123,20 +124,20 @@ public actor HistoryRepository {
         rust = AppRunHistory(root: directory.path)
     }
     public func record(
-        runID: RunID, requestID: String, prepared: PreparedRunSnapshot, responseHead: ResponseHead?,
+        runID: RunID, identity: SessionRequestIdentity, prepared: PreparedRunSnapshot, responseHead: ResponseHead?,
         completion: RunCompletion?, failure: RunFailure?, body: ResponseBodyStore
     ) async throws {
         let entry = RunHistoryEntry(
-            id: runID.description, requestID: requestID, createdAt: Date(), prepared: prepared,
-            responseHead: responseHead, completion: completion, failure: failure, bodyPath: "")
+            id: runID.description, requestID: identity.requestId, createdAt: Date(), prepared: prepared,
+            responseHead: responseHead, completion: completion, failure: failure, bodyPath: "", identity: identity)
         try await body.flushIngress()
         try rust.recordTyped(entry: entry.sessionRecord, body: body.rust)
     }
-    public func list(requestID: String) throws -> [RunHistoryEntry] {
-        try rust.listTyped(requestId: requestID).map(RunHistoryEntry.init)
+    public func list(identity: SessionRequestIdentity) throws -> [RunHistoryEntry] {
+        try rust.listTyped(identity: identity).map(RunHistoryEntry.init)
     }
-    public func count(requestID: String) throws -> Int { Int(clamping: try rust.count(requestId: requestID)) }
-    public func clear(requestID: String) throws { try rust.clear(requestId: requestID) }
+    public func count(identity: SessionRequestIdentity) throws -> Int { Int(clamping: try rust.count(identity: identity)) }
+    public func clear(identity: SessionRequestIdentity) throws { try rust.clear(identity: identity) }
 }
 
 public struct CookieSnapshot: Equatable, Identifiable, Sendable {
@@ -187,7 +188,7 @@ extension CookieSnapshot {
 extension RunHistoryEntry {
     var sessionRecord: SessionHistoryEntry {
         SessionHistoryEntry(
-            id: id, requestId: requestID, createdAt: createdAt.timeIntervalSinceReferenceDate,
+            id: id, requestId: requestID, identity: identity, createdAt: createdAt.timeIntervalSinceReferenceDate,
             prepared: prepared.sessionRecord, responseHead: responseHead, completion: completion,
             failure: failure, bodyPath: bodyPath)
     }
@@ -195,6 +196,6 @@ extension RunHistoryEntry {
         self.init(
             id: record.id, requestID: record.requestId, createdAt: Date(timeIntervalSinceReferenceDate: record.createdAt),
             prepared: PreparedRunSnapshot(record.prepared), responseHead: record.responseHead,
-            completion: record.completion, failure: record.failure, bodyPath: record.bodyPath)
+            completion: record.completion, failure: record.failure, bodyPath: record.bodyPath, identity: record.identity)
     }
 }

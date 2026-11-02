@@ -243,6 +243,7 @@ public final class WireboltModel {
         self.gitCollaboration = gitCollaboration
         self.sessions = sessions ?? DocumentSessionStore()
         runtime = AppSessionRuntime(history: history.rust, cookies: cookieJar.rust)
+        runtime.configureHistoryWorkspace(path: persistence?.location?.standardizedFileURL.path)
         self.cookieDirectory = cookieDirectory
         self.oauth2 = oauth2 ?? OAuth2Service()
     }
@@ -256,6 +257,7 @@ public final class WireboltModel {
         editedSecrets = [:]
         rustSecrets.resetEditor()
         workspaceLocation = persistence.location
+        runtime.configureHistoryWorkspace(path: persistence.location?.standardizedFileURL.path)
         runtime.configureCookies(workspace: persistence.location?.standardizedFileURL.path, directory: cookieDirectory?.path)
         mirrorRuntime()
 
@@ -452,16 +454,22 @@ public final class WireboltModel {
         mirrorSecretEdits()
     }
 
+    public func historyIdentity(for session: DocumentSession) -> SessionRequestIdentity {
+        runtime.requestIdentity(document: session.rust)
+    }
+    public func legacyHistoryEntries(for session: DocumentSession) async -> [RunHistoryEntry] {
+        await runtime.legacyHistory(requestId: session.requestID).map(RunHistoryEntry.init)
+    }
     public func historyEntries(for session: DocumentSession) async -> [RunHistoryEntry] {
-        do { return try await runtime.historyEntries(id: session.requestID).map(RunHistoryEntry.init) }
+        do { return try await runtime.historyEntries(id: historyIdentity(for: session)).map(RunHistoryEntry.init) }
         catch { operationFailure = RunFailure(kind: .storage, issues: []); return [] }
     }
     public func historyCount(for session: DocumentSession) async -> Int {
-        do { return Int(clamping: try await runtime.historyCount(id: session.requestID)) }
+        do { return Int(clamping: try await runtime.historyCount(id: historyIdentity(for: session))) }
         catch { operationFailure = RunFailure(kind: .storage, issues: []); return 0 }
     }
     public func loadHistory(for session: DocumentSession) async {
-        do { try await runtime.loadHistory(id: session.requestID) }
+        do { try await runtime.loadHistory(id: historyIdentity(for: session)) }
         catch { operationFailure = RunFailure(kind: .storage, issues: []) }
         mirrorRuntime()
     }
@@ -480,7 +488,7 @@ public final class WireboltModel {
         }
     }
     public func clearHistory(for session: DocumentSession) async {
-        await runtime.clearHistory(id: session.requestID)
+        await runtime.clearHistory(id: historyIdentity(for: session))
         mirrorRuntime()
     }
 
@@ -620,7 +628,7 @@ public final class WireboltModel {
         let result = await rustOperations.saveEnvironment(
             environment: environment.domain, values: secrets, selected: selectedEnvironmentID,
             platform: persistence.sessionWorkspacePlatform, secrets: rustSecrets, secretPlatform: persistence.sessionSecretPlatform)
-        finishMutation(result)
+        await finishMutation(result)
         return result.succeeded
     }
 
@@ -1038,11 +1046,12 @@ extension WireboltModel {
         let result = await rustOperations.mutate(
             command: command, selected: selectedEnvironmentID,
             platform: persistence.sessionWorkspacePlatform, secrets: rustSecrets, secretPlatform: persistence.sessionSecretPlatform)
-        finishMutation(result)
+        await finishMutation(result)
         return result
     }
 
-    private func finishMutation(_ result: WorkspaceMutation) {
+    private func finishMutation(_ result: WorkspaceMutation) async {
+        if let plan = result.plan { await applyHistoryEffects(plan) }
         mirrorSecretEdits()
         applyMutation(result)
         mirrorWorkspacePresentation()
@@ -1075,10 +1084,17 @@ extension WireboltModel {
                 platform: persistence.sessionWorkspacePlatform, secrets: self.rustSecrets, secretPlatform: persistence.sessionSecretPlatform
             )
             self.mirrorSecretEdits()
+            if let plan = result.plan { await self.applyHistoryEffects(plan) }
             self.applyMutation(result)
             self.mirrorWorkspacePresentation()
             if !result.succeeded { self.undoManager?.removeAllActions(withTarget: self) }
         }
+    }
+
+    private func applyHistoryEffects(_ plan: SessionWorkspacePlan) async {
+        do { try await runtime.applyWorkspaceEffects(effects: plan.effects) }
+        catch { operationFailure = RunFailure(kind: .storage, issues: []) }
+        mirrorRuntime()
     }
 
     private func applyMutation(_ result: WorkspaceMutation) {

@@ -493,17 +493,26 @@ impl AppRunHistory {
         })?;
         lock(&self.inner).record(entry, &lock(&body.inner))
     }
-    pub fn list(&self, request_id: String) -> Result<Vec<u8>, ResponseError> {
-        let entries = lock(&self.inner).list(&request_id)?;
+    pub fn list(
+        &self,
+        identity: wirebolt_app::session::history::SessionRequestIdentity,
+    ) -> Result<Vec<u8>, ResponseError> {
+        let entries = lock(&self.inner).list(&identity)?;
         serde_json::to_vec(&entries).map_err(|error| ResponseError::Io {
             reason: error.to_string(),
         })
     }
-    pub fn count(&self, request_id: String) -> Result<u64, ResponseError> {
-        lock(&self.inner).count(&request_id)
+    pub fn count(
+        &self,
+        identity: wirebolt_app::session::history::SessionRequestIdentity,
+    ) -> Result<u64, ResponseError> {
+        lock(&self.inner).count(&identity)
     }
-    pub fn clear(&self, request_id: String) -> Result<(), ResponseError> {
-        lock(&self.inner).clear(&request_id)
+    pub fn clear(
+        &self,
+        identity: wirebolt_app::session::history::SessionRequestIdentity,
+    ) -> Result<(), ResponseError> {
+        lock(&self.inner).clear(&identity)
     }
 }
 #[derive(Debug, uniffi::Object)]
@@ -828,9 +837,9 @@ impl AppRunHistory {
     }
     pub fn list_typed(
         &self,
-        request_id: String,
+        identity: wirebolt_app::session::history::SessionRequestIdentity,
     ) -> Result<Vec<wirebolt_app::session::history::SessionHistoryEntry>, ResponseError> {
-        lock(&self.inner).list(&request_id)
+        lock(&self.inner).list(&identity)
     }
 }
 

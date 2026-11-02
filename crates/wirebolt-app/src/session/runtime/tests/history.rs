@@ -19,14 +19,14 @@ async fn history_counts_and_clear_revision_belong_to_each_request() {
         ))
         .await;
     }
-    assert_eq!(state.history_count("first").unwrap(), 2);
-    assert_eq!(state.history_count("second").unwrap(), 1);
+    assert_eq!(state.history_count(&key(&state, "first")).unwrap(), 2);
+    assert_eq!(state.history_count(&key(&state, "second")).unwrap(), 1);
     let before = state.snapshot().history_revision;
-    state.clear_history("first");
+    state.clear_history(&key(&state, "first"));
     assert_eq!(state.snapshot().history_revision, before + 1);
-    assert_eq!(state.history_count("first").unwrap(), 0);
-    assert_eq!(state.history_count("second").unwrap(), 1);
-    assert!(!state.snapshot().request_activity.contains_key("first"));
+    assert_eq!(state.history_count(&key(&state, "first")).unwrap(), 0);
+    assert_eq!(state.history_count(&key(&state, "second")).unwrap(), 1);
+    assert!(!state.snapshot().request_activity.contains_key("api/first"));
 }
 #[tokio::test]
 async fn restore_history_uses_bounded_body_and_keeps_request_draft() {
@@ -45,7 +45,7 @@ async fn restore_history_uses_bounded_body_and_keeps_request_draft() {
             root.path(),
         ))
         .await;
-    let entry = state.history_entries("a").unwrap().remove(0);
+    let entry = state.history_entries(&key(&state, "a")).unwrap().remove(0);
     let run = Arc::new(Mutex::new(DocumentRun::default()));
     state.restore(entry.clone(), &run);
     let snapshot = lock(&run).snapshot();
@@ -76,14 +76,14 @@ async fn latest_response_restores_activity_only_into_unused_documents() {
     let run = Arc::new(Mutex::new(DocumentRun::default()));
     state
         .clone()
-        .restore_latest("a".into(), run.clone(), &Changes::default())
+        .restore_latest(key(&state, "a"), run.clone(), &Changes::default())
         .await;
     assert_eq!(lock(&run).snapshot().text, "stored");
-    assert_eq!(state.snapshot().request_activity["a"].status, Some(200));
+    assert_eq!(state.snapshot().request_activity["api/a"].status, Some(200));
     lock(&run).begin("new", root.path());
     state
         .clone()
-        .restore_latest("a".into(), run.clone(), &Changes::default())
+        .restore_latest(key(&state, "a"), run.clone(), &Changes::default())
         .await;
     assert_eq!(lock(&run).snapshot().active_run_id.as_deref(), Some("new"));
 }
@@ -128,7 +128,7 @@ fn resetting_workspace_clears_selection_activity_and_entries_but_keeps_revisions
     let root = tempfile::tempdir().unwrap();
     let state = state(root.path());
     state.select_environment(Some("old".into()));
-    state.clear_history("a");
+    state.clear_history(&key(&state, "a"));
     state.reset_workspace();
     assert!(state.snapshot().history_entries.is_empty());
     assert!(state.snapshot().request_activity.is_empty());
@@ -180,7 +180,8 @@ async fn latest_restore_checks_membership_after_io_and_rejects_departed_workspac
         let observer = gate.clone();
         let task = tokio::spawn(async move {
             state_for_task
-                .restore_latest("a".into(), run_for_task, observer.as_ref())
+                .clone()
+                .restore_latest(key(&state_for_task, "a"), run_for_task, observer.as_ref())
                 .await;
         });
         gate.ready.notified().await;
@@ -217,18 +218,21 @@ async fn corrupt_history_does_not_stop_recording_or_clearing() {
             root.path(),
         ))
         .await;
-    assert_eq!(state.history_count("health").unwrap(), 1);
+    assert_eq!(state.history_count(&key(&state, "health")).unwrap(), 1);
     assert_eq!(state.snapshot().history_entries.len(), 1);
     assert_eq!(
         crate::response::RunHistory::new(directory)
-            .count("health")
+            .count(&key(&state, "health"))
             .unwrap(),
         1
     );
-    state.clear_history("health");
-    assert_eq!(state.history_count("health").unwrap(), 0);
+    state.clear_history(&key(&state, "health"));
+    assert_eq!(state.history_count(&key(&state, "health")).unwrap(), 0);
     assert!(state.snapshot().history_entries.is_empty());
-    assert_eq!(std::fs::read(index).unwrap(), b"[]");
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(&std::fs::read(index).unwrap()).unwrap()["version"],
+        2
+    );
 }
 
 #[tokio::test]
@@ -247,10 +251,10 @@ async fn clear_history_preserves_displayed_response_body() {
             root.path(),
         ))
         .await;
-    let entry = state.history_entries("a").unwrap().remove(0);
+    let entry = state.history_entries(&key(&state, "a")).unwrap().remove(0);
     let run = Mutex::new(DocumentRun::default());
     state.restore(entry.clone(), &run);
-    state.clear_history("a");
+    state.clear_history(&key(&state, "a"));
     let body = lock(&run).body().unwrap();
     assert_eq!(lock(&body).viewport(0, 8).unwrap(), b"response");
     assert!(!std::path::Path::new(&entry.body_path).exists());
@@ -258,4 +262,71 @@ async fn clear_history_preserves_displayed_response_body() {
     drop(body);
     drop(run);
     assert!(!pinned.exists());
+}
+
+#[tokio::test]
+async fn request_history_does_not_cross_workspace_boundaries() {
+    let root = tempfile::tempdir().unwrap();
+    let first = state(root.path());
+    let second = state(root.path());
+    RuntimeRuns::default()
+        .send(command(
+            first,
+            document("same"),
+            Arc::new(Mutex::new(DocumentRun::default())),
+            Arc::new(Transport {
+                body: b"first workspace".to_vec(),
+                ..Default::default()
+            }),
+            root.path(),
+        ))
+        .await;
+    assert_eq!(second.history_count(&key(&second, "same")).unwrap(), 0);
+}
+
+#[tokio::test]
+async fn history_follows_moves_undo_and_in_flight_completions() {
+    use crate::session::workspace::SessionDocumentEffect::Relocate;
+    let root = tempfile::tempdir().unwrap();
+    let state = state(root.path());
+    let run = Arc::new(Mutex::new(DocumentRun::default()));
+    RuntimeRuns::default()
+        .send(command(
+            state.clone(),
+            document("same"),
+            run.clone(),
+            Arc::new(Transport {
+                body: b"fixture".to_vec(),
+                ..Default::default()
+            }),
+            root.path(),
+        ))
+        .await;
+    let source = key(&state, "same");
+    let destination = state.request_identity(Some("other"), "same");
+    state
+        .apply_workspace_effects(&[Relocate {
+            collection_id: "api".into(),
+            request_id: "same".into(),
+            destination: "other".into(),
+        }])
+        .unwrap();
+    assert_eq!(state.history_count(&source).unwrap(), 0);
+    assert_eq!(state.history_count(&destination).unwrap(), 1);
+    let snapshot = lock(&run).snapshot();
+    let body = lock(&run).body().unwrap();
+    state.record(&source, "in-flight", snapshot, &body);
+    assert_eq!(state.history_count(&destination).unwrap(), 2);
+    state
+        .apply_workspace_effects(&[Relocate {
+            collection_id: "other".into(),
+            request_id: "same".into(),
+            destination: "api".into(),
+        }])
+        .unwrap();
+    assert_eq!(state.history_count(&destination).unwrap(), 0);
+    assert_eq!(state.history_count(&source).unwrap(), 2);
+    let mut reloaded = RunHistory::new(root.path().join("history"));
+    assert_eq!(reloaded.count(&source).unwrap(), 2);
+    assert_eq!(reloaded.count(&destination).unwrap(), 0);
 }

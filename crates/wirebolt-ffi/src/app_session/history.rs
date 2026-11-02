@@ -3,15 +3,26 @@
     clippy::needless_pass_by_value,
     reason = "UniFFI lifts owned records at the boundary."
 )]
-use super::{SessionCompletion, SessionFailure, SessionHead, SessionHistoryEntry, SessionPrepared};
+use super::{
+    SessionCompletion, SessionFailure, SessionHead, SessionHistoryEntry, SessionPrepared,
+    SessionRequestIdentity,
+};
 #[uniffi::remote(Record)]
 pub struct SessionHistoryEntry {
     pub id: String,
     pub request_id: String,
+    pub identity: Option<SessionRequestIdentity>,
     pub created_at: f64,
     pub prepared: SessionPrepared,
     pub response_head: Option<SessionHead>,
     pub completion: Option<SessionCompletion>,
     pub failure: Option<SessionFailure>,
     pub body_path: String,
+}
+
+#[uniffi::remote(Record)]
+pub struct SessionRequestIdentity {
+    pub workspace: String,
+    pub collection_id: String,
+    pub request_id: String,
 }

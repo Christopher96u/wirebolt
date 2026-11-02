@@ -44,6 +44,11 @@ run that started it. The C surface only warms the runtime and reports its ABI ve
 
 Response bodies are file-backed. UI state retains bounded viewport data and
 indexes, not an ever-growing body string. History uses a quota and LRU eviction.
+History identities include the canonical workspace namespace, collection ID and
+request ID; moving a request moves its scoped history, including completions of
+runs already in flight. Request IDs from new imports are UUIDs. Legacy ID
+collisions block moves instead of replacing another request. A displayed historical
+response owns a temporary body independently of history retention.
 The cookie jar applies domain, path, secure, expiry, and SameSite rules within
 its workspace. Runtime storage remains outside Git-visible workspace files.
 

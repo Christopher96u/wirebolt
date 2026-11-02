@@ -3,7 +3,7 @@ use crate::{
     domain::{DomainEnvironment, DomainValueSource},
     response::{ResponseCookieJar, RunHistory, StoredCookie, cookie_storage_path, reference_time},
     session::{
-        history::{self, SessionHistoryEntry},
+        history::{self, SessionHistoryEntry, SessionRequestIdentity},
         run::{DocumentRun, SessionRunSnapshot},
     },
 };
@@ -31,6 +31,11 @@ pub struct RuntimeSnapshot {
     pub cookie_revision: u64,
 }
 #[derive(Debug)]
+struct HistoryContext {
+    workspace: String,
+    moves: HashMap<SessionRequestIdentity, SessionRequestIdentity>,
+}
+#[derive(Debug)]
 pub struct RuntimeState {
     pub history: RuntimeHistory,
     default_cookies: RuntimeCookies,
@@ -38,6 +43,7 @@ pub struct RuntimeState {
     snapshot: Mutex<RuntimeSnapshot>,
     selected: Mutex<Option<String>>,
     generation: AtomicU64,
+    history_context: Mutex<HistoryContext>,
 }
 impl RuntimeState {
     #[must_use]
@@ -49,7 +55,81 @@ impl RuntimeState {
             snapshot: Mutex::default(),
             selected: Mutex::default(),
             generation: AtomicU64::new(0),
+            history_context: Mutex::new(HistoryContext {
+                workspace: format!("session:{}", crate::domain::identity::unique_id()),
+                moves: HashMap::new(),
+            }),
         }
+    }
+    pub fn configure_history_workspace(&self, path: Option<&str>) {
+        let Some(path) = path else {
+            lock(&self.history_context).workspace =
+                format!("session:{}", crate::domain::identity::unique_id());
+            return;
+        };
+        // Reuse the canonical workspace namespace used for local cookie storage.
+        let key = cookie_storage_path(Path::new(path), Path::new(""));
+        lock(&self.history_context).workspace = key.to_string_lossy().into_owned();
+    }
+    #[must_use]
+    pub fn request_identity(
+        &self,
+        collection: Option<&str>,
+        request: &str,
+    ) -> SessionRequestIdentity {
+        SessionRequestIdentity {
+            workspace: lock(&self.history_context).workspace.clone(),
+            collection_id: collection.unwrap_or("").into(),
+            request_id: request.into(),
+        }
+    }
+    #[must_use]
+    pub fn document_identity(
+        &self,
+        document: &crate::session::tabs::SessionDocument,
+    ) -> SessionRequestIdentity {
+        self.request_identity(document.collection_id.as_deref(), &document.request_id)
+    }
+    /// # Errors
+    /// Returns an I/O error if the history index cannot be saved.
+    pub fn apply_workspace_effects(
+        &self,
+        effects: &[crate::session::workspace::SessionDocumentEffect],
+    ) -> crate::response::ResponseResult<()> {
+        use crate::session::workspace::SessionDocumentEffect;
+        for effect in effects {
+            if let SessionDocumentEffect::Relocate {
+                collection_id,
+                request_id,
+                destination,
+            } = effect
+            {
+                let from = self.request_identity(Some(collection_id), request_id);
+                let to = self.request_identity(Some(destination), request_id);
+                let mut context = lock(&self.history_context);
+                // Redirect in-flight completions too; undo reverses the mapping.
+                context.moves.remove(&to);
+                for target in context.moves.values_mut() {
+                    if *target == from {
+                        target.clone_from(&to);
+                    }
+                }
+                context.moves.insert(from.clone(), to.clone());
+                lock(&self.history).relocate(&from, &to)?;
+                let mut snapshot = lock(&self.snapshot);
+                if let Some(activity) = snapshot.request_activity.remove(&from.activity_key()) {
+                    snapshot
+                        .request_activity
+                        .insert(to.activity_key(), activity);
+                }
+                snapshot.history_entries = lock(&self.history).list(&to)?;
+                snapshot.history_revision += 1;
+            }
+        }
+        Ok(())
+    }
+    pub fn legacy_history(&self, id: &str) -> Vec<SessionHistoryEntry> {
+        lock(&self.history).legacy_list(id)
     }
     pub fn select_environment(&self, id: Option<String>) {
         *lock(&self.selected) = id;
@@ -106,32 +186,35 @@ impl RuntimeState {
     /// Returns a history storage error.
     pub fn history_entries(
         &self,
-        id: &str,
+        id: &SessionRequestIdentity,
     ) -> crate::response::ResponseResult<Vec<SessionHistoryEntry>> {
         lock(&self.history).list(id)
     }
     /// # Errors
     /// Returns a history storage error.
-    pub fn history_count(&self, id: &str) -> crate::response::ResponseResult<u64> {
+    pub fn history_count(
+        &self,
+        id: &SessionRequestIdentity,
+    ) -> crate::response::ResponseResult<u64> {
         lock(&self.history).count(id)
     }
     /// # Errors
     /// Returns a history storage error.
-    pub fn load_history(&self, id: &str) -> crate::response::ResponseResult<()> {
+    pub fn load_history(&self, id: &SessionRequestIdentity) -> crate::response::ResponseResult<()> {
         let entries = self.history_entries(id)?;
         lock(&self.snapshot).history_entries = entries;
         Ok(())
     }
-    pub fn clear_history(&self, id: &str) {
+    pub fn clear_history(&self, id: &SessionRequestIdentity) {
         let _ = lock(&self.history).clear(id);
         let mut state = lock(&self.snapshot);
         state.history_entries.clear();
-        state.request_activity.remove(id);
+        state.request_activity.remove(&id.activity_key());
         state.history_revision += 1;
     }
     pub fn record(
         &self,
-        id: &str,
+        id: &SessionRequestIdentity,
         run_id: &str,
         snapshot: SessionRunSnapshot,
         body: &crate::session::run::SharedBody,
@@ -139,9 +222,12 @@ impl RuntimeState {
         let Some(prepared) = snapshot.prepared else {
             return;
         };
+        let context = lock(&self.history_context);
+        let id = context.moves.get(id).unwrap_or(id);
         let entry = SessionHistoryEntry {
             id: run_id.into(),
-            request_id: id.into(),
+            request_id: id.request_id.clone(),
+            identity: Some(id.clone()),
             created_at: reference_time(),
             prepared,
             response_head: snapshot.head.clone(),
@@ -156,7 +242,7 @@ impl RuntimeState {
         let mut state = lock(&self.snapshot);
         state.history_entries = entries;
         state.request_activity.insert(
-            id.into(),
+            id.activity_key(),
             RequestActivity {
                 date: reference_time(),
                 status: snapshot.head.map(|h| h.status),
@@ -173,11 +259,11 @@ impl RuntimeState {
     }
     pub fn restore(&self, entry: SessionHistoryEntry, run: &Mutex<DocumentRun>) {
         let (snapshot, path) = history_snapshot(entry);
-        lock(run).restore(snapshot, path);
+        lock(run).restore(snapshot, &path);
     }
     pub async fn restore_latest(
         self: Arc<Self>,
-        id: String,
+        id: SessionRequestIdentity,
         run: Arc<Mutex<DocumentRun>>,
         observer: &dyn super::RuntimeObserver,
     ) {
@@ -189,7 +275,7 @@ impl RuntimeState {
                 date: entry.created_at,
                 status: entry.response_head.as_ref().map(|head| head.status),
             };
-            let id = entry.request_id.clone();
+            let id = entry.identity.as_ref()?.activity_key();
             let (snapshot, path) = history_snapshot(entry);
             Some((id, activity, snapshot, path))
         })
@@ -213,7 +299,7 @@ impl RuntimeState {
         {
             return;
         }
-        run.restore(snapshot, path);
+        run.restore(snapshot, &path);
         state.request_activity.insert(id, activity);
     }
 }

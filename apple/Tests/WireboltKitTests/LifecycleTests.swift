@@ -116,13 +116,14 @@ struct LifecycleTests {
         try await body.finish()
         let prepared = PreparedRunSnapshot(method: "GET", url: "https://example.com/a", headers: [],
             body: PreparedBodySnapshot(byteCount: 0, contentType: nil, textPreview: nil, redacted: false), transport: TransportSettings())
-        try await history.record(runID: RunID(), requestID: "a", prepared: prepared,
-            responseHead: ResponseHead(status: 200, version: "HTTP/1.1", headers: [], timeToHeadersNS: 1),
-            completion: nil, failure: nil, body: body)
+
 
         let a = RequestLocation(collectionID: "api", request: RequestDraft(id: "a", name: "A"))
         let workspace = WorkspaceDraft(name: "Layout", collections: [CollectionDraft(id: "api", name: "API", requests: [a])])
         let model = WireboltModel(runner: LifecycleRunner(), persistence: LayoutPersistence(workspace: workspace), history: history)
+        try await history.record(runID: RunID(), identity: model.historyIdentity(for: model.sessions.open(draft: RequestDraft(id: "a"), collectionID: "api")), prepared: prepared,
+            responseHead: ResponseHead(status: 200, version: "HTTP/1.1", headers: [], timeToHeadersNS: 1),
+            completion: nil, failure: nil, body: body)
         await model.loadWorkspace(restoring: SessionLayout(groups: [.init(tabs: [.init(collectionID: "api", requestID: "a")], selectedIndex: 0)]))
         let session = try #require(model.sessions.activeSession)
         for _ in 0 ..< 200 where session.responseHead == nil { try await Task.sleep(for: .milliseconds(5)) }

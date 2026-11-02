@@ -113,7 +113,7 @@ struct ResponseStorageTests {
             try await body.finish()
             try await repository.record(
                 runID: runID,
-                requestID: "health",
+                identity: SessionRequestIdentity(workspace: "test", collectionId: "api", requestId: "health"),
                 prepared: snapshot,
                 responseHead: nil,
                 completion: RunCompletion(bytesReceived: UInt64(index), totalTimeNS: 1),
@@ -124,10 +124,10 @@ struct ResponseStorageTests {
         }
 
         let reloaded = HistoryRepository(root: root)
-        let entries = try await reloaded.list(requestID: "health")
+        let entries = try await reloaded.list(identity: SessionRequestIdentity(workspace: "test", collectionId: "api", requestId: "health"))
         #expect(entries.count == HistoryRepository.maximumEntriesPerRequest)
-        #expect(try await reloaded.count(requestID: "health") == HistoryRepository.maximumEntriesPerRequest)
-        #expect(try await reloaded.count(requestID: "missing") == 0)
+        #expect(try await reloaded.count(identity: SessionRequestIdentity(workspace: "test", collectionId: "api", requestId: "health")) == HistoryRepository.maximumEntriesPerRequest)
+        #expect(try await reloaded.count(identity: SessionRequestIdentity(workspace: "test", collectionId: "api", requestId: "missing")) == 0)
         #expect(entries.allSatisfy { FileManager.default.fileExists(atPath: $0.bodyPath) })
     }
 

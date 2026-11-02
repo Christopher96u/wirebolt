@@ -265,6 +265,13 @@ pub(super) fn find_bytes(haystack: &[u8], needle: &[u8]) -> Option<usize> {
 /// Shared session records are persisted directly; the repository owns ordering,
 /// quotas and disk I/O while preserving the existing history file format.
 pub use crate::session::history::SessionHistoryEntry as HistoryEntry;
+use crate::session::history::SessionRequestIdentity;
+
+#[derive(Serialize, Deserialize)]
+struct HistoryIndex {
+    version: u32,
+    entries: Vec<HistoryEntry>,
+}
 #[derive(Debug)]
 pub struct RunHistory {
     root: PathBuf,
@@ -286,7 +293,15 @@ impl RunHistory {
         if self.entries.is_none() {
             let entries = fs::read(self.root.join("index.json"))
                 .ok()
-                .and_then(|data| serde_json::from_slice(&data).ok())
+                .and_then(|data| {
+                    // Version 1 was an unversioned array. Complete identities can
+                    // be retained verbatim; requestID-only entries stay unassigned.
+                    serde_json::from_slice::<HistoryIndex>(&data)
+                        .ok()
+                        .filter(|index| index.version == 2)
+                        .map(|index| index.entries)
+                        .or_else(|| serde_json::from_slice::<Vec<HistoryEntry>>(&data).ok())
+                })
                 .unwrap_or_default();
             self.entries = Some(entries);
         }
@@ -299,22 +314,30 @@ impl RunHistory {
         let destination = self.root.join(format!("{}.body", entry.id));
         body.export(&destination)?;
         entry.body_path = destination.to_string_lossy().into_owned();
-        let request_id = entry.request_id.clone();
+        let identity = entry.identity.clone();
         self.entries().push(entry);
         let mut matching: Vec<_> = self
             .entries()
             .iter()
-            .filter(|e| e.request_id == request_id)
+            .filter(|e| identity.is_some() && e.identity == identity)
             .cloned()
             .collect();
         matching.sort_by(|a, b| b.created_at.total_cmp(&a.created_at));
         for entry in matching.into_iter().skip(self.maximum_entries) {
             self.evict(&entry);
         }
-        let mut total: u64 = self.entries().iter().map(|e| file_size(&e.body_path)).sum();
+        let mut total: u64 = self
+            .entries()
+            .iter()
+            .filter(|e| e.identity.is_some())
+            .map(|e| file_size(&e.body_path))
+            .sum();
         let mut oldest = self.entries().clone();
         oldest.sort_by(|a, b| a.created_at.total_cmp(&b.created_at));
         for entry in oldest {
+            if entry.identity.is_none() {
+                continue;
+            }
             if total <= self.maximum_bytes {
                 break;
             }
@@ -329,11 +352,11 @@ impl RunHistory {
     }
     /// # Errors
     /// Unavailable or invalid indexes are treated as empty history.
-    pub fn list(&mut self, request_id: &str) -> ResponseResult<Vec<HistoryEntry>> {
+    pub fn list(&mut self, identity: &SessionRequestIdentity) -> ResponseResult<Vec<HistoryEntry>> {
         let mut entries: Vec<_> = self
             .entries()
             .iter()
-            .filter(|e| e.request_id == request_id)
+            .filter(|e| e.identity.as_ref() == Some(identity))
             .cloned()
             .collect();
         entries.sort_by(|a, b| b.created_at.total_cmp(&a.created_at));
@@ -341,24 +364,55 @@ impl RunHistory {
     }
     /// # Errors
     /// Unavailable or invalid indexes are treated as empty history.
-    pub fn count(&mut self, request_id: &str) -> ResponseResult<u64> {
+    pub fn count(&mut self, identity: &SessionRequestIdentity) -> ResponseResult<u64> {
         Ok(count(
             self.entries()
                 .iter()
-                .filter(|e| e.request_id == request_id)
+                .filter(|e| e.identity.as_ref() == Some(identity))
                 .count(),
         ))
     }
     /// # Errors
     /// Returns an I/O error if writing the index fails.
-    pub fn clear(&mut self, request_id: &str) -> ResponseResult<()> {
-        for entry in self.list(request_id)? {
+    pub fn clear(&mut self, identity: &SessionRequestIdentity) -> ResponseResult<()> {
+        for entry in self.list(identity)? {
             self.evict(&entry);
         }
         self.persist()
     }
+    /// Entries without a complete identity are available separately for recovery.
+    /// Clearing or quota eviction of a scoped request never removes these files.
+    pub fn legacy_list(&mut self, request_id: &str) -> Vec<HistoryEntry> {
+        let mut entries: Vec<_> = self
+            .entries()
+            .iter()
+            .filter(|entry| entry.identity.is_none() && entry.request_id == request_id)
+            .cloned()
+            .collect();
+        entries.sort_by(|a, b| b.created_at.total_cmp(&a.created_at));
+        entries
+    }
+    /// # Errors
+    /// Returns an I/O error if the migrated index cannot be saved.
+    pub fn relocate(
+        &mut self,
+        from: &SessionRequestIdentity,
+        to: &SessionRequestIdentity,
+    ) -> ResponseResult<()> {
+        for entry in self.entries() {
+            if entry.identity.as_ref() == Some(from) {
+                entry.identity = Some(to.clone());
+                entry.request_id.clone_from(&to.request_id);
+            }
+        }
+        self.persist()
+    }
     fn persist(&mut self) -> ResponseResult<()> {
-        let data = serde_json::to_vec(self.entries()).map_err(|e| json_io(&e))?;
+        let index = HistoryIndex {
+            version: 2,
+            entries: self.entries().clone(),
+        };
+        let data = serde_json::to_vec(&index).map_err(|e| json_io(&e))?;
         atomic_write(&self.root.join("index.json"), &data)
     }
 }

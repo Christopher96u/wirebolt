@@ -28,6 +28,8 @@ Changes under **Unreleased** are on `main` but not in a published build yet. Dow
 
 ### Fixed
 
+- Requests with the same ID shared history across collections and workspaces, so clearing one cleared another’s responses. History now follows the complete request identity and moves; older entries without enough identity information remain available under Unassigned Legacy History.
+
 - Clearing history or evicting old entries made a restored response unreadable. Displayed responses now keep their own temporary body until the last viewer releases it.
 
 - Moving an imported request could overwrite another request. New imports have unique IDs; moves with a legacy ID collision are refused so both requests and their undo state survive.

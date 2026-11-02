@@ -66,6 +66,24 @@ Unicode line/paragraph separators. The Markdown corpus compares every attributed
 run and visible text, including unfinished fenced-code-block newlines and inserted
 block separators.
 
+## History compatibility
+
+The local history `index.json` is version 2: an object with `version` and `entries`.
+Each new entry carries `identity` (workspace namespace, collection ID and request
+ID). The namespace uses the same canonical-path hash as workspace cookies;
+unsaved workspaces use a per-runtime namespace. Moves and Undo migrate scoped
+entries and redirect in-flight completions to their current collection.
+
+Version 1 was an unversioned array containing only `requestID`. Reading it retains
+all entries; the next write atomically wraps them in the version 2 index. Entries
+with a complete identity retain that key. A requestID-only entry cannot be assigned
+unambiguously: another collection or a copied workspace may contain the same ID,
+even when the currently open workspace has only one match. Such entries keep their
+body files and are available in **History → Unassigned Legacy History** for the
+matching request ID. They are excluded from scoped counts, Clear History and quota
+eviction. No workspace or collection is guessed from the prepared URL. Displayed
+responses own temporary copies, released with their last body handle.
+
 ## Performance
 
 Run on an idle Apple Silicon Mac:
