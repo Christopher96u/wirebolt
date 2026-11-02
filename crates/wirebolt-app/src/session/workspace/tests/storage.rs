@@ -500,3 +500,44 @@ async fn workspace_move_and_undo_migrate_history_before_returning() {
     assert_eq!(history.history_count(&identity).unwrap(), 1);
     assert_eq!(history.history_count(&target).unwrap(), 0);
 }
+
+#[tokio::test]
+async fn clean_unsaved_document_can_be_saved_to_its_first_collection() {
+    let (_root, store) = persistence();
+    let original = imported_pair(&store);
+    let destination = original.collections[0].id.clone();
+    let session = Arc::new(WorkspaceSession::default());
+    session.replace(original);
+    let ops = WorkspaceOperations::new(session);
+    let platform = SaveGate {
+        store: store.clone(),
+        ready: tokio::sync::Notify::default(),
+        release: tokio::sync::Notify::default(),
+        pause: std::sync::atomic::AtomicBool::new(false),
+    };
+    // Native clean tabs retain a saved projection even before they have a location.
+    let document = document("new", None, true);
+    assert!(
+        ops.save(
+            document,
+            Some(destination.clone()),
+            &platform,
+            &SessionSecrets::default(),
+            &Secrets
+        )
+        .await
+        .succeeded
+    );
+    assert!(
+        store
+            .domain_snapshot()
+            .unwrap()
+            .collections
+            .iter()
+            .find(|collection| collection.id == destination)
+            .unwrap()
+            .requests
+            .iter()
+            .any(|location| location.request.id == "new")
+    );
+}

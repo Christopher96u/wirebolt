@@ -633,7 +633,7 @@ impl WorkspaceOperations {
         secret_platform: &dyn SessionSecretPlatform,
     ) -> WorkspaceSave {
         let _guard = self.edits.lock().await;
-        let was_saved = document.saved_draft.is_some();
+        let was_saved = document.collection_id.is_some() && document.saved_draft.is_some();
         let mut result = WorkspaceSave {
             original_authentication: document.draft.authentication.clone(),
             document_id: document.id,
