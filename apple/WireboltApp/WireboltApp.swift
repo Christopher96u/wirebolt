@@ -131,7 +131,7 @@ final class WireboltAppDelegate: NSObject, NSApplicationDelegate {
         }
         let window = WorkspaceWindowRegistry.primary.flatMap { $0.isVisible ? $0 : nil } ?? NSApp.mainWindow
         Task {
-            var proceed = await confirmEnvironmentEdits(interface: interface, in: window)
+            var proceed = await finishEnvironmentEditing(interface: interface, in: window)
             if proceed && model.hasUnsavedRequestChanges {
                 proceed = await confirmUnsavedChanges(model: model, in: window, quitting: true)
             }
@@ -153,15 +153,8 @@ final class WireboltAppDelegate: NSObject, NSApplicationDelegate {
     /// System (nil) fully reverts to the macOS appearance.
     static func applyInterfaceAppearance() {
         let selection = UserDefaults.standard.string(forKey: "interfaceAppearance") ?? "system"
-        if let custom = ThemeStore.shared.customThemes.first(where: { $0.id == selection }) {
-            NSApp.appearance = NSAppearance(named: custom.tokens.preset == .paper ? .aqua : .darkAqua)
-            return
-        }
-        NSApp.appearance = switch selection {
-        case "light", "paper": NSAppearance(named: .aqua)
-        case "dark", "black", "ember": NSAppearance(named: .darkAqua)
-        default: nil
-        }
+        let appearance = ThemeStore.shared.appearance(selection: selection)
+        NSApp.appearance = appearance.followsSystem ? nil : NSAppearance(named: appearance.tokens.isDark ? .darkAqua : .aqua)
     }
 }
 

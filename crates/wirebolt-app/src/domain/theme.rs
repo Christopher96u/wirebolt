@@ -314,6 +314,8 @@ pub struct DomainMethodChip {
 }
 #[derive(Clone, Debug, PartialEq)]
 pub struct ResolvedTokens {
+    pub is_dark: bool,
+    pub statuses: std::collections::HashMap<DomainStatusClass, RgbColor>,
     pub definition: ThemeTokens,
     pub primary: RgbColor,
     pub muted: RgbColor,
@@ -360,6 +362,8 @@ pub fn resolve(preset: DomainThemePreset, increased: bool) -> ResolvedTokens {
         );
     }
     ResolvedTokens {
+        is_dark: preset != DomainThemePreset::Paper,
+        statuses: resolved_statuses(&d, &chips, increased, true),
         primary: strengthen(d.primary, &s, 7.0),
         muted: strengthen(d.muted, &s, if increased { 7.0 } else { 4.5 }),
         hairline: if increased {
@@ -584,11 +588,70 @@ pub enum DomainSemanticColor {
     Neutral,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum DomainStatusClass {
     Informational,
     Success,
     Redirection,
     ClientError,
     ServerError,
+}
+
+pub(super) fn resolved_statuses(
+    definition: &ThemeTokens,
+    chips: &std::collections::HashMap<MethodChipKind, DomainMethodChip>,
+    increased: bool,
+    built_in: bool,
+) -> std::collections::HashMap<DomainStatusClass, RgbColor> {
+    [100, 200, 300, 400, 500]
+        .into_iter()
+        .map(|status| {
+            let class = status_class(status);
+            let color = if increased && built_in {
+                let adaptive = status_color(status);
+                if definition.preset == DomainThemePreset::Paper {
+                    adaptive.light_high_contrast
+                } else {
+                    adaptive.dark_high_contrast
+                }
+            } else {
+                match class {
+                    DomainStatusClass::Informational => chips[&MethodChipKind::Post].foreground,
+                    DomainStatusClass::Success => definition.success,
+                    DomainStatusClass::Redirection => chips[&MethodChipKind::Put].foreground,
+                    DomainStatusClass::ClientError => definition.warning,
+                    DomainStatusClass::ServerError => definition.error,
+                }
+            };
+            (class, color)
+        })
+        .collect()
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct ResolvedAppearance {
+    pub tokens: ResolvedTokens,
+    pub custom: Option<library::CustomTheme>,
+    pub follows_system: bool,
+}
+#[must_use]
+pub fn resolve_selection(
+    selection: &str,
+    themes: &[library::CustomTheme],
+    system_is_dark: bool,
+    increased: bool,
+) -> ResolvedAppearance {
+    let custom = themes.iter().find(|theme| theme.id == selection).cloned();
+    let tokens = custom.as_ref().map_or_else(
+        || resolve(select_preset(selection, system_is_dark), increased),
+        |theme| custom::resolve(theme.tokens.clone(), increased),
+    );
+    let follows_system = custom.is_none()
+        && DomainThemePreset::from_preference(selection).is_none()
+        && !matches!(selection, "light" | "dark");
+    ResolvedAppearance {
+        tokens,
+        custom,
+        follows_system,
+    }
 }

@@ -9,7 +9,7 @@ use std::{
     sync::{Arc, Mutex},
 };
 use wirebolt_app::domain::theme::{
-    self, ResolvedTokens, RgbColor, ThemeTokens,
+    self, ResolvedAppearance, ResolvedTokens, RgbColor, ThemeTokens,
     custom::ThemePreview,
     library::{CustomTheme, ThemeLibrary, ThemeLibrarySnapshot},
 };
@@ -48,10 +48,6 @@ pub fn domain_resolve_custom_theme(tokens: ThemeTokens, increased: bool) -> Reso
     theme::custom::resolve(tokens, increased)
 }
 #[uniffi::export]
-pub fn domain_import_vscode_theme(bytes: Vec<u8>) -> Result<ThemePreview, DomainError> {
-    theme::vscode::parse(&bytes).map_err(invalid)
-}
-#[uniffi::export]
 pub fn app_import_vscode_theme(path: String) -> Result<ThemePreview, DomainError> {
     theme::vscode::read(Path::new(&path)).map_err(invalid)
 }
@@ -82,4 +78,20 @@ impl AppThemeLibrary {
     pub fn delete(&self, id: String, selection: String) -> Result<String, DomainError> {
         lock(&self.inner).delete(&id, &selection).map_err(invalid)
     }
+}
+
+#[uniffi::remote(Record)]
+pub struct ResolvedAppearance {
+    pub tokens: ResolvedTokens,
+    pub custom: Option<CustomTheme>,
+    pub follows_system: bool,
+}
+#[uniffi::export]
+pub fn domain_resolve_appearance(
+    selection: String,
+    themes: Vec<CustomTheme>,
+    system_is_dark: bool,
+    increased: bool,
+) -> theme::ResolvedAppearance {
+    theme::resolve_selection(&selection, &themes, system_is_dark, increased)
 }

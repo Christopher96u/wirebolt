@@ -39,7 +39,7 @@ pub fn read(path: &Path) -> Result<ThemePreview, String> {
         .extension()
         .is_some_and(|e| e.eq_ignore_ascii_case("json"))
     {
-        return Err("Choose a VS Code colour theme with a .json extension.".into());
+        return Err("Choose a VS Code color theme with a .json extension.".into());
     }
     let bytes = read_bounded(path, MAX_IMPORT_BYTES)?;
     parse(&bytes)
@@ -96,16 +96,16 @@ pub fn parse(bytes: &[u8]) -> Result<ThemePreview, String> {
     let accent = color(&colors, "focusBorder", background)?
         .or(color(&colors, "button.background", background)?)
         .unwrap_or(RgbColor::hex(0x0079_c0ff));
-    let mut d = custom::derive(background, accent).tokens;
+    let mut tokens = custom::derive(background, accent).tokens;
     // Reapply source surfaces so every repair is included in the import report.
-    d.window = background;
-    map_colors(&mut d, &colors)?;
+    tokens.window = background;
+    map_colors(&mut tokens, &colors)?;
     for rule in doc.token_colors.unwrap_or_default() {
-        apply_rule(&mut d, rule)?;
+        apply_rule(&mut tokens, rule)?;
     }
-    let (tokens, mut notices) = custom::checked(d, false);
+    let (tokens, mut notices) = custom::checked(tokens, false);
     if doc.include.is_some() {
-        notices.insert(0, "This theme includes a parent theme. Parent files are not resolved; missing colours were derived.".into());
+        notices.insert(0, "This theme includes a parent theme. Parent files are not resolved; missing colors were derived.".into());
     }
     let name = doc
         .name
@@ -119,90 +119,85 @@ pub fn parse(bytes: &[u8]) -> Result<ThemePreview, String> {
 }
 
 fn map_colors(
-    d: &mut ThemeTokens,
+    tokens: &mut ThemeTokens,
     colors: &BTreeMap<String, Option<String>>,
 ) -> Result<(), String> {
-    let canvas = d.window;
+    let canvas = tokens.window;
     // More specific editor/list/input tokens win over their general counterparts.
     for (key, destination) in [
-        ("sideBar.background", &mut d.sidebar),
-        ("input.background", &mut d.card),
-        ("list.inactiveSelectionBackground", &mut d.selected),
-        ("tab.activeBackground", &mut d.tab_active),
-        ("editorWidget.background", &mut d.overlay),
-        ("sideBar.border", &mut d.hairline),
-        ("input.border", &mut d.card_border),
-        ("editor.foreground", &mut d.primary),
-        ("sideBar.foreground", &mut d.secondary),
-        ("descriptionForeground", &mut d.muted),
-        ("editorLineNumber.foreground", &mut d.line_number),
-        ("button.background", &mut d.send_background),
-        ("button.foreground", &mut d.send_foreground),
-        ("editorWarning.foreground", &mut d.warning),
-        ("editorError.foreground", &mut d.error),
-        ("testing.iconPassed", &mut d.success),
+        ("sideBar.background", &mut tokens.sidebar),
+        ("input.background", &mut tokens.card),
+        ("list.inactiveSelectionBackground", &mut tokens.selected),
+        ("tab.activeBackground", &mut tokens.tab_active),
+        ("editorWidget.background", &mut tokens.overlay),
+        ("editor.foreground", &mut tokens.primary),
+        ("sideBar.foreground", &mut tokens.secondary),
+        ("descriptionForeground", &mut tokens.muted),
+        ("editorLineNumber.foreground", &mut tokens.line_number),
+        ("button.background", &mut tokens.send_background),
+        ("button.foreground", &mut tokens.send_foreground),
+        ("editorWarning.foreground", &mut tokens.warning),
+        ("editorError.foreground", &mut tokens.error),
+        ("testing.iconPassed", &mut tokens.success),
         (
             "editorBracketHighlight.foreground1",
-            &mut d.syntax_punctuation,
+            &mut tokens.syntax_punctuation,
         ),
     ] {
-        if let Some(c) = color(colors, key, canvas)? {
-            *destination = c;
+        if let Some(color) = color(colors, key, canvas)? {
+            *destination = color;
         }
     }
-    if let Some(c) = color(colors, "list.activeSelectionBackground", canvas)? {
-        d.selected = c;
+    if let Some(color) = color(colors, "list.activeSelectionBackground", canvas)? {
+        tokens.selected = color;
     }
-    if let Some(c) = color(colors, "focusBorder", canvas)? {
-        d.card_border = c;
+    if let Some(color) = color(colors, "input.foreground", canvas)? {
+        tokens.syntax_punctuation = color;
     }
-    if let Some(c) = color(colors, "input.foreground", canvas)? {
-        d.syntax_punctuation = c;
-    }
-    if let Some(c) = color(colors, "list.activeSelectionForeground", canvas)? {
+    if let Some(color) = color(colors, "list.activeSelectionForeground", canvas)? {
         // All text must work on all selection and editor surfaces.
-        d.primary = c;
+        tokens.primary = color;
     }
     Ok(())
 }
 
-fn apply_rule(d: &mut ThemeTokens, rule: TokenRule) -> Result<(), String> {
+fn apply_rule(tokens: &mut ThemeTokens, rule: TokenRule) -> Result<(), String> {
     let Some(fg) = rule.settings.foreground else {
         return Ok(());
     };
-    let c = parse_color(&fg, d.window)
-        .ok_or_else(|| format!("Invalid token foreground colour: {fg}"))?;
+    let color = parse_color(&fg, tokens.window)
+        .ok_or_else(|| format!("Invalid token foreground color: {fg}"))?;
     let scopes = match rule.scope {
         None => {
-            d.primary = c;
-            d.syntax_punctuation = c;
+            tokens.primary = color;
+            tokens.syntax_punctuation = color;
             return Ok(());
         }
-        Some(Scopes::One(s)) => vec![s],
-        Some(Scopes::Many(s)) => s,
+        Some(Scopes::One(scope_text)) => vec![scope_text],
+        Some(Scopes::Many(scope_text)) => scope_text,
     };
     for selectors in scopes {
         for selector in selectors.split(',') {
             // The rightmost scope is the token; ancestors constrain its context.
             let scope = selector.split_whitespace().last().unwrap_or("");
             if scope.starts_with("comment") {
-                d.dim = c;
-                d.muted = c;
+                tokens.dim = color;
+                tokens.muted = color;
             } else if scope.contains("property") || scope.contains("support.type.property-name") {
-                d.syntax_key = c;
+                tokens.syntax_key = color;
             } else if scope.starts_with("string") {
-                d.syntax_string = c;
+                tokens.syntax_string = color;
             } else if scope.starts_with("constant.numeric") {
-                d.syntax_number = c;
+                tokens.syntax_number = color;
             } else if scope.starts_with("keyword")
                 || scope.starts_with("storage")
                 || scope.starts_with("constant.language")
             {
-                d.syntax_keyword = c;
+                tokens.syntax_keyword = color;
             } else if scope.starts_with("punctuation") {
-                d.syntax_punctuation = c;
+                tokens.syntax_punctuation = color;
             } else if scope.starts_with("variable") {
-                d.variable_foreground = c;
+                tokens.variable_foreground = color;
             }
         }
     }
@@ -217,7 +212,10 @@ fn color(
     colors
         .get(key)
         .and_then(Option::as_deref)
-        .map(|s| parse_color(s, background).ok_or_else(|| format!("Invalid colour for {key}: {s}")))
+        .map(|scope_text| {
+            parse_color(scope_text, background)
+                .ok_or_else(|| format!("Invalid color for {key}: {scope_text}"))
+        })
         .transpose()
 }
 
@@ -227,7 +225,10 @@ fn parse_color(value: &str, background: RgbColor) -> Option<RgbColor> {
         return None;
     }
     let expanded = match hex.len() {
-        3 | 4 => hex.chars().flat_map(|c| [c, c]).collect::<String>(),
+        3 | 4 => hex
+            .chars()
+            .flat_map(|color| [color, color])
+            .collect::<String>(),
         6 | 8 => hex.to_owned(),
         _ => return None,
     };

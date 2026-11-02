@@ -101,7 +101,7 @@ public struct ResolvedTheme: Equatable, Sendable {
     public let increasedContrast: Bool
     public let geometry: ThemeGeometry
     public let typography: ThemeTypography
-    public var isDark: Bool { definition.preset != .paper }
+    public var isDark: Bool { tokens.isDark }
     public var primary: PaletteColor { tokens.primary }
     public var muted: PaletteColor { tokens.muted }
     public var hairline: PaletteColor { tokens.hairline }
@@ -127,6 +127,19 @@ public struct ResolvedTheme: Equatable, Sendable {
         self.revision = revision
         self.density = density
         self.increasedContrast = increasedContrast
+    }
+    public init(appearance: ResolvedAppearance, density: InterfaceDensity, increasedContrast: Bool, revision: UInt64) {
+        tokens = appearance.tokens
+        definition = ThemeDefinition(domain: tokens.definition)
+        customID = appearance.custom?.id
+        geometry = definition.geometry
+        typography = ThemeTypography(density: density)
+        self.revision = revision
+        self.density = density
+        self.increasedContrast = increasedContrast
+    }
+    public func statusColor(_ status: UInt16) -> PaletteColor {
+        tokens.statuses[domainStatusClass(status: status)] ?? primary
     }
     private static let methodKinds = domainMethodChipKinds()
     public func method(_ method: HTTPMethod, webSocket: Bool = false) -> (background: PaletteColor, foreground: PaletteColor) {
@@ -215,21 +228,15 @@ public final class ThemeStore {
         } catch { report(error); return nil }
     }
 
+    public func appearance(selection: String, systemIsDark: Bool = false, increasedContrast: Bool = false) -> ResolvedAppearance {
+        domainResolveAppearance(selection: selection, themes: customThemes, systemIsDark: systemIsDark, increased: increasedContrast)
+    }
+
     public func update(selection: String, systemIsDark: Bool, increasedContrast: Bool, density: InterfaceDensity) {
-        let custom = customThemes.first { $0.id == selection }
-        let candidate: ResolvedTheme
-        if let custom {
-            candidate = ResolvedTheme(custom: custom, density: density, increasedContrast: increasedContrast, revision: resolved.revision)
-        } else {
-            candidate = ResolvedTheme(preset: domainSelectPreset(selection: selection, dark: systemIsDark),
-                density: density, increasedContrast: increasedContrast, revision: resolved.revision)
-        }
+        let appearance = appearance(selection: selection, systemIsDark: systemIsDark, increasedContrast: increasedContrast)
+        var candidate = ResolvedTheme(appearance: appearance, density: density, increasedContrast: increasedContrast, revision: resolved.revision)
         guard candidate != resolved else { return }
-        if let custom {
-            resolved = ResolvedTheme(custom: custom, density: density, increasedContrast: increasedContrast, revision: resolved.revision &+ 1)
-        } else {
-            resolved = ResolvedTheme(preset: candidate.definition.preset, density: density,
-                increasedContrast: increasedContrast, revision: resolved.revision &+ 1)
-        }
+        candidate = ResolvedTheme(appearance: appearance, density: density, increasedContrast: increasedContrast, revision: resolved.revision &+ 1)
+        resolved = candidate
     }
 }

@@ -52,9 +52,9 @@ fn assert_contrast(tokens: &ThemeTokens) {
         let colors: HashSet<_> = t.chips.values().map(|c| c.foreground).collect();
         assert_eq!(colors.len(), MethodChipKind::ALL.len());
         let statuses = [
-            d.method_foregrounds[1],
+            t.chips[&MethodChipKind::Post].foreground,
             d.success,
-            d.method_foregrounds[2],
+            t.chips[&MethodChipKind::Put].foreground,
             d.warning,
             d.error,
         ];
@@ -116,7 +116,7 @@ fn vscode_jsonc_maps_colours_scopes_and_reports_repairs_and_parent() {
     assert_eq!(tidal.tokens.syntax_key, RgbColor::hex(0x008d_cfff));
     assert_eq!(tidal.tokens.syntax_string, RgbColor::hex(0x00a8_e0b4));
     assert_eq!(tidal.tokens.syntax_number, RgbColor::hex(0x00ef_bc85));
-    assert!(tidal.notices.iter().any(|n| n.contains("syntax/comment")));
+    assert!(tidal.notices.iter().any(|n| n.contains("Comment color")));
     assert_contrast(&tidal.tokens);
     let linen = vscode::parse(include_bytes!("fixtures/themes/linen.json")).unwrap();
     assert_eq!(linen.tokens.preset, DomainThemePreset::Paper);
@@ -296,4 +296,101 @@ fn vscode_include_only_themes_derive_gaps_and_show_parent_warning() {
     );
     assert_contrast(&preview.tokens);
     assert!(vscode::parse(br#"{"include":"  "}"#).is_err());
+}
+
+#[test]
+fn custom_borders_are_neutral_and_follow_final_surfaces() {
+    let mut previews = vec![vscode::parse(include_bytes!("fixtures/themes/linen.json")).unwrap()];
+    for background in [
+        0x00ff_9900,
+        0x0033_66ff,
+        0,
+        0x00ff_ffff,
+        0x0077_7777,
+        0x00ff_0000,
+        0x0000_ff00,
+        0x0000_ffff,
+    ] {
+        for accent in [0x00ff_00ff, 0x0000_ff00, 0x0077_7777] {
+            previews.push(custom::derive(
+                RgbColor::hex(background),
+                RgbColor::hex(accent),
+            ));
+            let source = format!(
+                r##"{{"colors":{{"editor.background":"#{background:06x}","focusBorder":"#{accent:06x}","input.border":"#{accent:06x}"}}}}"##
+            );
+            previews.push(vscode::parse(source.as_bytes()).unwrap());
+        }
+    }
+    for preview in previews {
+        for increased in [false, true] {
+            let resolved = custom::resolve(preview.tokens.clone(), increased);
+            for border in [
+                resolved.definition.hairline,
+                resolved.definition.card_border,
+                resolved.hairline,
+                resolved.card_border,
+                resolved.focus_border,
+            ] {
+                assert_eq!(border.red, border.green, "{border:?}");
+                assert_eq!(border.green, border.blue, "{border:?}");
+                assert_eq!(
+                    border.luminance() > resolved.definition.window.luminance(),
+                    resolved.definition.preset != DomainThemePreset::Paper
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn adjustment_notices_use_human_color_names() {
+    let preview = custom::derive(RgbColor::hex(0x00ff_9900), RgbColor::hex(0x00ff_cc00));
+    assert!(
+        preview
+            .notices
+            .iter()
+            .any(|notice| notice.starts_with("Selection color "))
+    );
+    assert!(preview.notices.iter().all(|notice| !notice.contains('/')));
+    let preview = vscode::parse(br##"{"colors":{"editor.background":"#ffffff"},"tokenColors":[{"scope":"comment","settings":{"foreground":"#eeeeee"}}]}"##).unwrap();
+    assert!(
+        preview
+            .notices
+            .iter()
+            .any(|notice| notice.starts_with("Comment color "))
+    );
+}
+
+#[test]
+fn saved_selection_resolves_custom_builtin_system_and_missing_themes_in_rust() {
+    let custom = wirebolt_app::domain::theme::library::CustomTheme {
+        id: "custom:fixture".into(),
+        name: "Linen".into(),
+        tokens: vscode::parse(include_bytes!("fixtures/themes/linen.json"))
+            .unwrap()
+            .tokens,
+    };
+    let themes = [custom.clone()];
+    for increased in [false, true] {
+        let selected = resolve_selection(&custom.id, &themes, true, increased);
+        assert_eq!(selected.custom, Some(custom.clone()));
+        assert!(!selected.follows_system && !selected.tokens.is_dark);
+        for (selection, dark, follows_system) in [
+            ("paper", false, false),
+            ("black", true, false),
+            ("ember", true, false),
+            ("system", true, true),
+            ("custom:missing", true, true),
+        ] {
+            let resolved = resolve_selection(selection, &themes, true, increased);
+            assert!(resolved.custom.is_none());
+            assert_eq!(resolved.tokens.is_dark, dark);
+            assert_eq!(resolved.follows_system, follows_system);
+            for status in [100, 200, 300, 400, 500] {
+                let color = resolved.tokens.statuses[&status_class(status)];
+                assert!(color.contrast(resolved.tokens.definition.window) >= 4.5);
+            }
+        }
+    }
 }

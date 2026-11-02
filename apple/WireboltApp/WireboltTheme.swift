@@ -121,17 +121,7 @@ enum WireboltTheme {
     }
     static func requestBarMethodColor(_ method: HTTPMethod) -> Color { methodColor(method) }
     static func statusColor(_ status: UInt16) -> Color {
-        if current.increasedContrast && current.customID == nil {
-            let color = SemanticPalette.status(status)
-            return (current.isDark ? color.darkHighContrast : color.lightHighContrast).color
-        }
-        return switch HTTPStatusClass(status: status) {
-        case .informational: methodColor(.post)
-        case .success: success
-        case .redirection: methodColor(.put)
-        case .clientError: warning
-        case .serverError: danger
-        }
+        current.statusColor(status).color
     }
     static func statusSymbol(_ status: UInt16) -> String {
         switch HTTPStatusClass(status: status) {
