@@ -33,6 +33,13 @@ pub trait WorkspaceSecrets: fmt::Debug + Send + Sync {
 }
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum WorkspaceError {
+    MissingRequest,
+    MissingDestination,
+    RequestDeleteFailed,
+    RequestTooLarge,
+    RequestSaveFailed,
+    MoveCollision,
+    MoveFailed,
     OperationFailed { reason: String },
 }
 
@@ -40,6 +47,7 @@ impl fmt::Display for WorkspaceError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::OperationFailed { reason } => formatter.write_str(reason),
+            _ => formatter.write_str(&self.user_message()),
         }
     }
 }
@@ -69,6 +77,76 @@ pub struct SessionPersistence {
     pub store: WorkspaceStore,
     secrets: Arc<dyn WorkspaceSecrets>,
     version: AtomicU64,
+}
+
+pub use wirebolt_core::DocumentProblemKind as WorkspaceDocumentProblemKind;
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct WorkspaceLoadProblem {
+    pub path: String,
+    pub kind: WorkspaceDocumentProblemKind,
+    pub reason: String,
+}
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct WorkspaceLoadDiagnostics {
+    pub problems: Vec<WorkspaceLoadProblem>,
+    pub omitted: u64,
+    pub notice: Option<String>,
+}
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct WorkspaceLoadResult {
+    pub workspace: crate::domain::DomainWorkspace,
+    pub diagnostics: WorkspaceLoadDiagnostics,
+}
+impl WorkspaceLoadDiagnostics {
+    fn from_problems(problems: Vec<wirebolt_core::DocumentProblem>) -> Self {
+        const LIMIT: usize = 10;
+        let omitted = problems.len().saturating_sub(LIMIT) as u64;
+        let problems: Vec<_> = problems
+            .into_iter()
+            .take(LIMIT)
+            .map(|problem| {
+                let reason = match problem.kind {
+                    WorkspaceDocumentProblemKind::InvalidToml => "Invalid TOML",
+                    WorkspaceDocumentProblemKind::InvalidDocument => "Invalid document",
+                    WorkspaceDocumentProblemKind::UnsupportedSchema => "Newer document version",
+                    WorkspaceDocumentProblemKind::DocumentTooLarge => &format!(
+                        "Exceeds the {} document limit",
+                        wirebolt_core::DOCUMENT_LIMIT_LABEL
+                    ),
+                    WorkspaceDocumentProblemKind::Io => "Could not read file",
+                };
+                WorkspaceLoadProblem {
+                    path: problem
+                        .path
+                        .to_string_lossy()
+                        .chars()
+                        .filter(|character| !character.is_control())
+                        .take(200)
+                        .collect(),
+                    kind: problem.kind,
+                    reason: reason.into(),
+                }
+            })
+            .collect();
+        let notice = (!problems.is_empty()).then(|| {
+            let files = problems
+                .iter()
+                .map(|problem| format!("{} ({})", problem.path, problem.reason))
+                .collect::<Vec<_>>()
+                .join("; ");
+            let more = if omitted == 0 {
+                String::new()
+            } else {
+                format!("; {omitted} more files")
+            };
+            format!("Some workspace files were skipped: {files}{more}. The files remain on disk.")
+        });
+        Self {
+            problems,
+            omitted,
+            notice,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, serde::Deserialize)]
@@ -119,7 +197,7 @@ impl WorkspaceImportSummary {
 impl SessionPersistence {
     /// Opens an existing workspace or creates an empty one.
     ///
-    /// Documents that cannot be migrated are skipped and reported through
+    /// Documents that cannot be loaded are skipped and reported through
     /// the snapshot's `problems`; they never prevent the workspace from
     /// opening.
     ///
@@ -138,62 +216,11 @@ impl SessionPersistence {
             WorkspaceStore::create(root, &Workspace::new(name))
         }
         .map_err(|_| WorkspaceError::operation("workspace could not be opened"))?;
-        store
-            .migrate()
-            .map_err(|_| WorkspaceError::operation("workspace could not be migrated"))?;
         Ok(Arc::new(Self {
             store,
             secrets,
             version: AtomicU64::new(0),
         }))
-    }
-
-    /// Exports the complete saved workspace with secret references intact.
-    ///
-    /// # Errors
-    /// Returns [`WorkspaceError`] if loading or encoding fails.
-    pub fn export_workspace_json(&self) -> Result<String, WorkspaceError> {
-        let snapshot = self
-            .store
-            .load()
-            .map_err(|_| WorkspaceError::operation("workspace could not be loaded"))?;
-        wirebolt_core::export_legacy_v1_workspace(&snapshot)
-            .map_err(|error| WorkspaceError::operation(&error.to_string()))
-    }
-
-    /// Exports one collection and all of its requests as a portable JSON document.
-    /// Secret material is absent because saved requests contain references only.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`WorkspaceError`] if the collection is absent or cannot be encoded.
-    pub fn export_collection_json(&self, id: &str) -> Result<String, WorkspaceError> {
-        let id = document_id(id.to_owned())?;
-        let snapshot = self
-            .store
-            .load()
-            .map_err(|_| WorkspaceError::operation("workspace could not be loaded"))?
-            .collections
-            .into_iter()
-            .find(|collection| collection.collection.id == id)
-            .ok_or_else(|| WorkspaceError::operation("collection does not exist"))?;
-        wirebolt_core::export_legacy_v1_collection(&snapshot.collection, &snapshot.requests)
-            .map_err(|error| WorkspaceError::operation(&error.to_string()))
-    }
-
-    /// Exports one saved request as portable JSON with secret references intact.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`WorkspaceError`] if the request is absent or cannot be encoded.
-    pub fn export_request_json(
-        &self,
-        collection_id: &str,
-        id: &str,
-    ) -> Result<String, WorkspaceError> {
-        let request = self.request(collection_id, id)?;
-        wirebolt_core::export_legacy_v1_request(&request)
-            .map_err(|error| WorkspaceError::operation(&error.to_string()))
     }
 
     /// Creates or updates a collection.
@@ -227,8 +254,7 @@ impl SessionPersistence {
         self.commit_imported(parse_import(format, source, None)?)
     }
 
-    /// Imports a file under its filename, preserving every exported folder. A
-    /// Wirebolt workspace export creates each of its collections and environments.
+    /// Imports a file under its filename, preserving its folders and environments.
     ///
     /// # Errors
     /// Returns [`WorkspaceError`] with the import's user-facing reason
@@ -507,8 +533,8 @@ impl SessionPersistence {
             .map_err(|_| WorkspaceError::operation("import collection could not be created"))?;
         created.collections.push(collection_id.clone());
 
-        for (index, imported_request) in imported.requests.into_iter().enumerate() {
-            let request_id = document_id(format!("request-{index}"))?;
+        for imported_request in imported.requests {
+            let request_id = document_id(crate::domain::identity::unique_id())?;
             let group_id = imported_request
                 .group_source_id
                 .as_ref()
@@ -643,7 +669,7 @@ impl SessionPersistence {
                         .iter()
                         .all(|existing| &existing.id != parent)
                 }) {
-                    return Err(WorkspaceError::operation("parent group does not exist"));
+                    return Err(WorkspaceError::MissingDestination);
                 }
                 if collection
                     .groups
@@ -743,7 +769,7 @@ impl SessionPersistence {
                         .iter()
                         .all(|existing| &existing.id != parent)
                 }) {
-                    return Err(WorkspaceError::operation("parent group does not exist"));
+                    return Err(WorkspaceError::MissingDestination);
                 }
                 let group = collection
                     .groups
@@ -764,7 +790,12 @@ impl SessionPersistence {
                         collection_id: document_id(collection_id.clone())?,
                         request,
                     })
-                    .map_err(|_| WorkspaceError::operation("request could not be saved"))?;
+                    .map_err(|error| match error {
+                        wirebolt_core::StorageError::DocumentTooLarge { .. } => {
+                            WorkspaceError::RequestTooLarge
+                        }
+                        _ => WorkspaceError::RequestSaveFailed,
+                    })?;
                 Ok((SessionWorkspaceNodeKind::Request, vec![collection_id, id]))
             }
             super::workspace::SessionWorkspaceCommand::DeleteRequest { collection_id, id } => {
@@ -773,7 +804,7 @@ impl SessionPersistence {
                         &document_id(collection_id.clone())?,
                         &document_id(id.clone())?,
                     )
-                    .map_err(|_| WorkspaceError::operation("request could not be deleted"))?;
+                    .map_err(|_| WorkspaceError::RequestDeleteFailed)?;
                 Ok((SessionWorkspaceNodeKind::Request, vec![collection_id, id]))
             }
             super::workspace::SessionWorkspaceCommand::DuplicateRequest {
@@ -810,21 +841,17 @@ impl SessionPersistence {
                 request.order = order;
                 let destination = document_id(to_collection_id.clone())?;
                 self.store
-                    .save(&WorkspaceDocument::Request {
-                        collection_id: destination,
-                        request,
-                    })
-                    .map_err(|_| WorkspaceError::operation("request could not be moved"))?;
-                if from_collection_id != to_collection_id {
-                    self.store
-                        .delete_request(
-                            &document_id(from_collection_id.clone())?,
-                            &document_id(request_id.clone())?,
-                        )
-                        .map_err(|_| {
-                            WorkspaceError::operation("source request could not be removed")
-                        })?;
-                }
+                    .move_request(
+                        &document_id(from_collection_id.clone())?,
+                        &destination,
+                        &request,
+                    )
+                    .map_err(|error| match error {
+                        wirebolt_core::StorageError::AlreadyExists { .. } => {
+                            WorkspaceError::MoveCollision
+                        }
+                        _ => WorkspaceError::MoveFailed,
+                    })?;
                 Ok((
                     SessionWorkspaceNodeKind::Request,
                     vec![from_collection_id, to_collection_id, request_id],
@@ -870,7 +897,7 @@ impl SessionPersistence {
             .collections
             .into_iter()
             .find(|entry| entry.collection.id == id)
-            .ok_or_else(|| WorkspaceError::operation("collection does not exist"))?;
+            .ok_or(WorkspaceError::MissingDestination)?;
         let expected: std::collections::HashSet<String> = snapshot
             .collection
             .groups
@@ -951,7 +978,7 @@ impl SessionPersistence {
             .into_iter()
             .find(|snapshot| snapshot.collection.id == id)
             .map(|snapshot| snapshot.collection)
-            .ok_or_else(|| WorkspaceError::operation("collection does not exist"))
+            .ok_or(WorkspaceError::MissingDestination)
     }
 
     /// # Errors
@@ -975,7 +1002,7 @@ impl SessionPersistence {
                     .into_iter()
                     .find(|request| request.id == request_id)
             })
-            .ok_or_else(|| WorkspaceError::operation("request does not exist"))
+            .ok_or(WorkspaceError::MissingRequest)
     }
 
     fn save_collection_document(&self, collection: Collection) -> Result<(), WorkspaceError> {
@@ -991,6 +1018,19 @@ impl SessionPersistence {
 }
 
 impl WorkspaceError {
+    #[must_use]
+    pub fn user_message(&self) -> String {
+        match self {
+            Self::MissingRequest => "The request no longer exists. Reload the workspace before saving.".into(),
+            Self::MissingDestination => "The destination no longer exists. Reload the workspace and try again.".into(),
+            Self::RequestDeleteFailed => "The request could not be deleted. Check the workspace folder's permissions and try again.".into(),
+            Self::RequestTooLarge => format!("This request exceeds the {} document limit. Reduce its body or notes, or attach a body file.", wirebolt_core::DOCUMENT_LIMIT_LABEL),
+            Self::RequestSaveFailed => "The request could not be saved.".into(),
+            Self::MoveCollision => super::workspace::actions::MOVE_COLLISION_REASON.into(),
+            Self::MoveFailed => "The request could not be moved without replacing another request.".into(),
+            Self::OperationFailed { .. } => "The workspace change could not be saved. Check the workspace folder and try again.".into(),
+        }
+    }
     #[must_use]
     pub fn operation(reason: &str) -> Self {
         Self::OperationFailed {
@@ -1184,6 +1224,12 @@ impl SessionPersistence {
     /// # Errors
     /// Returns a storage or projection error.
     pub fn domain_snapshot(&self) -> Result<crate::domain::DomainWorkspace, WorkspaceError> {
+        self.load_result().map(|result| result.workspace)
+    }
+    /// Loads readable records and bounded, content-free diagnostics for skipped files.
+    /// # Errors
+    /// Returns a storage or projection error when the workspace cannot be read.
+    pub fn load_result(&self) -> Result<WorkspaceLoadResult, WorkspaceError> {
         use crate::domain::{DomainCollection, DomainLocation, DomainWorkspace};
 
         let snapshot = self
@@ -1217,16 +1263,20 @@ impl SessionPersistence {
                 requests,
             });
         }
-        Ok(DomainWorkspace {
-            name: snapshot.workspace.name,
-            proxy: snapshot.workspace.proxy.map(proxy_from_core),
-            transport: transport_from_core(snapshot.workspace.transport),
-            collections,
-            environments: snapshot
-                .environments
-                .into_iter()
-                .map(environment_from_core)
-                .collect(),
+        let diagnostics = WorkspaceLoadDiagnostics::from_problems(snapshot.problems);
+        Ok(WorkspaceLoadResult {
+            workspace: DomainWorkspace {
+                name: snapshot.workspace.name,
+                proxy: snapshot.workspace.proxy.map(proxy_from_core),
+                transport: transport_from_core(snapshot.workspace.transport),
+                collections,
+                environments: snapshot
+                    .environments
+                    .into_iter()
+                    .map(environment_from_core)
+                    .collect(),
+            },
+            diagnostics,
         })
     }
 }
@@ -1244,10 +1294,10 @@ impl SessionPersistence {
         for command in commands {
             match self.apply_session_command(command) {
                 Ok(_) => completed += 1,
-                Err(WorkspaceError::OperationFailed { reason }) => {
+                Err(error) => {
                     return SessionCommandBatchResult {
                         completed,
-                        failure_reason: Some(reason),
+                        failure_reason: Some(error.user_message()),
                     };
                 }
             }

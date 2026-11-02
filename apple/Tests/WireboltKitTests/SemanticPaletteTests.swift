@@ -5,7 +5,7 @@ struct SemanticPaletteTests {
     private static var colors: [(String, AdaptivePaletteColor)] {
         HTTPMethod.allCases.map { ($0.rawValue, SemanticPalette.method($0)) }
             + [("WS", SemanticPalette.method(.get, webSocket: true)), ("CUSTOM", SemanticPalette.method(HTTPMethod(rawValue: "PROPFIND")!))]
-            + [101, 200, 302, 404, 503].map { ("\($0)", SemanticPalette.status($0)) }
+            + [101, 200, 302, 404, 503].map { ("\($0)", domainStatusColor(status: UInt16($0))) }
     }
 
     @Test("Method and status text meets WCAG AA, and AAA with Increase Contrast, on every background")
@@ -36,7 +36,7 @@ struct SemanticPaletteTests {
         #expect(HTTPStatusClass(status: 308) == .redirection)
         #expect(HTTPStatusClass(status: 422) == .clientError)
         #expect(HTTPStatusClass(status: 500) == .serverError)
-        let colors = [101, 200, 301, 404, 500].map { SemanticPalette.status($0) }
+        let colors = [101, 200, 301, 404, 500].map { domainStatusColor(status: UInt16($0)) }
         #expect(Set(colors).count == colors.count)
     }
 

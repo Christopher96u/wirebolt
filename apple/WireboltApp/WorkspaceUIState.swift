@@ -193,7 +193,7 @@ final class WorkspaceUIState {
     var collectionsExpanded = true
     var isShowingEnvironmentInspector = false
     var hasEnvironmentEdits = false
-    @ObservationIgnored var saveEnvironmentEdits: (@MainActor () async -> Bool)?
+    @ObservationIgnored var closeEnvironmentInspector: (@MainActor () async -> Bool)?
     var environmentCloseTrigger = 0
 
     func toggleEnvironmentInspector() {
@@ -231,11 +231,9 @@ final class WorkspaceUIState {
         requestSection = defaults.string(forKey: Self.requestSectionKey)
             .flatMap(RequestPanelSection.init(rawValue:)) ?? .params
         responseSection = defaults.string(forKey: Self.responseSectionKey)
-            .map(workspaceResponseSection(value:))
             .flatMap(ResponsePanelSection.init(rawValue:)) ?? .body
         responseRenderer =
             defaults.string(forKey: Self.responseRendererKey)
-            .map(workspaceResponseRenderer(value:))
             .flatMap(ResponseRenderer.init(rawValue:)) ?? .json
         responseOrientation = defaults.string(forKey: Self.responseOrientationKey)
             .flatMap(ResponseOrientation.init(rawValue:)) ?? .bottom
@@ -307,7 +305,7 @@ final class WorkspaceUIState {
         closeRevision += 1
         isShowingEnvironmentInspector = false
         hasEnvironmentEdits = false
-        saveEnvironmentEdits = nil
+        closeEnvironmentInspector = nil
         pendingURLFocusID = nil
         presentationByTabID = [:]
         responseLayoutsByGroupID = [:]

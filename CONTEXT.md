@@ -21,7 +21,13 @@ never belong to the workspace document tree.
 
 Collections, groups, requests, and their sibling order form one hierarchical
 tree. Workspace mutations are expressed as commands and produce monotonically
-versioned deltas; a routine mutation must not reload the entire tree.
+versioned deltas; a routine mutation must not reload the entire tree. Save, edits,
+Undo, import and workspace replacement serialize through the same operation guard.
+A stale save cannot recreate a request moved or deleted by an in-app action. Files removed externally can be recreated by saving.
+Collection deletion removes only readable managed documents, stages removals before
+commit, and preserves unmanaged or unreadable files. Document writes enforce the
+same 16 MiB serialized-byte limit as reads. Partial loads retain readable records
+and expose bounded, content-free diagnostics for skipped files.
 
 ## Editing and execution
 
@@ -44,6 +50,17 @@ run that started it. The C surface only warms the runtime and reports its ABI ve
 
 Response bodies are file-backed. UI state retains bounded viewport data and
 indexes, not an ever-growing body string. History uses a quota and LRU eviction.
+History identities include collection ID and request ID, independent of the
+workspace path. Renamed, moved or re-cloned workspace folders retain history;
+copies sharing those IDs share history. Moving a request moves its scoped
+history, including completions of runs already in flight. Request IDs from new
+imports are UUIDs. ID collisions block moves instead of replacing another
+request, with one Rust-owned eligibility result and refusal reason. Ordinary
+non-destinations are disabled or ignored without a warning. History indexes store entries with required collection and request identities. Unsaved
+requests use an empty collection ID, stable across launches; their first save
+relocates history and in-flight completions to the saved collection. Damaged history
+indexes are reported once before recording continues with a fresh index. A displayed historical response owns a temporary body independently of
+history retention; crash leftovers are cleaned on the next load.
 The cookie jar applies domain, path, secure, expiry, and SameSite rules within
 its workspace. Runtime storage remains outside Git-visible workspace files.
 
@@ -51,7 +68,7 @@ its workspace. Runtime storage remains outside Git-visible workspace files.
 
 - Rust owns workspace persistence, import parsing, the editable request/workspace/
   environment records, variable editing and resolution, cURL exports, proxy policy, forms
-  and probe state, editor tokenization/indent columns, bounded PEM file input, sidebar indexes/drop eligibility/menu ordering, chrome labels, typed theme/contrast computation,
+  and probe state, editor tokenization/indent columns, bounded PEM file input, sidebar indexes/drop eligibility/menu ordering, chrome labels, typed theme/contrast computation, custom-theme derivation, VS Code JSONC import and versioned local theme-library persistence,
   OAuth 2 protocol logic, immutable request preparation, HTTP transport, and TLS input.
 - Rust also owns response body storage, indexing, search, folding, wrapping policy,
   JSON parsing, Markdown run assembly/cache policy, run history, and cookie policy in `wirebolt-app::response`.
@@ -62,7 +79,7 @@ its workspace. Runtime storage remains outside Git-visible workspace files.
   typed history orchestration, workspace load/switch/save/import/Git transitions, named undo
   payloads, sidebar/dirty-close workflows and direct workspace/transport execution in
   `wirebolt-app::session`. Its runtime commands own send/cancel orchestration,
-  per-run cookie scoping, history/activity revisions, environment selection, secret
+  per-run cookie scoping, history/activity revisions, independent inspector browsing and active environment selection, secret
   editing/release, proxy/transport writes, OAuth acquisition and cURL coordination.
 - Rust domain modules separate stable identities (`identity`), editable URL/query state
   (`url`), native chrome labels (`chrome`), import summaries (`imports`) and Git

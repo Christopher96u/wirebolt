@@ -21,6 +21,7 @@ async fn workspace_switch_resets_environment_choice_git_and_undo_registry() {
         .undo
         .unwrap();
     lock(&h.store.replies).push_back(WorkspaceReply::Loaded {
+        diagnostics: crate::session::persistence::WorkspaceLoadDiagnostics::default(),
         workspace: DomainWorkspace {
             name: "Mutations".into(),
             ..Default::default()
@@ -290,36 +291,6 @@ async fn workspace_mutations_apply_deltas_without_loading_entire_workspace() {
     assert_eq!(h.workspace.snapshot().collections.len(), 2);
     assert_eq!(h.workspace.snapshot().collections[0].groups.len(), 4);
     assert!(lock(&h.store.replies).is_empty());
-}
-#[tokio::test]
-async fn export_reports_failure_kind_and_preserves_saved_only_contract() {
-    let h = Harness::new(nested());
-    lock(&h.store.replies).push_back(WorkspaceReply::Exported {
-        content: "saved definition".into(),
-    });
-    assert_eq!(
-        h.ops
-            .export(
-                WorkspaceExport::Request {
-                    collection_id: "api".into(),
-                    id: "root".into()
-                },
-                &h.store
-            )
-            .await
-            .as_deref(),
-        Some("saved definition")
-    );
-    assert!(
-        h.ops
-            .export(WorkspaceExport::Workspace, &h.store)
-            .await
-            .is_none()
-    );
-    assert_eq!(
-        h.ops.presentation().operation_failure,
-        Some(crate::response::ResponseFailureKind::Export)
-    );
 }
 #[test]
 fn new_environment_and_temporary_request_have_unique_ids_and_expected_defaults() {

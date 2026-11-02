@@ -15,7 +15,9 @@ for index in "${!wirebolt_app_inputs[@]}"; do
   esac
 done
 mkdir -p build
-swiftc -O -whole-module-optimization -parse-as-library -swift-version 6 \
+swiftc -O -g -whole-module-optimization -parse-as-library -emit-executable -swift-version 6 \
+  -emit-module-path build/native-adapter-tests.swiftmodule \
   -target arm64-apple-macosx15.0 -o build/native-adapter-tests \
-  apple/Tests/NativeAdapterTests.swift "${wirebolt_app_inputs[@]}"
+  apple/Tests/NativeAdapterTests.swift apple/Tests/NativeTestSupport.swift apple/Tests/CustomThemeNativeTests.swift \
+  apple/Tests/EnvironmentInspectorTests.swift "${wirebolt_app_inputs[@]}"
 python3 scripts/swift-tests.py --log build/native-adapter-tests.log build/native-adapter-tests

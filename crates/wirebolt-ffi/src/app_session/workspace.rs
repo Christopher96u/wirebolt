@@ -5,38 +5,60 @@
 )]
 use super::{
     AppSecretPlatform, AppSessionSecrets, AppSessionTabs, AppWorkspaceDocuments,
-    AppWorkspacePlatform, Arc, DomainAuthentication, DomainCollection, DomainEnvironment,
-    DomainGroup, DomainLocation, DomainProxy, DomainRequestDraft, DomainTransport, DomainWorkspace,
-    Path, SessionCommandBatchResult, SessionDeleteTarget, SessionDocument, SessionDocumentEffect,
+    AppWorkspacePlatform, Arc, DomainCollection, DomainEnvironment, DomainGroup, DomainLocation,
+    DomainProxy, DomainRequestDraft, DomainTransport, DomainWorkspace, Path,
+    SessionCommandBatchResult, SessionDeleteTarget, SessionDocument, SessionDocumentEffect,
     SessionEditorGroup, SessionLayout, SessionRestoreResult, SessionTabDocument,
     SessionTabSnapshot, SessionWorkspaceCommand, SessionWorkspaceDelta, SessionWorkspaceEdit,
     SessionWorkspaceNodeKind, SessionWorkspacePlan, WorkspaceAction, WorkspaceBridge,
-    WorkspaceClose, WorkspaceDiscard, WorkspaceExport, WorkspaceFailure, WorkspaceGitAction,
-    WorkspaceGitOperation, WorkspaceGitStatus, WorkspaceImport, WorkspaceImportFile,
-    WorkspaceImportSummary, WorkspaceLoad, WorkspaceMutation, WorkspaceOpenMode,
-    WorkspacePresentation, WorkspaceRepositoryProblem, WorkspaceRestore, WorkspaceSave,
-    WorkspaceSelectionProblem, WorkspaceUndoToken,
+    WorkspaceClose, WorkspaceDiscard, WorkspaceFailure, WorkspaceGitAction, WorkspaceGitOperation,
+    WorkspaceGitStatus, WorkspaceImport, WorkspaceImportFile, WorkspaceImportSummary,
+    WorkspaceLoad, WorkspaceMutation, WorkspaceOpenMode, WorkspacePresentation,
+    WorkspaceRepositoryProblem, WorkspaceRestore, WorkspaceSave, WorkspaceSelectionProblem,
+    WorkspaceUndoToken,
 };
 use crate::lock;
 use wirebolt_app::session::workspace::{
     SessionEnvironmentRestoreSelection, operations::WorkspaceImportSource,
 };
+use wirebolt_app::session::workspace::{
+    environment::EnvironmentCommit, operations::EnvironmentCommitOutcome,
+};
+#[uniffi::remote(Enum)]
+pub enum EnvironmentCommit {
+    Rename { name: String },
+    VariableName { id: String, name: String },
+    VariableValue { id: String, value: String },
+    VariableEnabled { id: String, enabled: bool },
+    VariableSecret { id: String, secret: bool },
+    AddVariable,
+    DeleteVariable { id: String },
+    ClearVariables,
+    Create,
+    Delete,
+}
+#[uniffi::remote(Record)]
+pub struct EnvironmentCommitOutcome {
+    pub mutation: WorkspaceMutation,
+    pub problem: Option<String>,
+}
+
 #[uniffi::remote(Enum)]
 pub enum SessionEnvironmentRestoreSelection {
     SelectCreated,
     SelectRestored,
+    RestorePrevious { id: Option<String> },
     Preserve,
 }
 #[uniffi::remote(Enum)]
 pub enum SessionWorkspaceEdit {
     RestoreEnvironment {
         environment: DomainEnvironment,
-        index: u64,
         selection: SessionEnvironmentRestoreSelection,
     },
     RemoveEnvironment {
         id: String,
-        is_creation: bool,
+        selection: SessionEnvironmentRestoreSelection,
     },
     RestoreRequest {
         location: DomainLocation,
@@ -386,9 +408,9 @@ pub struct WorkspacePresentation {
     pub git_operation: Option<WorkspaceGitOperation>,
     pub git_failure: Option<WorkspaceFailure>,
     pub import_failure: Option<String>,
-    pub export_failure: Option<String>,
     pub import_summary: Option<WorkspaceImportSummary>,
     pub operation_failure: Option<wirebolt_app::response::ResponseFailureKind>,
+    pub operation_failure_reason: Option<String>,
 }
 
 #[uniffi::remote(Record)]
@@ -409,13 +431,13 @@ pub struct WorkspaceMutation {
 #[uniffi::remote(Record)]
 pub struct WorkspaceLoad {
     pub workspace: DomainWorkspace,
+    pub diagnostics: wirebolt_app::session::persistence::WorkspaceLoadDiagnostics,
     pub selected_environment_id: Option<String>,
     pub select: Option<DomainLocation>,
 }
 
 #[uniffi::remote(Record)]
 pub struct WorkspaceSave {
-    pub original_authentication: DomainAuthentication,
     pub document_id: String,
     pub draft: DomainRequestDraft,
     pub location: Option<DomainLocation>,
@@ -430,12 +452,15 @@ pub struct AppWorkspaceOperations {
 #[uniffi::export]
 impl AppWorkspaceOperations {
     #[uniffi::constructor]
-    pub fn new(workspace: Arc<AppWorkspaceSession>) -> Arc<Self> {
-        Arc::new(Self {
-            inner: wirebolt_app::session::workspace::operations::WorkspaceOperations::new(
-                workspace.inner.clone(),
-            ),
-        })
+    pub fn new(
+        workspace: Arc<AppWorkspaceSession>,
+        runtime: Arc<super::runtime::AppSessionRuntime>,
+    ) -> Arc<Self> {
+        let inner = wirebolt_app::session::workspace::operations::WorkspaceOperations::new(
+            workspace.inner.clone(),
+        );
+        inner.connect_history(runtime.state.clone());
+        Arc::new(Self { inner })
     }
     pub fn presentation(&self) -> WorkspacePresentation {
         self.inner.presentation()
@@ -468,13 +493,14 @@ impl AppWorkspaceOperations {
         self.inner
             .can_reorder(identifier, target, collection_id, parent)
     }
-    pub fn can_move_to(
+    pub fn move_eligibility(
         &self,
         identifier: String,
         collection_id: String,
         parent: Option<String>,
-    ) -> bool {
-        self.inner.can_move_to(identifier, collection_id, parent)
+    ) -> wirebolt_app::session::workspace::actions::MoveEligibility {
+        self.inner
+            .move_eligibility(identifier, collection_id, parent)
     }
     pub fn next_order(&self, collection_id: String, parent: Option<String>) -> i64 {
         self.inner.next_order(collection_id, parent)
@@ -505,19 +531,19 @@ impl AppWorkspaceOperations {
     ) -> Option<String> {
         self.inner.rename(proposed, platform.as_ref()).await
     }
-    pub async fn save_environment(
+    pub async fn commit_environment(
         &self,
-        environment: DomainEnvironment,
-        values: std::collections::HashMap<String, String>,
+        id: String,
+        commit: EnvironmentCommit,
         selected: Option<String>,
         platform: Arc<AppWorkspacePlatform>,
         secrets: Arc<AppSessionSecrets>,
         secret_platform: Arc<AppSecretPlatform>,
-    ) -> WorkspaceMutation {
+    ) -> EnvironmentCommitOutcome {
         self.inner
-            .save_environment(
-                environment,
-                values,
+            .commit_environment(
+                id,
+                commit,
                 selected,
                 platform.as_ref(),
                 &secrets.inner,
@@ -604,18 +630,6 @@ impl AppWorkspaceOperations {
     ) -> Option<WorkspaceLoad> {
         self.inner.import(request, platform.as_ref()).await
     }
-    pub async fn export(
-        &self,
-        target: WorkspaceExport,
-        platform: Arc<AppWorkspacePlatform>,
-    ) -> Option<String> {
-        self.inner.export(target, platform.as_ref()).await
-    }
-}
-
-#[uniffi::export]
-pub fn workspace_new_environment() -> DomainEnvironment {
-    wirebolt_app::session::workspace::actions::new_environment()
 }
 
 #[uniffi::export]
@@ -811,15 +825,6 @@ impl AppWorkspaceOperations {
     }
 }
 
-#[uniffi::export]
-pub fn workspace_saved_authentication(
-    current: DomainAuthentication,
-    original: DomainAuthentication,
-    saved: DomainAuthentication,
-) -> DomainAuthentication {
-    wirebolt_app::session::workspace::documents::saved_authentication(current, &original, &saved)
-}
-
 #[uniffi::remote(Enum)]
 pub enum SessionWorkspaceNodeKind {
     Workspace,
@@ -838,4 +843,43 @@ pub enum WorkspaceImportSource {
     BrunoFolder {
         bundle: wirebolt_core::BrunoFolderBundle,
     },
+}
+
+#[uniffi::export]
+pub fn workspace_environment_inspector(
+    environments: Vec<DomainEnvironment>,
+) -> Vec<DomainEnvironment> {
+    wirebolt_app::session::workspace::environment::inspector_environments(environments)
+}
+
+use wirebolt_app::session::workspace::actions::MoveEligibility;
+#[uniffi::remote(Enum)]
+pub enum MoveEligibility {
+    Allowed { label: String },
+    NotDestination { label: String },
+    Refused { label: String, reason: String },
+}
+
+#[derive(Debug, uniffi::Object)]
+pub struct AppEnvironmentInspector {
+    inner: std::sync::Mutex<wirebolt_app::session::workspace::environment::EnvironmentInspector>,
+}
+#[uniffi::export]
+impl AppEnvironmentInspector {
+    #[uniffi::constructor]
+    pub fn new(active: Option<String>) -> std::sync::Arc<Self> {
+        std::sync::Arc::new(Self {
+            inner: std::sync::Mutex::new(
+                wirebolt_app::session::workspace::environment::EnvironmentInspector::new(active),
+            ),
+        })
+    }
+    pub fn browse(&self, id: String) -> String {
+        let mut inspector = crate::lock(&self.inner);
+        inspector.browse(id);
+        inspector.editing_id.clone()
+    }
+    pub fn use_for_requests(&self) -> Option<String> {
+        crate::lock(&self.inner).use_for_requests()
+    }
 }

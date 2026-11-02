@@ -52,8 +52,11 @@ output in `build/bridge-smoke.log`.
 
 Generated bindings live under `apple/Generated` and are produced by the scripts. Do not hand-edit them. The Swift package compiles the generated bindings into `WireboltKit` and links the Rust bridge: run `./scripts/generate-bindings.sh` before invoking `swift test --package-path apple` directly. `./scripts/test.sh` does this automatically. Response search accepts a Rust regex-engine trait: `wirebolt-app` provides a portable default, and the Apple-only `wirebolt-ffi` adapter injects system ICU (`-licucore`) to preserve the native dialect; cookie dates parse in pure Rust to Unix seconds, with native `Date` conversion in Swift.
 
+Only the current workspace schema is supported; other versions are rejected with
+an unsupported-version diagnostic.
+
 The Rust session suite covers storage conversions, typed secret/Git operations,
-presentation migrations and cancellation. Bridge smoke checks exercise typed
+presentation policy and cancellation. Bridge smoke checks exercise typed
 transport events and workspace commands. Swift adapter tests compare the Notes
 preview with Foundation's full Markdown renderer, including complete attributed
 text and cache costs, across headings, inline styles, code, nested/ordered/task
@@ -65,6 +68,46 @@ indent columns with native syntax patterns, including CR/CRLF, VT/FF, NEL and
 Unicode line/paragraph separators. The Markdown corpus compares every attributed
 run and visible text, including unfinished fenced-code-block newlines and inserted
 block separators.
+
+## Workspace persistence
+
+Read and write limits both apply to the complete serialized document (16 MiB),
+including TOML metadata and escaping. A rejected save keeps the previous file.
+Moves create a destination atomically without replacing any existing file, and roll
+it back if the source cannot be removed. Collection deletion stages readable
+managed documents and rolls them back on a staging failure; unmanaged files,
+malformed documents and nonempty directories remain in place.
+
+Production loads return `WorkspaceLoadResult` with typed per-file problems.
+The bridge carries at most ten diagnostics (200 characters per relative path),
+the number omitted and a Rust-composed notice. Reasons never include document
+contents. The app presents a dismissible notice while keeping readable requests
+available. Save and workspace replacement use the same guard as mutations and
+Undo; a queued stale save of a request moved or deleted inside the app fails.
+Saving a request file removed externally recreates it at its last known location.
+
+## History storage
+
+The local history `index.json` contains an `entries` array. Every entry requires
+an identity with collection ID and request ID. Unsupported or malformed indexes
+are reported once; recording and clearing then use a fresh index. Unreadable
+indexes remain errors. Index writes use atomic replacement.
+
+History follows collection and request IDs, independently of the workspace folder's
+name or location. Re-cloning a workspace retains history; copies with the same IDs
+share history. New imports receive unique request IDs. Requests without
+a collection use an empty collection ID, stable across launches. Their first save,
+moves and Undo relocate scoped entries within the serialized Rust workspace
+operation and redirect in-flight completions to the saved collection. Replacement
+loads reconcile redirects; late completions for requests absent from the open
+workspace do not change its history presentation.
+
+Restored responses own temporary body copies independently of history retention.
+Copies are made on workers into paths that do not exist, allowing APFS cloning.
+Releasing the last body handle removes the temporary file and directory. Process
+leases protect another running instance's copies; the next history load cleans up
+unleased directories left after a crash. Index updates finish before evicted bodies
+are removed, so failed writes preserve existing responses.
 
 ## Performance
 
@@ -154,10 +197,10 @@ the other native editor workloads continue to measure wall time.
 
 | Location | Responsibility |
 | --- | --- |
-| `crates/wirebolt-core` | Workspace persistence, import/export, request preparation and transport |
-| `crates/wirebolt-app/src/domain` | Typed editable records and request/credential editing (`request`), stable IDs (`identity`), URL/query editing (`url`), window/tab/timeout labels (`chrome`), import recognition and summaries (`imports`), Git presentation (`git`), variables, cURL exports, proxy forms and probes, sidebar/drop/menu ordering, typed theme tokens, editor syntax/indentation, bounded PEM input and OAuth 2 protocol logic |
+| `crates/wirebolt-core` | Workspace persistence, imports, request preparation and transport |
+| `crates/wirebolt-app/src/domain` | Typed editable records and request/credential editing (`request`), stable IDs (`identity`), URL/query editing (`url`), window/tab/timeout labels (`chrome`), import recognition and summaries (`imports`), Git presentation (`git`), variables, cURL exports, proxy forms and probes, sidebar/drop/menu ordering, typed theme tokens, custom-theme derivation/JSONC import/library persistence, editor syntax/indentation, bounded PEM input and OAuth 2 protocol logic |
 | `crates/wirebolt-app/src/response` | File-backed response bodies, sparse indexes, search, folding, wrapping policy, JSON parsing, Markdown run assembly/cache policy over platform parsing, history and cookies |
-| `crates/wirebolt-app/src/session` | Document/run state, editor groups and previews, layout, WebSocket lifecycle, reversible workspace plans, credential lifecycle, typed history, workspace persistence/import/export/Git and transport execution; `session/workspace/` owns action construction, undo payloads, save/load transitions, sidebar/close workflows and typed persistence seams; `session/runtime` owns send/cancel, per-run cookie scoping, history/activity, environment resolution, secret commands, settings writes, OAuth acquisition and cURL coordination |
+| `crates/wirebolt-app/src/session` | Document/run state, editor groups and previews, layout, WebSocket lifecycle, reversible workspace plans, credential lifecycle, typed history, workspace persistence/import/Git and transport execution; `session/workspace/` owns live environment field commits and validation, action construction, undo payloads, save/load transitions, sidebar/close workflows and typed persistence seams; `session/runtime` owns send/cancel, per-run cookie scoping, history/activity, environment resolution, secret commands, settings writes, OAuth acquisition and cURL coordination |
 | `crates/wirebolt-ffi` | Typed domain, response and session objects; foreign platform traits and typed HTTP probe/WebSocket callbacks; `app_session/` mirrors run, tabs, secrets, workspace and runtime responsibilities |
 | `apple/Sources/WireboltKit` | Native observation facades, cached editor projections and Apple platform adapters; Rust owns serialization and workspace/runtime orchestration |
 | `apple/WireboltApp` | Native interface, file panels, lifecycle and typed Rust connection/persistence wiring |
@@ -184,6 +227,45 @@ preset spellings supplied by Rust. Swift's own enums are view state: panel secti
 renderers, filters, drop positions and picker tags such as `ProxySelection`.
 
 Read [CONTEXT.md](../CONTEXT.md) for workspace vocabulary, ownership and invariants.
+
+## Custom themes
+
+Settings → Appearance can derive a theme **From 2 colors** or import a VS Code
+`.json` color theme through **Import…** or a file drop. Both paths show a preview
+before saving. The preview lists contrast adjustments; mid-tone backgrounds may
+move toward light or dark so all text remains readable. Increase Contrast also
+applies to custom syntax, variable, status and method colors. Geometry uses the
+same Rust-owned tokens as built-in themes.
+
+VS Code import accepts UTF-8 JSONC (comments, trailing commas and an optional BOM),
+up to **1 MiB**. It maps editor, sidebar, list, input, button, diagnostic and token
+scope colors, composites alpha colors over the canvas, and derives missing
+tokens. Parent `include` files are reported in the preview and are not resolved.
+
+Rust persists up to **64** custom palettes in version 2 of
+`~/Library/Application Support/Wirebolt/custom-themes.json`, outside the workspace.
+The existing `interfaceAppearance` preference holds the selected built-in name or
+custom ID. Saving uses an atomic replacement. A corrupt file reports a notice and uses built-in themes until a new theme is saved.
+Unsupported versions stay unchanged and read-only.
+Deleting the active custom theme returns to **Follow System**.
+
+`custom_themes.rs` tests contrast, method separation, JSONC fixtures and storage
+recovery. `CustomThemeTests` exercises the typed native facade under the strict
+cooperative pool. `CustomThemeNativeTests` hosts the production Appearance page
+with temporary storage and preferences, sends events only to its own window, and
+checks picker selection, preview saving, deletion and visible import errors. Run
+it with `scripts/native-adapter-tests.sh`. To capture fixture-only in-process PNGs:
+
+```sh
+mkdir -p build/review-screenshots
+WIREBOLT_NATIVE_CAPTURE_DIRECTORY="$PWD/build/review-screenshots" scripts/native-adapter-tests.sh
+```
+
+This optional variable controls captures from both native suites. No real
+workspace, preferences or Keychain is used. The benchmark-only
+`environment-screenshots` mode writes `environment-inspector.png` to the same
+capture directory when the variable is set, otherwise beside its output JSON;
+it also uses disposable fixtures.
 
 ## Documentation changes
 

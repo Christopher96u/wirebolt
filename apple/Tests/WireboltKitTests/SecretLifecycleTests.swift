@@ -24,7 +24,7 @@ struct SecretLifecycleTests {
         return (model, undoManager)
     }
 
-    @Test("Owned names are generated ones; legacy, proxy and chosen names are never owned")
+    @Test("Owned names are generated ones; proxy and chosen names are never owned")
     func ownership() {
         #expect(CredentialReference.isOwned(tokenName))
         #expect(CredentialReference.isOwned(CredentialReference.unique(role: "password")))
@@ -161,17 +161,14 @@ struct SecretLifecycleTests {
 
     @Test("Removing a secret variable releases its item; purging twice deletes once")
     func environmentVariableDeletion() async throws {
-        let reference = EnvironmentVariableDraft(key: "token").makeSecretReference(environmentID: "staging")
+        let reference = CredentialReference.unique(role: "staging", scope: "env")
         let environment = EnvironmentDraft(id: "staging", name: "Staging", variables: [
             EnvironmentVariableDraft(key: "token", value: .secret(reference)),
             EnvironmentVariableDraft(key: "host", value: .literal("api.example.com")),
         ])
         let keychain = KeychainRecorder(workspace: workspace([], environments: [environment]), keychain: [reference: "fixture"])
         let (model, _) = await makeModel(keychain)
-        var edited = environment
-        edited.variables.removeFirst()
-
-        #expect(await model.saveEnvironment(edited))
+        #expect(await model.commitEnvironment(id: environment.id, commit: .deleteVariable(id: environment.variables[0].id)) == nil)
         await model.purgeReleasedSecrets()
         await model.purgeReleasedSecrets()
 
@@ -179,58 +176,8 @@ struct SecretLifecycleTests {
         #expect(!model.hasReleasableSecrets)
     }
 
-    @Test("Saving a request with legacy shared names moves it to its own names and keeps the shared items")
-    func migratesLegacyNamesOnSave() async throws {
-        let request = RequestDraft(id: "orders", name: "Orders", url: "https://api.example.com/orders",
-                                   authentication: .apiKey(placement: .header, name: "X-API-Key", value: .secret("auth.api-key")))
-        let keychain = KeychainRecorder(workspace: workspace([request]), keychain: ["auth.api-key": "fixture-shared-key"])
-        let (model, _) = await makeModel(keychain)
-        let session = try #require(model.sessions.activeSession)
 
-        #expect(await model.save(session, fallbackCollectionID: "api"))
 
-        guard case let .apiKey(_, _, .secret(migrated)) = session.draft.authentication else {
-            Issue.record("API key reference missing"); return
-        }
-        #expect(migrated != "auth.api-key" && CredentialReference.isOwned(migrated))
-        #expect(await keychain.saved[migrated] == "fixture-shared-key")
-        #expect(!session.isDirty)
-        #expect(model.workspace.location(collectionID: "api", requestID: "orders")?.request.authentication == session.draft.authentication)
-
-        await model.purgeReleasedSecrets()
-        #expect(await keychain.saved["auth.api-key"] == "fixture-shared-key")
-        #expect(await keychain.deleted.isEmpty)
-    }
-
-    @Test("A new OAuth token never overwrites the legacy shared token item")
-    func migratesLegacyOAuthBeforeTokenRequest() async throws {
-        let configuration = OAuth2Configuration(grant: .clientCredentials, tokenURL: "https://id.example.com/token", clientID: "wirebolt",
-                                                clientSecretReference: "oauth.client-secret", accessTokenReference: "oauth.access-token")
-        let request = RequestDraft(id: "orders", name: "Orders", authentication: .oauth2(configuration: configuration))
-        let keychain = KeychainRecorder(workspace: workspace([request]),
-                                        keychain: ["oauth.client-secret": "fixture-client-secret", "oauth.access-token": "fixture-old-token"])
-        let model = WireboltModel(runner: SilentRunner(), persistence: keychain, cookieDirectory: nil,
-                                  oauth2: FixedTokenAuthorizer())
-        await model.loadWorkspace()
-        let session = try #require(model.sessions.activeSession)
-
-        await model.acquireOAuthToken(for: session)
-
-        guard case let .oauth2(migrated) = session.draft.authentication else { Issue.record("OAuth missing"); return }
-        #expect(!CredentialReference.isLegacyShared(migrated.accessTokenReference))
-        #expect(await keychain.saved[migrated.accessTokenReference] == "fixture-new-token")
-        #expect(await keychain.saved[migrated.clientSecretReference] == "fixture-client-secret")
-        #expect(await keychain.saved["oauth.access-token"] == "fixture-old-token")
-    }
-
-    @Test("Migration renames only legacy shared names")
-    func legacyEditsNeverWriteSharedItems() {
-        let (authentication, renames) = RequestAuthentication.basic(username: .secret("auth.api-key"), password: .secret(tokenName))
-            .withOwnKeychainNames(onlyLegacy: true)
-        #expect(renames.keys.sorted() == ["auth.api-key"])
-        #expect(authentication.secretReferences.contains(tokenName))
-        #expect(!authentication.secretReferences.contains("auth.api-key"))
-    }
 }
 
 @MainActor

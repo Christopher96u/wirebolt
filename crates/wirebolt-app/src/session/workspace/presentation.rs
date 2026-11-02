@@ -1,19 +1,7 @@
-//! Persisted presentation migrations and Git diagnostics shared by interfaces.
+//! Default panels and Git diagnostics shared by interfaces.
 use super::io::{GitDelta, WorkspaceGitOutcome};
 use crate::domain::{DomainBody, git::PushAvailability};
 
-#[must_use]
-pub fn response_section(value: String) -> String {
-    if value == "Raw" {
-        "Raw HTTP".into()
-    } else {
-        value
-    }
-}
-#[must_use]
-pub fn response_renderer(value: String) -> String {
-    if value == "Raw" { "Text".into() } else { value }
-}
 #[must_use]
 pub fn request_section(body: &DomainBody) -> String {
     if *body == DomainBody::Empty {
@@ -81,9 +69,6 @@ mod tests {
     use super::*;
     #[test]
     fn preferences_and_default_panels_preserve_saved_behavior() {
-        assert_eq!(response_section("Raw".into()), "Raw HTTP");
-        assert_eq!(response_renderer("Raw".into()), "Text");
-        assert_eq!(response_renderer("JSON".into()), "JSON");
         assert_eq!(request_section(&DomainBody::Empty), "Params");
         assert_eq!(
             request_section(&DomainBody::Json { value: "{}".into() }),

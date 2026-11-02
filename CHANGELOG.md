@@ -7,6 +7,8 @@ Changes under **Unreleased** are on `main` but not in a published build yet. Dow
 ### Added
 
 - **QUERY** method (RFC 10008) in the method menu, with its own color.
+- **Clear All History…** in Settings → Privacy removes all saved history.
+- Custom themes from two colors and VS Code theme imports, with a live preview, checked contrast, and rename/delete controls (Settings → Appearance).
 - Black, Paper and Ember themes with checked contrast, Compact and Comfortable density, and Increase Contrast support (Settings → Appearance).
 - Settings open in the workspace window (**⌘,**); Esc or **⌘W** closes them.
 - Streaming responses show a bounded partial preview while they arrive.
@@ -14,6 +16,9 @@ Changes under **Unreleased** are on `main` but not in a published build yet. Dow
 
 ### Changed
 
+- Older Wirebolt workspaces, history and preferences are not migrated; the legacy Wirebolt v1 import and export are removed.
+
+- Environments save as you edit, with undo and redo for names, variables and secrets. Globals appears once, and long names and values stay on one line. Browsing the inspector leaves the active environment unchanged; **Use for Requests** switches it explicitly.
 - Find in large responses is faster and uses less memory; closing tabs no longer copies every open request.
 - Sidebar requests show URL paths, folders are quieter, activity columns align, and History shows the active request's entry count.
 - Redesigned sidebar, request composer and response bar. Environments are edited in a side inspector instead of a sheet.
@@ -28,6 +33,24 @@ Changes under **Unreleased** are on `main` but not in a published build yet. Dow
 
 ### Fixed
 
+- Large multipart file uploads stream from disk instead of loading the complete upload into memory before Send. Bodies up to 64 KiB can still be resent on redirects. A user-set multipart **Content-Length** is replaced with the computed length.
+- Bulk Edit accepts pasted CRLF and CR line endings in headers, query parameters and form fields without adding carriage returns to values.
+- XML and HTML payloads stay unchanged by Format, which is now disabled for these types because inserted whitespace can change their content.
+- OAuth sign-in preserves literal plus signs and valueless URL parameters, and uses form encoding for authorization parameters and callbacks (spaces encode as `+`, as required by RFC 6749).
+- **Copy cURL** now encodes query parameters the same way as Send, including literal plus signs, punctuation and Unicode.
+- Query and form fields marked sensitive are redacted in Sent Request and History while their values are still sent.
+- Cookie expiry now gives valid `Max-Age` precedence over `Expires`, regardless of attribute order, and ignores invalid expiry attributes.
+- Cookies keep directory scope and encoded path separators when choosing which requests receive them.
+- Saving while deleting or moving a request could recreate stale files. Save now runs in order with workspace edits and refuses a target moved or deleted inside the app; saving recreates a request file removed externally.
+- Malformed, newer-version and oversized workspace files disappeared from the sidebar without explanation. Open now keeps readable requests and shows a dismissible notice naming skipped files.
+- Requests with the same ID shared history across collections. History now follows collection and request IDs through moves, saves and workspace folder renames or relocation.
+- A damaged history index is reported once, then recording and clearing history continue with a fresh index.
+- Clearing history or evicting old entries made a restored response unreadable. Displayed responses now keep their own temporary body until the last viewer releases it, using APFS cloning where available; crash leftovers are cleaned on the next launch.
+- Moving an imported request could overwrite another request. New imports have unique IDs; moves with an ID collision are refused so both requests and their undo state survive.
+- Deleting a collection also deleted attachments and other files that Undo could not restore. It now removes only readable Wirebolt documents and leaves other files in place.
+- Malformed Insomnia folder IDs could crash import. Invalid parent links, cycles and hierarchies deeper than 128 levels now report an error.
+- A failed response export deleted the previous destination. Export now replaces it only after the body has been copied successfully, respects normal file permissions and retains the destination's permissions and supported extended attributes.
+- Saving a request larger than the 16 MiB document limit made it disappear on reopen. Save now rejects oversized documents and keeps the previous file.
 - A response body write failure left the download running in the background. It now cancels the transfer and keeps the Storage failure visible.
 - The response preview stayed blank when its temporary file could not be created. It now keeps a bounded preview in memory and reports the storage failure.
 - Undoing and redoing an environment edit lost its previous Keychain values and changed the active environment.

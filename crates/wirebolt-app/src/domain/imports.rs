@@ -9,7 +9,7 @@ pub fn detect_collection(
     root: Option<&serde_json::Value>,
 ) -> Option<ImportFormat> {
     if extension.eq_ignore_ascii_case("bru") {
-        return Some(ImportFormat::BrunoFolder);
+        return Some(ImportFormat::Bruno);
     }
     let Some(root) = root else {
         return contents
@@ -74,11 +74,6 @@ pub fn detect(extension: &str, contents: &str) -> Option<ImportFormat> {
         i.is_object() && (i.get("schema").is_some() || i.get("_postman_id").is_some())
     }) {
         return Some(ImportFormat::PostmanV2);
-    }
-    if root.get("version").and_then(serde_json::Value::as_i64) == Some(1)
-        && root.get("nodes").is_some_and(serde_json::Value::is_array)
-    {
-        return Some(ImportFormat::LegacyWorkspaceV1);
     }
     detect_collection(extension, trimmed, Some(&root)).or_else(|| {
         extension

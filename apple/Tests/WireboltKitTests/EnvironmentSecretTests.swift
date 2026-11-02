@@ -3,35 +3,21 @@ import Testing
 @testable import WireboltKit
 
 struct EnvironmentSecretTests {
-    @Test("Secret variable references are fresh, owned and valid for Keychain")
-    func secretReferences() {
-        let row = EnvironmentVariableDraft(id: "variable-0", key: "apiToken", value: .literal(""))
-        let staging = row.makeSecretReference(environmentID: "staging")
-        // Imported rows reuse IDs such as "variable-0" in every workspace; names must not.
-        #expect(staging != row.makeSecretReference(environmentID: "staging"))
-        #expect(staging.hasPrefix("env.") && staging.hasSuffix(".staging"))
-        #expect(CredentialReference.isOwned(staging))
-
-        let odd = EnvironmentVariableDraft(id: String(repeating: "é/", count: 100), key: "x")
-        let name = odd.makeSecretReference(environmentID: String(repeating: "team env ", count: 30))
-        #expect(name.count <= 128)
-        #expect(name.allSatisfy { $0.isASCII && ($0.isLetter || $0.isNumber || ".-_".contains($0)) })
-    }
-
     @Test("Saving environment secrets writes Keychain first and the workspace keeps only the reference")
     @MainActor
     func savesSecretValuesOutsideTheWorkspace() async throws {
         let keychain = KeychainRecorder()
         let model = WireboltModel(runner: SilentRunner(), persistence: keychain)
         let row = EnvironmentVariableDraft(id: "token-row", key: "token", value: .literal(""))
-        let reference = row.makeSecretReference(environmentID: "staging")
-        var environment = EnvironmentDraft(id: "staging", name: "Staging", variables: [row])
-        environment.variables[0].value = .secret(reference)
-
-        #expect(await model.saveEnvironment(environment, secrets: [reference: "fixture-environment-token"]))
+        let environment = EnvironmentDraft(id: "staging", name: "Staging", variables: [row])
+        model.workspace.environments = [environment]
+        model.selectedEnvironmentID = environment.id
+        #expect(await model.commitEnvironment(id: environment.id, commit: .variableValue(id: row.id, value: "fixture-environment-token")) == nil)
+        #expect(await model.commitEnvironment(id: environment.id, commit: .variableSecret(id: row.id, secret: true)) == nil)
         let saved = try #require(model.workspace.environments.first)
         let savedReference = try #require(saved.variables.first?.value.secretName)
-        #expect(savedReference != reference)
+        #expect(savedReference.hasPrefix("env.") && savedReference.hasSuffix(".staging"))
+        #expect(CredentialReference.isOwned(savedReference))
 
         #expect(await keychain.saved[savedReference] == "fixture-environment-token")
         #expect(model.secretMaterial(for: .secret(savedReference)) == "fixture-environment-token")
@@ -48,10 +34,11 @@ struct EnvironmentSecretTests {
         let model = WireboltModel(runner: SilentRunner(), persistence: keychain)
 
         let environment = EnvironmentDraft(id: "staging", name: "Staging", variables: [
-            EnvironmentVariableDraft(id: "row", key: "token", value: .secret("env.staging.row")),
+            EnvironmentVariableDraft(id: "row", key: "token", value: .literal("fixture")),
         ])
-        #expect(await model.saveEnvironment(environment, secrets: ["env.staging.row": "fixture"]) == false)
-        #expect(model.operationFailure?.kind == .keychain)
-        #expect(model.secretMaterial(for: .secret("env.staging.row")).isEmpty)
+        model.workspace.environments = [environment]
+        #expect(await model.commitEnvironment(id: environment.id, commit: .variableSecret(id: "row", secret: true)) != nil)
+        #expect(model.operationFailure == nil)
+        #expect(model.workspace.environments == [environment])
     }
 }

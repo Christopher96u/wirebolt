@@ -1,6 +1,6 @@
 import Foundation
 
-// Compatibility stores implement this typed seam. Native stores provide a direct
+// Injected stores implement this typed seam. Native stores provide a direct
 // Rust platform, so a batch never round-trips through Swift for each command.
 final class WorkspacePlatformAdapter: WorkspaceIoPlatform {
     let persistence: (any WorkspacePersistence)?
@@ -30,7 +30,8 @@ final class WorkspacePlatformAdapter: WorkspaceIoPlatform {
         switch request {
         case .load:
             let persistence = try requiredPersistence()
-            return .loaded(workspace: try await persistence.load().domain)
+            let result = try await persistence.loadResult()
+            return .loaded(workspace: result.workspace, diagnostics: result.diagnostics)
         case .commands(let commands):
             let persistence = try requiredPersistence()
             return .commands(result: await persistence.applySessionCommands(commands))
@@ -44,15 +45,6 @@ final class WorkspacePlatformAdapter: WorkspaceIoPlatform {
         case .importBrunoFolder(let bundle, let name):
             let result = try await requiredPersistence().commitBrunoFolder(bundle: bundle, name: name)
             return .imported(summary: result.workspaceRecord)
-        case .export(let target):
-            let persistence = try requiredPersistence()
-            let content: String
-            switch target {
-            case .workspace: content = try await persistence.exportWorkspace()
-            case .collection(let id): content = try await persistence.exportCollection(id: id)
-            case .request(let collectionID, let id): content = try await persistence.exportRequest(collectionID: collectionID, id: id)
-            }
-            return .exported(content: content)
         case .git(let action):
             guard let git else { throw WorkspaceMutationError.unsupported }
             switch action {

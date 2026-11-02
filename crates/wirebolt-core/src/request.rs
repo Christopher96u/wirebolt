@@ -1,3 +1,5 @@
+pub(crate) mod multipart;
+
 use std::{error::Error, fmt, path::PathBuf};
 
 use http::{HeaderMap, HeaderName, HeaderValue, Method};
@@ -52,6 +54,7 @@ pub(crate) struct Redaction {
 pub(crate) enum PreparedBodySource {
     Bytes(Vec<u8>),
     File { path: PathBuf, byte_count: u64 },
+    Multipart(multipart::MultipartBody),
 }
 
 impl PreparedRequest {
@@ -110,7 +113,7 @@ impl PreparedRequest {
     pub fn body(&self) -> &[u8] {
         match &self.body {
             PreparedBodySource::Bytes(bytes) => bytes,
-            PreparedBodySource::File { .. } => &[],
+            PreparedBodySource::File { .. } | PreparedBodySource::Multipart(_) => &[],
         }
     }
 
@@ -119,12 +122,16 @@ impl PreparedRequest {
         match &self.body {
             PreparedBodySource::Bytes(bytes) => u64::try_from(bytes.len()).unwrap_or(u64::MAX),
             PreparedBodySource::File { byte_count, .. } => *byte_count,
+            PreparedBodySource::Multipart(body) => body.byte_count(),
         }
     }
 
     #[must_use]
     pub const fn body_is_file_backed(&self) -> bool {
-        matches!(&self.body, PreparedBodySource::File { .. })
+        matches!(
+            &self.body,
+            PreparedBodySource::File { .. } | PreparedBodySource::Multipart(_)
+        )
     }
 
     #[must_use]

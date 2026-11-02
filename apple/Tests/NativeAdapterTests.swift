@@ -29,13 +29,6 @@ enum DraftWorkProbe {
     init(_ draft: RequestDraft) { self.draft = draft; savedDraft = draft }
 }
 
-private struct AdapterRunner: RequestRunner {
-    func events(for input: RunInput, runID: RunID) -> AsyncThrowingStream<RunEvent, any Error> {
-        AsyncThrowingStream { $0.finish() }
-    }
-    func cancel(runID: RunID) {}
-}
-
 @main @MainActor enum NativeAdapterTests {
     static func typingAssignmentsAvoidDraftWork() {
         let body = String(repeating: "x", count: 1_048_576)
@@ -61,7 +54,7 @@ private struct AdapterRunner: RequestRunner {
     }
 
     static func lastTabDirtyConfirmAndReopen(root: URL, defaults: UserDefaults) {
-        let model = WireboltModel(runner: AdapterRunner(),
+        let model = WireboltModel(runner: FixtureRunner(),
             history: HistoryRepository(root: root.appending(path: "history")),
             cookieJar: CookieJar(storageURL: root.appending(path: "cookies.json")),
             proxyPreferences: ProxyPreferences(defaults: defaults))
@@ -87,7 +80,7 @@ private struct AdapterRunner: RequestRunner {
         print("lastTabDirtyConfirmAndReopen: passed")
     }
 
-    static func main() throws {
+    static func main() async throws {
         _ = NSApplication.shared
         NSApp.setActivationPolicy(.prohibited)
         let root = FileManager.default.temporaryDirectory.appending(path: "wirebolt-adapters-\(UUID().uuidString)")
@@ -98,6 +91,9 @@ private struct AdapterRunner: RequestRunner {
             defaults.removePersistentDomain(forName: domain)
             try? FileManager.default.removeItem(at: root)
         }
+        let captureDirectory = ProcessInfo.processInfo.environment["WIREBOLT_NATIVE_CAPTURE_DIRECTORY"].map { URL(fileURLWithPath: $0) }
+        try await CustomThemeNativeTests.run(root: root, defaults: defaults, screenshots: captureDirectory)
+        try await EnvironmentInspectorTests.run(root: root, defaults: defaults, screenshots: captureDirectory)
         typingAssignmentsAvoidDraftWork()
         lastTabDirtyConfirmAndReopen(root: root, defaults: defaults)
     }

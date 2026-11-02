@@ -183,6 +183,7 @@ pub struct DomainProxyRoute {
     #[serde(deserialize_with = "proxy_destination")]
     pub destination: Option<wirebolt_core::ProxyDestination>,
     pub endpoint: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub credentials: Option<DomainProxyCredentials>,
 }
 

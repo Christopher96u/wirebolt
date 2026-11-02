@@ -1,11 +1,6 @@
 #![forbid(unsafe_code)]
 
 mod body_decoder;
-mod export_engine;
-pub use export_engine::{
-    ExportError, GLOBAL_ENVIRONMENT_ID, export_legacy_v1_collection, export_legacy_v1_request,
-    export_legacy_v1_workspace,
-};
 mod git_collaboration;
 mod http_engine;
 mod import_engine;
@@ -42,15 +37,20 @@ pub use proxy::{
 pub use request::{
     HeaderField, PreparedRequest, RequestDraft, RequestPreparationError, prepare_request,
 };
-pub use request_pipeline::{RequestIssue, RequestIssueKind, RequestPipeline, RequestPipelineError};
-pub use storage::{
-    ApiKeyPlacement, CURRENT_SCHEMA_VERSION, Collection, CollectionSnapshot, DocumentId,
-    DocumentProblem, DocumentProblemKind, Environment, EnvironmentVariable, Group, IdentifierError,
-    MigrationReport, MultipartPart, MultipartPartKind, Oauth2Configuration, Oauth2Grant, Request,
-    RequestAuthentication, RequestBody, RequestHeader, RequestValueField, SaveOutcome, SecretName,
-    StorageError, TransportSettings, ValueSource, Workspace, WorkspaceDocument, WorkspaceSnapshot,
-    WorkspaceStore,
+pub use request_pipeline::{
+    RequestIssue, RequestIssueKind, RequestPipeline, RequestPipelineError, append_query_pairs,
+    encode_query_component,
 };
+pub use storage::{
+    ApiKeyPlacement, CURRENT_SCHEMA_VERSION, Collection, CollectionSnapshot, DOCUMENT_LIMIT_LABEL,
+    DocumentId, DocumentProblem, DocumentProblemKind, Environment, EnvironmentVariable, Group,
+    IdentifierError, MAX_DOCUMENT_BYTES, MultipartPart, MultipartPartKind, Oauth2Configuration,
+    Oauth2Grant, Request, RequestAuthentication, RequestBody, RequestHeader, RequestValueField,
+    SaveOutcome, SecretName, StorageError, TransportSettings, ValueSource, Workspace,
+    WorkspaceDocument, WorkspaceSnapshot, WorkspaceStore,
+};
+
+pub const GLOBAL_ENVIRONMENT_ID: &str = "global";
 
 pub const STREAM_ABI_VERSION: u32 = 5;
 

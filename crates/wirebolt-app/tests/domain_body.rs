@@ -174,7 +174,7 @@ fn every_body_transition_preserves_only_text_and_resets_metadata() {
     }
 }
 #[test]
-fn composer_displays_legacy_text_as_raw_and_exposes_formatting_only_for_markup() {
+fn composer_displays_text_as_raw_and_exposes_only_supported_formatting() {
     for ((body, _), expected) in sources().into_iter().take(9).zip([
         DomainBodyKind::Empty,
         DomainBodyKind::Raw,
@@ -187,24 +187,18 @@ fn composer_displays_legacy_text_as_raw_and_exposes_formatting_only_for_markup()
         DomainBodyKind::File,
     ]) {
         assert_eq!(kind(&body), expected);
-        assert_eq!(
-            can_format(&body),
-            matches!(
-                expected,
-                DomainBodyKind::Json | DomainBodyKind::Xml | DomainBodyKind::Html
-            )
-        );
+        assert_eq!(can_format(&body), matches!(expected, DomainBodyKind::Json));
     }
 }
 #[test]
-fn formatting_preserves_unsupported_bodies_and_only_splits_adjacent_markup_tags() {
+fn formatting_preserves_unsupported_bodies_and_markup_without_a_semantic_formatter() {
     for (body, _) in sources() {
         if !can_format(&body) {
             assert_eq!(formatted(body.clone(), &LexicalOrdering), body);
         }
     }
     let markup = "<a><b>text</b></a> <c>\n<d/>";
-    let expected = "<a>\n<b>text</b>\n</a> <c>\n<d/>";
+    let expected = markup;
     assert_eq!(
         formatted(
             DomainBody::Xml {
@@ -348,5 +342,28 @@ fn json_preserves_foundation_decimal_precision_and_trailing_comma_tolerance() {
             value: source.into(),
         };
         assert_eq!(formatted(body.clone(), &LexicalOrdering), body);
+    }
+}
+
+#[test]
+fn markup_format_preserves_cdata_comments_attributes_scripts_and_mixed_content() {
+    for input in [
+        "<node><![CDATA[a><b]]></node>",
+        "<a><!-- a><b --></a>",
+        "<a value='a><b'/>",
+        "<script>const x = \"><\";</script>",
+        "<p>Hello <b>one</b><i>two</i>!</p>",
+        "<pre><code>a><b</code></pre>",
+    ] {
+        for body in [
+            DomainBody::Xml {
+                value: input.into(),
+            },
+            DomainBody::Html {
+                value: input.into(),
+            },
+        ] {
+            assert_eq!(formatted(body.clone(), &LexicalOrdering), body);
+        }
     }
 }

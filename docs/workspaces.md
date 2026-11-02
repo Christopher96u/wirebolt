@@ -22,7 +22,18 @@ In Comfortable density, request rows show their URL path beside the method, with
 
 Drag a request or subfolder to the **upper or lower edge** of a sibling row to reorder it. The insertion line shows the destination. Requests and folders can be mixed. Drop in the **center of a folder** to move an item into it. Without dragging, use **Move Up** / **Move Down** (**⌥⌘↑** / **⌥⌘↓**) or the context menu's **Move To** submenu.
 
+If an older imported request has the same ID as a request in the destination,
+Wirebolt refuses the move and explains why in the Move To menu or when you drop it.
+Duplicate the source request to give it a fresh ID, then move the duplicate. Both
+original requests stay intact.
+
 Moving an open request keeps its document session associated with its new collection. Deleting a folder deletes its descendants and closes their tabs. Creating, renaming, moving, reordering and deleting items can be undone with **Edit → Undo** (**⌘Z**) and redone with **⇧⌘Z**; undo restores the files on disk with the same IDs and order. Wirebolt asks before a deletion only when it also removes other items or discards unsaved edits in open tabs, which undo can't bring back.
+
+Deleting a collection removes its readable Wirebolt documents. Attachments,
+other unmanaged files and unreadable request documents stay on disk; nonempty
+directories are kept. Undo restores the managed documents without removing those
+files. A leftover directory without `collection.toml` is no longer a collection
+and does not generate a warning when the workspace opens again.
 
 ### Keyboard
 
@@ -45,6 +56,11 @@ workspace/
 │       └── requests/<request>.toml
 └── environments/<environment>.toml
 ```
+
+If some workspace files are malformed, newer than this build, oversized or
+unreadable, Wirebolt opens the readable documents and shows a dismissible notice
+naming skipped files and their reasons. The notice is bounded, omits file contents,
+and reports the number of additional skipped files. The skipped files stay on disk.
 
 Files use versioned TOML. Stable IDs identify documents; ordering is stored explicitly. Prefer app commands for ordinary edits. If you edit files outside the app, save or close your drafts first and reopen the workspace to load the changes.
 

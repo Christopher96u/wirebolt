@@ -457,7 +457,20 @@ fn insomnia_rejects_other_documents_with_a_reason() {
 
 // MARK: - Bruno folder
 
-fn bruno_folder_source(root: &Path) -> String {
+fn bruno_bundle(root: &str, files: &[(String, String)]) -> wirebolt_core::BrunoFolderBundle {
+    wirebolt_core::BrunoFolderBundle {
+        root: root.into(),
+        files: files
+            .iter()
+            .map(|(path, contents)| wirebolt_core::BrunoSourceFile {
+                path: path.clone(),
+                contents: contents.clone(),
+            })
+            .collect(),
+    }
+}
+
+fn bruno_folder_bundle(root: &Path) -> wirebolt_core::BrunoFolderBundle {
     fn collect(root: &Path, directory: &Path, files: &mut Vec<(String, String)>) {
         let mut entries = std::fs::read_dir(directory)
             .expect("read directory")
@@ -478,18 +491,14 @@ fn bruno_folder_source(root: &Path) -> String {
     }
     let mut files = Vec::new();
     collect(root, root, &mut files);
-    ImportEngine::bruno_folder_source("/Users/demo/Library API", &files)
+    bruno_bundle("/Users/demo/Library API", &files)
 }
 
 fn bruno_folder() -> ImportedWorkspace {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/bruno/collection");
-    ImportEngine::parse_import(
-        ImportFormat::BrunoFolder,
-        &bruno_folder_source(&root),
-        Some("collection"),
-    )
-    .expect("parse Bruno folder")
-    .workspace
+    ImportEngine::parse_bruno_folder(&bruno_folder_bundle(&root), Some("collection"))
+        .expect("parse Bruno folder")
+        .workspace
 }
 
 #[test]
@@ -719,26 +728,26 @@ fn bruno_folder_environments_layer_collection_variables_and_reference_secrets() 
 
 #[test]
 fn bruno_folder_rejects_folders_without_bru_files() {
-    let source = ImportEngine::bruno_folder_source(
+    let source = bruno_bundle(
         "/tmp/not-bruno",
         &[("README.md".to_owned(), "# Notes".to_owned())],
     );
-    assert!(ImportEngine::parse(ImportFormat::BrunoFolder, &source).is_err());
-    let yaml = ImportEngine::bruno_folder_source(
+    assert!(ImportEngine::parse_bruno_folder(&source, None).is_err());
+    let yaml = bruno_bundle(
         "/tmp/yaml",
         &[("opencollection.yml".to_owned(), "name: x".to_owned())],
     );
-    let error = ImportEngine::parse(ImportFormat::BrunoFolder, &yaml).expect_err("YAML");
+    let error = ImportEngine::parse_bruno_folder(&yaml, None).expect_err("YAML");
     assert!(error.to_string().contains("YAML"));
 }
 
 #[test]
 fn a_single_bru_file_imports_as_one_request() {
-    let source = ImportEngine::bruno_folder_source(
+    let source = bruno_bundle(
         "/Users/demo/Downloads",
         &[("Ping.bru".to_owned(), fixture("bruno/collection/Ping.bru"))],
     );
-    let workspace = ImportEngine::parse_import(ImportFormat::BrunoFolder, &source, Some("Ping"))
+    let workspace = ImportEngine::parse_bruno_folder(&source, Some("Ping"))
         .expect("single file")
         .workspace;
     let collection = only_collection(&workspace);
@@ -874,4 +883,80 @@ fn bruno_export_json_reports_unsupported_items_and_imports_environments() {
 fn bruno_export_rejects_other_json() {
     assert!(ImportEngine::parse(ImportFormat::Bruno, r#"{"version": 1, "nodes": []}"#).is_err());
     assert!(ImportEngine::parse(ImportFormat::Bruno, "not json").is_err());
+}
+
+#[test]
+fn insomnia_invalid_graph_is_rejected_without_crash() {
+    const CHILD: &str = "WIREBOLT_INSOMNIA_GRAPH_CHILD";
+    if std::env::var_os(CHILD).is_none() {
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "insomnia_invalid_graph_is_rejected_without_crash",
+                "--nocapture",
+            ])
+            .env(CHILD, "1")
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        return;
+    }
+    for resources in [
+        serde_json::json!([{"_type":"workspace","_id":"wrk"},{"_type":"request_group","_id":"wrk","parentId":"wrk"}]),
+        serde_json::json!([{"_type":"request_group","_id":"a","parentId":"b"},{"_type":"request_group","_id":"b","parentId":"a"}]),
+        serde_json::json!([{"_type":"request","_id":"","url":"https://example.com"}]),
+        serde_json::json!([{"_type":"request","_id":"r","parentId":"missing","url":"https://example.com"}]),
+    ] {
+        let source = serde_json::json!({"__export_format":4,"resources":resources}).to_string();
+        assert!(ImportEngine::parse_import(ImportFormat::Insomnia, &source, None).is_err());
+    }
+}
+
+#[test]
+fn insomnia_long_parent_chain_is_bounded() {
+    for depth in [64, 1024] {
+        let mut resources = vec![serde_json::json!({"_type":"workspace","_id":"wrk"})];
+        let mut parent = "wrk".to_owned();
+        for index in 0..depth {
+            let id = format!("g{index}");
+            resources.push(serde_json::json!({"_type":"request_group","_id":id,"parentId":parent,"name":"Folder"}));
+            parent = id;
+        }
+        resources.push(serde_json::json!({"_type":"request","_id":"r","parentId":parent,"name":"Get","url":"https://example.com","method":"GET"}));
+        let source = serde_json::json!({"__export_format":4,"resources":resources}).to_string();
+        let result = ImportEngine::parse_import(ImportFormat::Insomnia, &source, None);
+        if depth == 64 {
+            assert_eq!(result.unwrap().workspace.collections[0].groups.len(), depth);
+        } else {
+            assert!(result.is_err());
+        }
+    }
+}
+
+#[test]
+fn insomnia_workspace_parent_ids_and_placeholders_remain_compatible() {
+    for path in [
+        "insomnia-v4-workspace-placeholder.json",
+        "insomnia-v4-workspace-parent.json",
+    ] {
+        let parsed =
+            ImportEngine::parse_import(ImportFormat::Insomnia, &fixture(path), None).unwrap();
+        assert_eq!(parsed.workspace.collections[0].requests.len(), 1);
+    }
+    for parent in [
+        serde_json::Value::Null,
+        serde_json::json!("__WORKSPACE_ID__"),
+        serde_json::json!("external-workspace"),
+    ] {
+        let source = serde_json::json!({"__export_format":4,"resources":[
+            {"_type":"workspace","_id":"wrk","parentId":parent,"name":"API"},
+            {"_type":"request","_id":"r","parentId":"wrk","name":"Get","method":"GET","url":"https://example.com"}
+        ]}).to_string();
+        let parsed = ImportEngine::parse_import(ImportFormat::Insomnia, &source, None).unwrap();
+        assert_eq!(parsed.workspace.collections[0].requests.len(), 1);
+    }
 }

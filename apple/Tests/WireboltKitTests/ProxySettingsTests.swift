@@ -207,7 +207,7 @@ private actor ProxyPersistence: WorkspacePersistence {
     var savedSecrets: [String: String] = [:]
     let rejectSecrets: Bool
     init(rejectSecrets: Bool = false) { self.rejectSecrets = rejectSecrets }
-    func load() async throws -> WorkspaceDraft { WorkspaceDraft(name: "Test") }
+    func loadResult() async throws -> WorkspaceLoadResult {WorkspaceDraft(name: "Test").loadResult }
     func save(request: RequestDraft, in collectionID: String) async throws {}
     func save(environment: EnvironmentDraft) async throws {}
     func saveSecret(name: String, value: String) async throws {

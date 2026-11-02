@@ -10,7 +10,9 @@ struct WorkspaceSaveConcurrencyTests {
         for fails in [false, true] {
             let persistence = SuspendedWorkspaceSave(fails: fails)
             let model = WireboltModel(runner: SaveBoundaryRunner(), persistence: persistence)
-            let session = model.sessions.open(draft: RequestDraft(id: "a", url: "https://example.com/original"), collectionID: "api")
+            let original = RequestDraft(id: "a", url: "https://example.com/original")
+            model.workspace.collections = [CollectionDraft(id: "api", name: "API", requests: [RequestLocation(collectionID: "api", request: original)])]
+            let session = model.sessions.open(draft: original, collectionID: "api")
             session.draft.url = "https://example.com/saved"
             let saving = Task { await model.save(session, fallbackCollectionID: nil) }
             await persistence.waitUntilSaving()
@@ -27,6 +29,10 @@ struct WorkspaceSaveConcurrencyTests {
     func capturesEachLiveDraft() async {
         let persistence = SuspendedWorkspaceSave()
         let model = WireboltModel(runner: SaveBoundaryRunner(), persistence: persistence)
+        model.workspace.collections = [
+            CollectionDraft(id: "api", name: "API", requests: [RequestLocation(collectionID: "api", request: RequestDraft(id: "a"))]),
+            CollectionDraft(id: "other", name: "Other", requests: [RequestLocation(collectionID: "other", request: RequestDraft(id: "b"))]),
+        ]
         let a = model.sessions.open(draft: RequestDraft(id: "a"), collectionID: "api")
         let b = model.sessions.open(draft: RequestDraft(id: "b"), collectionID: "other")
         a.draft.note = "Save A"; b.draft.note = "Earlier B"
@@ -54,7 +60,7 @@ private actor SuspendedWorkspaceSave: WorkspacePersistence {
     private var writing: CheckedContinuation<Void, Never>?
     private(set) var saved: [RequestLocation] = []
     init(fails: Bool = false) { self.fails = fails }
-    func load() async throws -> WorkspaceDraft { WorkspaceDraft(name: "Saves") }
+    func loadResult() async throws -> WorkspaceLoadResult {WorkspaceDraft(name: "Saves").loadResult }
     func save(request _: RequestDraft, in _: String) async throws {}
     func save(environment _: EnvironmentDraft) async throws {}
     func saveSecret(name _: String, value _: String) async throws {}

@@ -231,16 +231,6 @@ impl AppSessionSecrets {
 
 #[uniffi::export(async_runtime = "tokio")]
 impl AppSessionSecrets {
-    pub async fn migrate(
-        &self,
-        draft: DomainRequestDraft,
-        platform: Arc<AppSecretPlatform>,
-    ) -> Result<DomainRequestDraft, crate::WorkspaceBridgeError> {
-        self.inner
-            .migrate(draft, platform.as_ref())
-            .await
-            .map_err(secret_error)
-    }
     pub async fn purge_workspace(
         &self,
         workspace: DomainWorkspace,

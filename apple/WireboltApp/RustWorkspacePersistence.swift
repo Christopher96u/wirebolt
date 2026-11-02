@@ -29,18 +29,9 @@ struct RustWorkspacePersistence: WorkspacePersistence, GitCollaboration {
         workspaceDefaultName(path: path.standardizedFileURL.path, builtIn: builtInWorkspaceURL.standardizedFileURL.path)
     }
 
-    func load() async throws -> WorkspaceDraft {
+    func loadResult() async throws -> WorkspaceLoadResult {
         let bridge = bridge
-        return try await Task.detached(priority: .userInitiated) {
-            WorkspaceDraft(domain: try bridge.domainSnapshot())
-        }.value
-    }
-
-    func loadSession(_ application: AppWorkspaceSession) async throws -> WorkspaceDraft {
-        let bridge = bridge
-        return try await Task.detached(priority: .userInitiated) {
-            WorkspaceDraft(domain: try bridge.loadSession(application: application))
-        }.value
+        return try await Task.detached(priority: .userInitiated) { try bridge.loadResult() }.value
     }
 
     func save(request: RequestDraft, in collectionID: String) async throws {

@@ -18,18 +18,6 @@ use std::{
 };
 
 impl SessionSecrets {
-    /// # Errors
-    /// Returns a credential-copy failure; the original draft stays intact.
-    pub async fn migrate(
-        &self,
-        mut draft: DomainRequestDraft,
-        platform: &dyn SessionSecretPlatform,
-    ) -> Result<DomainRequestDraft, SecretAccessError> {
-        let (authentication, renames) = request::own_auth(draft.authentication.clone(), true);
-        self.copy(renames, platform).await?;
-        draft.authentication = authentication;
-        Ok(draft)
-    }
     pub async fn purge_workspace(
         &self,
         workspace: DomainWorkspace,
@@ -281,14 +269,9 @@ pub async fn acquire_token(
         lock(document).edit(input.draft);
     }
     let draft = lock(document).draft.clone();
-    if !matches!(draft.authentication, DomainAuthentication::Oauth2 { .. }) {
-        return Ok(None);
-    }
-    let migrated = secrets.migrate(draft, platform).await.map_err(keychain)?;
-    let DomainAuthentication::Oauth2 { configuration } = &migrated.authentication else {
+    let DomainAuthentication::Oauth2 { configuration } = &draft.authentication else {
         return Ok(None);
     };
-    lock(document).edit(migrated.clone());
     let (token, receipt) = authorizer.acquire(configuration.clone()).await?;
     secrets.observe(vec![configuration.access_token_reference.clone()]);
     platform

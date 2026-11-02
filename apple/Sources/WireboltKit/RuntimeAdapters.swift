@@ -1,6 +1,6 @@
 import Foundation
 
-/// Compatibility seam for injected runners. Production supplies AppRuntimeTransport.native().
+/// Injected transports use the same runtime sink as AppRuntimeTransport.native().
 final class RuntimeRunnerAdapter: SessionRuntimeTransport {
     let runner: any RequestRunner
     init(runner: any RequestRunner) { self.runner = runner }

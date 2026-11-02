@@ -41,6 +41,7 @@ swiftc \
   apple/Sources/WireboltKit/WireboltModel.swift \
   apple/Sources/WireboltKit/WorkspaceOperations.swift \
   apple/Sources/WireboltKit/SidebarSnapshot.swift \
+  apple/Tests/WireboltKitTests/RuntimeRunFixture.swift \
   apple/Tests/StreamBridgeSmoke.swift \
   apple/Tests/BridgeSmoke.swift \
   apple/WireboltApp/PerformanceProbe.swift \

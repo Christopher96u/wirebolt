@@ -1,10 +1,10 @@
-//! Request fields, authentication and credential ownership, environment migration and run inputs.
+//! Request fields, authentication, credential ownership and run inputs.
 use super::{
     identity::unique_id,
     models::{
-        ApiKeyPlacement, DomainAuthentication, DomainAuthenticationKind, DomainBody,
-        DomainEnvironment, DomainField, DomainOAuthConfiguration, DomainProxy, DomainRequestDraft,
-        DomainTransport, DomainValueSource, DomainVariable, DomainWorkspace, Oauth2Grant,
+        ApiKeyPlacement, DomainAuthentication, DomainAuthenticationKind, DomainBody, DomainField,
+        DomainOAuthConfiguration, DomainProxy, DomainRequestDraft, DomainTransport,
+        DomainValueSource, DomainWorkspace, Oauth2Grant,
     },
 };
 use std::{
@@ -30,20 +30,11 @@ pub fn credential_reference(role: &str, scope: &str) -> String {
     );
     text.chars().take(128).collect()
 }
-#[must_use]
-pub fn legacy_reference(name: &str) -> bool {
-    matches!(
-        name,
-        "auth.api-key" | "oauth.client-secret" | "oauth.access-token"
-    )
-}
-/// Chooses a writable per-request name, copying legacy shared credentials on edit.
+/// Chooses a writable credential name.
 #[must_use]
 pub fn editable_credential_reference(source: &DomainValueSource, role: &str) -> String {
     match source {
-        DomainValueSource::Secret { secret } if !secret.is_empty() && !legacy_reference(secret) => {
-            secret.clone()
-        }
+        DomainValueSource::Secret { secret } if !secret.is_empty() => secret.clone(),
         _ => credential_reference(role, "auth"),
     }
 }
@@ -113,18 +104,13 @@ pub fn rename_auth(
     auth
 }
 #[must_use]
-pub fn own_auth(
-    auth: DomainAuthentication,
-    only_legacy: bool,
-) -> (DomainAuthentication, HashMap<String, String>) {
+pub fn own_auth(auth: DomainAuthentication) -> (DomainAuthentication, HashMap<String, String>) {
     let mut names = HashMap::new();
     for name in auth_references(&auth) {
-        if !only_legacy || legacy_reference(&name) {
-            let role = name.rsplit_once('.').map_or("secret", |(_, r)| r);
-            names
-                .entry(name.clone())
-                .or_insert_with(|| credential_reference(role, "auth"));
-        }
+        let role = name.rsplit_once('.').map_or("secret", |(_, r)| r);
+        names
+            .entry(name.clone())
+            .or_insert_with(|| credential_reference(role, "auth"));
     }
     (rename_auth(auth, &names), names)
 }
@@ -179,7 +165,7 @@ pub fn new_auth(kind: DomainAuthenticationKind) -> DomainAuthentication {
 pub fn parse_bulk(source: &str, previous: Vec<DomainField>) -> Vec<DomainField> {
     let mut unused = previous;
     source
-        .split('\n')
+        .split(['\r', '\n'])
         .filter(|s| !s.is_empty())
         .filter_map(|line| {
             let (enabled, text) = line
@@ -312,28 +298,6 @@ pub fn sanitized(text: &str) -> String {
     }
 }
 
-#[must_use]
-pub fn legacy_environment(
-    id: String,
-    name: String,
-    values: std::collections::BTreeMap<String, DomainValueSource>,
-) -> DomainEnvironment {
-    DomainEnvironment {
-        id,
-        name,
-        variables: values
-            .into_iter()
-            .zip(0_i64..)
-            .map(|((key, value), order)| DomainVariable {
-                id: format!("variable-{order}"),
-                key,
-                value,
-                enabled: true,
-                order,
-            })
-            .collect(),
-    }
-}
 #[must_use]
 pub fn switch_auth(
     auth: DomainAuthentication,

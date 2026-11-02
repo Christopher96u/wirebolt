@@ -116,13 +116,13 @@ struct LifecycleTests {
         try await body.finish()
         let prepared = PreparedRunSnapshot(method: "GET", url: "https://example.com/a", headers: [],
             body: PreparedBodySnapshot(byteCount: 0, contentType: nil, textPreview: nil, redacted: false), transport: TransportSettings())
-        try await history.record(runID: RunID(), requestID: "a", prepared: prepared,
-            responseHead: ResponseHead(status: 200, version: "HTTP/1.1", headers: [], timeToHeadersNS: 1),
-            completion: nil, failure: nil, body: body)
 
         let a = RequestLocation(collectionID: "api", request: RequestDraft(id: "a", name: "A"))
         let workspace = WorkspaceDraft(name: "Layout", collections: [CollectionDraft(id: "api", name: "API", requests: [a])])
         let model = WireboltModel(runner: LifecycleRunner(), persistence: LayoutPersistence(workspace: workspace), history: history)
+        try await history.record(runID: RunID(), identity: model.historyIdentity(for: DocumentSession(collectionID: "api", draft: RequestDraft(id: "a"))), prepared: prepared,
+            responseHead: ResponseHead(status: 200, version: "HTTP/1.1", headers: [], timeToHeadersNS: 1),
+            completion: nil, failure: nil, body: body)
         await model.loadWorkspace(restoring: SessionLayout(groups: [.init(tabs: [.init(collectionID: "api", requestID: "a")], selectedIndex: 0)]))
         let session = try #require(model.sessions.activeSession)
         for _ in 0 ..< 200 where session.responseHead == nil { try await Task.sleep(for: .milliseconds(5)) }
@@ -132,7 +132,8 @@ struct LifecycleTests {
 
     @Test("Menu command state changes only when availability changes")
     @MainActor func commandStateTracksAvailability() async throws {
-        let model = WireboltModel(runner: LifecycleRunner())
+        let runner = PendingRequestRunner()
+        let model = WireboltModel(runner: runner)
         let commands = WorkspaceCommandState(model: model)
         #expect(!commands.hasActiveSession)
         let session = model.sessions.open(draft: RequestDraft(id: "a", name: "A"), collectionID: "api")
@@ -143,7 +144,8 @@ struct LifecycleTests {
         session.draft.url = "h"
         await settle()
         #expect(commands.hasURL)
-        session.beginRun(RunID())
+        let liveRun = await runner.start(model, session: session)
+        defer { model.cancel(session); liveRun.cancel() }
         await settle()
         #expect(commands.isRunning)
         #expect(commands.tabCount == 1)
@@ -154,7 +156,7 @@ struct LifecycleTests {
         #expect(ImportFormat.detect(fileExtension: "txt", contents: "  curl https://example.com") == .curl)
         #expect(ImportFormat.detect(fileExtension: "har", contents: #"{"log":{"entries":[]}}"#) == .har)
         #expect(ImportFormat.detect(fileExtension: "json", contents: #"{"info":{"schema":"https://schema.getpostman.com/json/collection/v2.1.0/collection.json"},"item":[]}"#) == .postmanV2)
-        #expect(ImportFormat.detect(fileExtension: "json", contents: #"{"version":1,"nodes":[]}"#) == .legacyWorkspaceV1)
+        #expect(ImportFormat.detect(fileExtension: "json", contents: #"{"version":1,"nodes":[]}"#) == nil)
         #expect(ImportFormat.detect(fileExtension: "json", contents: #"{"hello":"world"}"#) == nil)
         #expect(ImportFormat.detect(fileExtension: "txt", contents: "hello") == nil)
     }
@@ -168,7 +170,7 @@ struct LifecycleTests {
         await writer.store(headers: [ResponseHeader(name: "Set-Cookie", value: "id=1; Max-Age=3600")], requestURL: URL(string: "https://example.com")!)
         let reader = CookieJar(storageURL: cookies)
         #expect(await reader.header(for: URL(string: "https://example.com/")!) == "id=1")
-        #expect(try await HistoryRepository(root: root.appending(path: "missing")).list(requestID: "a").isEmpty)
+        #expect(try await HistoryRepository(root: root.appending(path: "missing")).list(identity: SessionRequestIdentity(collectionId: "api", requestId: "a")).isEmpty)
     }
 
     @MainActor private func settle() async {
@@ -186,7 +188,8 @@ private struct LifecycleRunner: RequestRunner {
 
 private struct LayoutPersistence: WorkspacePersistence {
     let workspace: WorkspaceDraft
-    func load() async throws -> WorkspaceDraft { workspace }
+    var diagnostics = WorkspaceLoadDiagnostics(problems: [], omitted: 0, notice: nil)
+    func loadResult() async throws -> WorkspaceLoadResult { WorkspaceLoadResult(workspace: workspace.domain, diagnostics: diagnostics) }
     func save(request _: RequestDraft, in _: String) async throws {}
     func save(environment _: EnvironmentDraft) async throws {}
     func saveSecret(name _: String, value _: String) async throws {}
@@ -198,7 +201,7 @@ private actor SaveRecorder: WorkspacePersistence {
 
     init(fails: Bool = false) { self.fails = fails }
 
-    func load() async throws -> WorkspaceDraft { WorkspaceDraft(name: "Saves") }
+    func loadResult() async throws -> WorkspaceLoadResult {WorkspaceDraft(name: "Saves").loadResult }
     func save(request _: RequestDraft, in _: String) async throws {}
     func save(environment _: EnvironmentDraft) async throws {}
     func saveSecret(name _: String, value _: String) async throws {}
@@ -208,17 +211,6 @@ private actor SaveRecorder: WorkspacePersistence {
         if case let .saveRequest(location) = command { saved.append((location.collectionId, RequestLocation(domain: location))) }
         return WorkspaceDelta(version: UInt64(saved.count), kind: .request, affectedIDs: [])
     }
-}
-
-@Test("Stored signed layout indices preserve legacy decoding")
-@MainActor
-func signedLayoutIndicesRemainCompatible() throws {
-    let defaults = try #require(UserDefaults(suiteName: "wirebolt.signed-layout.\(UUID().uuidString)"))
-    let source = Data(#"{"groups":[{"tabs":[{"collectionID":"api","requestID":"a"}],"selectedIndex":-1,"previewIndex":-1}],"activeGroupIndex":-1}"#.utf8)
-    defaults.set(["/legacy": source], forKey: SessionLayoutStore.defaultsKey)
-    let layout = try #require(SessionLayoutStore(defaults: defaults).layout(forWorkspace: "/legacy"))
-    #expect(layout.activeGroupIndex == -1)
-    #expect(layout.groups[0].selectedIndex == -1 && layout.groups[0].previewIndex == -1)
 }
 
 extension LifecycleTests {
@@ -316,10 +308,12 @@ extension LifecycleTests {
     }
 
     @Test(arguments: [2, 20, 100])
-    @MainActor func mixedCloseUsesNativeDirtyStateAndCancelsOnlyClosedRuns(count: Int) {
-        let model = WireboltModel(runner: LifecycleRunner())
+    @MainActor func mixedCloseUsesNativeDirtyStateAndCancelsOnlyClosedRuns(count: Int) async {
+        let runner = PendingRequestRunner()
+        let model = WireboltModel(runner: runner)
         let tabs = (0..<count).map { model.sessions.open(draft: RequestDraft(id: "\($0)", name: "Original")) }
-        tabs[0].beginRun(RunID())
+        let liveRun = await runner.start(model, session: tabs[0])
+        defer { liveRun.cancel() }
         tabs[count - 1].draft.note = "Native edit, not synchronized"
         #expect(model.closeDocuments(.others(tabs[0].id)).map(\.id) == [tabs[count - 1].id])
         #expect(model.sessions.sessions.count == count)
@@ -331,6 +325,8 @@ extension LifecycleTests {
         #expect(tabs.enumerated().allSatisfy { $0.element.draftSynchronizationCount == ($0.offset == count - 1 ? 1 : 0) })
         #expect(tabs[0].isRunning)
         #expect(model.closeDocuments(.all).isEmpty)
+        await liveRun.value
+        #expect(runner.cancellationCount == 1)
         #expect(!tabs[0].isRunning)
         #expect(model.sessions.sessions.isEmpty)
     }
@@ -381,5 +377,22 @@ extension LifecycleTests {
         #expect(model.closeDocuments(.all, in: split, allowDirty: true).isEmpty)
         #expect(model.sessions.groupCount == 1)
         #expect(model.sessions.session(id: source.id) === source)
+    }
+}
+
+
+extension LifecycleTests {
+    @Test("Partial workspace loads keep requests and mirror a dismissible notice")
+    @MainActor func partialLoadNoticePreservesReadableRequests() async {
+        let request = RequestLocation(collectionID: "api", request: RequestDraft(id: "readable", name: "Readable"))
+        let workspace = WorkspaceDraft(name: "Partial", collections: [CollectionDraft(id: "api", name: "API", requests: [request])])
+        let diagnostics = WorkspaceLoadDiagnostics(problems: [WorkspaceLoadProblem(path: "collections/api/requests/broken.toml", kind: .invalidToml, reason: "Invalid TOML")], omitted: 0, notice: "Skipped broken.toml. The file remains on disk.")
+        let model = WireboltModel(runner: LifecycleRunner(), persistence: LayoutPersistence(workspace: workspace, diagnostics: diagnostics))
+        await model.loadWorkspace()
+        #expect(model.workspace.collections.first?.requests.first?.request.id == "readable")
+        #expect(model.workspaceLoadNotice == diagnostics.notice)
+        #expect(model.hasLoadedWorkspace && !model.isLoadingWorkspace)
+        model.workspaceLoadNotice = nil
+        #expect(model.workspace.collections.first?.requests.count == 1)
     }
 }

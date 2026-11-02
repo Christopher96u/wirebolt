@@ -774,3 +774,81 @@ fn routing_and_exports_share_transport_template_resolution() {
     assert_eq!(error.issues[0].kind, RequestIssueKind::MissingVariable);
     assert_eq!(error.issues[0].path, "values[0].value");
 }
+
+#[test]
+fn sensitive_query_and_form_rows_redact_diagnostics_but_keep_transport_values() {
+    for form in [false, true] {
+        let mut request = Request::new(id("sensitive"), "Sensitive", "POST", "http://localhost/");
+        let mut field = RequestValueField::enabled("token", ValueSource::literal("fixture-secret"));
+        field.sensitive = true;
+        if form {
+            request.body = RequestBody::FormUrlEncoded {
+                fields: vec![field],
+            };
+        } else {
+            request.query.push(field);
+        }
+        let prepared = RequestPipeline::new(None, &wirebolt_core::NoSecrets)
+            .prepare(&request)
+            .unwrap();
+        if form {
+            assert!(prepared.body_is_sensitive());
+            assert_eq!(prepared.body(), b"token=fixture-secret");
+        } else {
+            assert!(prepared.url_is_sensitive());
+            assert_eq!(prepared.url().query(), Some("token=fixture-secret"));
+        }
+        assert!(!format!("{prepared:?}").contains("fixture-secret"));
+    }
+}
+
+#[test]
+fn multipart_upload_stays_file_backed() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("payload.bin");
+    File::create(&path)
+        .unwrap()
+        .set_len(32 * 1024 * 1024)
+        .unwrap();
+    let mut request = Request::new(id("upload"), "Upload", "POST", "http://localhost/");
+    request.body = serde_json::from_value(serde_json::json!({
+        "kind": "multipart", "parts": [{"id":"file", "name":"file", "kind":"file", "value":"", "file_path":path, "enabled":true}]
+    })).unwrap();
+    let prepared = RequestPipeline::new(None, &wirebolt_core::NoSecrets)
+        .prepare(&request)
+        .unwrap();
+    assert!(
+        prepared.body().len() <= 64 * 1024,
+        "Prepared multipart retained {} bytes",
+        prepared.body().len()
+    );
+    assert!(prepared.body_is_file_backed());
+    assert!(prepared.body_byte_count() > 32 * 1024 * 1024);
+    assert_eq!(
+        prepared.headers()["content-length"],
+        prepared.body_byte_count().to_string()
+    );
+}
+
+#[test]
+fn multipart_replaces_stale_user_content_length() {
+    let mut request = Request::new(
+        DocumentId::new("upload").unwrap(),
+        "Upload",
+        "POST",
+        "http://localhost/",
+    );
+    request.headers = serde_json::from_value(
+        serde_json::json!([{"id":"length", "name":"Content-Length", "value":"1", "enabled":true}]),
+    )
+    .unwrap();
+    request.body =
+        serde_json::from_value(serde_json::json!({"kind":"multipart","parts":[]})).unwrap();
+    let prepared = RequestPipeline::new(None, &wirebolt_core::NoSecrets)
+        .prepare(&request)
+        .unwrap();
+    assert_eq!(
+        prepared.headers()["content-length"].to_str().unwrap(),
+        prepared.body_byte_count().to_string()
+    );
+}

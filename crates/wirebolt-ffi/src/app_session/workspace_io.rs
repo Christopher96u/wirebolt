@@ -5,12 +5,15 @@
 )]
 use super::{
     Arc, DomainWorkspace, GitDelta, Mutex, PushAvailability, SessionCommandBatchResult,
-    SessionWorkspaceCommand, WorkspaceBridge, WorkspaceExport, WorkspaceFailure,
-    WorkspaceGitAction, WorkspaceGitChange, WorkspaceGitOperation, WorkspaceGitOutcome,
-    WorkspaceGitStatus, WorkspaceIO, WorkspaceImportSummary, WorkspaceImportedEnvironment,
-    WorkspaceReply,
+    SessionWorkspaceCommand, WorkspaceBridge, WorkspaceFailure, WorkspaceGitAction,
+    WorkspaceGitChange, WorkspaceGitOperation, WorkspaceGitOutcome, WorkspaceGitStatus,
+    WorkspaceIO, WorkspaceImportSummary, WorkspaceImportedEnvironment, WorkspaceReply,
 };
 use crate::lock;
+use wirebolt_app::session::persistence::{
+    WorkspaceDocumentProblemKind, WorkspaceLoadDiagnostics, WorkspaceLoadProblem,
+    WorkspaceLoadResult,
+};
 #[uniffi::remote(Record)]
 pub struct WorkspaceFailure {
     pub kind: wirebolt_app::session::workspace::io::WorkspaceFailureKind,
@@ -70,13 +73,6 @@ pub enum WorkspaceGitAction {
 }
 
 #[uniffi::remote(Enum)]
-pub enum WorkspaceExport {
-    Workspace,
-    Collection { id: String },
-    Request { collection_id: String, id: String },
-}
-
-#[uniffi::remote(Enum)]
 pub enum WorkspaceIO {
     Load,
     Commands {
@@ -91,9 +87,6 @@ pub enum WorkspaceIO {
         bundle: wirebolt_core::BrunoFolderBundle,
         name: Option<String>,
     },
-    Export {
-        target: WorkspaceExport,
-    },
     Git {
         action: WorkspaceGitAction,
     },
@@ -101,13 +94,25 @@ pub enum WorkspaceIO {
 
 #[uniffi::remote(Enum)]
 pub enum WorkspaceReply {
-    Loaded { workspace: DomainWorkspace },
-    Commands { result: SessionCommandBatchResult },
-    Imported { summary: WorkspaceImportSummary },
-    Exported { content: String },
-    GitStatus { status: WorkspaceGitStatus },
-    GitOperation { operation: WorkspaceGitOperation },
-    Failed { failure: WorkspaceFailure },
+    Loaded {
+        workspace: DomainWorkspace,
+        diagnostics: wirebolt_app::session::persistence::WorkspaceLoadDiagnostics,
+    },
+    Commands {
+        result: SessionCommandBatchResult,
+    },
+    Imported {
+        summary: WorkspaceImportSummary,
+    },
+    GitStatus {
+        status: WorkspaceGitStatus,
+    },
+    GitOperation {
+        operation: WorkspaceGitOperation,
+    },
+    Failed {
+        failure: WorkspaceFailure,
+    },
 }
 
 #[derive(Debug, uniffi::Object)]
@@ -262,4 +267,30 @@ pub enum WorkspaceFailureKind {
     TimedOut,
     NoMergeInProgress,
     Other { code: String },
+}
+
+#[uniffi::remote(Enum)]
+pub enum WorkspaceDocumentProblemKind {
+    InvalidToml,
+    InvalidDocument,
+    UnsupportedSchema,
+    DocumentTooLarge,
+    Io,
+}
+#[uniffi::remote(Record)]
+pub struct WorkspaceLoadProblem {
+    pub path: String,
+    pub kind: WorkspaceDocumentProblemKind,
+    pub reason: String,
+}
+#[uniffi::remote(Record)]
+pub struct WorkspaceLoadDiagnostics {
+    pub problems: Vec<WorkspaceLoadProblem>,
+    pub omitted: u64,
+    pub notice: Option<String>,
+}
+#[uniffi::remote(Record)]
+pub struct WorkspaceLoadResult {
+    pub workspace: DomainWorkspace,
+    pub diagnostics: WorkspaceLoadDiagnostics,
 }

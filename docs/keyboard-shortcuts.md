@@ -69,6 +69,6 @@ For a WebSocket request, ⌥⌘3 opens **Message**. Response sections apply to H
 ## In context
 
 - **Settings modal:** ⌘F focuses settings search; Esc or ⌘W returns to the workspace.
-- **Environment editor:** ⇧⌘K adds a variable entry; Return applies and Esc cancels.
+- **Environment editor:** ⇧⌘K adds a variable entry; Return, Tab and focus loss save the edited field; Esc closes the inspector after saving. Use ⌘Z / ⇧⌘Z to undo / redo changes.
 - **Find in a response or editor:** ⌘F opens the find bar; Return and ⇧Return go to the next and previous match; ⌥⌘C, ⌥⌘W and ⌥⌘R toggle Match Case, Whole Word and Regular Expression; ⌥⌘L finds in the selection; Esc closes the bar.
 - **Focused sidebar:** arrow keys move through rows (**←** / **→** collapse and expand), typing a name jumps to it, **Return** renames, **⌘↓** moves to the request's URL and **Delete** deletes. See [Workspaces](workspaces.md#keyboard).

@@ -140,28 +140,6 @@ async fn undo_inactive_environment_deletion_preserves_selection() {
     }
 }
 
-#[derive(Default)]
-struct EnvironmentSecrets(
-    Mutex<std::collections::HashMap<String, String>>,
-    std::sync::atomic::AtomicBool,
-);
-#[async_trait]
-impl SessionSecretPlatform for EnvironmentSecrets {
-    async fn read(&self, name: String) -> Result<Option<String>, ()> {
-        Ok(lock(&self.0).get(&name).cloned())
-    }
-    async fn save(&self, name: String, value: String) -> Result<(), ()> {
-        if self.1.load(std::sync::atomic::Ordering::Relaxed) {
-            return Err(());
-        }
-        lock(&self.0).insert(name, value);
-        Ok(())
-    }
-    async fn remove(&self, name: String) -> Result<(), ()> {
-        lock(&self.0).remove(&name);
-        Ok(())
-    }
-}
 #[tokio::test]
 async fn environment_secret_save_failure_preserves_workspace_and_previous_keychain_item() {
     let original = DomainEnvironment {
@@ -183,15 +161,20 @@ async fn environment_secret_save_failure_preserves_workspace_and_previous_keycha
     platform.1.store(true, std::sync::atomic::Ordering::Relaxed);
     let result = h
         .ops
-        .save_environment(
-            original.clone(),
-            [("env.local.token".into(), "new-token".into())].into(),
+        .commit_environment(
+            "local".into(),
+            super::super::environment::EnvironmentCommit::VariableValue {
+                id: original.variables[0].id.clone(),
+                value: "new-token".into(),
+            },
             None,
             &h.store,
             &h.secrets,
             &platform,
         )
         .await;
+    assert!(result.problem.is_some());
+    let result = result.mutation;
     assert!(!result.succeeded && result.undo.is_none());
     assert!(lock(&h.store.commands).is_empty());
     assert_eq!(h.workspace.snapshot().environments, [original]);
@@ -199,10 +182,7 @@ async fn environment_secret_save_failure_preserves_workspace_and_previous_keycha
         lock(&platform.0).get("env.local.token").unwrap(),
         "old-token"
     );
-    assert_eq!(
-        h.ops.presentation().operation_failure,
-        Some(crate::response::ResponseFailureKind::Keychain)
-    );
+    assert_eq!(h.ops.presentation().operation_failure, None);
 }
 #[tokio::test]
 async fn secret_only_environment_edit_undo_redo_retains_values_and_selection() {
@@ -229,15 +209,19 @@ async fn secret_only_environment_edit_undo_redo_retains_values_and_selection() {
     });
     let result = h
         .ops
-        .save_environment(
-            original.clone(),
-            [("env.local.token".into(), "new-token".into())].into(),
+        .commit_environment(
+            "local".into(),
+            super::super::environment::EnvironmentCommit::VariableValue {
+                id: original.variables[0].id.clone(),
+                value: "new-token".into(),
+            },
             Some("production".into()),
             &h.store,
             &h.secrets,
             &platform,
         )
         .await;
+    let result = result.mutation;
     assert!(result.succeeded);
     let plan = result.plan.unwrap();
     assert!(!plan.changes_environment_selection);
@@ -561,15 +545,12 @@ fn move_to_rejects_cycles_other_collections_current_parent_and_missing_parent() 
         ("request|api|root", "api", None),
         ("request|api|root", "api", Some("missing")),
     ] {
-        assert!(!actions::can_move_to(&w, id, c, p));
+        assert!(!actions::move_eligibility(&w, id, c, p).is_allowed());
     }
-    assert!(actions::can_move_to(
-        &w,
-        "group|api|grandchild",
-        "api",
-        Some("parent")
-    ));
-    assert!(actions::can_move_to(&w, "request|api|root", "other", None));
+    assert!(
+        actions::move_eligibility(&w, "group|api|grandchild", "api", Some("parent")).is_allowed()
+    );
+    assert!(actions::move_eligibility(&w, "request|api|root", "other", None).is_allowed());
 }
 #[tokio::test]
 async fn failed_undo_reports_error_and_invalidates_every_token() {
@@ -631,4 +612,59 @@ async fn a_new_successful_edit_discards_redo_payloads_but_failed_edits_keep_them
         .succeeded
     );
     assert!(h.ops.reverse_token(redo.token).is_none());
+}
+
+#[tokio::test]
+async fn undo_environment_creation_restores_previous_active_and_redo_is_symmetric() {
+    for selected in [None, Some("staging".to_owned())] {
+        let h = Harness::new(DomainWorkspace {
+            environments: vec![DomainEnvironment {
+                id: "staging".into(),
+                ..Default::default()
+            }],
+            ..Default::default()
+        });
+        let created = h
+            .ops
+            .mutate(
+                Action::SaveEnvironment {
+                    environment: DomainEnvironment {
+                        id: "new".into(),
+                        ..Default::default()
+                    },
+                },
+                selected.clone(),
+                &h.store,
+                &h.secrets,
+                &Secrets,
+            )
+            .await;
+        let undo = created.undo.unwrap();
+        let redo = h.ops.reverse_token(undo.token).unwrap();
+        let removed = h
+            .ops
+            .undo(
+                undo.token,
+                redo.token,
+                Some("new".into()),
+                &h.store,
+                &h.secrets,
+                &Secrets,
+            )
+            .await;
+        let plan = removed.plan.unwrap();
+        assert!(plan.changes_environment_selection);
+        assert_eq!(plan.selected_environment_id, selected);
+        let undo = h.ops.reverse_token(redo.token).unwrap();
+        let restored = h
+            .ops
+            .undo(
+                redo.token, undo.token, selected, &h.store, &h.secrets, &Secrets,
+            )
+            .await;
+        assert_eq!(
+            restored.plan.unwrap().selected_environment_id.as_deref(),
+            Some("new")
+        );
+    }
 }

@@ -1,23 +1,30 @@
 import Foundation
+import Darwin
 import CryptoKit
 import Testing
 @testable import WireboltKit
 
 @Suite("File-backed responses")
 struct ResponseStorageTests {
-    @Test("Cookie paths and IPv6 hosts match Foundation URL projections")
-    func foundationCookieURLs() async throws {
-        for source in ["https://h/v1/users/", "https://h/v1/users//", "https://h/v1/users%2F", "http://[::1]/v1/users/", "http://[0:0:0:0:0:0:0:1]/v1/users/", "http://[::0001]/v1/users/", "http://[::FFFF:192.0.2.1]/v1/users/"] {
+    @Test("Cookie paths preserve URI encoding and directory scope; IPv6 hosts keep native spelling")
+    func encodedCookieURLs() async throws {
+        for (source, expectedPath) in [
+            ("https://h/v1/users/", "/v1/users"),
+            ("https://h/v1/users//", "/v1/users/"),
+            ("https://h/v1/users%2F", "/v1"),
+            ("http://[::1]/v1/users/", "/v1/users"),
+            ("http://[0:0:0:0:0:0:0:1]/v1/users/", "/v1/users"),
+            ("http://[::0001]/v1/users/", "/v1/users"),
+            ("http://[::FFFF:192.0.2.1]/v1/users/", "/v1/users"),
+        ] {
             let url = try #require(URL(string: source))
             let jar = CookieJar()
             let received = await jar.store(headers: [ResponseHeader(name: "Set-Cookie", value: "name=value")], requestURL: url)
-            let path = url.path
-            let parent = path.lastIndex(of: "/").map { String(path[..<$0]) }
-            #expect(received.first?.path == (parent?.isEmpty == false ? parent : "/"))
+            #expect(received.first?.path == expectedPath)
             #expect(received.first?.domain == url.host?.lowercased())
             await jar.store(headers: [ResponseHeader(name: "Set-Cookie", value: "scoped=value; Path=/account/")], requestURL: url)
             let destination = try #require(URL(string: "/account/", relativeTo: url))
-            #expect(await jar.header(for: destination) == nil)
+            #expect(await jar.header(for: destination) == "scoped=value")
         }
     }
 
@@ -113,7 +120,7 @@ struct ResponseStorageTests {
             try await body.finish()
             try await repository.record(
                 runID: runID,
-                requestID: "health",
+                identity: SessionRequestIdentity(collectionId: "api", requestId: "health"),
                 prepared: snapshot,
                 responseHead: nil,
                 completion: RunCompletion(bytesReceived: UInt64(index), totalTimeNS: 1),
@@ -124,11 +131,42 @@ struct ResponseStorageTests {
         }
 
         let reloaded = HistoryRepository(root: root)
-        let entries = try await reloaded.list(requestID: "health")
+        let entries = try await reloaded.list(identity: SessionRequestIdentity(collectionId: "api", requestId: "health"))
         #expect(entries.count == HistoryRepository.maximumEntriesPerRequest)
-        #expect(try await reloaded.count(requestID: "health") == HistoryRepository.maximumEntriesPerRequest)
-        #expect(try await reloaded.count(requestID: "missing") == 0)
+        #expect(try await reloaded.count(identity: SessionRequestIdentity(collectionId: "api", requestId: "health")) == HistoryRepository.maximumEntriesPerRequest)
+        #expect(try await reloaded.count(identity: SessionRequestIdentity(collectionId: "api", requestId: "missing")) == 0)
         #expect(entries.allSatisfy { FileManager.default.fileExists(atPath: $0.bodyPath) })
+    }
+
+
+    @Test("Replacing an export preserves extended attributes")
+    func exportPreservesExtendedAttributes() async throws {
+        let root = temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let destination = root.appending(path: "export.body")
+        try Data("old".utf8).write(to: destination)
+        let attribute = "com.wirebolt.storage-fixture"
+        let value = Data("fixture attribute".utf8)
+        let written = destination.path.withCString { path in
+            attribute.withCString { key in
+                value.withUnsafeBytes { bytes in setxattr(path, key, bytes.baseAddress, bytes.count, 0, 0) }
+            }
+        }
+        #expect(written == 0)
+        let body = try ResponseBodyStore(runID: RunID(), directory: root)
+        try await body.append(Data("new".utf8))
+        try await body.finish()
+        try await body.export(to: destination)
+        var restored = Data(count: value.count)
+        let count = destination.path.withCString { path in
+            attribute.withCString { key in
+                restored.withUnsafeMutableBytes { bytes in getxattr(path, key, bytes.baseAddress, bytes.count, 0, 0) }
+            }
+        }
+        #expect(count == value.count)
+        #expect(restored == value)
+        #expect(try Data(contentsOf: destination) == Data("new".utf8))
     }
 
     @Test("cookies honor host, path, TLS, expiry and persistence")
@@ -177,11 +215,11 @@ extension ResponseStorageTests {
 }
 
 extension ResponseStorageTests {
-    @Test func cookiePathsDecodeURLsAndIgnoreEmptyAttributes() async throws {
+    @Test func cookiePathsPreserveEncodedURLsAndIgnoreEmptyAttributes() async throws {
         let jar = CookieJar()
         let origin = try #require(URL(string: "https://api.example.com/caf%C3%A9/login"))
         let cookies = await jar.store(headers: [ResponseHeader(name: "Set-Cookie", value: "name=value; Domain=; Path=")], requestURL: origin)
-        #expect(cookies.first?.path == "/café")
+        #expect(cookies.first?.path == "/caf%C3%A9")
         #expect(cookies.first?.hostOnly == true)
         let destination = try #require(URL(string: "https://api.example.com/caf%C3%A9/me"))
         #expect(await jar.header(for: destination) == "name=value")

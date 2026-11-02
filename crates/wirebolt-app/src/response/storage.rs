@@ -5,7 +5,7 @@ use std::{
     fs::{self, File},
     io::{Read, Seek, SeekFrom, Write},
     path::{Path, PathBuf},
-    sync::Arc,
+    sync::{Arc, OnceLock},
     time::{SystemTime, UNIX_EPOCH},
 };
 use unicode_segmentation::UnicodeSegmentation;
@@ -84,6 +84,7 @@ pub struct BodyStore {
     writer: Option<File>,
     preview: BodyPreview,
     json: [JsonCache; 2],
+    retained_directory: Option<tempfile::TempDir>,
 }
 impl BodyStore {
     /// # Errors
@@ -97,6 +98,7 @@ impl BodyStore {
             writer: Some(writer),
             preview: BodyPreview::default(),
             json: [JsonCache::Unparsed, JsonCache::Unparsed],
+            retained_directory: None,
         })
     }
     /// # Errors
@@ -112,7 +114,21 @@ impl BodyStore {
                 ..BodyPreview::default()
             },
             json: [JsonCache::Unparsed, JsonCache::Unparsed],
+            retained_directory: None,
         })
+    }
+    /// Copies a historical body into a temporary file owned by the displayed run.
+    /// # Errors
+    /// Returns an I/O error if the source cannot be copied.
+    pub fn retained(path: &Path) -> ResponseResult<Self> {
+        let directory = tempfile::tempdir_in(retained_root()?)?;
+        let destination = directory.path().join("body");
+        // The destination must not exist: fs::copy can then clone on APFS.
+        fs::copy(path, &destination)?;
+        let mut body = Self::existing(destination)?;
+        body.owns_file = true;
+        body.retained_directory = Some(directory);
+        Ok(body)
     }
     #[must_use]
     pub fn path(&self) -> PathBuf {
@@ -217,10 +233,33 @@ impl BodyStore {
         if let Some(writer) = &self.writer {
             writer.sync_all()?;
         }
-        if destination.exists() {
-            fs::remove_file(destination)?;
+        let source_path = fs::canonicalize(&self.path)?;
+        if fs::canonicalize(destination).ok().as_ref() == Some(&source_path) {
+            return Ok(());
         }
-        fs::copy(&self.path, destination)?;
+        let parent = destination
+            .parent()
+            .filter(|path| !path.as_os_str().is_empty())
+            .unwrap_or_else(|| Path::new("."));
+        let mut temporary = tempfile::Builder::new().make_in(parent, |path| {
+            File::options()
+                .write(true)
+                .read(true)
+                .create_new(true)
+                .open(path)
+        })?;
+        if destination.is_file() {
+            // Copying onto the staging file preserves platform metadata where
+            // fs::copy supports it, including extended attributes on macOS.
+            fs::copy(destination, temporary.path())?;
+            temporary.as_file().set_len(0)?;
+        }
+        let mut source = File::open(&self.path)?;
+        std::io::copy(&mut source, &mut temporary)?;
+        temporary.as_file().sync_all()?;
+        temporary
+            .persist(destination)
+            .map_err(|error| ResponseError::from(error.error))?;
         Ok(())
     }
     pub fn remove(&mut self) {
@@ -242,12 +281,22 @@ pub(super) fn find_bytes(haystack: &[u8], needle: &[u8]) -> Option<usize> {
 }
 
 /// Shared session records are persisted directly; the repository owns ordering,
-/// quotas and disk I/O while preserving the existing history file format.
+/// quotas and disk I/O.
 pub use crate::session::history::SessionHistoryEntry as HistoryEntry;
+use crate::session::history::SessionRequestIdentity;
+
+pub const HISTORY_LOAD_FAILURE: &str = "History could not be loaded.";
+
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct HistoryIndex {
+    entries: Vec<HistoryEntry>,
+}
 #[derive(Debug)]
 pub struct RunHistory {
     root: PathBuf,
-    entries: Option<Vec<HistoryEntry>>,
+    entries: Option<ResponseResult<Vec<HistoryEntry>>>,
+    load_problem: Option<ResponseError>,
     maximum_entries: usize,
     maximum_bytes: u64,
 }
@@ -257,88 +306,228 @@ impl RunHistory {
         Self {
             root,
             entries: None,
+            load_problem: None,
             maximum_entries: 100,
             maximum_bytes: 2 * 1024 * 1024 * 1024,
         }
     }
-    fn entries(&mut self) -> &mut Vec<HistoryEntry> {
+    fn entries(&mut self) -> ResponseResult<&mut Vec<HistoryEntry>> {
         if self.entries.is_none() {
-            let entries = fs::read(self.root.join("index.json"))
-                .ok()
-                .and_then(|data| serde_json::from_slice(&data).ok())
-                .unwrap_or_default();
+            let _ = retained_root();
+            let path = self.root.join("index.json");
+            let entries = match fs::read(&path) {
+                Ok(data) => match decode_history_index(&data) {
+                    Ok(entries) => Ok(entries),
+                    Err(error) => {
+                        self.load_problem = Some(error);
+                        Ok(Vec::new())
+                    }
+                },
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(Vec::new()),
+                Err(error) => Err(error.into()),
+            };
             self.entries = Some(entries);
         }
-        self.entries.as_mut().expect("history was loaded")
+        self.entries
+            .as_mut()
+            .expect("history was loaded")
+            .as_mut()
+            .map_err(|error| error.clone())
+    }
+    /// Consume a damaged-index notice once; unrecoverable storage errors remain errors.
+    /// # Errors
+    /// Reports the damaged data or an unreadable index.
+    pub fn take_load_problem(&mut self) -> ResponseResult<()> {
+        self.entries()?;
+        self.load_problem.take().map_or(Ok(()), Err)
     }
     /// # Errors
     /// Returns an I/O error if the body or index cannot be stored.
     pub fn record(&mut self, mut entry: HistoryEntry, body: &BodyStore) -> ResponseResult<()> {
+        self.entries()?;
         fs::create_dir_all(&self.root)?;
         let destination = self.root.join(format!("{}.body", entry.id));
         body.export(&destination)?;
         entry.body_path = destination.to_string_lossy().into_owned();
-        let request_id = entry.request_id.clone();
-        self.entries().push(entry);
-        let mut matching: Vec<_> = self
-            .entries()
-            .iter()
-            .filter(|e| e.request_id == request_id)
-            .cloned()
-            .collect();
-        matching.sort_by(|a, b| b.created_at.total_cmp(&a.created_at));
-        for entry in matching.into_iter().skip(self.maximum_entries) {
-            self.evict(&entry);
-        }
-        let mut total: u64 = self.entries().iter().map(|e| file_size(&e.body_path)).sum();
-        let mut oldest = self.entries().clone();
-        oldest.sort_by(|a, b| a.created_at.total_cmp(&b.created_at));
-        for entry in oldest {
-            if total <= self.maximum_bytes {
-                break;
+        let identity = entry.identity.clone();
+        let mut entries = self.entries()?.clone();
+        entries.retain(|previous| previous.id != entry.id);
+        entries.push(entry);
+        entries.sort_by(|a, b| b.created_at.total_cmp(&a.created_at));
+        let mut matching = 0;
+        entries.retain(|entry| {
+            if entry.identity == identity {
+                matching += 1;
+                matching <= self.maximum_entries
+            } else {
+                true
             }
+        });
+        let mut total: u64 = entries
+            .iter()
+            .map(|entry| file_size(&entry.body_path))
+            .sum();
+        while total > self.maximum_bytes {
+            let Some(entry) = entries.pop() else {
+                break;
+            };
             total = total.saturating_sub(file_size(&entry.body_path));
-            self.evict(&entry);
         }
-        self.persist()
-    }
-    fn evict(&mut self, entry: &HistoryEntry) {
-        self.entries().retain(|e| e.id != entry.id);
-        let _ = fs::remove_file(&entry.body_path);
+        let retained = entries
+            .iter()
+            .any(|entry| Path::new(&entry.body_path) == destination);
+        if let Err(error) = self.replace_entries(entries) {
+            let _ = fs::remove_file(destination);
+            return Err(error);
+        }
+        if !retained {
+            let _ = fs::remove_file(destination);
+        }
+        Ok(())
     }
     /// # Errors
-    /// Unavailable or invalid indexes are treated as empty history.
-    pub fn list(&mut self, request_id: &str) -> ResponseResult<Vec<HistoryEntry>> {
+    /// Returns an error for unreadable or damaged indexes.
+    pub fn list(&mut self, identity: &SessionRequestIdentity) -> ResponseResult<Vec<HistoryEntry>> {
         let mut entries: Vec<_> = self
-            .entries()
+            .entries()?
             .iter()
-            .filter(|e| e.request_id == request_id)
+            .filter(|e| &e.identity == identity)
             .cloned()
             .collect();
         entries.sort_by(|a, b| b.created_at.total_cmp(&a.created_at));
         Ok(entries)
     }
     /// # Errors
-    /// Unavailable or invalid indexes are treated as empty history.
-    pub fn count(&mut self, request_id: &str) -> ResponseResult<u64> {
+    /// Returns an error for unreadable or damaged indexes.
+    pub fn count(&mut self, identity: &SessionRequestIdentity) -> ResponseResult<u64> {
         Ok(count(
-            self.entries()
+            self.entries()?
                 .iter()
-                .filter(|e| e.request_id == request_id)
+                .filter(|e| &e.identity == identity)
                 .count(),
         ))
     }
     /// # Errors
     /// Returns an I/O error if writing the index fails.
-    pub fn clear(&mut self, request_id: &str) -> ResponseResult<()> {
-        for entry in self.list(request_id)? {
-            self.evict(&entry);
-        }
-        self.persist()
+    pub fn clear(&mut self, identity: &SessionRequestIdentity) -> ResponseResult<()> {
+        let entries = self
+            .entries()?
+            .iter()
+            .filter(|entry| &entry.identity != identity)
+            .cloned()
+            .collect();
+        self.replace_entries(entries)
     }
-    fn persist(&mut self) -> ResponseResult<()> {
-        let data = serde_json::to_vec(self.entries()).map_err(|e| json_io(&e))?;
-        atomic_write(&self.root.join("index.json"), &data)
+    /// # Errors
+    /// Returns an I/O error if the index cannot be saved.
+    pub fn relocate(
+        &mut self,
+        from: &SessionRequestIdentity,
+        to: &SessionRequestIdentity,
+    ) -> ResponseResult<()> {
+        let mut entries = self.entries()?.clone();
+        for entry in &mut entries {
+            if &entry.identity == from {
+                entry.identity = to.clone();
+            }
+        }
+        self.replace_entries(entries)
+    }
+    /// # Errors
+    /// Returns a storage error if reading or writing the index fails.
+    pub fn clear_all(&mut self) -> ResponseResult<()> {
+        self.replace_entries(Vec::new())
+    }
+    /// # Errors
+    /// Returns an error for an unreadable index.
+    pub fn workspace_entries(
+        &mut self,
+        workspace: &crate::domain::DomainWorkspace,
+    ) -> ResponseResult<Vec<HistoryEntry>> {
+        Ok(self
+            .entries()?
+            .iter()
+            .filter(|entry| {
+                let identity = &entry.identity;
+                crate::session::workspace::location(
+                    workspace,
+                    &identity.collection_id,
+                    &identity.request_id,
+                )
+                .is_some()
+            })
+            .cloned()
+            .collect())
+    }
+    fn replace_entries(&mut self, entries: Vec<HistoryEntry>) -> ResponseResult<()> {
+        // Persist before unlinking anything: failed writes keep every old body.
+        let previous = self.entries()?.clone();
+        let index = HistoryIndex { entries };
+        let data = serde_json::to_vec(&index).map_err(|e| json_io(&e))?;
+        let entries = index.entries;
+        atomic_write(&self.root.join("index.json"), &data)?;
+        let retained_paths: std::collections::HashSet<_> = entries
+            .iter()
+            .map(|entry| entry.body_path.as_str())
+            .collect();
+        for entry in previous {
+            if !retained_paths.contains(entry.body_path.as_str()) {
+                let _ = fs::remove_file(&entry.body_path);
+            }
+        }
+        self.entries = Some(Ok(entries));
+        Ok(())
+    }
+}
+fn decode_history_index(data: &[u8]) -> ResponseResult<Vec<HistoryEntry>> {
+    let unreadable = || ResponseError::Io {
+        reason: HISTORY_LOAD_FAILURE.into(),
+    };
+    serde_json::from_slice::<HistoryIndex>(data)
+        .map(|index| index.entries)
+        .map_err(|_| unreadable())
+}
+
+struct RetainedRoot {
+    directory: tempfile::TempDir,
+    _lease: File,
+}
+// Process leases keep a second running instance's displayed bodies alive. A later
+// launch removes directories whose process exited, including after a crash.
+fn retained_root() -> std::io::Result<&'static Path> {
+    static ROOT: OnceLock<Result<RetainedRoot, std::io::Error>> = OnceLock::new();
+    ROOT.get_or_init(|| {
+        let root = std::env::temp_dir().join("wirebolt-retained-bodies");
+        fs::create_dir_all(&root)?;
+        let directory = tempfile::tempdir_in(&root)?;
+        let lease = File::options()
+            .create_new(true)
+            .write(true)
+            .open(directory.path().join("lease"))?;
+        lease.lock()?;
+        cleanup_retained_bodies(&root, directory.path());
+        Ok(RetainedRoot {
+            directory,
+            _lease: lease,
+        })
+    })
+    .as_ref()
+    .map(|root| root.directory.path())
+    .map_err(|error| std::io::Error::new(error.kind(), error.to_string()))
+}
+fn cleanup_retained_bodies(root: &Path, active: &Path) {
+    let Ok(directories) = fs::read_dir(root) else {
+        return;
+    };
+    for entry in directories.flatten() {
+        if entry.path() == active {
+            continue;
+        }
+        if let Ok(lease) = File::options().write(true).open(entry.path().join("lease"))
+            && lease.try_lock().is_ok()
+        {
+            let _ = fs::remove_dir_all(entry.path());
+        }
     }
 }
 fn file_size(path: &str) -> u64 {
@@ -349,11 +538,12 @@ pub(super) fn json_io(error: &serde_json::Error) -> ResponseError {
         reason: error.to_string(),
     }
 }
-fn atomic_write(path: &Path, bytes: &[u8]) -> ResponseResult<()> {
+pub(crate) fn atomic_write(path: &Path, bytes: &[u8]) -> ResponseResult<()> {
     let parent = path.parent().unwrap_or_else(|| Path::new("."));
     fs::create_dir_all(parent)?;
     let mut file = tempfile::NamedTempFile::new_in(parent)?;
     file.write_all(bytes)?;
+    file.as_file().sync_all()?;
     file.persist(path)
         .map_err(|e| ResponseError::from(e.error))?;
     Ok(())
@@ -365,7 +555,7 @@ pub fn unix_time() -> f64 {
         .unwrap_or_default()
         .as_secs_f64()
 }
-/// Legacy history/session timestamps retain their existing persisted representation.
+/// Native session dates use Foundation reference-date seconds.
 #[must_use]
 pub fn reference_time() -> f64 {
     unix_time() - 978_307_200.0
@@ -382,8 +572,7 @@ pub struct StoredCookie {
     pub secure: bool,
     pub http_only: bool,
     pub same_site: String,
-    /// Unix seconds in memory; legacy cookie files use the original reference epoch.
-    #[serde(default, with = "legacy_cookie_expiry")]
+    /// Unix seconds in memory and on disk.
     pub expires_at: Option<f64>,
 }
 impl StoredCookie {
@@ -397,10 +586,16 @@ pub struct ResponseHeaderValue {
     pub name: String,
     pub value: String,
 }
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CookieFile {
+    cookies: Vec<StoredCookie>,
+}
 #[derive(Debug)]
 pub struct ResponseCookieJar {
     storage: Option<PathBuf>,
     cookies: Option<Vec<StoredCookie>>,
+    load_problem: Option<String>,
 }
 impl ResponseCookieJar {
     #[must_use]
@@ -408,19 +603,45 @@ impl ResponseCookieJar {
         Self {
             storage,
             cookies: None,
+            load_problem: None,
         }
     }
     fn cookies(&mut self) -> &mut Vec<StoredCookie> {
-        self.cookies.get_or_insert_with(|| {
-            self.storage
-                .as_ref()
-                .and_then(|p| fs::read(p).ok())
-                .and_then(|data| serde_json::from_slice::<Vec<StoredCookie>>(&data).ok())
-                .unwrap_or_default()
-                .into_iter()
-                .filter(|c| c.expires_at.is_some())
-                .collect()
-        })
+        if self.cookies.is_none() {
+            let result =
+                self.storage
+                    .as_ref()
+                    .map_or(Ok(Vec::new()), |path| match fs::read(path) {
+                        Ok(data) => serde_json::from_slice::<CookieFile>(&data)
+                            .map(|file| file.cookies)
+                            .map_err(|_| {
+                                "Cookies could not be loaded: the cookie file is invalid."
+                                    .to_owned()
+                            }),
+                        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                            Ok(Vec::new())
+                        }
+                        Err(_) => Err(
+                            "Cookies could not be loaded: the cookie file could not be read."
+                                .to_owned(),
+                        ),
+                    });
+            let cookies = result.unwrap_or_else(|reason| {
+                self.load_problem = Some(reason);
+                Vec::new()
+            });
+            self.cookies = Some(
+                cookies
+                    .into_iter()
+                    .filter(|cookie| cookie.expires_at.is_some())
+                    .collect(),
+            );
+        }
+        self.cookies.as_mut().expect("cookies were loaded")
+    }
+    /// Takes a load diagnostic already produced by a cookie operation, without disk I/O.
+    pub fn take_load_problem(&mut self) -> Option<String> {
+        self.load_problem.take()
     }
     #[must_use]
     pub fn store(
@@ -455,11 +676,10 @@ impl ResponseCookieJar {
         self.expire(now);
         let url = Url::parse(request_url).ok()?;
         let host = cookie_host(&url, request_url);
-        let decoded_path = decoded_url_path(&url);
-        let path = if decoded_path.is_empty() {
+        let path = if url.path().is_empty() {
             "/"
         } else {
-            &decoded_path
+            url.path()
         };
         let mut cookies: Vec<_> = self
             .cookies()
@@ -502,7 +722,8 @@ impl ResponseCookieJar {
                 .iter()
                 .filter(|c| c.expires_at.is_some())
                 .collect();
-            if let Ok(data) = serde_json::to_vec(&cookies) {
+            let cookies = cookies.into_iter().cloned().collect();
+            if let Ok(data) = serde_json::to_vec(&CookieFile { cookies }) {
                 let _ = atomic_write(&path, &data);
             }
         }
@@ -510,6 +731,10 @@ impl ResponseCookieJar {
 }
 #[must_use]
 pub fn cookie_storage_path(workspace: &Path, directory: &Path) -> PathBuf {
+    directory.join(cookie_storage_name(workspace))
+}
+
+fn cookie_storage_name(workspace: &Path) -> String {
     let path = resolved_workspace_path(workspace);
     let digest = Sha256::digest(path.to_string_lossy().as_bytes());
     let mut hex = String::with_capacity(32);
@@ -517,7 +742,7 @@ pub fn cookie_storage_path(workspace: &Path, directory: &Path) -> PathBuf {
         use std::fmt::Write as _;
         let _ = write!(hex, "{byte:02x}");
     }
-    directory.join(format!("{hex}.json"))
+    format!("{hex}.json")
 }
 fn resolved_workspace_path(workspace: &Path) -> PathBuf {
     use std::path::Component;
@@ -563,7 +788,8 @@ fn parse_cookie(source: &str, url: &Url, host: &str, now: f64) -> Option<StoredC
         value: value.into(),
         domain: host.into(),
         host_only: true,
-        path: decoded_url_path(url)
+        path: url
+            .path()
             .rsplit_once('/')
             .filter(|(parent, _)| !parent.is_empty())
             .map_or_else(|| "/".into(), |(parent, _)| parent.into()),
@@ -572,6 +798,8 @@ fn parse_cookie(source: &str, url: &Url, host: &str, now: f64) -> Option<StoredC
         same_site: String::new(),
         expires_at: None,
     };
+    let mut max_age = None;
+    let mut expires = None;
     for attribute in segments {
         let (key, value) = attribute
             .split_once('=')
@@ -583,37 +811,38 @@ fn parse_cookie(source: &str, url: &Url, host: &str, now: f64) -> Option<StoredC
                 cookie.domain = v.trim_matches('.').to_lowercase();
                 cookie.host_only = false;
             }
-            ("path", Some(v)) => cookie.path = v.into(),
+            ("path", Some(v)) if v.starts_with('/') => cookie.path = v.into(),
             ("secure", _) => cookie.secure = true,
             ("httponly", _) => cookie.http_only = true,
             ("samesite", Some(v)) => cookie.same_site = v.into(),
             ("max-age", Some(v)) => {
-                cookie.expires_at = v.parse::<i64>().ok().map(|age| {
-                    now + std::time::Duration::from_secs(age.unsigned_abs()).as_secs_f64()
-                        * if age < 0 { -1.0 } else { 1.0 }
-                });
+                let digits = v.strip_prefix('-').unwrap_or(v);
+                if !digits.is_empty() && digits.bytes().all(|b| b.is_ascii_digit()) {
+                    let age = v.parse::<i64>().unwrap_or(if v.starts_with('-') {
+                        i64::MIN
+                    } else {
+                        i64::MAX
+                    });
+                    max_age = Some(if age <= 0 {
+                        now
+                    } else {
+                        now + std::time::Duration::from_secs(age.unsigned_abs()).as_secs_f64()
+                    });
+                }
             }
             ("expires", Some(v)) => {
-                cookie.expires_at = super::cookie_date::parse_cookie_date(v);
+                if let Some(date) = super::cookie_date::parse_cookie_date(v) {
+                    expires = Some(date);
+                }
             }
             _ => (),
         }
     }
+    cookie.expires_at = max_age.or(expires);
     (cookie.host_only || host == cookie.domain || host.ends_with(&format!(".{}", cookie.domain)))
         .then_some(cookie)
 }
 
-fn decoded_url_path(url: &Url) -> String {
-    let decoded = percent_encoding::percent_decode_str(url.path()).decode_utf8_lossy();
-    // URL.path removes trailing separators, including percent-encoded ones,
-    // while retaining the root slash.
-    let trimmed = decoded.trim_end_matches('/');
-    if trimmed.is_empty() && decoded.starts_with('/') {
-        "/".into()
-    } else {
-        trimmed.into()
-    }
-}
 fn cookie_host(url: &Url, source: &str) -> String {
     // Foundation preserves the spelling of IPv6 addresses instead of compressing
     // them. Cookie files and host-only matching use that unbracketed spelling.
@@ -635,19 +864,22 @@ fn cookie_host(url: &Url, source: &str) -> String {
         .to_lowercase()
 }
 
-mod legacy_cookie_expiry {
-    use serde::{Deserialize, Deserializer, Serialize, Serializer};
-    const OFFSET: f64 = 978_307_200.0;
-    #[expect(
-        clippy::ref_option,
-        reason = "Serde field serializers receive a borrowed field."
-    )]
-    pub fn serialize<S: Serializer>(value: &Option<f64>, serializer: S) -> Result<S::Ok, S::Error> {
-        value.map(|v| v - OFFSET).serialize(serializer)
-    }
-    pub fn deserialize<'de, D: Deserializer<'de>>(
-        deserializer: D,
-    ) -> Result<Option<f64>, D::Error> {
-        Option::<f64>::deserialize(deserializer).map(|value| value.map(|v| v + OFFSET))
+#[cfg(test)]
+mod retention_tests {
+    use super::*;
+    #[test]
+    fn crash_cleanup_removes_only_unleased_retained_directories() {
+        let root = tempfile::tempdir().unwrap();
+        let crashed = root.path().join("crashed");
+        let live = root.path().join("live");
+        fs::create_dir(&crashed).unwrap();
+        fs::create_dir(&live).unwrap();
+        fs::write(crashed.join("lease"), b"").unwrap();
+        fs::write(crashed.join("body"), b"leftover").unwrap();
+        let lease = File::create(live.join("lease")).unwrap();
+        lease.lock().unwrap();
+        cleanup_retained_bodies(root.path(), &root.path().join("active"));
+        assert!(!crashed.exists());
+        assert!(live.exists());
     }
 }

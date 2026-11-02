@@ -16,11 +16,9 @@ pub fn display_name(format: wirebolt_core::ImportFormat) -> String {
     match format {
         wirebolt_core::ImportFormat::Curl => "cURL",
         wirebolt_core::ImportFormat::Har => "HAR",
-        wirebolt_core::ImportFormat::LegacyWorkspaceV1 => "Wirebolt JSON",
         wirebolt_core::ImportFormat::PostmanV2 => "Postman Collection v2",
         wirebolt_core::ImportFormat::Insomnia => "Insomnia",
         wirebolt_core::ImportFormat::Bruno => "Bruno collection",
-        wirebolt_core::ImportFormat::BrunoFolder => "Bruno collection folder",
     }
     .into()
 }

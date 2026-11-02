@@ -85,17 +85,13 @@ public enum CredentialReference {
         domainCredentialReference(role: role, scope: scope)
     }
 
-    /// Names earlier versions gave every API Key and OAuth request. Other workspaces may still
-    /// use them, so Wirebolt copies their values to per-request names and never deletes them.
-    public static func isLegacyShared(_ name: String) -> Bool { domainLegacyReference(name: name) }
-
     public static func editableName(for source: ValueSource, role: String) -> String {
         domainEditableCredentialReference(source: source, role: role)
     }
 
     /// Whether Wirebolt generated `name` for exactly one request or variable, so the Keychain
     /// item can be deleted once nothing references it. Names people chose (such as proxy
-    /// credentials or `{{secret}}` references) and legacy shared names never qualify.
+    /// credentials or `{{secret}}` references) never qualify.
     public static func isOwned(_ name: String) -> Bool {
         domainOwnedReference(name: name)
     }
@@ -123,10 +119,9 @@ extension RequestAuthentication {
         return domainRenameAuth(authentication: self, names: names)
     }
 
-    /// Fresh per-request names for every credential, for a copy of a request (`all`) or for
-    /// migrating legacy shared names only. Returns the new authentication and old → new names.
-    public func withOwnKeychainNames(onlyLegacy: Bool) -> (RequestAuthentication, [String: String]) {
-        let result = domainOwnAuth(authentication: self, onlyLegacy: onlyLegacy)
+    /// Fresh per-request names for a copy of a request.
+    public func withOwnKeychainNames() -> (RequestAuthentication, [String: String]) {
+        let result = domainOwnAuth(authentication: self)
         return (result.authentication, result.renames)
     }
 }
@@ -385,16 +380,6 @@ extension EnvironmentVariableDraft {
         if case .secret = value { true } else { false }
     }
 
-    /// A new Keychain name for this variable's secret value. It is stored in the variable, so
-    /// renaming the key keeps its value, and it is unique, so no other environment,
-    /// workspace or Mac user of the same Keychain shares it.
-    public func makeSecretReference(environmentID: String) -> String {
-        CredentialReference.unique(role: environmentID, scope: "env")
-    }
-}
-
-extension EnvironmentDraft {
-    public var secretReferences: Set<String> { Set(variables.compactMap(\.value.secretName)) }
 }
 
 extension RequestDraft {
@@ -439,9 +424,6 @@ public struct EnvironmentDraft: Identifiable, Equatable, Sendable {
         self.variables = variables
     }
 
-    public init(id: String, name: String, legacyVariables: [String: ValueSource]) {
-        self.init(domain: domainLegacyEnvironment(id: id, name: name, values: legacyVariables))
-    }
 
     public var enabledValues: [String: ValueSource] {
         domainEnabledValues(environment: domain)
@@ -457,12 +439,19 @@ public struct RequestLocation: Identifiable, Equatable, Sendable {
             transport: DomainTransport(
                 validateTls: false, followRedirects: false, maximumRedirects: 0, totalTimeoutMs: 0, readTimeoutMs: 0,
                 clientCertificateReference: nil, customCaPath: nil), inheritsWorkspaceTransport: false))
-    init(domain: DomainLocation) { self.domain = domain }
+    private var activityKey = ""
+    init(domain: DomainLocation) {
+        self.domain = domain
+        activityKey = sessionRequestActivityKey(collectionId: domain.collectionId, requestId: domain.request.id)
+    }
 
-    public var id: String { "\(collectionID)/\(request.id)" }
+    public var id: String { activityKey }
     public var collectionID: String {
         get { domain.collectionId }
-        set { domain.collectionId = newValue }
+        set {
+            domain.collectionId = newValue
+            activityKey = sessionRequestActivityKey(collectionId: newValue, requestId: domain.request.id)
+        }
     }
     public var groupID: String? {
         get { domain.groupId }
@@ -474,7 +463,10 @@ public struct RequestLocation: Identifiable, Equatable, Sendable {
     }
     public var request: RequestDraft {
         get { RequestDraft(domain: domain.request) }
-        set { domain.request = newValue.domain }
+        set {
+            domain.request = newValue.domain
+            activityKey = sessionRequestActivityKey(collectionId: domain.collectionId, requestId: newValue.id)
+        }
     }
     public init(
         collectionID: String,

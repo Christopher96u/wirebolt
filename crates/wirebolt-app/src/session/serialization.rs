@@ -18,23 +18,7 @@ pub(crate) fn decode<T: serde::de::DeserializeOwned>(
 /// # Errors
 /// Returns an invalid preference record error.
 pub fn encode_proxy(value: &DomainProxy) -> Result<Vec<u8>, WorkspaceError> {
-    let mut document = serde_json::to_value(value)
-        .map_err(|_| WorkspaceError::operation("proxy preferences could not be encoded"))?;
-    if let Some(routes) = document
-        .get_mut("routes")
-        .and_then(serde_json::Value::as_array_mut)
-    {
-        for route in routes {
-            if route
-                .get("credentials")
-                .is_some_and(serde_json::Value::is_null)
-                && let Some(route) = route.as_object_mut()
-            {
-                route.remove("credentials");
-            }
-        }
-    }
-    encode(&document, "proxy preferences")
+    encode(value, "proxy preferences")
 }
 /// # Errors
 /// Returns an invalid preference record error.

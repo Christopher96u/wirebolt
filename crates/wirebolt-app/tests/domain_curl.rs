@@ -385,3 +385,56 @@ fn proxy_arguments_quote_keychain_credentials_and_preserve_bypass() {
     assert!(args.contains("-a 'proxy.user'"));
     assert!(args.contains("-a 'proxy.password'"));
 }
+
+#[test]
+fn curl_query_matches_send_for_punctuation_unicode_and_repeated_parameters() {
+    let mut draft = request("http://localhost/path?existing=a%2Bb#fragment");
+    draft.query = vec![
+        field("q", "a+b"),
+        field("q", " !~*'();:@,/?&=% café 東京"),
+        field("a+b", "+"),
+    ];
+    let mut saved = wirebolt_core::Request::new(
+        wirebolt_core::DocumentId::new("query").unwrap(),
+        "Query",
+        "GET",
+        &draft.url,
+    );
+    saved.query = draft
+        .query
+        .iter()
+        .map(|f| {
+            wirebolt_core::RequestValueField::enabled(
+                &f.name,
+                wirebolt_core::ValueSource::literal(f.value.editable()),
+            )
+        })
+        .collect();
+    let prepared = wirebolt_core::RequestPipeline::new(None, &wirebolt_core::NoSecrets)
+        .prepare(&saved)
+        .unwrap();
+    let args = run(
+        &command(&draft, &HashMap::new(), &HashMap::new()),
+        &HashMap::new(),
+    );
+    assert_eq!(args[2], prepared.url().as_str());
+}
+
+#[test]
+fn curl_secret_query_uses_transport_encoding_for_punctuation_unicode_and_repeated_names() {
+    let mut draft = request("http://localhost/");
+    let mut protected = field("a:b;+ café", "");
+    protected.value = secret("query.fixture");
+    draft.query = vec![protected.clone(), protected];
+    let fixture = keys([("query.fixture", "a+b café")]);
+    let args = run(&command(&draft, &HashMap::new(), &fixture), &fixture);
+    assert_eq!(
+        &args[3..],
+        [
+            "--url-query",
+            "a%3Ab%3B%2B%20caf%C3%A9=a+b café",
+            "--url-query",
+            "a%3Ab%3B%2B%20caf%C3%A9=a+b café"
+        ]
+    );
+}

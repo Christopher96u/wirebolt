@@ -112,10 +112,12 @@ pub fn enabled_values(environment: &DomainEnvironment) -> BTreeMap<String, Domai
 pub fn catalog(environments: &[DomainEnvironment], selected: Option<&str>) -> Vec<CatalogEntry> {
     let mut entries = BTreeMap::new();
     for environment in [
-        environments.iter().find(|e| e.id == "global"),
         environments
             .iter()
-            .find(|e| Some(e.id.as_str()) == selected && e.id != "global"),
+            .find(|e| e.id == wirebolt_core::GLOBAL_ENVIRONMENT_ID),
+        environments.iter().find(|e| {
+            Some(e.id.as_str()) == selected && e.id != wirebolt_core::GLOBAL_ENVIRONMENT_ID
+        }),
     ]
     .into_iter()
     .flatten()

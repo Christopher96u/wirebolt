@@ -567,6 +567,13 @@ impl HttpEngine {
                 let stream = ReaderStream::new(file).inspect_ok(move |_chunk| progress.touch());
                 Ok(reqwest::Body::wrap_stream(stream))
             }
+            PreparedBodySource::Multipart(body) => {
+                body.validate_files().await.map_err(RunError::upload)?;
+                let stream = body
+                    .into_stream()
+                    .inspect_ok(move |_chunk| progress.touch());
+                Ok(reqwest::Body::wrap_stream(stream))
+            }
         }
     }
 }
@@ -596,7 +603,7 @@ struct RequestBody {
     progress: Arc<SendProgress>,
 }
 
-const REQUEST_FRAME_BYTES: usize = 64 * 1024;
+const REQUEST_FRAME_BYTES: usize = crate::request::multipart::UPLOAD_FRAME_BYTES;
 
 impl http_body::Body for RequestBody {
     type Data = Bytes;
@@ -918,7 +925,12 @@ impl fmt::Display for RunError {
                 self.response_limit.unwrap_or(0)
             ),
             RunErrorKind::Connection => formatter.write_str("connection failed"),
-            RunErrorKind::Request => formatter.write_str("request failed before sending"),
+            RunErrorKind::Request => match &self.source {
+                Some(RunErrorSource::Upload(source)) => {
+                    write!(formatter, "request upload failed: {source}")
+                }
+                _ => formatter.write_str("request failed before sending"),
+            },
             RunErrorKind::ResponseBody => {
                 formatter.write_str("response body failed while streaming")
             }

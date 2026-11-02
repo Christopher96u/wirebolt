@@ -120,11 +120,6 @@ impl RuntimeRuns {
                 lock(run).cancel(&active.id);
                 active.transport.cancel(&active.id);
             }
-        } else {
-            let mut run = lock(run);
-            if let Some(id) = run.snapshot().active_run_id {
-                run.cancel(&id);
-            }
         }
     }
     pub async fn send(&self, command: RuntimeSend) -> Option<SessionFailure> {
@@ -144,7 +139,7 @@ impl RuntimeRuns {
             if lock(&run).snapshot().active_run_id.is_some() {
                 return None;
             }
-            (document.id.clone(), document.request_id.clone())
+            (document.id.clone(), state.document_identity(&document))
         };
         let cancellation = RunCancellation::new();
         // Installation and begin share the active-map lock with cancellation.
@@ -465,7 +460,7 @@ async fn prepare_cookies(
 
 async fn record_terminal(
     state: Arc<RuntimeState>,
-    request_id: String,
+    request_id: crate::session::history::SessionRequestIdentity,
     id: String,
     observer: &RunObserver,
 ) {

@@ -23,21 +23,22 @@ struct PreviewTabTests {
     }
 
     @Test("Editing or sending a preview tab keeps it open")
-    @MainActor func touchingPins() {
+    @MainActor func touchingPins() async {
         let store = DocumentSessionStore()
         let edited = store.openPreview(draft: Self.location("a").request, collectionID: "api")
         edited.draft.url = "https://example.com/edited"
         #expect(!store.isPreview(tabID: edited.id))
         let sent = store.openPreview(draft: Self.location("b").request, collectionID: "api")
         #expect(store.activeGroup?.tabIDs == [edited.id, sent.id])
-        sent.beginRun(RunID())
+        let liveRun = await RuntimeRunFixture.start(sent)
+        defer { liveRun.cancel() }
         let third = store.openPreview(draft: Self.location("c").request, collectionID: "api")
         #expect(store.activeGroup?.tabIDs == [edited.id, sent.id, third.id])
         #expect(store.isPreview(tabID: third.id))
     }
 
     @Test("Restoring history leaves an untouched preview replaceable")
-    @MainActor func historyRestorationStaysPreview() throws {
+    @MainActor func historyRestorationStaysPreview() async throws {
         let store = DocumentSessionStore()
         let first = store.openPreview(draft: Self.location("a").request, collectionID: "api")
         let path = FileManager.default.temporaryDirectory.appending(path: "wirebolt-preview-history-\(UUID().uuidString)")
@@ -46,9 +47,9 @@ struct PreviewTabTests {
         try data.write(to: path)
         let prepared = PreparedRunSnapshot(method: "GET", url: first.draft.url, headers: [],
             body: PreparedBodySnapshot(byteCount: 0, contentType: nil, textPreview: nil, redacted: false), transport: TransportSettings())
-        let entry = RunHistoryEntry(id: RunID().description, requestID: first.requestID, createdAt: Date(), prepared: prepared,
-            responseHead: ResponseHead(status: 200, version: "HTTP/2", headers: [], timeToHeadersNS: 1), completion: nil, failure: nil, bodyPath: path.path)
-        first.restore(entry, viewport: data)
+        let entry = RunHistoryEntry(id: RunID().description, createdAt: Date(), prepared: prepared,
+            responseHead: ResponseHead(status: 200, version: "HTTP/2", headers: [], timeToHeadersNS: 1), completion: nil, failure: nil, bodyPath: path.path, identity: SessionRequestIdentity(collectionId: "api", requestId: first.requestID))
+        await first.restore(entry, viewport: data)
         #expect(!first.isTouched)
         #expect(store.isPreview(tabID: first.id))
         let next = store.openPreview(draft: Self.location("b").request, collectionID: "api")
@@ -122,12 +123,6 @@ struct PreviewTabTests {
         #expect(restored.activeSession?.id == tabIDs[0])
     }
 
-    @Test("Layouts saved before preview tabs decode with every tab kept open")
-    @MainActor func legacyLayoutDecodes() throws {
-        let legacy = #"{"groups":[{"tabs":[{"collectionID":"api","requestID":"a"}],"selectedIndex":0}],"activeGroupIndex":0}"#
-        let layout = SessionLayout(try sessionDecodeLayout(data: Data(legacy.utf8)))
-        #expect(layout.groups.first?.previewIndex == nil)
-    }
 }
 
 private struct PreviewRunner: RequestRunner {

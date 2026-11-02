@@ -1,3 +1,5 @@
+mod multipart;
+use multipart::prepare_multipart;
 use std::{
     borrow::Cow,
     collections::{BTreeMap, BTreeSet},
@@ -10,13 +12,12 @@ use http::{
     HeaderMap, HeaderName, HeaderValue,
     header::{AUTHORIZATION, CONTENT_LENGTH, CONTENT_TYPE},
 };
-use percent_encoding::{AsciiSet, NON_ALPHANUMERIC, utf8_percent_encode};
+use percent_encoding::{AsciiSet, NON_ALPHANUMERIC, PercentEncode, utf8_percent_encode};
 use url::Url;
 
 use crate::{
-    ApiKeyPlacement, Environment, MultipartPartKind, PreparedRequest, Request,
-    RequestAuthentication, RequestBody, RequestHeader, RequestValueField, SecretResolver,
-    ValueSource,
+    ApiKeyPlacement, Environment, PreparedRequest, Request, RequestAuthentication, RequestBody,
+    RequestHeader, RequestValueField, SecretResolver, ValueSource,
     request::{PreparedBodySource, Redaction, parse_http_url, parse_method},
 };
 
@@ -30,6 +31,12 @@ const QUERY_COMPONENT: &AsciiSet = &NON_ALPHANUMERIC
     .remove(b'_')
     .remove(b'.')
     .remove(b'~');
+
+/// Encodes a query name or value exactly as request preparation does.
+#[must_use]
+pub fn encode_query_component(value: &str) -> PercentEncode<'_> {
+    utf8_percent_encode(value, QUERY_COMPONENT)
+}
 
 pub struct RequestPipeline<'a, R: SecretResolver + ?Sized> {
     environment: Option<&'a Environment>,
@@ -186,6 +193,15 @@ struct QueryBuilder {
     changed: bool,
 }
 
+/// Appends query rows using the same RFC 3986 component encoding as Send.
+pub fn append_query_pairs<'a>(url: &mut Url, pairs: impl IntoIterator<Item = (&'a str, &'a str)>) {
+    let mut query = QueryBuilder::new(url);
+    for (name, value) in pairs {
+        query.append(name, value);
+    }
+    query.apply(url);
+}
+
 impl QueryBuilder {
     fn new(url: &Url) -> Self {
         Self {
@@ -198,11 +214,9 @@ impl QueryBuilder {
         if !self.query.is_empty() {
             self.query.push('&');
         }
-        self.query
-            .extend(utf8_percent_encode(name, QUERY_COMPONENT));
+        self.query.extend(encode_query_component(name));
         self.query.push('=');
-        self.query
-            .extend(utf8_percent_encode(value, QUERY_COMPONENT));
+        self.query.extend(encode_query_component(value));
         self.changed = true;
     }
 
@@ -225,6 +239,7 @@ fn append_query<R: SecretResolver + ?Sized>(
             resolver.resolve_source(&field.value, FieldPath::indexed("query", index, "value"));
         if let (Some(name), Some(value)) = (name, value) {
             query.append(&name, &value);
+            resolver.redaction.url |= field.sensitive;
         }
     }
 }
@@ -437,7 +452,7 @@ fn prepare_body<R: SecretResolver + ?Sized>(
             append_form_fields(fields, resolver, &mut serializer);
             serializer.finish().into_bytes()
         }
-        RequestBody::Multipart { parts } => prepare_multipart(parts, resolver, headers),
+        RequestBody::Multipart { parts } => return prepare_multipart(parts, resolver, headers),
         RequestBody::File { .. } => unreachable!("file bodies return before byte preparation"),
     };
     PreparedBodySource::Bytes(bytes)
@@ -466,108 +481,6 @@ fn apply_optional_content_type<R: SecretResolver + ?Sized>(
     }
 }
 
-fn prepare_multipart<R: SecretResolver + ?Sized>(
-    parts: &[crate::MultipartPart],
-    resolver: &mut TemplateResolver<'_, R>,
-    headers: &mut HeaderMap,
-) -> Vec<u8> {
-    let boundary = "wirebolt-boundary-7MA4YWxkTrZu0gW";
-    // The encoder owns the boundary. Imported headers may describe a different body.
-    headers.insert(
-        CONTENT_TYPE,
-        HeaderValue::from_static("multipart/form-data; boundary=wirebolt-boundary-7MA4YWxkTrZu0gW"),
-    );
-    let mut body = Vec::new();
-    for (index, part) in parts.iter().enumerate().filter(|(_, part)| part.enabled) {
-        let Some(name) =
-            resolver.resolve_template(&part.name, FieldPath::indexed("body.parts", index, "name"))
-        else {
-            continue;
-        };
-        let escaped_name = name.replace(['"', '\r', '\n'], "_");
-        body.extend_from_slice(format!("--{boundary}\r\n").as_bytes());
-        let filename = part.file_name.as_deref().or_else(|| {
-            (part.kind == MultipartPartKind::File).then(|| {
-                part.file_path
-                    .as_deref()
-                    .and_then(|path| std::path::Path::new(path).file_name())
-                    .and_then(|name| name.to_str())
-                    .unwrap_or("file")
-            })
-        });
-        let disposition = filename.map_or_else(String::new, |name| {
-            format!("; filename=\"{}\"", name.replace(['\"', '\r', '\n'], "_"))
-        });
-        body.extend_from_slice(
-            format!("Content-Disposition: form-data; name=\"{escaped_name}\"{disposition}\r\n")
-                .as_bytes(),
-        );
-        let content_type = part
-            .content_type
-            .as_deref()
-            .filter(|value| !value.is_empty())
-            .or_else(|| {
-                (part.kind == MultipartPartKind::File).then_some("application/octet-stream")
-            });
-        if let Some(content_type) = content_type {
-            if HeaderValue::from_str(content_type).is_err() {
-                resolver.issue(
-                    FieldPath::indexed("body.parts", index, "content_type"),
-                    RequestIssueKind::InvalidHeaderValue,
-                    None,
-                );
-                continue;
-            }
-            body.extend_from_slice(format!("Content-Type: {content_type}\r\n").as_bytes());
-        }
-        body.extend_from_slice(b"\r\n");
-        match part.kind {
-            MultipartPartKind::Binary => {
-                if let Some(value) = resolver.resolve_source(
-                    &part.value,
-                    FieldPath::indexed("body.parts", index, "value"),
-                ) {
-                    if let Ok(bytes) = STANDARD.decode(value.as_bytes()) {
-                        body.extend_from_slice(&bytes);
-                    } else {
-                        resolver.issue(
-                            FieldPath::indexed("body.parts", index, "value"),
-                            RequestIssueKind::InvalidBody,
-                            None,
-                        );
-                    }
-                }
-            }
-            MultipartPartKind::Text => {
-                if let Some(value) = resolver.resolve_source(
-                    &part.value,
-                    FieldPath::indexed("body.parts", index, "value"),
-                ) {
-                    body.extend_from_slice(value.as_bytes());
-                }
-            }
-            MultipartPartKind::File => {
-                let bytes = part
-                    .file_path
-                    .as_deref()
-                    .and_then(|path| fs::read(path).ok());
-                if let Some(bytes) = bytes {
-                    body.extend_from_slice(&bytes);
-                } else {
-                    resolver.issue(
-                        FieldPath::indexed("body.parts", index, "file_path"),
-                        RequestIssueKind::FileUnavailable,
-                        None,
-                    );
-                }
-            }
-        }
-        body.extend_from_slice(b"\r\n");
-    }
-    body.extend_from_slice(format!("--{boundary}--\r\n").as_bytes());
-    body
-}
-
 fn append_form_fields<R: SecretResolver + ?Sized>(
     fields: &[RequestValueField],
     resolver: &mut TemplateResolver<'_, R>,
@@ -584,6 +497,7 @@ fn append_form_fields<R: SecretResolver + ?Sized>(
         );
         if let (Some(name), Some(value)) = (name, value) {
             serializer.append_pair(&name, &value);
+            resolver.redaction.body |= field.sensitive;
         }
     }
 }

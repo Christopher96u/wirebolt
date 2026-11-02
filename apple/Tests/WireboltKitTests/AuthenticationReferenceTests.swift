@@ -92,7 +92,7 @@ actor KeychainRecorder: WorkspacePersistence {
         saved = keychain
     }
 
-    func load() async throws -> WorkspaceDraft { workspace }
+    func loadResult() async throws -> WorkspaceLoadResult {workspace.loadResult }
     func save(request _: RequestDraft, in _: String) async throws {}
     func save(environment: EnvironmentDraft) async throws { environments.append(environment) }
     func readSecret(name: String) async throws -> String? { saved[name] }
@@ -123,7 +123,7 @@ struct SilentRunner: RequestRunner {
 
 extension AuthenticationReferenceTests {
     @Test func credentialNamePolicyComesFromTheDomain() {
-        for name in ["auth.api-key", "oauth.client-secret", "oauth.access-token", ""] {
+        for name in [""] {
             let replacement = CredentialReference.editableName(for: .secret(name), role: "token")
             #expect(replacement != name)
             #expect(CredentialReference.isOwned(replacement))

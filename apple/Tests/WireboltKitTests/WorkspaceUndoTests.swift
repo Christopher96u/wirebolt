@@ -49,14 +49,13 @@ struct WorkspaceUndoTests {
         model.workspace.environments = [original, other]
         var changed = original
         changed.name = "Development"
-        changed.variables.append(EnvironmentVariableDraft(id: "host", key: "host", value: .literal("localhost")))
-        #expect(await model.saveEnvironment(changed))
+        #expect(await model.commitEnvironment(id: original.id, commit: .rename(name: changed.name)) == nil)
         #expect(model.workspace.environments == [changed, other])
         await undo(model, manager)
         #expect(model.workspace.environments == [original, other])
         await redo(model, manager)
         #expect(model.workspace.environments == [changed, other])
-        #expect(await model.deleteEnvironment(id: original.id))
+        #expect(await model.commitEnvironment(id: original.id, commit: .delete) == nil)
         await undo(model, manager)
         #expect(model.workspace.environments == [changed, other])
         #expect(model.workspace.environments[0].variables[0].value == .secret("env.local.token"))
@@ -73,9 +72,7 @@ struct WorkspaceUndoTests {
         model.workspace.environments = [original, other]
         model.selectedEnvironmentID = other.id
         try await persistence.saveSecret(name: reference, value: "old-token")
-        var changed = original
-        changed.name = "Development"
-        #expect(await model.saveEnvironment(changed, secrets: [reference: "new-token"]))
+        #expect(await model.commitEnvironment(id: original.id, commit: .variableValue(id: "token", value: "new-token")) == nil)
         let saved = try #require(model.workspace.environments.first)
         let savedReference = try #require(saved.variables.first?.value.secretName)
         #expect(savedReference != reference)
@@ -90,7 +87,7 @@ struct WorkspaceUndoTests {
         #expect(try await persistence.readSecret(name: savedReference) == "new-token")
         #expect(model.secretMaterial(for: .secret(savedReference)) == "new-token")
         #expect(model.selectedEnvironmentID == other.id)
-        #expect(await model.deleteEnvironment(id: original.id))
+        #expect(await model.commitEnvironment(id: original.id, commit: .delete) == nil)
         await undo(model, manager)
         #expect(model.workspace.environments == [saved, other])
         #expect(try await persistence.readSecret(name: savedReference) == "new-token")
@@ -254,17 +251,45 @@ struct WorkspaceUndoTests {
         #expect(model.workspace.collections[0].orderedChildren(parentID: nil) == ["request:root", "group:parent"])
     }
 
+    @Test("Refused moves present the same Rust reason from menu and drop actions")
+    func moveRefusalIsPresentedForMenuAndDropActions() async throws {
+        let (model, persistence, _) = makeModel()
+        let source = nested.requests[0]
+        model.workspace.collections = [nested, CollectionDraft(id: "other", name: "Other", requests: [
+            RequestLocation(collectionID: "other", request: source.request)])]
+        let identifier = "request|api|\(source.request.id)"
+        guard case .refused(_, let reason) = model.moveEligibility(identifier, toCollectionID: "other", parentID: nil) else {
+            Issue.record("An ID collision must be refused")
+            return
+        }
+        await model.moveSidebarItem(identifier, toCollectionID: "other", parentID: nil)
+        #expect(model.operationFailure?.kind == .workspace)
+        #expect(model.operationFailureMessage == reason)
+        model.operationFailure = nil
+        await model.moveSidebarItem(identifier, toCollectionID: "other", parentID: nil)
+        #expect(model.operationFailure?.kind == .workspace)
+        #expect(model.operationFailureMessage == reason)
+        #expect(await persistence.commands.isEmpty)
+    }
+
     @Test("Move To rejects a folder's own subtree, other collections and its current place")
-    func moveToValidation() {
+    func moveToValidation() async {
         let (model, _, _) = makeModel()
         model.workspace.collections = [nested, CollectionDraft(id: "other", name: "Other")]
-        #expect(!model.canMoveSidebarItem("group|api|parent", toCollectionID: "api", parentID: "grandchild"))
-        #expect(!model.canMoveSidebarItem("group|api|parent", toCollectionID: "other", parentID: nil))
-        #expect(!model.canMoveSidebarItem("group|api|parent", toCollectionID: "api", parentID: nil))
-        #expect(model.canMoveSidebarItem("group|api|grandchild", toCollectionID: "api", parentID: "parent"))
-        #expect(!model.canMoveSidebarItem("request|api|root", toCollectionID: "api", parentID: nil))
-        #expect(model.canMoveSidebarItem("request|api|root", toCollectionID: "other", parentID: nil))
-        #expect(!model.canMoveSidebarItem("request|api|root", toCollectionID: "api", parentID: "missing"))
+        #expect(!model.moveEligibility("group|api|parent", toCollectionID: "api", parentID: "grandchild").isAllowed)
+        #expect(!model.moveEligibility("group|api|parent", toCollectionID: "other", parentID: nil).isAllowed)
+        #expect(!model.moveEligibility("group|api|parent", toCollectionID: "api", parentID: nil).isAllowed)
+        #expect(model.moveEligibility("group|api|grandchild", toCollectionID: "api", parentID: "parent").isAllowed)
+        #expect(!model.moveEligibility("request|api|root", toCollectionID: "api", parentID: nil).isAllowed)
+        #expect(model.moveEligibility("request|api|root", toCollectionID: "other", parentID: nil).isAllowed)
+        #expect(!model.moveEligibility("request|api|root", toCollectionID: "api", parentID: "missing").isAllowed)
+        guard case .notDestination = model.moveEligibility("request|api|root", toCollectionID: "api", parentID: nil) else {
+            Issue.record("The current location must be silently disabled")
+            return
+        }
+        await model.moveSidebarItem("request|api|root", toCollectionID: "api", parentID: nil)
+        #expect(model.operationFailure == nil)
+
     }
 
     @Test("A failed undo reports the failure and clears the stack instead of guessing")
@@ -308,7 +333,7 @@ private actor UndoRecorder: WorkspacePersistence {
     init(fails: Bool = false) { self.fails = fails }
 
     func setFails(_ value: Bool) { fails = value }
-    func load() async throws -> WorkspaceDraft { WorkspaceDraft(name: "Undo") }
+    func loadResult() async throws -> WorkspaceLoadResult {WorkspaceDraft(name: "Undo").loadResult }
     func save(request _: RequestDraft, in _: String) async throws {}
     func save(environment _: EnvironmentDraft) async throws {}
     func saveSecret(name: String, value: String) async throws { secrets[name] = value }

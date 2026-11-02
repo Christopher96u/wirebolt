@@ -30,5 +30,4 @@ public enum SemanticPalette {
     public static func method(_ method: HTTPMethod, webSocket: Bool = false) -> AdaptivePaletteColor {
         webSocket ? indigo : methods[method.rawValue] ?? neutral
     }
-    public static func status(_ status: UInt16) -> AdaptivePaletteColor { domainStatusColor(status: status) }
 }

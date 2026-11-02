@@ -23,8 +23,7 @@ extension RequestRunner {
 }
 
 public protocol WorkspacePersistence: Sendable {
-    func load() async throws -> WorkspaceDraft
-    func loadSession(_ application: AppWorkspaceSession) async throws -> WorkspaceDraft
+    func loadResult() async throws -> WorkspaceLoadResult
     func save(request: RequestDraft, in collectionID: String) async throws
     func save(environment: EnvironmentDraft) async throws
     func saveSecret(name: String, value: String) async throws
@@ -36,9 +35,6 @@ public protocol WorkspacePersistence: Sendable {
     func commitBrunoFolder(bundle: BrunoFolderBundle, name: String?) async throws -> ImportSummary
     func commitImport(format: ImportFormat, source: String) async throws -> ImportResult
     func commitImportFile(format: ImportFormat, source: String, name: String) async throws -> ImportResult
-    func exportCollection(id: String) async throws -> String
-    func exportWorkspace() async throws -> String
-    func exportRequest(collectionID: String, id: String) async throws -> String
     /// The workspace folder, used to key local runtime storage such as cookies.
     var location: URL? { get }
     var sessionSecretPlatform: AppSecretPlatform { get }
@@ -47,12 +43,10 @@ public protocol WorkspacePersistence: Sendable {
 }
 
 extension WorkspacePersistence {
+    // Write-only platform adapters can omit loading. A loader must return the
+    // complete typed result; no fallback can silently discard diagnostics.
+    public func loadResult() async throws -> WorkspaceLoadResult { throw WorkspaceMutationError.unsupported }
     public var sessionWorkspacePlatform: AppWorkspacePlatform { .foreign(platform: WorkspacePlatformAdapter(persistence: self)) }
-    public func loadSession(_ application: AppWorkspaceSession) async throws -> WorkspaceDraft {
-        let workspace = try await load()
-        application.replace(workspace: workspace.domain)
-        return workspace
-    }
     public var location: URL? { nil }
     public var runtimeWorkspaceBridge: WorkspaceBridge? { nil }
     public var sessionSecretPlatform: AppSecretPlatform { AppSecretPlatform.foreign(platform: SessionSecretAdapter(persistence: self)) }
@@ -94,11 +88,6 @@ extension WorkspacePersistence {
         try await commitImport(format: format, source: source)
     }
 
-    public func exportCollection(id _: String) async throws -> String { throw WorkspaceMutationError.unsupported }
-    public func exportWorkspace() async throws -> String { throw WorkspaceMutationError.unsupported }
-    public func exportRequest(collectionID _: String, id _: String) async throws -> String {
-        throw WorkspaceMutationError.unsupported
-    }
 }
 
 public enum WorkspaceMutationError: Error, Equatable, Sendable {
@@ -165,6 +154,7 @@ public final class WireboltModel {
     public private(set) var isLoadingWorkspace = false
     /// False until the first workspace load finishes; the window shows a skeleton meanwhile.
     public private(set) var hasLoadedWorkspace = false
+    public var workspaceLoadNotice: String?
     public private(set) var gitStatus: GitStatusSnapshot?
     public private(set) var gitOperation: GitOperationSnapshot?
     public private(set) var gitFailure: GitFailure?
@@ -209,8 +199,10 @@ public final class WireboltModel {
     @ObservationIgnored private let cookieDirectory: URL?
     @ObservationIgnored private let oauth2: any OAuth2Authorizing
     @ObservationIgnored private var transportSave: Task<Void, Never>?
-    public private(set) var exportFailureMessage: String?
-    public var operationFailure: RunFailure?
+    public var operationFailure: RunFailure? {
+        didSet { if operationFailure == nil { operationFailureMessage = nil } }
+    }
+    public var operationFailureMessage: String?
     /// The window's undo manager; workspace mutations register their inverse here.
     @ObservationIgnored public weak var undoManager: UndoManager?
     /// Undo and redo run one at a time so each inverse sees the state its predecessor left.
@@ -235,14 +227,15 @@ public final class WireboltModel {
     ) {
         let rustWorkspace = AppWorkspaceSession()
         self.rustWorkspace = rustWorkspace
-        rustOperations = AppWorkspaceOperations(workspace: rustWorkspace)
+        let runtime = AppSessionRuntime(history: history.rust, cookies: cookieJar.rust)
+        self.runtime = runtime
+        rustOperations = AppWorkspaceOperations(workspace: rustWorkspace, runtime: runtime)
         self.proxyPreferences = proxyPreferences ?? ProxyPreferences()
         self.socketConnector = socketConnector
         self.runner = runner
         self.persistence = persistence
         self.gitCollaboration = gitCollaboration
         self.sessions = sessions ?? DocumentSessionStore()
-        runtime = AppSessionRuntime(history: history.rust, cookies: cookieJar.rust)
         self.cookieDirectory = cookieDirectory
         self.oauth2 = oauth2 ?? OAuth2Service()
     }
@@ -265,7 +258,7 @@ public final class WireboltModel {
         guard let session = sessions.activeSession,
               let collectionID = session.collectionID
         else { return nil }
-        return "\(collectionID)/\(session.requestID)"
+        return sessionRequestActivityKey(collectionId: collectionID, requestId: session.requestID)
     }
 
     /// Whether `location` is the active document's saved request. Observes only that
@@ -341,10 +334,6 @@ public final class WireboltModel {
 
     private func applySave(_ result: WorkspaceSave, session target: DocumentSession? = nil) {
         guard let session = target ?? sessions.session(id: result.documentId) else { return }
-        let authentication = workspaceSavedAuthentication(
-            current: session.draft.authentication,
-            original: result.originalAuthentication, saved: result.draft.authentication)
-        if authentication != session.draft.authentication { session.draft.authentication = authentication }
         if let location = result.location {
             session.recordSavedDraft(RequestDraft(domain: location.request))
             applySavedRequest(RequestLocation(domain: location))
@@ -452,16 +441,19 @@ public final class WireboltModel {
         mirrorSecretEdits()
     }
 
+    public func historyIdentity(for session: DocumentSession) -> SessionRequestIdentity {
+        runtime.requestIdentity(document: session.rust)
+    }
     public func historyEntries(for session: DocumentSession) async -> [RunHistoryEntry] {
-        do { return try await runtime.historyEntries(id: session.requestID).map(RunHistoryEntry.init) }
+        do { return try await runtime.historyEntries(id: historyIdentity(for: session)).map(RunHistoryEntry.init) }
         catch { operationFailure = RunFailure(kind: .storage, issues: []); return [] }
     }
     public func historyCount(for session: DocumentSession) async -> Int {
-        do { return Int(clamping: try await runtime.historyCount(id: session.requestID)) }
+        do { return Int(clamping: try await runtime.historyCount(id: historyIdentity(for: session))) }
         catch { operationFailure = RunFailure(kind: .storage, issues: []); return 0 }
     }
     public func loadHistory(for session: DocumentSession) async {
-        do { try await runtime.loadHistory(id: session.requestID) }
+        do { try await runtime.loadHistory(id: historyIdentity(for: session)) }
         catch { operationFailure = RunFailure(kind: .storage, issues: []) }
         mirrorRuntime()
     }
@@ -479,25 +471,21 @@ public final class WireboltModel {
             mirrorRuntime()
         }
     }
+    public func clearAllHistory() async {
+        do { try await runtime.clearAllHistory() }
+        catch { operationFailure = RunFailure(kind: .storage, issues: []) }
+        mirrorRuntime()
+    }
+    public func activity(for location: RequestLocation) -> RequestActivity? {
+        requestActivity[location.id]
+    }
     public func clearHistory(for session: DocumentSession) async {
-        await runtime.clearHistory(id: session.requestID)
+        do { try await runtime.clearHistory(id: historyIdentity(for: session)) }
+        catch { operationFailure = RunFailure(kind: .storage, issues: []) }
         mirrorRuntime()
     }
 
-    public func exportWorkspace() async -> String? { await export(.workspace) }
 
-    public func exportCollection(id: String) async -> String? { await export(.collection(id: id)) }
-
-    public func exportRequest(collectionID: String, id: String) async -> String? {
-        await export(.request(collectionId: collectionID, id: id))
-    }
-
-    private func export(_ target: WorkspaceExport) async -> String? {
-        guard let persistence else { return nil }
-        let result = await rustOperations.export(target: target, platform: persistence.sessionWorkspacePlatform)
-        mirrorWorkspacePresentation()
-        return result
-    }
 
     public func loadWorkspace(restoring layout: SessionLayout? = nil) async {
         let begin = rustOperations.beginLoad(configured: persistence != nil)
@@ -527,7 +515,6 @@ public final class WireboltModel {
         rustSecrets.clearObserved()
         configurePersistence(persistence, gitCollaboration: gitCollaboration)
         transportSave = nil
-        runtime.resetWorkspace()
         oauthReceipts = [:]
         historyEntries = []
         requestActivity = [:]
@@ -570,7 +557,11 @@ public final class WireboltModel {
     // MARK: Cookies
 
     /// The active workspace's cookies, most specific domain first.
-    public func cookies() async -> [CookieSnapshot] { runtime.cookies().map(CookieSnapshot.init) }
+    public func cookies() async -> [CookieSnapshot] {
+        let values = runtime.cookies().map(CookieSnapshot.init)
+        mirrorRuntime()
+        return values
+    }
     public func deleteCookie(id: CookieSnapshot.ID) async {
         runtime.deleteCookie(id: id)
         mirrorRuntime()
@@ -612,16 +603,17 @@ public final class WireboltModel {
         return result.succeeded
     }
 
-    @discardableResult
-    public func saveEnvironment(_ environment: EnvironmentDraft, secrets: [String: String] = [:]) async -> Bool {
+    /// Returns a Rust-owned inline validation/save problem; native controls retain
+    /// their text until this field commit succeeds.
+    public func commitEnvironment(id: String, commit: EnvironmentCommit) async -> String? {
         await undoWork?.value
-        guard let persistence else { return false }
+        guard let persistence else { return "No workspace is open." }
         synchronizeWorkspace()
-        let result = await rustOperations.saveEnvironment(
-            environment: environment.domain, values: secrets, selected: selectedEnvironmentID,
+        let result = await rustOperations.commitEnvironment(
+            id: id, commit: commit, selected: selectedEnvironmentID,
             platform: persistence.sessionWorkspacePlatform, secrets: rustSecrets, secretPlatform: persistence.sessionSecretPlatform)
-        finishMutation(result)
-        return result.succeeded
+        finishMutation(result.mutation)
+        return result.problem
     }
 
     public func makeProxyConnectionTest() -> ProxyConnectionTest { ProxyConnectionTest(runner: runner) }
@@ -672,11 +664,6 @@ public final class WireboltModel {
         do { try await runtime.saveTransport(value: workspace.transport.domain, platform: runtimeSettings()) } catch {
             operationFailure = RunFailure(kind: .workspace, issues: [])
         }
-    }
-
-    @discardableResult
-    public func deleteEnvironment(id: String) async -> Bool {
-        await perform(.deleteEnvironment(id: id)).succeeded
     }
 
     /// Explicit export keeps Keychain references in the generated command.
@@ -742,11 +729,6 @@ public final class WireboltModel {
             current: workspaceLocation?.standardizedFileURL.path,
             others: knownWorkspaceLocations().map(\.standardizedFileURL.path), platform: persistence.sessionSecretPlatform)
         mirrorSecretEdits()
-    }
-    private func migratingLegacySecrets(_ draft: RequestDraft) async throws -> RequestDraft {
-        guard let persistence else { throw WorkspaceMutationError.unsupported }
-        defer { mirrorSecretEdits() }
-        return try await RequestDraft(domain: rustSecrets.migrate(draft: draft.domain, platform: persistence.sessionSecretPlatform))
     }
 
     /// Copies Keychain values from old to new names. Missing values stay missing.
@@ -866,7 +848,6 @@ public final class WireboltModel {
         return session
     }
 
-    public func makeNewEnvironment() -> EnvironmentDraft { EnvironmentDraft(domain: workspaceNewEnvironment()) }
 
     public func createRequest(kind: DocumentKind = .http, collectionID: String? = nil, groupID: String? = nil) async -> DocumentSession? {
         let result = await perform(.createRequest(webSocket: kind == .webSocket, collectionId: collectionID, groupId: groupID))
@@ -916,9 +897,9 @@ public final class WireboltModel {
     public func moveSidebarItem(_ identifier: String, by delta: Int) async {
         await perform(.moveBy(identifier: identifier, delta: Int64(delta)))
     }
-    public func canMoveSidebarItem(_ identifier: String, toCollectionID collectionID: String, parentID: String?) -> Bool {
+    public func moveEligibility(_ identifier: String, toCollectionID collectionID: String, parentID: String?) -> MoveEligibility {
         synchronizeWorkspace()
-        return rustOperations.canMoveTo(identifier: identifier, collectionId: collectionID, parent: parentID)
+        return rustOperations.moveEligibility(identifier: identifier, collectionId: collectionID, parent: parentID)
     }
     public func moveSidebarItem(_ identifier: String, toCollectionID collectionID: String, parentID: String?) async {
         await perform(.moveTo(identifier: identifier, collectionId: collectionID, parentId: parentID))
@@ -938,6 +919,7 @@ public final class WireboltModel {
 
     private func applyLoadedWorkspace(_ loaded: WorkspaceLoad, restoring layout: SessionLayout? = nil) {
         mirroringWorkspace = true
+        workspaceLoadNotice = loaded.diagnostics.notice
         workspace = WorkspaceDraft(domain: loaded.workspace)
         mirroringWorkspace = false
         workspaceNeedsSynchronization = false
@@ -1023,8 +1005,10 @@ public final class WireboltModel {
         if gitOperation != operation { gitOperation = operation }
         let failure = value.gitFailure.map { GitFailure(kind: $0.kind, reason: $0.reason) }
         if gitFailure != failure { gitFailure = failure }
-        if let kind = rustOperations.takeFailure() { operationFailure = RunFailure(kind: kind, issues: []) }
-        if let reason = value.exportFailure { exportFailureMessage = reason }
+        if let kind = rustOperations.takeFailure() {
+            operationFailure = RunFailure(kind: kind, issues: [])
+            operationFailureMessage = value.operationFailureReason
+        }
     }
 
 }
@@ -1111,6 +1095,7 @@ extension WireboltModel {
                     session.relocate(to: destination)
                 }
                 sessions.refreshActiveRequest()
+                mirrorRuntime()
             }
         }
     }
@@ -1182,10 +1167,10 @@ extension ImportFormat {
     public static func unrecognizedMessage(fileName: String, contents: String) -> String {
         workspaceImportUnrecognized(name: fileName, contents: contents, formats: localizedFormats)
     }
-    public static let allCases: [ImportFormat] = [.curl, .har, .legacyWorkspaceV1, .postmanV2, .insomnia, .bruno, .brunoFolder]
+    public static let allCases: [ImportFormat] = [.curl, .har, .postmanV2, .insomnia, .bruno]
 
     public static var localizedFormats: String {
-        ListFormatter.localizedString(byJoining: allCases.filter { $0 != .brunoFolder }.map(\.displayName))
+        ListFormatter.localizedString(byJoining: allCases.map(\.displayName))
     }
 
     /// Infers the importer for a file opened from Finder or dropped on the window.
@@ -1262,6 +1247,10 @@ extension WireboltModel {
         if cookieRevision != value { cookieRevision = value }
     }
     fileprivate func mirrorRuntime() {
+        if let reason = runtime.takeStorageProblem() {
+            operationFailure = RunFailure(kind: .storage, issues: [])
+            operationFailureMessage = reason
+        }
         let state = runtime.snapshot()
         let entries = state.historyEntries.map(RunHistoryEntry.init)
         if historyEntries != entries { historyEntries = entries }

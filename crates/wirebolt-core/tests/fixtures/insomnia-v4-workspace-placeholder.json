@@ -1,0 +1,19 @@
+{
+  "__export_format": 4,
+  "resources": [
+    {
+      "_type": "workspace",
+      "_id": "__WORKSPACE_ID__",
+      "parentId": null,
+      "name": "API"
+    },
+    {
+      "_type": "request",
+      "_id": "req-fixture",
+      "parentId": "__WORKSPACE_ID__",
+      "name": "Get",
+      "method": "GET",
+      "url": "https://example.com"
+    }
+  ]
+}

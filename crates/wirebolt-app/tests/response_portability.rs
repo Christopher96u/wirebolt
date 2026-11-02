@@ -30,10 +30,10 @@ fn cookie_dates_match_the_two_foundation_formatter_patterns() {
     assert!(differences.is_empty(), "{}", differences.join("\n"));
 }
 #[test]
-fn cookie_files_keep_the_existing_epoch_while_bridge_records_use_unix() {
+fn cookie_files_and_bridge_records_use_unix_seconds() {
     let root = tempfile::tempdir().unwrap();
     let path = root.path().join("cookies.json");
-    std::fs::write(&path, r#"[{"name":"name","value":"value","domain":"example.com","hostOnly":true,"path":"/","secure":false,"httpOnly":false,"sameSite":"Lax","expiresAt":834229094}]"#).unwrap();
+    std::fs::write(&path, r#"{"cookies":[{"name":"name","value":"value","domain":"example.com","hostOnly":true,"path":"/","secure":false,"httpOnly":false,"sameSite":"Lax","expiresAt":1812536294}]}"#).unwrap();
     let mut jar = ResponseCookieJar::new(Some(path.clone()));
     assert_eq!(
         jar.all(1_812_536_293.0)[0].expires_at,
@@ -50,7 +50,7 @@ fn cookie_files_keep_the_existing_epoch_while_bridge_records_use_unix() {
     assert_eq!(received[0].expires_at, Some(1_812_536_294.0));
     let persisted: serde_json::Value =
         serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
-    assert_eq!(persisted[0]["expiresAt"], 834_229_094.0);
+    assert_eq!(persisted["cookies"][0]["expiresAt"], 1_812_536_294.0);
     assert!(
         ResponseCookieJar::new(Some(path))
             .all(1_812_536_294.0)

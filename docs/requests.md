@@ -47,6 +47,17 @@ Tabs show each request's method and name. Clicking a request in the sidebar open
 
 Open multiple requests in tabs. **Navigate → Split Right** (**⇧⌘D**) creates a second editor group for comparison. Drafts and responses are independent between document sessions. Save each edited draft you want to retain. Wirebolt reopens your tabs and the latest response of each request at the next launch.
 
-For HTTP requests, open **History** in the composer's **⋯** menu to inspect available prior runs. History is local runtime data, subject to storage limits, and is not included in workspace exports or Git commits.
+For HTTP requests, open **History** in the composer's **⋯** menu to inspect available prior runs. History is local runtime data, subject to storage limits, and is not included in Git commits.
+
+History follows collection and request IDs. Requests with the same ID in different
+collections keep separate responses. Renaming, moving or re-cloning a workspace
+folder keeps its history; copies sharing those IDs share history.
+Moving a request or saving a tab for the first time carries its history, including
+runs already in flight. History for a workspace without a saved folder also
+survives relaunch.
+
+**Clear History** deletes this request's entries. **Settings → Privacy → Clear All
+History** deletes history from every workspace. Responses already displayed in tabs
+keep their own temporary body and remain readable after clearing or quota eviction.
 
 Use **Request → Copy cURL** to copy a command representation. Keychain-backed values, including secret variables and proxy credentials, aren't copied: the command reads them with `security find-generic-password` when it runs, so macOS may ask to allow access, and it works only on a Mac that has those Keychain items. Review the clipboard content before sharing: URLs, bodies and other text you typed are copied as is.

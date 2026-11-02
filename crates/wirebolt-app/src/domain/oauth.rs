@@ -91,16 +91,9 @@ pub struct DomainTokenReceipt {
 }
 #[must_use]
 pub fn encode_form(form: &BTreeMap<String, String>) -> String {
-    form.iter()
-        .map(|(k, v)| {
-            format!(
-                "{}={}",
-                super::url::encode_query(k).replace('+', "%2B"),
-                super::url::encode_query(v).replace('+', "%2B")
-            )
-        })
-        .collect::<Vec<_>>()
-        .join("&")
+    url::form_urlencoded::Serializer::new(String::new())
+        .extend_pairs(form)
+        .finish()
 }
 #[must_use]
 pub fn pkce_challenge(verifier: &str) -> String {
@@ -129,27 +122,9 @@ pub fn authorization_url(
         .map_err(|_| DomainOAuthError::InvalidConfiguration)?
         .scheme()
         .to_owned();
-    let mut items: Vec<(String, Option<String>)> = url
-        .query()
-        .filter(|q| !q.is_empty())
-        .into_iter()
-        .flat_map(|q| q.split('&'))
-        .map(|item| {
-            let (name, value) = item
-                .split_once('=')
-                .map_or((item, None), |(n, v)| (n, Some(v)));
-            (
-                percent_encoding::percent_decode_str(name)
-                    .decode_utf8_lossy()
-                    .into_owned(),
-                value.map(|v| {
-                    percent_encoding::percent_decode_str(v)
-                        .decode_utf8_lossy()
-                        .into_owned()
-                }),
-            )
-        })
-        .collect();
+    // Retain the existing wire representation, including flags without '='.
+    let existing = url.query().unwrap_or_default().to_owned();
+    let mut items: Vec<(String, String)> = Vec::new();
     items.extend(
         [
             ("response_type", "code"),
@@ -159,27 +134,22 @@ pub fn authorization_url(
             ("code_challenge_method", "S256"),
             ("state", state),
         ]
-        .map(|(k, v)| (k.into(), Some(v.into()))),
+        .map(|(k, v)| (k.into(), v.into())),
     );
     if !c.scopes.is_empty() {
-        items.push(("scope".into(), Some(c.scopes.clone())));
+        items.push(("scope".into(), c.scopes.clone()));
     }
     if !c.audience.is_empty() {
-        items.push(("audience".into(), Some(c.audience.clone())));
+        items.push(("audience".into(), c.audience.clone()));
     }
-    // Match URLComponents query-item escaping, including its literal '+' behavior.
-    let query = items
-        .iter()
-        .map(|(k, v)| {
-            let name = super::url::encode_query(k);
-            v.as_ref().map_or_else(
-                || name.clone(),
-                |value| format!("{name}={}", super::url::encode_query(value)),
-            )
-        })
-        .collect::<Vec<_>>()
-        .join("&");
-    url.set_query(Some(&query));
+    let encoded = url::form_urlencoded::Serializer::new(String::new())
+        .extend_pairs(&items)
+        .finish();
+    url.set_query(Some(&if existing.is_empty() {
+        encoded
+    } else {
+        format!("{existing}&{encoded}")
+    }));
     Ok((url.into(), callback))
 }
 /// # Errors
@@ -187,20 +157,10 @@ pub fn authorization_url(
 pub fn authorization_code(callback: &str, state: &str) -> Result<String, DomainOAuthError> {
     let url = Url::parse(callback).map_err(|_| DomainOAuthError::AuthorizationFailed)?;
     let mut values = BTreeMap::new();
-    for item in url.query().unwrap_or_default().split('&') {
-        if let Some((k, v)) = item.split_once('=') {
-            values
-                .entry(
-                    percent_encoding::percent_decode_str(k)
-                        .decode_utf8_lossy()
-                        .into_owned(),
-                )
-                .or_insert_with(|| {
-                    percent_encoding::percent_decode_str(v)
-                        .decode_utf8_lossy()
-                        .into_owned()
-                });
-        }
+    for (key, value) in url.query_pairs() {
+        values
+            .entry(key.into_owned())
+            .or_insert_with(|| value.into_owned());
     }
     if values.get("state").map(String::as_str) != Some(state) {
         return Err(DomainOAuthError::StateMismatch);

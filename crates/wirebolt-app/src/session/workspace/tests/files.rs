@@ -102,7 +102,7 @@ impl crate::session::persistence::WorkspaceSecrets for NoSecrets {
     }
 }
 #[test]
-fn native_workspace_io_executes_typed_load_commands_import_export_and_git() {
+fn native_workspace_io_executes_typed_load_commands_import_and_git() {
     let dir = tempfile::tempdir().unwrap();
     let store = crate::session::persistence::SessionPersistence::open_or_create(
         dir.path().to_string_lossy().into_owned(),
@@ -111,7 +111,7 @@ fn native_workspace_io_executes_typed_load_commands_import_export_and_git() {
     )
     .unwrap();
     assert!(
-        matches!(store.workspace_io(WorkspaceIO::Load),WorkspaceReply::Loaded{workspace} if workspace.name=="Native")
+        matches!(store.workspace_io(WorkspaceIO::Load),WorkspaceReply::Loaded{workspace,..} if workspace.name=="Native")
     );
     let reply = store.workspace_io(WorkspaceIO::Commands {
         commands: vec![SessionWorkspaceCommand::RenameWorkspace {
@@ -127,9 +127,6 @@ fn native_workspace_io_executes_typed_load_commands_import_export_and_git() {
         name: Some("shop".into()),
     });
     assert!(matches!(reply,WorkspaceReply::Imported{summary} if summary.request_count==1));
-    assert!(
-        matches!(store.workspace_io(WorkspaceIO::Export{target:WorkspaceExport::Workspace}),WorkspaceReply::Exported{content} if content.contains("example.com"))
-    );
     assert!(
         matches!(store.workspace_io(WorkspaceIO::Git{action:WorkspaceGitAction::Initialize}),WorkspaceReply::GitStatus{status} if !status.merging)
     );

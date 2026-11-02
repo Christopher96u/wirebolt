@@ -39,7 +39,7 @@ brew tap christopher96u/wirebolt https://github.com/Christopher96u/wirebolt
 brew install --cask christopher96u/wirebolt/wirebolt
 ```
 
-Or download the ZIP from [releases](https://github.com/Christopher96u/wirebolt/releases), extract it, and move Wirebolt to Applications. Builds are ad-hoc signed, not notarized; see [first launch](docs/installation.md#first-launch) to approve the app once. Installed a beta from `christopher96u/tap`? [Switch taps](docs/installation.md#migrate-from-the-beta-tap).
+Or download the ZIP from [releases](https://github.com/Christopher96u/wirebolt/releases), extract it, and move Wirebolt to Applications. Builds are ad-hoc signed, not notarized; see [first launch](docs/installation.md#first-launch) to approve the app once.
 
 ### Build from source
 
@@ -76,7 +76,7 @@ The [quick start](docs/quick-start.md) includes a local demo server and copyable
 | [WebSockets](docs/websockets.md) | Connect, send text or binary messages, inspect replies and disconnect |
 | [Markdown notes](docs/notes.md) | Request documentation with local Edit/Preview modes |
 | [Git collaboration](docs/git-collaboration.md) | Review status and explicitly commit, pull or push workspace documents |
-| [Import and export](docs/import-export.md) | cURL, HAR, Postman v2, Insomnia, Bruno and Wirebolt JSON import; Wirebolt JSON export |
+| [Import and export](docs/import-export.md) | cURL, HAR, Postman v2, Insomnia and Bruno import; cURL and response export |
 
 ### Configure once, reuse across requests
 
@@ -106,7 +106,6 @@ Git operations run only when requested. There is no background cloud sync and no
 
 - Packages currently target Apple Silicon; Intel, Windows and Linux packages are not provided.
 - API key secret provisioning requires Keychain Access; there is no general secret manager in the app yet.
-- Wirebolt JSON preserves advanced authentication through extensions that other clients may not understand.
 - Markdown images display alternative text; previews do not execute HTML.
 - Proxy host exclusions are not exposed in the UI.
 

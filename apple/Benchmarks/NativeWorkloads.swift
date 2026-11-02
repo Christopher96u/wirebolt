@@ -6,10 +6,6 @@ import Observation
 import SwiftUI
 import os
 
-private struct OfflineRunner: RequestRunner {
-    func events(for input: RunInput, runID: RunID) -> AsyncThrowingStream<RunEvent, any Error> { AsyncThrowingStream { $0.finish() } }
-    func cancel(runID: RunID) {}
-}
 @MainActor @Observable private final class TextFixture {
     var text: String
     var preview = false
@@ -187,7 +183,7 @@ final class ProbeWindow: NSWindow { override var canBecomeKey: Bool { true } }
 
     }
     static func workspace(_ count: Int, root: URL) throws {
-        let model = WireboltModel(runner:OfflineRunner(),history:HistoryRepository(root:root.appending(path:"history")),cookieJar:CookieJar(storageURL:root.appending(path:"cookies.json")))
+        let model = WireboltModel(runner:FixtureRunner(),history:HistoryRepository(root:root.appending(path:"history")),cookieJar:CookieJar(storageURL:root.appending(path:"cookies.json")))
         let defaultsName="wirebolt-profiling-\(UUID().uuidString)"
         let defaults=UserDefaults(suiteName:defaultsName)!
         defer { defaults.removePersistentDomain(forName:defaultsName) }
@@ -241,11 +237,11 @@ final class ProbeWindow: NSWindow { override var canBecomeKey: Bool { true } }
         let raw="["+(0..<rows).map { "{\"id\":\($0),\"active\":true,\"message\":\"café 東京 🚀\"}" }.joined(separator:",")+"]"
         let session=DocumentSession(draft:RequestDraft())
         let run=RunID()
-        session.beginRun(run)
         var ready=false
         Task { @MainActor in
-            await session.consume(.chunk(Data(raw.utf8)),runID:run)
-            await session.consume(.complete(RunCompletion(bytesReceived:UInt64(raw.utf8.count),totalTimeNS:1)),runID:run)
+            let sessionRun = await RuntimeRunFixture.start(session, runID: run)
+            _ = sessionRun.sink.bytes(data: Data(raw.utf8)); session.mirror()
+            sessionRun.sink.event(event: .complete(completion: RunCompletion(bytesReceived:UInt64(raw.utf8.count),totalTimeNS:1))); await sessionRun.complete()
             ready=true
         }
         for _ in 0..<1000 where !ready { spin(0.002) }
@@ -353,11 +349,12 @@ final class ProbeWindow: NSWindow { override var canBecomeKey: Bool { true } }
         let body = #"{"zeta":1,"alpha":"caf\u00e9"}"#
         let session = DocumentSession(draft: RequestDraft())
         let run = RunID()
-        session.beginRun(run)
+        var sessionRun: RuntimeRunFixture!
         var step = 0
         Task { @MainActor in
-            await session.consume(.head(ResponseHead(status: 200, version: "HTTP/1.1",
-                headers: [ResponseHeader(name: "Content-Type", value: "application/json")], timeToHeadersNS: 1)), runID: run)
+            sessionRun = await RuntimeRunFixture.start(session, runID: run)
+            sessionRun.sink.event(event: .head(head: ResponseHead(status: 200, version: "HTTP/1.1",
+                headers: [ResponseHeader(name: "Content-Type", value: "application/json")], timeToHeadersNS: 1))); session.mirror()
             step = 1
         }
         for _ in 0..<1000 where step < 1 { spin(0.002) }
@@ -366,8 +363,8 @@ final class ProbeWindow: NSWindow { override var canBecomeKey: Bool { true } }
         defer { window.close() }
         spin(0.05); flush(host)
         Task { @MainActor in
-            await session.consume(.chunk(Data(body.utf8)), runID: run)
-            await session.consume(.complete(RunCompletion(bytesReceived: UInt64(body.utf8.count), totalTimeNS: 1)), runID: run)
+            _ = sessionRun.sink.bytes(data: Data(body.utf8)); session.mirror()
+            sessionRun.sink.event(event: .complete(completion: RunCompletion(bytesReceived: UInt64(body.utf8.count), totalTimeNS: 1))); await sessionRun.complete()
             step = 2
         }
         func shows(_ prefix: String) -> Bool {
@@ -382,40 +379,18 @@ final class ProbeWindow: NSWindow { override var canBecomeKey: Bool { true } }
         precondition(shows(body), "Raw must show the completed body")
         print("streamed_response_presentation=passed")
     }
-    struct Element {
-        let role: String
-        let name: String
-        let frame: NSRect
-    }
-    static func elements(_ object: Any, depth: Int = 0) -> [Element] {
-        guard depth < 30, let object = object as? NSObject else { return [] }
-        // macOS 27 can return NSAttributedString for nominally String AX
-        // labels. Preserve it rather than dropping names or force-bridging.
-        func value(_ key: String) -> Any? {
-            object.responds(to: NSSelectorFromString(key)) ? object.value(forKey: key) : nil
-        }
-        func text(_ key: String) -> String {
-            let raw = value(key)
-            return (raw as? NSAttributedString)?.string ?? (raw as? String) ?? ""
-        }
-        let name = ["accessibilityLabel", "accessibilityTitle", "accessibilityValue"]
-            .map(text).first { !$0.isEmpty } ?? ""
-        let current = Element(role: text("accessibilityRole"), name: name,
-            frame: (value("accessibilityFrame") as? NSValue)?.rectValue ?? .zero)
-        return [current] + (value("accessibilityChildren") as? [Any] ?? []).flatMap { elements($0, depth: depth + 1) }
-    }
+    typealias Element = NativeTestSupport.Element
 
     static func missingBodyFilePresentation(root: URL) async throws {
         let blocked = root.appending(path: "not-a-body-directory")
         try Data("fixture".utf8).write(to: blocked)
         let session = DocumentSession(draft: RequestDraft())
         let run = RunID()
-        session.rust.begin(runId: run.description, directory: blocked.path)
-        session.mirror()
+        let sessionRun = await RuntimeRunFixture.start(session, runID: run, directory: blocked)
         let body = String(repeating: "preview survives 🌍\n", count: 4000)
-        await session.consume(.head(ResponseHead(status: 200, version: "HTTP/1.1", headers: [], timeToHeadersNS: 1)), runID: run)
-        await session.consume(.chunk(Data(body.utf8)), runID: run)
-        await session.consume(.complete(RunCompletion(bytesReceived: UInt64(body.utf8.count), totalTimeNS: 1)), runID: run)
+        sessionRun.sink.event(event: .head(head: ResponseHead(status: 200, version: "HTTP/1.1", headers: [], timeToHeadersNS: 1))); session.mirror()
+        _ = sessionRun.sink.bytes(data: Data(body.utf8)); session.mirror()
+        sessionRun.sink.event(event: .complete(completion: RunCompletion(bytesReceived: UInt64(body.utf8.count), totalTimeNS: 1))); await sessionRun.complete()
         precondition(session.bodyStore == nil && session.failure?.kind == .storage)
         precondition(session.responsePreviewData.count <= DocumentSession.previewByteLimit && session.responseWasTruncated)
         let state = DocumentPresentationState()
@@ -430,14 +405,14 @@ final class ProbeWindow: NSWindow { override var canBecomeKey: Bool { true } }
         }
         precondition(shown, "a failed body-file creation must leave the memory preview visible after completion")
         let title = RunFailureMessage(RunFailure(kind: .storage, issues: [])).title
-        precondition(elements(host).contains { $0.name.contains(title) }, "the partial preview must still report the storage failure")
+        precondition(NativeTestSupport.elements(host).contains { $0.name.contains(title) }, "the partial preview must still report the storage failure")
         print("missing_body_file_presentation=passed")
     }
 
     static func verifyRedesignFlows(root: URL) async throws {
         try await missingBodyFilePresentation(root: root)
         let persistence = try RustWorkspacePersistence(path: root.appending(path: "redesign-flows"))
-        let model = WireboltModel(runner: OfflineRunner(), persistence: persistence,
+        let model = WireboltModel(runner: FixtureRunner(), persistence: persistence,
             history: HistoryRepository(root: root.appending(path: "flow-history")), cookieJar: CookieJar())
         await model.loadWorkspace()
         let interface = WorkspaceUIState(defaults: fixtureDefaults)
@@ -471,60 +446,18 @@ final class ProbeWindow: NSWindow { override var canBecomeKey: Bool { true } }
         precondition(model.sessions.session(id: other.id) === other && other.isDirty, "Save and Close must leave unrelated dirty tabs intact")
         precondition(model.workspace.location(collectionID: first.collectionID!, requestID: first.requestID)?.request.url == first.draft.url)
         print("new_request_url_focus_and_scoped_save_close=passed")
-        func fields(_ view: NSView) -> [NSTextField] {
-            (view as? NSTextField).map { [$0] } ?? view.subviews.flatMap { fields($0) }
+        interface.isShowingEnvironmentInspector = true
+        for _ in 0..<100 where interface.closeEnvironmentInspector == nil {
+            try await Task.sleep(for: .milliseconds(5)); flush(host)
         }
-        func stageVariable(_ key: String) async throws {
-            interface.isShowingEnvironmentInspector = true
-            for _ in 0..<100 where interface.saveEnvironmentEdits == nil {
-                try await Task.sleep(for: .milliseconds(5)); flush(host)
-            }
-            guard let field = fields(host).first(where: { $0.placeholderString == "New key" }) else {
-                preconditionFailure("Inspector's new-key field must remain reachable")
-            }
-            for label in ["Sidebar width", "Environment inspector width"] {
-                // Split dividers deliberately keep a narrow grab strip so they do not
-                // cover adjacent editor controls; their full-height AX target is named.
-                precondition(elements(host).contains { $0.name == label && $0.frame.width > 0 && $0.frame.height >= 28 },
-                    "Resize dividers must expose a named, full-height accessibility target")
-            }
-            window.makeFirstResponder(field)
-            guard let editor = field.currentEditor() as? NSTextView else { preconditionFailure("Variable entry must accept keyboard focus") }
-            editor.insertText(key, replacementRange: NSRange(location: 0, length: 0))
-            for _ in 0..<100 where !interface.hasEnvironmentEdits {
-                try await Task.sleep(for: .milliseconds(5)); flush(host)
-            }
-            precondition(interface.hasEnvironmentEdits, "Staged inspector edits must participate in exit protection")
+        for label in ["Sidebar width", "Environment inspector width"] {
+            precondition(NativeTestSupport.elements(host).contains { $0.name == label && $0.frame.width > 0 && $0.frame.height >= 28 },
+                "Resize dividers must expose a named, full-height accessibility target")
         }
-        try await stageVariable("preview_only")
-        precondition(model.workspace.environments.isEmpty, "Typing must not persist staged variables")
-        guard let save = interface.saveEnvironmentEdits else { preconditionFailure("Inspector apply action must be installed") }
-        let applied = await save()
-        precondition(applied, "Inspector must apply valid staged edits")
-        flush(host)
-        precondition(model.workspace.environments.first?.variables.first?.key == "preview_only")
-        model.undoManager?.undo()
-        await model.finishUndoWork()
-        precondition(model.workspace.environments.isEmpty, "Applying environments must support workspace undo")
-        // Let the old inspector detach before opening a fresh editing session.
-        try await Task.sleep(for: .milliseconds(20)); flush(host)
-        try await stageVariable("discard_me")
-        for (response, expected) in [(NSApplication.ModalResponse.alertSecondButtonReturn, false), (.alertThirdButtonReturn, true)] {
-            let decision = Task { await confirmEnvironmentEdits(interface: interface, in: window) }
-            for _ in 0..<100 where window.attachedSheet == nil {
-                try await Task.sleep(for: .milliseconds(5))
-            }
-            guard let sheet = window.attachedSheet else { preconditionFailure("Pending environment edits must show an exit decision") }
-            window.endSheet(sheet, returnCode: response)
-            spin(0.04)
-            let result = await decision.value
-            precondition(result == expected)
-            if !expected { precondition(interface.hasEnvironmentEdits && interface.isShowingEnvironmentInspector) }
-            try await Task.sleep(for: .milliseconds(20)); flush(host)
-        }
-        precondition(!interface.hasEnvironmentEdits && !interface.isShowingEnvironmentInspector)
-        precondition(model.workspace.environments.isEmpty, "Discarding must not persist a staged variable")
-        print("environment_staging_undo_exit_guards=passed")
+        precondition(!NativeTestSupport.elements(host).contains { $0.role == "AXButton" && ["Apply", "Cancel"].contains($0.name) })
+        let closed = await finishEnvironmentEditing(interface: interface, in: window)
+        precondition(closed && !interface.isShowingEnvironmentInspector)
+        print("environment_live_exit_guard=passed")
 
     }
 
@@ -555,7 +488,7 @@ final class ProbeWindow: NSWindow { override var canBecomeKey: Bool { true } }
     }
 
     static func verifyInterface(root: URL) throws {
-        let model = WireboltModel(runner: OfflineRunner(), history: HistoryRepository(root: root.appending(path: "history")),
+        let model = WireboltModel(runner: FixtureRunner(), history: HistoryRepository(root: root.appending(path: "history")),
             cookieJar: CookieJar(storageURL: root.appending(path: "cookies.json")))
         let interface = WorkspaceUIState(defaults: fixtureDefaults)
         interface.responseOrientation = .right
@@ -575,7 +508,7 @@ final class ProbeWindow: NSWindow { override var canBecomeKey: Bool { true } }
             for width in [1248.0, 1000.0, 900.0, 720.0] {
                 window.setContentSize(NSSize(width: width, height: 580))
                 spin(); flush(host)
-                let tree = elements(host)
+                let tree = NativeTestSupport.elements(host)
                 for name in ["Send Request", "Params", "Headers", "Body", "Auth", "Note", "Format Body"] {
                     precondition(tree.contains { $0.role == "AXButton" && $0.name == name }, "Missing accessible button: \(name)")
                 }
@@ -589,7 +522,7 @@ final class ProbeWindow: NSWindow { override var canBecomeKey: Bool { true } }
                 for section in RequestPanelSection.allCases {
                     interface.presentation(for: session).requestSection = section
                     spin(0.3); flush(host)
-                    checkSectionBar(elements(host), selected: section, context: "\(context), \(section.rawValue) selected",
+                    checkSectionBar(NativeTestSupport.elements(host), selected: section, context: "\(context), \(section.rawValue) selected",
                         clipped: "Clipped request control")
                 }
                 interface.presentation(for: session).requestSection = .body
@@ -600,23 +533,24 @@ final class ProbeWindow: NSWindow { override var canBecomeKey: Bool { true } }
         window.setContentSize(NSSize(width: 1248, height: 580))
         interface.responseLayout(for: model.sessions.activeGroupID).requestWidth = 1000
         spin(); flush(host)
-        let before = elements(host).first { $0.name == "Content Type" }!.frame
-        let run = RunID(); session.beginRun(run)
+        let before = NativeTestSupport.elements(host).first { $0.name == "Content Type" }!.frame
+        let run = RunID()
         var done = false
         Task { @MainActor in
-            await session.consume(.head(ResponseHead(status: 200, version: "HTTP/1.1", headers: [], timeToHeadersNS: 1)), runID: run)
-            await session.consume(.complete(RunCompletion(bytesReceived: 0, totalTimeNS: 1)), runID: run)
+            let sessionRun = await RuntimeRunFixture.start(session, runID: run)
+            sessionRun.sink.event(event: .head(head: ResponseHead(status: 200, version: "HTTP/1.1", headers: [], timeToHeadersNS: 1))); session.mirror()
+            sessionRun.sink.event(event: .complete(completion: RunCompletion(bytesReceived: 0, totalTimeNS: 1))); await sessionRun.complete()
             done = true
         }
         while !done { spin(0.002) }
         spin(); flush(host)
-        precondition(elements(host).first { $0.name == "Content Type" }!.frame == before, "Receiving headers must not shift request controls")
+        precondition(NativeTestSupport.elements(host).first { $0.name == "Content Type" }!.frame == before, "Receiving headers must not shift request controls")
         _ = model.sessions.split(tabID: session.id)
         interface.synchronizeSelection(model: model)
         if let copy = model.sessions.activeSession { interface.presentation(for: copy).requestSection = .body }
         spin(0.3); flush(host)
         // Both groups' section bars: their visible parts stay inside their own pane.
-        checkSectionBar(elements(host), selected: .body, context: "split", clipped: "Clipped split control")
+        checkSectionBar(NativeTestSupport.elements(host), selected: .body, context: "split", clipped: "Clipped split control")
         print("interface_regressions=passed")
 
         /// The section tabs scroll inside a strip and the current section's actions are
@@ -674,8 +608,28 @@ final class ProbeWindow: NSWindow { override var canBecomeKey: Bool { true } }
         }
     }
 
+    static func environmentScreenshots(root: URL, screenshots: URL?) throws {
+        let model = WireboltModel(runner: FixtureRunner(),
+            history: HistoryRepository(root: root.appending(path: "history")),
+            cookieJar: CookieJar(storageURL: root.appending(path: "cookies.json")),
+            proxyPreferences: ProxyPreferences(defaults: fixtureDefaults))
+        model.workspace.environments = [
+            EnvironmentDraft(id: WorkspaceDraft.globalEnvironmentID, name: "Globals", variables: [
+                EnvironmentVariableDraft(id: "global-url", key: "shared_api_url", value: .literal("http://192.168.100.200:8080/api/v1/shared/configuration"))]),
+            EnvironmentDraft(id: "staging", name: "Staging integration environment with a long name", variables: [
+                EnvironmentVariableDraft(id: "url", key: "service_base_url_for_integration", value: .literal("http://192.168.100.200:8080/api/v1/integration/resources?include=metadata")),
+                EnvironmentVariableDraft(id: "region", key: "region", value: .literal("Australia/Sydney"))])]
+        model.selectedEnvironmentID = "staging"
+        let interface = WorkspaceUIState(defaults: fixtureDefaults)
+        let (window, host, _) = mount(EnvironmentEditor(model: model, interface: interface, closeTrigger: 0, onClose: {}), width: 380, height: 820)
+        defer { window.close() }
+        spin(0.2); flush(host)
+        try NativeTestSupport.capture(host, directory: screenshots ?? root.deletingLastPathComponent(), name: "environment-inspector")
+        print("environment_inspector_screenshot=written")
+    }
+
     static func proxyScreenshots(root: URL) throws {
-        let model = WireboltModel(runner: OfflineRunner(), history: HistoryRepository(root: root.appending(path: "history")), cookieJar: CookieJar())
+        let model = WireboltModel(runner: FixtureRunner(), history: HistoryRepository(root: root.appending(path: "history")), cookieJar: CookieJar())
         model.workspace.name = "Demo workspace"
         let manual = ProxyDocument.manual(routes: [ProxyRouteDocument(destination: .all, endpoint: "http://127.0.0.1:18766")])
         try model.proxyPreferences.save(manual)
@@ -707,11 +661,11 @@ final class ProbeWindow: NSWindow { override var canBecomeKey: Bool { true } }
         print("native_proxy_screenshots=written")
     }
 
-    static func settingsUI(root: URL) throws {
+    static func settingsUI(root: URL) async throws {
         let preferences = ProxyPreferences(defaults: fixtureDefaults)
         let original = ProxyDocument.manual(routes: [ProxyRouteDocument(destination: .all, endpoint: "http://localhost:8080")])
         try preferences.save(original)
-        let model = WireboltModel(runner: OfflineRunner(), history: HistoryRepository(root: root.appending(path: "history")),
+        let model = WireboltModel(runner: FixtureRunner(), history: HistoryRepository(root: root.appending(path: "history")),
             cookieJar: CookieJar(), proxyPreferences: preferences)
         let interface = WorkspaceUIState(defaults: fixtureDefaults)
         _ = model.sessions.open(draft: RequestDraft(url: "https://example.invalid"))
@@ -721,11 +675,11 @@ final class ProbeWindow: NSWindow { override var canBecomeKey: Bool { true } }
         window.makeKey()
         NSApp.accessibilitySetValue(true, forAttribute: NSAccessibility.Attribute(rawValue: "AXEnhancedUserInterface"))
         NSApp.accessibilitySetValue(true, forAttribute: NSAccessibility.Attribute(rawValue: "AXManualAccessibility"))
-        spin(); flush(host)
-        func press(_ title: String, in targetWindow: NSWindow? = nil) {
+        await NativeTestSupport.settle(host)
+        func press(_ title: String, in targetWindow: NSWindow? = nil) async {
             let targetWindow = targetWindow ?? window
             let targetHost = targetWindow.contentView!
-            guard let button = elements(targetHost).first(where: { $0.role == "AXButton" && $0.name == title }) else {
+            guard let button = NativeTestSupport.elements(targetHost).first(where: { $0.role == "AXButton" && $0.name == title }) else {
                 preconditionFailure("Missing settings action: \(title)")
             }
             precondition(button.frame.height >= 28, "Settings actions must keep their minimum hit height")
@@ -736,7 +690,7 @@ final class ProbeWindow: NSWindow { override var canBecomeKey: Bool { true } }
                     context: nil, eventNumber: 1, clickCount: 1, pressure: type == .leftMouseDown ? 1 : 0)!
                 targetWindow.sendEvent(event)
             }
-            spin(); flush(host)
+            await NativeTestSupport.settle(host)
         }
         func fields(_ view: NSView) -> [NSTextField] {
             (view as? NSTextField).map { [$0] } ?? view.subviews.flatMap { fields($0) }
@@ -744,19 +698,24 @@ final class ProbeWindow: NSWindow { override var canBecomeKey: Bool { true } }
         guard let urlField = fields(host).first(where: { $0.accessibilityLabel() == "Request URL" }) else {
             preconditionFailure("The workspace URL must remain reachable before opening Settings")
         }
-        window.makeFirstResponder(urlField)
-        (urlField.currentEditor() as? NSTextView)?.setSelectedRange(NSRange(location: 2, length: 4))
+        precondition(window.makeFirstResponder(urlField))
+        guard let originalEditor = urlField.currentEditor() as? NSTextView else { preconditionFailure("URL must accept focus before Settings opens") }
+        originalEditor.setSelectedRange(NSRange(location: 2, length: 4))
         presentAppSettings(model)
-        spin(0.1); flush(host)
+        await NativeTestSupport.settle(host)
         precondition(model.settingsTab == "appearance")
-        precondition(!elements(host).contains { $0.name == "Request URL" }, "The settings modal must hide background controls from accessibility")
+        precondition(!NativeTestSupport.elements(host).contains { $0.name == "Request URL" }, "The settings modal must hide background controls from accessibility")
+        await NativeTestSupport.wait(host) {
+            guard let editor = window.firstResponder as? NSTextView, let field = editor.delegate as? NSTextField else { return false }
+            return field.placeholderString == "Search"
+        }
         guard let searchEditor = window.firstResponder as? NSTextView, let searchField = searchEditor.delegate as? NSTextField,
               searchField.placeholderString == "Search" else { preconditionFailure("Opening Settings must focus its search field") }
         let navigation = ["General", "Appearance", "Network", "Keyboard", "Privacy"]
-        let buttons = elements(host).filter { $0.role == "AXButton" && navigation.contains($0.name) }
+        let buttons = NativeTestSupport.elements(host).filter { $0.role == "AXButton" && navigation.contains($0.name) }
         precondition(buttons.count == navigation.count && buttons.allSatisfy { $0.frame.width >= 180 && $0.frame.height >= 28 },
             "Settings must use the approved sidebar, with every section reachable")
-        press("Network")
+        await press("Network")
         precondition(model.settingsTab == "network")
         guard let field = fields(host).first(where: { $0.isEditable && $0.stringValue == "localhost" }) else {
             preconditionFailure("Network settings must preserve the native editable proxy form")
@@ -765,57 +724,61 @@ final class ProbeWindow: NSWindow { override var canBecomeKey: Bool { true } }
         guard let editor = field.currentEditor() as? NSTextView else { preconditionFailure("Proxy host must accept keyboard input") }
         editor.insertText("edited.proxy.invalid", replacementRange: NSRange(location: 0, length: editor.string.utf16.count))
         window.makeFirstResponder(nil)
-        spin(); flush(host)
-        press("Appearance")
+        await NativeTestSupport.settle(host)
+        await press("Appearance")
         precondition(model.settingsTab == "appearance")
-        precondition(!elements(host).contains { $0.name == "Proxy host" }, "Hidden settings pages must leave the accessibility tree")
-        press("General")
-        precondition(elements(host).contains { $0.name == "Word wrap" })
-        press("Keyboard")
-        precondition(elements(host).contains { $0.name == "Send request or message" })
-        press("Privacy")
-        press("Privacy Policy")
-        for _ in 0..<100 where window.attachedSheet == nil { spin(0.002) }
+        precondition(!NativeTestSupport.elements(host).contains { $0.name == "Proxy host" }, "Hidden settings pages must leave the accessibility tree")
+        await press("General")
+        precondition(NativeTestSupport.elements(host).contains { $0.name == "Word wrap" })
+        await press("Keyboard")
+        precondition(NativeTestSupport.elements(host).contains { $0.name == "Send request or message" })
+        await press("Privacy")
+        await press("Privacy Policy")
+        await NativeTestSupport.wait(host) { window.attachedSheet != nil }
         guard let sheet = window.attachedSheet else { preconditionFailure("Privacy Policy must open its content") }
-        press("Done", in: sheet)
-        for _ in 0..<100 where window.attachedSheet != nil { spin(0.002) }
+        await press("Done", in: sheet)
+        await NativeTestSupport.wait(host) { window.attachedSheet == nil }
         precondition(window.attachedSheet == nil)
-        press("Network")
+        await press("Network")
         precondition(fields(host).contains { $0.isEditable && $0.stringValue == "edited.proxy.invalid" },
             "Switching settings sections must preserve unapplied proxy edits")
         precondition(preferences.configuration == original, "Navigation must not save a staged proxy edit")
-        press("Back to workspace")
+        await press("Back to workspace")
         precondition(window.isVisible && !model.isShowingAppSettings, "Closing Settings must leave the workspace window open")
+        let focusReady = { urlField.currentEditor() === window.firstResponder && (window.firstResponder as? NSTextView)?.selectedRange() == NSRange(location: 2, length: 4) }
+        // A nested RunLoop does not reliably drain the queued main-executor
+        // restoration callback. Yield and await the exact responder and selection.
+        await NativeTestSupport.wait(host, until: focusReady)
         precondition(urlField.currentEditor() === window.firstResponder && (window.firstResponder as? NSTextView)?.selectedRange() == NSRange(location: 2, length: 4),
             "Closing Settings must restore the previous URL focus and selection")
-        precondition(elements(host).contains { $0.name == "Request URL" }, "Closing the modal must restore access to the workspace")
+        precondition(NativeTestSupport.elements(host).contains { $0.name == "Request URL" }, "Closing the modal must restore access to the workspace")
         presentAppSettings(model)
-        spin(0.1); flush(host)
+        await NativeTestSupport.settle(host)
         precondition(fields(host).contains { $0.isEditable && $0.stringValue == "edited.proxy.invalid" },
             "Closing and reopening Settings must preserve unapplied proxy edits")
-        press("Reset")
+        await press("Reset")
         precondition(fields(host).contains { $0.isEditable && $0.stringValue == "localhost" })
         window.makeFirstResponder(searchField)
         guard let editor = searchField.currentEditor() as? NSTextView else { preconditionFailure("Search must remain editable") }
         editor.insertText("theme", replacementRange: NSRange(location: 0, length: editor.string.utf16.count))
-        spin(); flush(host)
-        precondition(model.settingsTab == "appearance" && !elements(host).contains { $0.role == "AXButton" && $0.name == "Network" },
+        await NativeTestSupport.settle(host)
+        precondition(model.settingsTab == "appearance" && !NativeTestSupport.elements(host).contains { $0.role == "AXButton" && $0.name == "Network" },
             "Searching settings must filter and select matching sections")
-        press("Clear settings search")
-        precondition(elements(host).filter { $0.role == "AXButton" && navigation.contains($0.name) }.count == navigation.count)
-        press("Close Settings")
+        await press("Clear settings search")
+        precondition(NativeTestSupport.elements(host).filter { $0.role == "AXButton" && navigation.contains($0.name) }.count == navigation.count)
+        await press("Close Settings")
         precondition(window.isVisible && !model.isShowingAppSettings)
         model.settingsTab = "network"
         presentAppSettings(model)
-        spin(0.1); flush(host)
-        precondition(model.settingsTab == "network" && elements(host).filter { $0.role == "AXButton" && navigation.contains($0.name) }.count == navigation.count,
+        await NativeTestSupport.settle(host)
+        precondition(model.settingsTab == "network" && NativeTestSupport.elements(host).filter { $0.role == "AXButton" && navigation.contains($0.name) }.count == navigation.count,
             "Reopening a settings destination must clear the old search filter")
-        press("Close Settings")
+        await press("Close Settings")
         print("settings_modal_search_navigation_staged_proxy_and_privacy=passed")
     }
 
     static func composerFocus(root: URL) {
-        let model = WireboltModel(runner: OfflineRunner(), history: HistoryRepository(root: root.appending(path: "history")), cookieJar: CookieJar())
+        let model = WireboltModel(runner: FixtureRunner(), history: HistoryRepository(root: root.appending(path: "history")), cookieJar: CookieJar())
         let interface = WorkspaceUIState(defaults: fixtureDefaults)
         let session = model.sessions.open(draft: RequestDraft(url: "https://example.invalid/products"))
         interface.synchronizeSelection(model: model)
@@ -849,7 +812,7 @@ final class ProbeWindow: NSWindow { override var canBecomeKey: Bool { true } }
     }
 
     static func proxySettings(root: URL) throws {
-        let model = WireboltModel(runner: OfflineRunner(), history: HistoryRepository(root: root.appending(path: "history")), cookieJar: CookieJar())
+        let model = WireboltModel(runner: FixtureRunner(), history: HistoryRepository(root: root.appending(path: "history")), cookieJar: CookieJar())
         try model.proxyPreferences.save(.manual(routes: [ProxyRouteDocument(destination: .all, endpoint: "http://localhost:8080")]))
         let session = model.sessions.open(draft: RequestDraft(name: "Proxy fixture", url: "https://example.invalid"))
         let (window, host, _) = mount(NetworkSettingsPage(model: model, scope: .request, session: session), width: 590, height: 850)
@@ -857,7 +820,7 @@ final class ProbeWindow: NSWindow { override var canBecomeKey: Bool { true } }
         NSApp.accessibilitySetValue(true, forAttribute: NSAccessibility.Attribute(rawValue: "AXEnhancedUserInterface"))
         NSApp.accessibilitySetValue(true, forAttribute: NSAccessibility.Attribute(rawValue: "AXManualAccessibility"))
         spin(); flush(host)
-        precondition(elements(host).contains { $0.name.contains("Source: App default") }, "Request must explain inherited app policy")
+        precondition(NativeTestSupport.elements(host).contains { $0.name.contains("Source: App default") }, "Request must explain inherited app policy")
         precondition(session.draft.proxy == .inherit && model.workspace.proxy == nil)
         session.draft.proxy = .manual(.manual(routes: [ProxyRouteDocument(destination: .all, endpoint: "http://localhost:8080")]))
         spin(); flush(host)
@@ -865,7 +828,7 @@ final class ProbeWindow: NSWindow { override var canBecomeKey: Bool { true } }
             window.setContentSize(NSSize(width: width, height: 850))
             spin(); flush(host)
             let frame = window.convertToScreen(host.convert(host.bounds, to: nil))
-            let tree = elements(host)
+            let tree = NativeTestSupport.elements(host)
             for name in ["Proxy host", "Proxy port", "Proxy protocol"] {
                 guard let field = tree.first(where: { $0.name == name }) else { preconditionFailure("Missing proxy field: \(name)") }
                 precondition(field.frame.minX >= frame.minX && field.frame.maxX <= frame.maxX, "Proxy field clipped at \(width): \(name)")
@@ -891,8 +854,8 @@ final class ProbeWindow: NSWindow { override var canBecomeKey: Bool { true } }
         portEditor.insertText("12345", replacementRange: NSRange(location: 0, length: portEditor.string.utf16.count))
         window.makeFirstResponder(nil)
         spin(); flush(host)
-        precondition(elements(host).contains { $0.name == "HTTP · 127.0.0.1:12345" }, "The accessible connection preview must track host and port edits")
-        guard let apply = elements(host).first(where: { $0.name == "Apply to request" }) else { preconditionFailure("Missing apply action") }
+        precondition(NativeTestSupport.elements(host).contains { $0.name == "HTTP · 127.0.0.1:12345" }, "The accessible connection preview must track host and port edits")
+        guard let apply = NativeTestSupport.elements(host).first(where: { $0.name == "Apply to request" }) else { preconditionFailure("Missing apply action") }
         let rect = window.convertFromScreen(apply.frame)
         for type in [NSEvent.EventType.leftMouseDown, .leftMouseUp] {
             let event = NSEvent.mouseEvent(with: type, location: NSPoint(x: rect.midX, y: rect.midY), modifierFlags: [],
@@ -909,7 +872,7 @@ final class ProbeWindow: NSWindow { override var canBecomeKey: Bool { true } }
     /// Sidebar reordering through SwiftUI's AppKit drop destinations: a row being dragged
     /// drops before or after another row, and text dragged from elsewhere is refused.
     static func sidebarReorder(root: URL) throws {
-        let model = WireboltModel(runner: OfflineRunner(), history: HistoryRepository(root: root.appending(path: "history")), cookieJar: CookieJar())
+        let model = WireboltModel(runner: FixtureRunner(), history: HistoryRepository(root: root.appending(path: "history")), cookieJar: CookieJar())
         let interface = WorkspaceUIState(defaults: fixtureDefaults)
         let requests = (0..<6).map { RequestLocation(collectionID: "drag", order: $0, request: RequestDraft(id: "r\($0)", name: "Drag Request \($0)", url: "https://example.invalid/\($0)")) }
         model.workspace.collections = [CollectionDraft(id: "drag", name: "Drag Fixture", requests: requests)]
@@ -918,7 +881,7 @@ final class ProbeWindow: NSWindow { override var canBecomeKey: Bool { true } }
         NSApp.accessibilitySetValue(true, forAttribute: NSAccessibility.Attribute(rawValue: "AXEnhancedUserInterface"))
         spin(0.4); flush(host)
         func rowFrame(_ index: Int) -> NSRect {
-            guard let row = elements(window).first(where: { $0.name == "GET request, Drag Request \(index)" }) else {
+            guard let row = NativeTestSupport.elements(window).first(where: { $0.name == "GET request, Drag Request \(index)" }) else {
                 preconditionFailure("Sidebar row is missing from the accessibility tree")
             }
             return window.convertFromScreen(row.frame)
@@ -967,7 +930,7 @@ final class ProbeWindow: NSWindow { override var canBecomeKey: Bool { true } }
     }
 
     static func requestClicks(root: URL, tabs: Bool = false, tabCount: Int = 2, noteBytes: Int = 0) throws {
-        let model = WireboltModel(runner: OfflineRunner(), history: HistoryRepository(root: root.appending(path: "history")), cookieJar: CookieJar())
+        let model = WireboltModel(runner: FixtureRunner(), history: HistoryRepository(root: root.appending(path: "history")), cookieJar: CookieJar())
         let interface = WorkspaceUIState(defaults: fixtureDefaults)
         let note = String(repeating: "# Hidden note\n\n", count: noteBytes / 15)
         let requests = (0..<(tabs ? max(2, tabCount) : 20)).map { RequestLocation(collectionID: "clicks", order: $0, request: RequestDraft(id: "r\($0)", name: "Click Request \($0)", url: "https://example.invalid/\($0)", note: note)) }
@@ -983,7 +946,7 @@ final class ProbeWindow: NSWindow { override var canBecomeKey: Bool { true } }
         NSApp.accessibilitySetValue(true, forAttribute: NSAccessibility.Attribute(rawValue: "AXManualAccessibility"))
         spin(0.4); flush(host)
         func namePoint(_ index: Int) -> NSPoint {
-            guard let row = elements(window).first(where: { $0.name == (tabs ? "Click Request \(index)" : "GET request, Click Request \(index)") }) else {
+            guard let row = NativeTestSupport.elements(window).first(where: { $0.name == (tabs ? "Click Request \(index)" : "GET request, Click Request \(index)") }) else {
                 preconditionFailure("Request row is missing from the accessibility tree")
             }
             let rect = window.convertFromScreen(row.frame)
@@ -1089,7 +1052,7 @@ final class ProbeWindow: NSWindow { override var canBecomeKey: Bool { true } }
 
     static func closeFixture(_ count: Int, root: URL) -> (WireboltModel, WorkspaceUIState) {
         let model = WireboltModel(
-            runner: OfflineRunner(), history: HistoryRepository(root: root.appending(path: "history")),
+            runner: FixtureRunner(), history: HistoryRepository(root: root.appending(path: "history")),
             cookieJar: CookieJar(storageURL: root.appending(path: "cookies.json")),
             proxyPreferences: ProxyPreferences(defaults: fixtureDefaults))
         let interface = WorkspaceUIState(defaults: fixtureDefaults)
@@ -1152,7 +1115,7 @@ final class ProbeWindow: NSWindow { override var canBecomeKey: Bool { true } }
     }
 
     static func verifyLastTabReopen(root: URL) {
-        let model = WireboltModel(runner: OfflineRunner(),
+        let model = WireboltModel(runner: FixtureRunner(),
             history: HistoryRepository(root: root.appending(path: "history")),
             cookieJar: CookieJar(storageURL: root.appending(path: "cookies.json")),
             proxyPreferences: ProxyPreferences(defaults: fixtureDefaults))
@@ -1212,9 +1175,10 @@ final class ProbeWindow: NSWindow { override var canBecomeKey: Bool { true } }
         }
         else if mode=="request-click" { try requestClicks(root: root) }
         else if mode=="sidebar-reorder" { try sidebarReorder(root: root) }
+        else if mode=="environment-screenshots" { try environmentScreenshots(root: root, screenshots: ProcessInfo.processInfo.environment["WIREBOLT_NATIVE_CAPTURE_DIRECTORY"].map { URL(fileURLWithPath: $0) }) }
         else if mode=="proxy-screenshots" { try proxyScreenshots(root: root) }
         else if mode=="proxy-settings" { try proxySettings(root: root) }
-        else if mode=="settings-ui" { try settingsUI(root: root) }
+        else if mode=="settings-ui" { try await settingsUI(root: root) }
         else if mode=="composer-focus" { composerFocus(root: root) }
         else if mode=="tab-click" { try requestClicks(root: root, tabs: true, tabCount: size) }
         else { preconditionFailure("unknown mode") }

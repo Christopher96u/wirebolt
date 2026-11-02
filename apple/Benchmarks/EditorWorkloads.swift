@@ -247,8 +247,8 @@ private struct EditorWorkloads {
     }
 
     @MainActor private static func verifyFieldHeights() {
-        ThemeStore.shared.update(selection: "black", systemIsDark: true, increasedContrast: false, density: .compact)
-        defer { ThemeStore.shared.update(selection: "black", systemIsDark: true, increasedContrast: false, density: .comfortable) }
+        ThemeStore.shared.update(selection: .builtIn(preset: .black), systemIsDark: true, increasedContrast: false, density: .compact)
+        defer { ThemeStore.shared.update(selection: .builtIn(preset: .black), systemIsDark: true, increasedContrast: false, density: .comfortable) }
         func expectHeight(_ value: String, _ width: Double, _ expected: Double) {
             let actual = FieldEditorMetrics.height(for: value, width: width)
             if actual != expected { fputs("field_height value=\(value) width=\(width) actual=\(actual) expected=\(expected)\n", stderr) }

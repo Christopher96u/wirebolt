@@ -83,8 +83,10 @@ final class WireboltAppDelegate: NSObject, NSApplicationDelegate {
         }
         // In-app tabs own ⌘T; native window tabs would stack a second tab bar on top.
         NSWindow.allowsAutomaticWindowTabbing = false
+        ThemeStore.shared.loadLibrary(at: FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            .appending(path: "Wirebolt/custom-themes.json"))
         Self.applyInterfaceAppearance()
-        ThemeStore.shared.update(selection: UserDefaults.standard.string(forKey: "interfaceAppearance") ?? "system",
+        ThemeStore.shared.update(selection: ThemeSelection(rawValue: UserDefaults.standard.string(forKey: "interfaceAppearance") ?? ""),
             systemIsDark: NSApp.effectiveAppearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua,
             increasedContrast: NSWorkspace.shared.accessibilityDisplayShouldIncreaseContrast,
             density: InterfaceDensity(rawValue: UserDefaults.standard.string(forKey: "interfaceDensity") ?? "comfortable") ?? .comfortable)
@@ -129,7 +131,7 @@ final class WireboltAppDelegate: NSObject, NSApplicationDelegate {
         }
         let window = WorkspaceWindowRegistry.primary.flatMap { $0.isVisible ? $0 : nil } ?? NSApp.mainWindow
         Task {
-            var proceed = await confirmEnvironmentEdits(interface: interface, in: window)
+            var proceed = await finishEnvironmentEditing(interface: interface, in: window)
             if proceed && model.hasUnsavedRequestChanges {
                 proceed = await confirmUnsavedChanges(model: model, in: window, quitting: true)
             }
@@ -150,11 +152,9 @@ final class WireboltAppDelegate: NSObject, NSApplicationDelegate {
     /// Applied app-wide so every window, including Settings, follows the choice, and
     /// System (nil) fully reverts to the macOS appearance.
     static func applyInterfaceAppearance() {
-        NSApp.appearance = switch UserDefaults.standard.string(forKey: "interfaceAppearance") {
-        case "light", "paper": NSAppearance(named: .aqua)
-        case "dark", "black", "ember": NSAppearance(named: .darkAqua)
-        default: nil
-        }
+        let selection = ThemeSelection(rawValue: UserDefaults.standard.string(forKey: "interfaceAppearance") ?? "")
+        let appearance = ThemeStore.shared.appearance(selection: selection)
+        NSApp.appearance = appearance.followsSystem ? nil : NSAppearance(named: appearance.tokens.isDark ? .darkAqua : .aqua)
     }
 }
 

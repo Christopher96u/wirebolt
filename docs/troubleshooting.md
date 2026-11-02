@@ -14,13 +14,12 @@
 | Local demo cannot connect | Start the demo server; confirm port 18990 is free and try Direct at request scope |
 | Proxy test fails but GET works | The probe uses HEAD without request auth, headers, body or cookies |
 | WebSocket changes do not take effect | Disconnect and reconnect with the new configuration |
-| Export misses an edit | Save the request before exporting |
 | Git actions are unavailable | Configure a workspace repository and remote; load status, enter a commit message or establish an upstream as needed |
 | Markdown image does not render | Preview deliberately displays alternative text without fetching remote resources |
 
 ## Known boundaries
 
-There is no general secret-management screen, no exposed proxy host-exclusion editor, and no promise that other clients understand Wirebolt's advanced-auth export extensions. OAuth compatibility depends on provider configuration. Published packages are ad-hoc signed and currently Apple Silicon only.
+There is no general secret-management screen or exposed proxy host-exclusion editor. OAuth compatibility depends on provider configuration. Published packages are ad-hoc signed and currently Apple Silicon only.
 
 These guides document supported behavior; they are not a claim that every external proxy, identity provider or server configuration has been tested.
 

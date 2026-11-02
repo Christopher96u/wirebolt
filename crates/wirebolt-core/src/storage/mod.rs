@@ -30,7 +30,8 @@ const COLLECTION_FILE: &str = "collection.toml";
 const REQUESTS_DIRECTORY: &str = "requests";
 const ENVIRONMENTS_DIRECTORY: &str = "environments";
 const DOCUMENT_EXTENSION: &str = ".toml";
-const MAX_DOCUMENT_BYTES: u64 = 16 * 1024 * 1024;
+pub const MAX_DOCUMENT_BYTES: u64 = 16 * 1024 * 1024;
+pub const DOCUMENT_LIMIT_LABEL: &str = "16 MiB";
 
 /// Whether a workspace-relative path (with `/` separators) names a document
 /// Wirebolt itself writes: the manifest, a collection manifest, a request,
@@ -70,11 +71,6 @@ pub enum SaveOutcome {
     Created,
     Updated,
     Unchanged,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct MigrationReport {
-    pub migrated_documents: usize,
 }
 
 /// One document that could not be loaded. The rest of the workspace is still
@@ -138,7 +134,6 @@ enum Durability {
 #[derive(Clone, Debug)]
 struct CachedDocument {
     identity: FileIdentity,
-    migrated: bool,
     document: CachedKind,
 }
 
@@ -183,7 +178,6 @@ enum CachedKind {
 /// Documents that can be parsed, cached, and stamped with the current schema.
 trait Document: DeserializeOwned + Clone {
     fn schema_version(&self) -> u32;
-    fn set_schema_version(&mut self, version: u32);
     fn into_cached(self) -> CachedKind;
     fn from_cached(cached: &CachedKind) -> Option<&Self>;
 }
@@ -193,10 +187,6 @@ macro_rules! document {
         impl Document for $type {
             fn schema_version(&self) -> u32 {
                 self.schema_version
-            }
-
-            fn set_schema_version(&mut self, version: u32) {
-                self.schema_version = version;
             }
 
             fn into_cached(self) -> CachedKind {
@@ -299,7 +289,7 @@ impl WorkspaceStore {
 
     /// Loads a deterministic snapshot of every readable workspace document.
     ///
-    /// Documents that fail to parse, use a newer schema, or disagree with
+    /// Documents that fail to parse, use an unsupported schema, or disagree with
     /// their path are reported in [`WorkspaceSnapshot::problems`] and skipped.
     ///
     /// # Errors
@@ -307,7 +297,7 @@ impl WorkspaceStore {
     /// Returns [`StorageError`] only when the manifest itself cannot be read
     /// or a workspace directory cannot be listed.
     pub fn load(&self) -> Result<WorkspaceSnapshot, StorageError> {
-        self.load_with_migrations().map(|(snapshot, _)| snapshot)
+        self.load_snapshot()
     }
 
     /// Atomically saves one workspace document.
@@ -365,11 +355,85 @@ impl WorkspaceStore {
         if !path.join(COLLECTION_FILE).is_file() {
             return Err(StorageError::Missing { path });
         }
-        fs::remove_dir_all(&path)
-            .map_err(|source| StorageError::io("delete collection", &path, source))?;
+        for directory in [&path, &path.join(REQUESTS_DIRECTORY)] {
+            match fs::symlink_metadata(directory) {
+                Ok(metadata) if !metadata.is_dir() => {
+                    return Err(StorageError::InvalidDocument {
+                        path: directory.to_owned(),
+                        reason: "collection directories must be regular directories",
+                    });
+                }
+                Err(source) if source.kind() != io::ErrorKind::NotFound => {
+                    return Err(StorageError::io(
+                        "inspect collection directory",
+                        directory,
+                        source,
+                    ));
+                }
+                _ => {}
+            }
+        }
+        let snapshot = self.load_collection(&path, &mut Vec::new())?;
+        let mut documents = snapshot
+            .requests
+            .iter()
+            .map(|request| self.request_path(id, &request.id))
+            .collect::<Vec<_>>();
+        // The manifest goes last. Failed staging restores the original documents,
+        // so the application can keep its current tree and undo state unchanged.
+        documents.push(path.join(COLLECTION_FILE));
+        delete_managed_documents(&documents)?;
+        let _ = fs::remove_dir(path.join(REQUESTS_DIRECTORY));
+        let _ = fs::remove_dir(&path);
         self.lock_cache()
             .retain(|cached_path, _| !cached_path.starts_with(&path));
         Ok(())
+    }
+
+    /// Moves a request without replacing an existing destination. If removing the
+    /// source fails, the newly created destination is rolled back.
+    /// # Errors
+    /// Returns a storage error for a collision, missing collection or failed write.
+    pub fn move_request(
+        &self,
+        from: &DocumentId,
+        to: &DocumentId,
+        request: &Request,
+    ) -> Result<(), StorageError> {
+        if from == to {
+            self.save(&WorkspaceDocument::Request {
+                collection_id: to.clone(),
+                request: request.clone(),
+            })?;
+            return Ok(());
+        }
+        if !self.collection_path(to).join(COLLECTION_FILE).is_file() {
+            return Err(StorageError::MissingCollection { id: to.clone() });
+        }
+        let destination = self.request_path(to, &request.id);
+        require_current_schema(request.schema_version(), &destination)?;
+        let parent = self.collection_path(to).join(REQUESTS_DIRECTORY);
+        let parent = parent.as_path();
+        fs::create_dir_all(parent)
+            .map_err(|source| StorageError::io("create request directory", parent, source))?;
+        let (temporary, file) = create_temporary_file(parent, &destination)?;
+        drop(file);
+        let result = (|| {
+            write_document(&temporary, request, Durability::Fast)?;
+            // No hard links or platform-only syscalls: exclusive creation works
+            // on APFS, exFAT/FAT and network volumes, and never replaces a file.
+            exclusive_copy(&temporary, &destination)?;
+            if let Err(error) = self.delete_request(from, &request.id) {
+                fs::remove_file(&destination).map_err(|source| {
+                    StorageError::io("roll back move destination", &destination, source)
+                })?;
+                return Err(error);
+            }
+            self.lock_cache().remove(&destination);
+            Ok(())
+        })();
+        let _ = fs::remove_file(temporary);
+        result
     }
 
     /// Deletes one request document without touching its collection.
@@ -412,41 +476,20 @@ impl WorkspaceStore {
         Ok(())
     }
 
-    /// Rewrites only documents loaded from an older supported schema.
-    ///
-    /// The migration is restartable: each document is replaced atomically and
-    /// a later call skips documents already on the current schema. Documents
-    /// that could not be loaded are left untouched.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`StorageError`] when discovery, decoding, or an atomic
-    /// replacement fails.
-    pub fn migrate(&self) -> Result<MigrationReport, StorageError> {
-        let (_, migrations) = self.load_with_migrations()?;
-        for document in &migrations {
-            self.save(document)?;
-        }
-
-        Ok(MigrationReport {
-            migrated_documents: migrations.len(),
-        })
-    }
-
-    fn load_with_migrations(
-        &self,
-    ) -> Result<(WorkspaceSnapshot, Vec<WorkspaceDocument>), StorageError> {
-        let (workspace, workspace_migrated): (Workspace, bool) =
-            self.read(&self.workspace_path())?;
-        let mut migrations = Vec::new();
+    fn load_snapshot(&self) -> Result<WorkspaceSnapshot, StorageError> {
+        let workspace: Workspace = self.read(&self.workspace_path())?;
         let mut problems = Vec::new();
-        if workspace_migrated {
-            migrations.push(WorkspaceDocument::Workspace(workspace.clone()));
-        }
 
         let mut collections = Vec::new();
         for directory in child_directories(&self.collections_path())? {
-            match self.load_collection(&directory, &mut migrations, &mut problems) {
+            // A deleted collection may retain attachments or unreadable documents.
+            // Only the absence of a manifest means this is not a collection.
+            if fs::symlink_metadata(directory.join(COLLECTION_FILE))
+                .is_err_and(|error| error.kind() == io::ErrorKind::NotFound)
+            {
+                continue;
+            }
+            match self.load_collection(&directory, &mut problems) {
                 Ok(snapshot) => collections.push(snapshot),
                 Err(error) => problems.push(DocumentProblem::new(&self.root, &error)),
             }
@@ -456,32 +499,23 @@ impl WorkspaceStore {
         let mut environments = Vec::new();
         for environment_file in toml_files(&self.environments_path())? {
             match self.load_environment(&environment_file) {
-                Ok((environment, migrated)) => {
-                    if migrated {
-                        migrations.push(WorkspaceDocument::Environment(environment.clone()));
-                    }
-                    environments.push(environment);
-                }
+                Ok(environment) => environments.push(environment),
                 Err(error) => problems.push(DocumentProblem::new(&self.root, &error)),
             }
         }
         environments.sort_by(|left, right| left.id.cmp(&right.id));
 
-        Ok((
-            WorkspaceSnapshot {
-                workspace,
-                collections,
-                environments,
-                problems,
-            },
-            migrations,
-        ))
+        Ok(WorkspaceSnapshot {
+            workspace,
+            collections,
+            environments,
+            problems,
+        })
     }
 
     fn load_collection(
         &self,
         directory: &Path,
-        migrations: &mut Vec<WorkspaceDocument>,
         problems: &mut Vec<DocumentProblem>,
     ) -> Result<CollectionSnapshot, StorageError> {
         let directory_name = file_name(directory)?;
@@ -491,24 +525,13 @@ impl WorkspaceStore {
                 reason: "collection directory is not a valid document ID",
             })?;
         let collection_file = directory.join(COLLECTION_FILE);
-        let (collection, collection_migrated): (Collection, bool) = self.read(&collection_file)?;
+        let collection: Collection = self.read(&collection_file)?;
         require_matching_id(&collection.id, &expected_id, &collection_file)?;
-        if collection_migrated {
-            migrations.push(WorkspaceDocument::Collection(collection.clone()));
-        }
 
         let mut requests = Vec::new();
         for request_file in toml_files(&directory.join(REQUESTS_DIRECTORY))? {
             match self.load_request(&request_file) {
-                Ok((request, migrated)) => {
-                    if migrated {
-                        migrations.push(WorkspaceDocument::Request {
-                            collection_id: collection.id.clone(),
-                            request: request.clone(),
-                        });
-                    }
-                    requests.push(request);
-                }
+                Ok(request) => requests.push(request),
                 Err(error) => problems.push(DocumentProblem::new(&self.root, &error)),
             }
         }
@@ -519,23 +542,23 @@ impl WorkspaceStore {
         })
     }
 
-    fn load_request(&self, path: &Path) -> Result<(Request, bool), StorageError> {
+    fn load_request(&self, path: &Path) -> Result<Request, StorageError> {
         let expected_id = document_id_from_file(path)?;
-        let (request, migrated): (Request, bool) = self.read(path)?;
+        let request: Request = self.read(path)?;
         require_matching_id(&request.id, &expected_id, path)?;
-        Ok((request, migrated))
+        Ok(request)
     }
 
-    fn load_environment(&self, path: &Path) -> Result<(Environment, bool), StorageError> {
+    fn load_environment(&self, path: &Path) -> Result<Environment, StorageError> {
         let expected_id = document_id_from_file(path)?;
-        let (environment, migrated): (Environment, bool) = self.read(path)?;
+        let environment: Environment = self.read(path)?;
         require_matching_id(&environment.id, &expected_id, path)?;
-        Ok((environment, migrated))
+        Ok(environment)
     }
 
     /// Reads one document, serving it from the cache when the file's
     /// on-disk identity is unchanged.
-    fn read<T: Document>(&self, path: &Path) -> Result<(T, bool), StorageError> {
+    fn read<T: Document>(&self, path: &Path) -> Result<T, StorageError> {
         let metadata = fs::symlink_metadata(path).map_err(|source| {
             if source.kind() == io::ErrorKind::NotFound {
                 StorageError::Missing {
@@ -563,21 +586,20 @@ impl WorkspaceStore {
             && entry.identity == identity
             && let Some(document) = T::from_cached(&entry.document)
         {
-            return Ok((document.clone(), entry.migrated));
+            return Ok(document.clone());
         }
 
         let source = fs::read_to_string(path)
             .map_err(|source| StorageError::io("read document", path, source))?;
-        let (document, migrated) = parse_document::<T>(path, &source)?;
+        let document = parse_document::<T>(path, &source)?;
         self.lock_cache().insert(
             path.to_owned(),
             CachedDocument {
                 identity,
-                migrated,
                 document: document.clone().into_cached(),
             },
         );
-        Ok((document, migrated))
+        Ok(document)
     }
 
     fn write<T: Document + Serialize>(
@@ -595,7 +617,6 @@ impl WorkspaceStore {
                 path.to_owned(),
                 CachedDocument {
                     identity,
-                    migrated: false,
                     document: document.clone().into_cached(),
                 },
             );
@@ -784,9 +805,9 @@ fn require_matching_id(
 }
 
 /// Parses a document in one pass. The parsed table is inspected for the root
-/// `schema_version` first, so a newer document is refused before its unknown
+/// `schema_version` first, so an unsupported document is refused before its unknown
 /// fields turn into a misleading TOML error, and only then deserialized.
-fn parse_document<T: Document>(path: &Path, source: &str) -> Result<(T, bool), StorageError> {
+fn parse_document<T: Document>(path: &Path, source: &str) -> Result<T, StorageError> {
     let table =
         toml::de::DeTable::parse(source).map_err(|error| invalid_toml(path, source, &error))?;
     let declared =
@@ -794,25 +815,12 @@ fn parse_document<T: Document>(path: &Path, source: &str) -> Result<(T, bool), S
             path: path.to_owned(),
             reason,
         })?;
-    if let Some(found) = declared
-        && found > CURRENT_SCHEMA_VERSION
-    {
-        return Err(unsupported_schema(path, found));
-    }
+    require_current_schema(declared.unwrap_or(0), path)?;
 
-    let mut document = T::deserialize(toml::de::Deserializer::from(table))
+    let document = T::deserialize(toml::de::Deserializer::from(table))
         .map_err(|error| invalid_toml(path, source, &error))?;
-    // The deserialized version is authoritative: whatever the peek saw, a
-    // document from the future is never rewritten to an older schema.
-    let found = document.schema_version();
-    if found > CURRENT_SCHEMA_VERSION {
-        return Err(unsupported_schema(path, found));
-    }
-    let migrated = found < CURRENT_SCHEMA_VERSION;
-    if migrated {
-        document.set_schema_version(CURRENT_SCHEMA_VERSION);
-    }
-    Ok((document, migrated))
+    require_current_schema(document.schema_version(), path)?;
+    Ok(document)
 }
 
 fn invalid_toml(path: &Path, source: &str, error: &toml::de::Error) -> StorageError {
@@ -824,14 +832,6 @@ fn invalid_toml(path: &Path, source: &str, error: &toml::de::Error) -> StorageEr
         path: path.to_owned(),
         line,
         column,
-    }
-}
-
-fn unsupported_schema(path: &Path, found: u32) -> StorageError {
-    StorageError::UnsupportedSchema {
-        path: path.to_owned(),
-        found,
-        supported: CURRENT_SCHEMA_VERSION,
     }
 }
 
@@ -866,6 +866,13 @@ fn write_document<T: Serialize>(
         })?;
     if !contents.ends_with('\n') {
         contents.push('\n');
+    }
+    let bytes = contents.len() as u64;
+    if bytes > MAX_DOCUMENT_BYTES {
+        return Err(StorageError::DocumentTooLarge {
+            path: path.to_owned(),
+            bytes,
+        });
     }
     atomic_write_if_changed(path, contents.as_bytes(), durability)
 }
@@ -933,6 +940,71 @@ fn atomic_write_if_changed(
     } else {
         SaveOutcome::Created
     })
+}
+
+fn exclusive_copy(source: &Path, destination: &Path) -> Result<(), StorageError> {
+    let mut output = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(destination)
+        .map_err(|source| {
+            if source.kind() == io::ErrorKind::AlreadyExists {
+                StorageError::AlreadyExists {
+                    path: destination.to_owned(),
+                }
+            } else {
+                StorageError::io("create move destination", destination, source)
+            }
+        })?;
+    let result = (|| {
+        let mut input = fs::File::open(source)?;
+        io::copy(&mut input, &mut output)?;
+        output.sync_all()
+    })();
+    if let Err(source) = result {
+        drop(output);
+        let _ = fs::remove_file(destination);
+        return Err(StorageError::io(
+            "copy move destination",
+            destination,
+            source,
+        ));
+    }
+    Ok(())
+}
+
+/// Renames to sibling temporary files first, rolling back if any rename fails.
+/// Once all documents are staged, deletion has committed; leftover hidden files
+/// from a cleanup failure remain recoverable and are never loaded as documents.
+fn delete_managed_documents(documents: &[PathBuf]) -> Result<(), StorageError> {
+    let mut staged: Vec<(PathBuf, PathBuf)> = Vec::new();
+    for path in documents {
+        let result = (|| {
+            let parent = path.parent().expect("workspace document parent");
+            let (temporary, file) = create_temporary_file(parent, path)?;
+            drop(file);
+            if let Err(source) = fs::rename(path, &temporary) {
+                let _ = fs::remove_file(&temporary);
+                return Err(StorageError::io("stage document deletion", path, source));
+            }
+            Ok(temporary)
+        })();
+        match result {
+            Ok(temporary) => staged.push((path.clone(), temporary)),
+            Err(error) => {
+                for (original, temporary) in staged.iter().rev() {
+                    fs::rename(temporary, original).map_err(|source| {
+                        StorageError::io("restore staged document", original, source)
+                    })?;
+                }
+                return Err(error);
+            }
+        }
+    }
+    for (_, temporary) in staged {
+        let _ = fs::remove_file(temporary);
+    }
+    Ok(())
 }
 
 fn create_temporary_file(
@@ -1067,6 +1139,17 @@ mod tests {
     }
 
     #[test]
+    fn failed_collection_deletion_restores_staged_documents() {
+        let directory = tempfile::tempdir().unwrap();
+        let original = directory.path().join("saved.toml");
+        std::fs::write(&original, b"saved request").unwrap();
+        let missing = directory.path().join("missing.toml");
+        assert!(super::delete_managed_documents(&[original.clone(), missing]).is_err());
+        assert_eq!(std::fs::read(original).unwrap(), b"saved request");
+        assert_eq!(std::fs::read_dir(directory.path()).unwrap().count(), 1);
+    }
+
+    #[test]
     fn peeks_the_root_schema_version_only() {
         assert_eq!(peek("name = \"x\"\n"), Ok(None));
         assert_eq!(
@@ -1117,5 +1200,28 @@ mod tests {
         ] {
             assert!(!is_managed_document_path(unmanaged), "{unmanaged}");
         }
+    }
+}
+
+#[cfg(test)]
+mod exclusive_move_tests {
+    use super::*;
+    #[test]
+    fn exclusive_copy_preserves_collisions_and_cleans_failed_copies() {
+        let root = tempfile::tempdir().unwrap();
+        let source = root.path().join("source");
+        let destination = root.path().join("destination");
+        fs::write(&source, b"source").unwrap();
+        exclusive_copy(&source, &destination).unwrap();
+        assert_eq!(fs::read(&destination).unwrap(), b"source");
+        fs::write(&destination, b"existing").unwrap();
+        assert!(matches!(
+            exclusive_copy(&source, &destination),
+            Err(StorageError::AlreadyExists { .. })
+        ));
+        assert_eq!(fs::read(&destination).unwrap(), b"existing");
+        fs::remove_file(&destination).unwrap();
+        assert!(exclusive_copy(&root.path().join("missing"), &destination).is_err());
+        assert!(!destination.exists());
     }
 }

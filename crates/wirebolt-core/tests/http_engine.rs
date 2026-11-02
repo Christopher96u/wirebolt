@@ -1781,3 +1781,161 @@ async fn a_redirect_that_must_resend_large_content_is_returned() {
     assert_eq!(run.status, 307);
     assert_eq!(server.await.unwrap().len(), 1);
 }
+
+fn multipart_request(
+    address: SocketAddr,
+    path: &std::path::Path,
+) -> wirebolt_core::PreparedRequest {
+    let mut request = SavedRequest::new(
+        DocumentId::new("multipart").unwrap(),
+        "Multipart",
+        "PUT",
+        format!("http://{address}/upload"),
+    );
+    request.body = serde_json::from_value(serde_json::json!({"kind":"multipart", "parts":[{"id":"file", "name":"file", "kind":"file", "value":"", "file_path":path, "enabled":true}]})).unwrap();
+    RequestPipeline::new(None, &NoSecrets)
+        .prepare(&request)
+        .unwrap()
+}
+
+#[tokio::test]
+async fn multipart_redirects_replay_only_bodies_up_to_64_kib() {
+    for large in [false, true] {
+        let mut responses: Vec<&'static [u8]> = vec![b"HTTP/1.1 307 Temporary Redirect\r\nLocation: /again\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"];
+        if !large {
+            responses.push(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok");
+        }
+        let (address, server) = spawn_http1_sequence(responses).await;
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("payload.bin");
+        std::fs::write(&path, b"").unwrap();
+        let overhead =
+            usize::try_from(multipart_request(address, &path).body_byte_count()).unwrap();
+        std::fs::write(&path, vec![b'x'; 64 * 1024 - overhead + usize::from(large)]).unwrap();
+        let prepared = multipart_request(address, &path);
+        let byte_count = prepared.body_byte_count();
+        assert_eq!(prepared.body_is_file_backed(), large);
+        let run = tokio::time::timeout(
+            Duration::from_secs(5),
+            following_engine().run(
+                prepared,
+                RunOptions::default(),
+                &RunCancellation::new(),
+                |_| StreamControl::Continue,
+            ),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert_eq!(run.status, if large { 307 } else { 200 });
+        let requests = server.await.unwrap();
+        assert_eq!(requests.len(), if large { 1 } else { 2 });
+        for request in &requests {
+            let (_, body) = request.split_once("\r\n\r\n").unwrap();
+            assert_eq!(body.len() as u64, byte_count);
+            assert!(request.contains(&format!("content-length: {byte_count}\r\n")));
+            assert!(body.ends_with("--wirebolt-boundary-7MA4YWxkTrZu0gW--\r\n"));
+        }
+        if !large {
+            assert_eq!(
+                requests[0].split_once("\r\n\r\n").unwrap().1,
+                requests[1].split_once("\r\n\r\n").unwrap().1
+            );
+        }
+    }
+}
+
+#[tokio::test]
+async fn cancels_a_streamed_multipart_upload_under_backpressure() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("payload.bin");
+    std::fs::File::create(&path)
+        .unwrap()
+        .set_len(32 * 1024 * 1024)
+        .unwrap();
+    let cancellation = RunCancellation::new();
+    let trigger = cancellation.clone();
+    let server = tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let mut bytes = [0; 1024];
+        assert!(stream.read(&mut bytes).await.unwrap() > 0);
+        trigger.cancel();
+        // Keep the connection open without draining the body until the client exits.
+        std::future::pending::<()>().await;
+    });
+    let result = tokio::time::timeout(
+        Duration::from_secs(5),
+        following_engine().run(
+            multipart_request(address, &path),
+            RunOptions::default(),
+            &cancellation,
+            |_| StreamControl::Continue,
+        ),
+    )
+    .await
+    .unwrap();
+    assert_eq!(result.unwrap_err().kind(), RunErrorKind::Cancelled);
+    server.abort();
+    assert!(server.await.unwrap_err().is_cancelled());
+}
+
+async fn changed_multipart_file_is_rejected(change: &str) {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("payload.bin");
+    std::fs::write(&path, vec![b'x'; 128 * 1024]).unwrap();
+    let prepared = multipart_request(address, &path);
+    match change {
+        "removed" => std::fs::remove_file(&path).unwrap(),
+        "truncated" => std::fs::File::options()
+            .write(true)
+            .open(&path)
+            .unwrap()
+            .set_len(1)
+            .unwrap(),
+        "grown" => std::fs::File::options()
+            .write(true)
+            .open(&path)
+            .unwrap()
+            .set_len(256 * 1024)
+            .unwrap(),
+        _ => unreachable!(),
+    }
+    let result = tokio::time::timeout(
+        Duration::from_secs(3),
+        following_engine().run(
+            prepared,
+            RunOptions::default(),
+            &RunCancellation::new(),
+            |_| StreamControl::Continue,
+        ),
+    )
+    .await
+    .expect("upload must fail promptly");
+    let error = result.expect_err("changed upload must fail");
+    assert_eq!(error.kind(), RunErrorKind::Request);
+    let message = error.to_string();
+    assert!(message.contains("Upload file"), "{message}");
+    // Preflight rejects the changed file before even opening the connection,
+    // so no partial body or mismatched Content-Length can reach the server.
+    assert!(
+        tokio::time::timeout(Duration::from_millis(50), listener.accept())
+            .await
+            .is_err()
+    );
+}
+#[tokio::test]
+async fn multipart_removed_between_preparation_and_send_fails_cleanly() {
+    changed_multipart_file_is_rejected("removed").await;
+}
+#[tokio::test]
+async fn multipart_truncated_between_preparation_and_send_fails_cleanly() {
+    changed_multipart_file_is_rejected("truncated").await;
+}
+#[tokio::test]
+async fn multipart_grown_between_preparation_and_send_fails_cleanly() {
+    changed_multipart_file_is_rejected("grown").await;
+}

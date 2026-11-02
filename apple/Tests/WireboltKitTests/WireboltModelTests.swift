@@ -39,6 +39,28 @@ struct WireboltModelTests {
         #expect(await model.historyCount(for: second) == 1)
     }
 
+    @Test("Moving a request and Undo immediately relocate history activity")
+    @MainActor func movesMirrorHistoryActivity() async throws {
+        let root = FileManager.default.temporaryDirectory.appending(path: "wirebolt-history-move-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let model = WireboltModel(runner: InputCapturingRunner(), persistence: MutationRecorder(), history: HistoryRepository(root: root))
+        let request = RequestDraft(id: "a", url: "https://example.com/a")
+        model.workspace.collections = [CollectionDraft(id: "api", name: "API", requests: [RequestLocation(collectionID: "api", request: request)]), CollectionDraft(id: "other", name: "Other")]
+        let manager = UndoManager(); manager.groupsByEvent = false; model.undoManager = manager
+        let session = model.sessions.open(draft: request, collectionID: "api")
+        await model.send(session)
+        #expect(model.requestActivity["api/a"] != nil)
+        let revision = model.historyRevision
+        await model.moveRequest(fromCollectionID: "api", requestID: "a", toCollectionID: "other", groupID: nil, order: 0)
+        #expect(session.collectionID == "other")
+        #expect(model.requestActivity["api/a"] == nil && model.requestActivity["other/a"] != nil)
+        #expect(model.historyRevision > revision)
+        #expect(await model.historyCount(for: session) == 1)
+        manager.undo(); await model.finishUndoWork()
+        #expect(session.collectionID == "api")
+        #expect(model.requestActivity["api/a"] != nil && model.requestActivity["other/a"] == nil)
+    }
+
     @Test("A workspace that cannot load leaves the current documents and edits intact")
     @MainActor func failedWorkspaceOpenPreservesDraft() async throws {
         let model = WireboltModel(runner: StubRunner(), persistence: MutationRecorder())
@@ -69,11 +91,15 @@ struct WireboltModelTests {
 
     @Test("Workspace switching cancels old HTTP runs and clears the selected environment")
     @MainActor func workspaceSwitchClosesRuns() async throws {
-        let model = WireboltModel(runner: StubRunner(), persistence: MutationRecorder())
+        let runner = PendingRequestRunner()
+        let model = WireboltModel(runner: runner, persistence: MutationRecorder())
         let old = model.sessions.open(draft: RequestDraft(id: "old", name: "Old"))
-        old.beginRun(RunID())
+        let liveRun = await runner.start(model, session: old)
+        defer { liveRun.cancel() }
         model.selectedEnvironmentID = "old-environment"
         #expect(await model.openWorkspace(using: MutationRecorder()))
+        await liveRun.value
+        #expect(runner.cancellationCount == 1)
         #expect(!old.isRunning)
         #expect(model.sessions.sessions.isEmpty)
         #expect(model.selectedEnvironmentID == nil)
@@ -130,16 +156,20 @@ struct WireboltModelTests {
     @Test("Deleting a folder closes descendant splits and cancels their runs")
     @MainActor func deletedFolderClosesDescendants() async throws {
         let persistence = MutationRecorder()
-        let model = WireboltModel(runner: StubRunner(), persistence: persistence)
+        let runner = PendingRequestRunner()
+        let model = WireboltModel(runner: runner, persistence: persistence)
         let location = RequestLocation(collectionID: "api", groupID: "child", request: RequestDraft(id: "r"))
         model.workspace.collections = [CollectionDraft(id: "api", name: "API", groups: [GroupDraft(id: "parent", name: "Parent"), GroupDraft(id: "child", name: "Child", parentID: "parent")], requests: [location])]
         model.select(location)
         let original = try #require(model.sessions.activeSession)
         _ = model.sessions.split(tabID: original.id)
-        original.beginRun(RunID())
+        let liveRun = await runner.start(model, session: original)
+        defer { liveRun.cancel() }
         original.draft.note = "Discarded with folder"
         await model.deleteGroup(collectionID: "api", id: "parent")
         #expect(model.sessions.sessions.isEmpty)
+        await liveRun.value
+        #expect(runner.cancellationCount == 1)
         #expect(!original.isRunning)
         await model.saveCurrentRequest(collectionID: "api")
         #expect(await persistence.commands.count == 1)
@@ -294,10 +324,8 @@ struct WireboltModelTests {
     func globalVariables() {
         let model = WireboltModel(runner: StubRunner())
         model.workspace.environments = [
-            EnvironmentDraft(id: WorkspaceDraft.globalEnvironmentID, name: "Global Environment", legacyVariables: [
-                "host": .literal("global.example"), "shared": .literal("yes")
-            ]),
-            EnvironmentDraft(id: "local", name: "Local", legacyVariables: ["host": .literal("localhost")])
+            EnvironmentDraft(id: WorkspaceDraft.globalEnvironmentID, name: "Global Environment", variables: [EnvironmentVariableDraft(key: "host", value: .literal("global.example"), order: 0), EnvironmentVariableDraft(key: "shared", value: .literal("yes"), order: 1)]),
+            EnvironmentDraft(id: "local", name: "Local", variables: [EnvironmentVariableDraft(key: "host", value: .literal("localhost"), order: 0)])
         ]
         #expect(model.activeVariables["host"] == .literal("global.example"))
         model.selectedEnvironmentID = "local"
@@ -623,9 +651,9 @@ struct WireboltModelTests {
         let session = store.openTemporary()
         session.markSaved(session.draft)
         let run = RunID()
-        session.beginRun(run)
-        await session.consume(.chunk(Data("preserved".utf8)), runID: run)
-        await session.consume(.complete(RunCompletion(bytesReceived: 9, totalTimeNS: 1)), runID: run)
+        let sessionRun = await RuntimeRunFixture.start(session, runID: run)
+        _ = sessionRun.sink.bytes(data: Data("preserved".utf8)); session.mirror()
+        sessionRun.sink.event(event: .complete(completion: RunCompletion(bytesReceived: 9, totalTimeNS: 1))); await sessionRun.complete()
         #expect(store.close(.all).isEmpty)
         #expect(store.activeSession == nil)
         store.reopen(session)
@@ -641,14 +669,15 @@ struct WireboltModelTests {
         let source = store.openTemporary()
         source.markSaved(source.draft)
         let run = RunID()
-        source.beginRun(run)
-        await source.consume(.chunk(Data("shared body".utf8)), runID: run)
-        await source.consume(.complete(RunCompletion(bytesReceived: 11, totalTimeNS: 1)), runID: run)
+        let sourceRun = await RuntimeRunFixture.start(source, runID: run)
+        _ = sourceRun.sink.bytes(data: Data("shared body".utf8)); source.mirror()
+        sourceRun.sink.event(event: .complete(completion: RunCompletion(bytesReceived: 11, totalTimeNS: 1))); await sourceRun.complete()
         _ = try #require(store.split(tabID: source.id))
         let copy = try #require(store.activeSession)
         #expect(copy.responseText == "shared body")
         #expect(!copy.isDirty)
-        source.beginRun(RunID())
+        let liveRun = await RuntimeRunFixture.start(source)
+        defer { liveRun.cancel() }
         let bytes = try await copy.bodyStore?.viewport()
         #expect(bytes == Data("shared body".utf8))
         store.select(tabID: source.id, in: store.groups[0].id)
@@ -822,9 +851,9 @@ struct WireboltModelTests {
     func cancellationPresentation() async {
         let session = DocumentSession(draft: RequestDraft())
         let run = RunID()
-        session.beginRun(run)
-        session.cancel(runID: run)
-        await session.consume(.chunk(Data("late".utf8)), runID: run)
+        let sessionRun = await RuntimeRunFixture.start(session, runID: run)
+        sessionRun.cancel()
+        _ = sessionRun.sink.bytes(data: Data("late".utf8)); session.mirror()
         #expect(!session.isRunning)
         #expect(session.failure?.kind == .cancelled)
         #expect(session.responseBytes == 0)
@@ -1045,7 +1074,7 @@ private actor RoutedRunner: RequestRunner {
 private struct StubPersistence: WorkspacePersistence {
     let workspace: WorkspaceDraft
 
-    func load() async throws -> WorkspaceDraft { workspace }
+    func loadResult() async throws -> WorkspaceLoadResult {workspace.loadResult }
     func save(request _: RequestDraft, in _: String) async throws {}
     func save(environment _: EnvironmentDraft) async throws {}
     func saveSecret(name _: String, value _: String) async throws {}
@@ -1054,9 +1083,7 @@ private struct StubPersistence: WorkspacePersistence {
 private actor PersistenceRecorder: WorkspacePersistence {
     var savedRequest: (RequestDraft, String)?
 
-    func load() async throws -> WorkspaceDraft {
-        WorkspaceDraft(name: "Demo")
-    }
+    func loadResult() async throws -> WorkspaceLoadResult {WorkspaceDraft(name: "Demo").loadResult }
 
     func save(request: RequestDraft, in collectionID: String) async throws {
         savedRequest = (request, collectionID)
@@ -1069,7 +1096,7 @@ private actor PersistenceRecorder: WorkspacePersistence {
 private actor SecretPersistenceRecorder: WorkspacePersistence {
     private(set) var savedSecret: (String, String)?
 
-    func load() async throws -> WorkspaceDraft { WorkspaceDraft(name: "OAuth") }
+    func loadResult() async throws -> WorkspaceLoadResult {WorkspaceDraft(name: "OAuth").loadResult }
     func save(request _: RequestDraft, in _: String) async throws {}
     func save(environment _: EnvironmentDraft) async throws {}
     func saveSecret(name: String, value: String) async throws { savedSecret = (name, value) }
@@ -1095,11 +1122,11 @@ private actor SequencedPersistence: WorkspacePersistence {
         self.workspaces = workspaces
     }
 
-    func load() async throws -> WorkspaceDraft {
+    func loadResult() async throws -> WorkspaceLoadResult {
         if workspaces.count > 1 {
-            return workspaces.removeFirst()
+            return workspaces.removeFirst().loadResult
         }
-        return workspaces[0]
+        return workspaces[0].loadResult
     }
 
     func save(request _: RequestDraft, in _: String) async throws {}
@@ -1113,9 +1140,9 @@ private actor MutationRecorder: WorkspacePersistence {
     private(set) var commands: [SessionWorkspaceCommand] = []
     private(set) var loadCount = 0
 
-    func load() async throws -> WorkspaceDraft {
+    func loadResult() async throws -> WorkspaceLoadResult {
         loadCount += 1
-        return WorkspaceDraft(name: "Mutations")
+        return WorkspaceDraft(name: "Mutations").loadResult
     }
 
     func save(request _: RequestDraft, in _: String) async throws {}
@@ -1173,7 +1200,7 @@ private extension GitStatusSnapshot {
 }
 
 private struct UnreadableWorkspace: WorkspacePersistence {
-    func load() async throws -> WorkspaceDraft { throw RunFailure(kind: .workspace, issues: []) }
+    func loadResult() async throws -> WorkspaceLoadResult { throw RunFailure(kind: .workspace, issues: []) }
     func save(request: RequestDraft, in collectionID: String) async throws {}
     func save(environment: EnvironmentDraft) async throws {}
     func saveSecret(name: String, value: String) async throws {}
@@ -1181,7 +1208,7 @@ private struct UnreadableWorkspace: WorkspacePersistence {
 
 private actor PausedSecretPersistence: WorkspacePersistence {
     private var pending: CheckedContinuation<Void, Never>?
-    func load() async throws -> WorkspaceDraft { WorkspaceDraft(name: "Fixture") }
+    func loadResult() async throws -> WorkspaceLoadResult {WorkspaceDraft(name: "Fixture").loadResult }
     func save(request: RequestDraft, in collectionID: String) async throws {}
     func save(environment: EnvironmentDraft) async throws {}
     func saveSecret(name: String, value: String) async throws {
@@ -1215,4 +1242,27 @@ func defaultPersistenceDeltaKeepsLocationIdentity() async throws {
     let location = RequestLocation(collectionID: "api", request: RequestDraft(id: "orders"))
     let delta = try await persistence.apply(.saveRequest(location: location.domain))
     #expect(delta.affectedIDs == [location.id])
+}
+
+extension WireboltModelTests {
+    @Test("A damaged history index reports once, then records and clears")
+    @MainActor func damagedHistoryRecoveryIsReportedOnce() async throws {
+        let root = FileManager.default.temporaryDirectory.appending(path: "wirebolt-history-recovery-\(UUID())")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try Data("damaged index".utf8).write(to: root.appending(path: "index.json"))
+        let model = WireboltModel(runner: InputCapturingRunner(), history: HistoryRepository(root: root))
+        let session = model.sessions.open(draft: RequestDraft(id: "unsaved", url: "https://example.invalid/fixture"))
+        await model.send()
+        #expect(await model.historyCount(for: session) == 1)
+        #expect(model.operationFailure?.kind == .storage)
+        #expect(model.operationFailureMessage?.contains("History could not be loaded.") == true)
+        model.operationFailure = nil
+        model.operationFailureMessage = nil
+        await model.send()
+        #expect(await model.historyCount(for: session) == 2)
+        #expect(model.operationFailure == nil)
+        await model.clearAllHistory()
+        #expect(await model.historyCount(for: session) == 0)
+    }
 }

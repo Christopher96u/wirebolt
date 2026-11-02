@@ -328,6 +328,22 @@ pub struct AdaptiveColor {
     pub dark_high_contrast: RgbColor,
 }
 
+use domain::theme::MethodTokens;
+
+#[uniffi::remote(Record)]
+pub struct MethodTokens {
+    pub get: DomainMethodChip,
+    pub post: DomainMethodChip,
+    pub put: DomainMethodChip,
+    pub patch: DomainMethodChip,
+    pub delete: DomainMethodChip,
+    pub head: DomainMethodChip,
+    pub options: DomainMethodChip,
+    pub query: DomainMethodChip,
+    pub custom: DomainMethodChip,
+    pub web_socket: DomainMethodChip,
+}
+
 #[uniffi::remote(Record)]
 pub struct ThemeTokens {
     pub preset: DomainThemePreset,
@@ -356,8 +372,7 @@ pub struct ThemeTokens {
     pub success: RgbColor,
     pub warning: RgbColor,
     pub error: RgbColor,
-    pub method_backgrounds: Vec<RgbColor>,
-    pub method_foregrounds: Vec<RgbColor>,
+    pub methods: domain::theme::MethodTokens,
     pub control: RgbColor,
 }
 
@@ -382,6 +397,8 @@ pub struct DomainMethodChip {
 
 #[uniffi::remote(Record)]
 pub struct ResolvedTokens {
+    pub is_dark: bool,
+    pub statuses: std::collections::HashMap<DomainStatusClass, RgbColor>,
     pub definition: ThemeTokens,
     pub primary: RgbColor,
     pub muted: RgbColor,
@@ -513,7 +530,7 @@ impl DomainOAuthPlatform for PlatformAdapter {
     }
     async fn read_secret(&self, name: String) -> Option<String> {
         wirebolt_app::session::persistence::WorkspaceSecrets::read(
-            &crate::PlatformWorkspaceSecrets,
+            &crate::PlatformWorkspaceSecrets::default(),
             &name,
         )
         .ok()
@@ -621,12 +638,6 @@ pub fn domain_owned_reference(name: String) -> bool {
 
 #[uniffi::export]
 #[must_use]
-pub fn domain_legacy_reference(name: String) -> bool {
-    domain::request::legacy_reference(&name)
-}
-
-#[uniffi::export]
-#[must_use]
 pub fn domain_auth_references(authentication: DomainAuthentication) -> Vec<String> {
     domain::request::auth_references(&authentication)
 }
@@ -642,11 +653,8 @@ pub fn domain_rename_auth(
 
 #[uniffi::export]
 #[must_use]
-pub fn domain_own_auth(
-    authentication: DomainAuthentication,
-    only_legacy: bool,
-) -> OwnedAuthentication {
-    let (authentication, renames) = domain::request::own_auth(authentication, only_legacy);
+pub fn domain_own_auth(authentication: DomainAuthentication) -> OwnedAuthentication {
+    let (authentication, renames) = domain::request::own_auth(authentication);
     OwnedAuthentication {
         authentication,
         renames,
@@ -853,8 +861,11 @@ pub fn domain_typography(compact: bool) -> TypographyTokens {
 
 #[uniffi::export]
 #[must_use]
-pub fn domain_select_preset(selection: String, dark: bool) -> DomainThemePreset {
-    domain::theme::select_preset(&selection, dark)
+pub fn domain_select_preset(
+    selection: domain::theme::ThemeSelection,
+    dark: bool,
+) -> DomainThemePreset {
+    selection.preset(dark)
 }
 
 #[uniffi::export]
@@ -1038,8 +1049,17 @@ pub fn domain_curl_value_sources(draft: DomainRequestDraft) -> Vec<DomainValueSo
 }
 #[uniffi::export]
 impl WorkspaceBridge {
-    /// Loads typed application records without a JSON round trip through Swift.
+    /// Loads readable application records with bounded diagnostics for skipped files.
     ///
+    /// # Errors
+    /// Returns an error if the workspace cannot be read or projected.
+    pub fn load_result(
+        &self,
+    ) -> Result<wirebolt_app::session::persistence::WorkspaceLoadResult, crate::WorkspaceBridgeError>
+    {
+        self.inner.load_result()
+    }
+    /// Loads typed application records without a JSON round trip through Swift.
     /// # Errors
     /// Returns an error if the workspace cannot be read or projected.
     pub fn domain_snapshot(&self) -> Result<DomainWorkspace, crate::WorkspaceBridgeError> {
@@ -1171,15 +1191,6 @@ pub fn domain_push_availability(
 #[must_use]
 pub fn domain_separate_url_query(url: String, query: Vec<DomainField>) -> UrlQueryEdit {
     domain::url::separate_url_query_values(url, query)
-}
-#[uniffi::export]
-#[must_use]
-pub fn domain_legacy_environment(
-    id: String,
-    name: String,
-    values: HashMap<String, DomainValueSource>,
-) -> DomainEnvironment {
-    domain::request::legacy_environment(id, name, values.into_iter().collect())
 }
 #[uniffi::export]
 #[must_use]
@@ -1543,11 +1554,9 @@ pub fn domain_body_can_format(kind: DomainBodyKind) -> bool {
 pub enum DomainImportFormat {
     Curl,
     Har,
-    LegacyWorkspaceV1,
     PostmanV2,
     Insomnia,
     Bruno,
-    BrunoFolder,
 }
 #[uniffi::remote(Enum)]
 pub enum ProxySource {
@@ -1629,11 +1638,6 @@ mod choice_tests {
                 DomainImportFormat::PostmanV2,
             ),
             (
-                "json",
-                r#"{"version":1,"nodes":[]}"#,
-                DomainImportFormat::LegacyWorkspaceV1,
-            ),
-            (
                 "yaml",
                 "type: collection.insomnia.rest/5",
                 DomainImportFormat::Insomnia,
@@ -1643,7 +1647,7 @@ mod choice_tests {
                 r#"{"version":"1","name":"C","items":[]}"#,
                 DomainImportFormat::Bruno,
             ),
-            ("bru", "meta {}", DomainImportFormat::BrunoFolder),
+            ("bru", "meta {}", DomainImportFormat::Bruno),
         ] {
             assert_eq!(
                 domain_detect_import(extension.into(), source.into()),

@@ -116,6 +116,11 @@ struct ContentView: View {
     private var workspaceSurface: some View {
         let groupCount = model.sessions.groupCount
         return workspacePanels
+        .safeAreaInset(edge: .top, spacing: 0) {
+            if let message = model.workspaceLoadNotice {
+                WorkspaceLoadNotice(message: message) { model.workspaceLoadNotice = nil }
+            }
+        }
         .disabled(model.isLoadingWorkspace)
         .background { WorkspaceWindowTitle(model: model) }
         .frame(minWidth: (groupCount > 1
@@ -211,11 +216,9 @@ struct ContentView: View {
         )) {
             Button("OK", role: .cancel) { model.operationFailure = nil }
         } message: {
-            Text(model.operationFailure?.kind == .keychain
+            Text(model.operationFailureMessage ?? (model.operationFailure?.kind == .keychain
                 ? "The credentials could not be read or saved in Keychain. Check access and try again."
-                : model.operationFailure?.kind == .export
-                    ? (model.exportFailureMessage ?? "The saved request could not be exported.")
-                    : "The operation could not be completed. Check access to the workspace and try again.")
+                : "The operation could not be completed. Check access to the workspace and try again."))
         }
         .sheet(item: $interface.workspaceNamePrompt) { prompt in
             WorkspaceNameEditor(prompt: prompt, model: model)
@@ -838,11 +841,7 @@ private struct CollectionActionMenu: View {
             Button("Git Collaboration…") { model.isShowingGitCollaboration = true }
             Divider()
             WorkspaceImportMenu(interface: interface)
-            Button("Export Wirebolt JSON…") {
-                Task { if let document = await model.exportWorkspace() {
-                    saveExportedDocument(named: model.workspace.name, content: document)
-                } }
-            }.disabled(model.workspace.collections.isEmpty)
+
 
         } label: {
             Image(systemName: "plus")
@@ -865,7 +864,6 @@ private struct WorkspaceImportMenu: View {
             Button("cURL") { interface.isShowingCurlImporter = true }
             Button("HAR") { open(.har) }
             Divider()
-            Button("Wirebolt / Legacy Collection v1 JSON") { open(.legacyWorkspaceV1) }
             Button("Postman Collection v2") { open(.postmanV2) }
             Button("Insomnia (v4 JSON or v5 YAML)") { open(.insomnia) }
             Button("Bruno Collection (Folder or JSON)") { open(.bruno) }
@@ -1052,29 +1050,41 @@ private struct SidebarReorderDrop: DropDelegate {
         return info.location.y < 12 ? .before : .after
     }
 
-    func validateDrop(info: DropInfo) -> Bool { destination(info) != nil }
+    func validateDrop(info: DropInfo) -> Bool {
+        guard let identifier = interface.sidebarDragIdentifier else { return false }
+        if case .refused = model.moveEligibility(identifier, toCollectionID: target.collection, parentID: target.folder ?? target.parent) { return true }
+        return destination(info) != nil
+    }
     func dropEntered(info: DropInfo) { position = destination(info) }
     func dropExited(info: DropInfo) { position = nil }
     func dropUpdated(info: DropInfo) -> DropProposal? {
         position = destination(info)
-        return DropProposal(operation: position == nil ? .forbidden : .move)
+        return DropProposal(operation: position == nil && !validateDrop(info: info) ? .forbidden : .move)
     }
     func performDrop(info: DropInfo) -> Bool {
+        if let identifier = interface.sidebarDragIdentifier,
+           case .refused = model.moveEligibility(identifier, toCollectionID: target.collection, parentID: target.folder ?? target.parent),
+           destination(info) == nil {
+            Task { await model.moveSidebarItem(identifier, toCollectionID: target.collection, parentID: target.folder ?? target.parent) }
+            position = nil
+            interface.sidebarDragIdentifier = nil
+            return false
+        }
         guard let destination = destination(info), let expected = interface.sidebarDragIdentifier,
               let provider = info.itemProviders(for: [UTType.text]).first else { return false }
         position = nil
         interface.sidebarDragIdentifier = nil
-        let target = target
-        let model = model
+        let dropTarget = target
+        let sidebarModel = model
         // Verify the actual pasteboard payload, rather than trusting a previous drag's UI state.
         provider.loadObject(ofClass: NSString.self) { value, _ in
             guard let identifier = value as? String, identifier == expected else { return }
             Task { @MainActor in
-                if destination == .inside, let folder = target.folder {
-                    await model.moveSidebarItem(identifier, toCollectionID: target.collection, parentID: folder)
+                if destination == .inside, let folder = dropTarget.folder {
+                    await sidebarModel.moveSidebarItem(identifier, toCollectionID: dropTarget.collection, parentID: folder)
                 } else {
-                    await model.reorderSidebar(identifier, relativeTo: target.item, after: destination == .after,
-                                               collectionID: target.collection, parentID: target.parent)
+                    await sidebarModel.reorderSidebar(identifier, relativeTo: dropTarget.item, after: destination == .after,
+                                                      collectionID: dropTarget.collection, parentID: dropTarget.parent)
                 }
             }
         }
@@ -1203,22 +1213,31 @@ private struct SidebarMoveMenu: View {
             ForEach(collections) { collection in
                 if collection.id != collections.first?.id { Divider() }
                 // The root collection has no sidebar header; its items sit at the top level.
-                destination(collection.id == WorkspaceDraft.rootCollectionID ? "Top Level" : collection.name,
-                            collectionID: collection.id, parentID: nil)
+                destination(collectionID: collection.id, parentID: nil)
                 ForEach(collection.folderOutline(), id: \.group.id) { entry in
-                    destination(String(repeating: "    ", count: entry.depth + 1) + entry.group.name,
-                                collectionID: collection.id, parentID: entry.group.id)
+                    destination(collectionID: collection.id, parentID: entry.group.id, depth: entry.depth + 1)
                 }
             }
         }
     }
 
-    private func destination(_ title: String, collectionID: String, parentID: String?) -> some View {
-        Button(title) {
-            Task { await model.moveSidebarItem(identifier, toCollectionID: collectionID, parentID: parentID) }
+    @ViewBuilder
+    private func destination(collectionID: String, parentID: String?, depth: Int = 0) -> some View {
+        switch model.moveEligibility(identifier, toCollectionID: collectionID, parentID: parentID) {
+        case .allowed(let label):
+            Button(String(repeating: "    ", count: depth) + label) {
+                Task { await model.moveSidebarItem(identifier, toCollectionID: collectionID, parentID: parentID) }
+            }
+        case .notDestination(let label):
+            Button(String(repeating: "    ", count: depth) + label) {}.disabled(true)
+        case .refused(let label, let reason):
+            Button { Task { await model.moveSidebarItem(identifier, toCollectionID: collectionID, parentID: parentID) } } label: {
+                Label(String(repeating: "    ", count: depth) + label, systemImage: "exclamationmark.triangle")
+            }
+            Text(reason)
         }
-        .disabled(!model.canMoveSidebarItem(identifier, toCollectionID: collectionID, parentID: parentID))
     }
+
 }
 
 struct InlineSidebarName: View {
@@ -1333,13 +1352,6 @@ private struct SavedCollectionRow: View {
             }
             Divider()
             WorkspaceImportMenu(interface: interface)
-            Button("Export Wirebolt JSON…") {
-                Task {
-                    if let document = await model.exportCollection(id: collection.id) {
-                        saveExportedDocument(named: collection.name, content: document)
-                    }
-                }
-            }
             Divider()
             Button("Rename") { interface.beginRename(row) }
             Button("Delete", role: .destructive) {
@@ -1347,8 +1359,8 @@ private struct SavedCollectionRow: View {
             }
         }
         .dropDestination(for: String.self) { identifiers, _ in
-            guard let identifier = identifiers.first,
-                  model.canMoveSidebarItem(identifier, toCollectionID: collection.id, parentID: nil) else { return false }
+            guard let identifier = identifiers.first else { return false }
+            if case .notDestination = model.moveEligibility(identifier, toCollectionID: collection.id, parentID: nil) { return false }
             Task { await model.moveSidebarItem(identifier, toCollectionID: collection.id, parentID: nil) }
             return true
         }
@@ -1459,14 +1471,6 @@ private struct SidebarRequestButton: View, @MainActor Equatable {
         Task { await model.duplicateRequest(collectionID: location.collectionID, requestID: location.request.id) }
     }
 
-    private func onExport() {
-        let (model, location) = (model, location)
-        Task {
-            if let document = await model.exportRequest(collectionID: location.collectionID, id: location.request.id) {
-                saveExportedDocument(named: location.request.name, content: document)
-            }
-        }
-    }
 
     private func onDelete() {
         interface.requestDelete(.request(collectionId: location.collectionID, id: location.request.id),
@@ -1477,7 +1481,7 @@ private struct SidebarRequestButton: View, @MainActor Equatable {
     private var identifier: String { "request|\(location.collectionID)|\(location.request.id)" }
 
     var body: some View {
-        let activity = model.requestActivity[location.request.id]
+        let activity = model.activity(for: location)
         VStack(alignment: .leading, spacing: WireboltTheme.Spacing.xSmall) {
             if theme.density == .comfortable {
                 HStack(spacing: WireboltTheme.Spacing.medium) {
@@ -1548,7 +1552,6 @@ private struct SidebarRequestButton: View, @MainActor Equatable {
             Button("Open in New Split", action: onSplit)
             Divider()
             WorkspaceImportMenu(interface: interface)
-            Button("Export Wirebolt JSON…", action: onExport)
             Divider()
             Button("Copy cURL") { copyRequestAsCurl(location.request, model: model) }
                 .disabled(location.request.webSocket)
@@ -2720,9 +2723,10 @@ private struct RequestActionsMenu: View {
                 let session = session
                 Task {
                     await model.clearHistory(for: session)
-                    if loaded.documentID == session.id { loaded.entries = [] }
                 }
             }
+        } message: {
+            Text("Stored responses for this request will be deleted.")
         }
     }
 }
@@ -4573,7 +4577,7 @@ private struct NoOpenRequestPlaceholder: View {
             ContentUnavailableView {
                 Label("Start Your Workspace", systemImage: "paperplane")
             } description: {
-                Text("Create a request, or import a cURL command, HAR file, Postman, Insomnia or Bruno collection or Wirebolt JSON. You can also drop one of those files, or a Bruno collection folder, on this window.")
+                Text("Create a request, or import a cURL command, HAR file, Postman, Insomnia or Bruno collection. You can also drop one of those files, or a Bruno collection folder, on this window.")
             } actions: {
                 Button("New Request") { interface.makeNewRequest(model: model) }
                     .buttonStyle(.borderedProminent).tint(WireboltTheme.controlAccent)

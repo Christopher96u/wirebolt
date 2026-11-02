@@ -3,7 +3,9 @@
 use super::SessionWorkspaceCommand;
 use crate::{
     domain::DomainWorkspace,
-    session::persistence::{SessionCommandBatchResult, SessionPersistence},
+    session::persistence::{
+        SessionCommandBatchResult, SessionPersistence, WorkspaceLoadDiagnostics,
+    },
 };
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
@@ -163,12 +165,6 @@ pub enum WorkspaceGitAction {
     Initialize,
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub enum WorkspaceExport {
-    Workspace,
-    Collection { id: String },
-    Request { collection_id: String, id: String },
-}
-#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum WorkspaceIO {
     Load,
     Commands {
@@ -183,9 +179,6 @@ pub enum WorkspaceIO {
         bundle: wirebolt_core::BrunoFolderBundle,
         name: Option<String>,
     },
-    Export {
-        target: WorkspaceExport,
-    },
     Git {
         action: WorkspaceGitAction,
     },
@@ -196,13 +189,25 @@ pub enum WorkspaceIO {
     reason = "One typed reply per coarse workspace operation."
 )]
 pub enum WorkspaceReply {
-    Loaded { workspace: DomainWorkspace },
-    Commands { result: SessionCommandBatchResult },
-    Imported { summary: WorkspaceImportSummary },
-    Exported { content: String },
-    GitStatus { status: WorkspaceGitStatus },
-    GitOperation { operation: WorkspaceGitOperation },
-    Failed { failure: WorkspaceFailure },
+    Loaded {
+        workspace: DomainWorkspace,
+        diagnostics: WorkspaceLoadDiagnostics,
+    },
+    Commands {
+        result: SessionCommandBatchResult,
+    },
+    Imported {
+        summary: WorkspaceImportSummary,
+    },
+    GitStatus {
+        status: WorkspaceGitStatus,
+    },
+    GitOperation {
+        operation: WorkspaceGitOperation,
+    },
+    Failed {
+        failure: WorkspaceFailure,
+    },
 }
 #[async_trait]
 pub trait WorkspacePlatform: Send + Sync {
@@ -245,9 +250,12 @@ impl SessionPersistence {
     #[must_use]
     pub fn workspace_io(&self, request: WorkspaceIO) -> WorkspaceReply {
         match request {
-            WorkspaceIO::Load => workspace_result(self.domain_snapshot(), |workspace| {
-                WorkspaceReply::Loaded { workspace }
-            }),
+            WorkspaceIO::Load => {
+                workspace_result(self.load_result(), |result| WorkspaceReply::Loaded {
+                    workspace: result.workspace,
+                    diagnostics: result.diagnostics,
+                })
+            }
             WorkspaceIO::Commands { commands } => WorkspaceReply::Commands {
                 result: self.execute_session_commands(commands),
             },
@@ -269,16 +277,6 @@ impl SessionPersistence {
                 |commit| WorkspaceReply::Imported {
                     summary: commit.summary,
                 },
-            ),
-            WorkspaceIO::Export { target } => workspace_result(
-                match target {
-                    WorkspaceExport::Workspace => self.export_workspace_json(),
-                    WorkspaceExport::Collection { id } => self.export_collection_json(&id),
-                    WorkspaceExport::Request { collection_id, id } => {
-                        self.export_request_json(&collection_id, &id)
-                    }
-                },
-                |content| WorkspaceReply::Exported { content },
             ),
             WorkspaceIO::Git { action } => match action {
                 WorkspaceGitAction::Status => git_result(self.git_status(), |status| {

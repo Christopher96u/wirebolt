@@ -5,7 +5,6 @@ use super::{
         ApiKeyPlacement, DomainAuthentication, DomainBody, DomainField, DomainProxy,
         DomainProxyRoute, DomainRequestDraft, DomainValueSource, MultipartPartKind,
     },
-    url::{display_url, encode_query},
     variables,
 };
 use std::{
@@ -190,26 +189,25 @@ pub fn export(
         .collect();
     if query.is_empty() {
         args.push(e.word(&address));
-    } else if let (Some(base), Some(query)) = (address.plain(), plain) {
-        let mut d = d.clone();
-        d.url = base;
-        d.query = query
-            .into_iter()
-            .map(|(name, value)| DomainField {
-                id: String::new(),
-                name,
-                value: DomainValueSource::literal(value),
-                enabled: true,
-                sensitive: false,
-            })
-            .collect();
-        args.push(shell_quote(&display_url(&d)));
+    } else if let (Some(mut url), Some(query)) = (
+        address
+            .plain()
+            .and_then(|base| url::Url::parse(base.trim()).ok()),
+        plain,
+    ) {
+        wirebolt_core::append_query_pairs(
+            &mut url,
+            query
+                .iter()
+                .map(|(name, value)| (name.as_str(), value.as_str())),
+        );
+        args.push(shell_quote(url.as_str()));
     } else {
         args.push(e.word(&address));
         for (n, v) in query {
             let n = n.plain().map_or_else(
                 || n.clone(),
-                |s| Text::literal(encode_query(&s).replace('+', "%2B")),
+                |s| Text::literal(wirebolt_core::encode_query_component(&s).to_string()),
             );
             args.extend([
                 "--url-query".into(),

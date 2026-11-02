@@ -23,9 +23,7 @@ struct WorkspaceIdentityTests {
         let root = FileManager.default.temporaryDirectory.appending(path: "wirebolt-cookies-\(UUID().uuidString)")
         defer { try? FileManager.default.removeItem(at: root) }
         let cookieDirectory = root.appending(path: "Cookies")
-        let legacy = cookieDirectory.appending(path: "cookies.json")
         try FileManager.default.createDirectory(at: cookieDirectory, withIntermediateDirectories: true)
-        try Data("[]".utf8).write(to: legacy)
         let first = KeychainRecorder(location: root.appending(path: "Checkout"))
         let second = KeychainRecorder(location: root.appending(path: "Payments"))
         let model = WireboltModel(runner: CookieSettingRunner(), persistence: first, cookieDirectory: cookieDirectory)
@@ -42,7 +40,6 @@ struct WorkspaceIdentityTests {
         let relaunched = WireboltModel(runner: SilentRunner(), cookieDirectory: cookieDirectory)
         relaunched.configurePersistence(first)
         #expect(await relaunched.cookies().map(\.name) == ["remember"])
-        #expect(!FileManager.default.fileExists(atPath: legacy.path))
     }
 
     @Test("Deleting one cookie or clearing all updates the list and its revision")
