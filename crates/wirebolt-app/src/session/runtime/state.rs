@@ -40,6 +40,7 @@ pub struct RuntimeState {
     pub history: RuntimeHistory,
     default_cookies: RuntimeCookies,
     cookies: Mutex<RuntimeCookies>,
+    workspace_cookies: Mutex<HashMap<std::path::PathBuf, RuntimeCookies>>,
     snapshot: Mutex<RuntimeSnapshot>,
     selected: Mutex<Option<String>>,
     generation: AtomicU64,
@@ -53,6 +54,7 @@ impl RuntimeState {
             history,
             default_cookies: cookies.clone(),
             cookies: Mutex::new(cookies),
+            workspace_cookies: Mutex::default(),
             snapshot: Mutex::default(),
             selected: Mutex::default(),
             generation: AtomicU64::new(0),
@@ -227,7 +229,10 @@ impl RuntimeState {
     pub fn configure_cookies(&self, workspace: Option<&str>, directory: Option<&str>) {
         *lock(&self.cookies) = if let (Some(workspace), Some(directory)) = (workspace, directory) {
             let storage = cookie_storage_path(Path::new(workspace), Path::new(directory));
-            Arc::new(Mutex::new(ResponseCookieJar::new(Some(storage))))
+            lock(&self.workspace_cookies)
+                .entry(storage.clone())
+                .or_insert_with(|| Arc::new(Mutex::new(ResponseCookieJar::new(Some(storage)))))
+                .clone()
         } else {
             self.default_cookies.clone()
         };
@@ -239,13 +244,19 @@ impl RuntimeState {
         cookies.sort_by(|a, b| (&a.domain, &a.path, &a.name).cmp(&(&b.domain, &b.path, &b.name)));
         cookies
     }
-    pub fn delete_cookie(&self, id: &str) {
-        lock(&self.cookie_jar()).delete(id);
+    /// # Errors
+    /// Returns a storage error without removing the cookie on failure.
+    pub fn delete_cookie(&self, id: &str) -> crate::response::ResponseResult<()> {
+        lock(&self.cookie_jar()).delete(id)?;
         lock(&self.snapshot).cookie_revision += 1;
+        Ok(())
     }
-    pub fn clear_cookies(&self) {
-        lock(&self.cookie_jar()).remove_all();
+    /// # Errors
+    /// Returns a storage error without clearing cookies on failure.
+    pub fn clear_cookies(&self) -> crate::response::ResponseResult<()> {
+        lock(&self.cookie_jar()).remove_all()?;
         lock(&self.snapshot).cookie_revision += 1;
+        Ok(())
     }
     pub fn received_cookies(&self, cookies: &[StoredCookie]) {
         if !cookies.is_empty() {

@@ -112,14 +112,14 @@ fn cookies_are_sorted_deleted_cleared_and_scoped_per_workspace() {
         cookies.iter().map(|c| c.name.as_str()).collect::<Vec<_>>(),
         ["a", "z"]
     );
-    state.delete_cookie(&cookies[0].id());
+    state.delete_cookie(&cookies[0].id()).unwrap();
     assert_eq!(state.cookies().len(), 1);
     state.configure_cookies(Some("/work/b"), Some(root.path().to_str().unwrap()));
     assert!(state.cookies().is_empty());
     assert_eq!(lock(&old).all(crate::response::unix_time()).len(), 1);
     state.configure_cookies(Some("/work/a"), Some(root.path().to_str().unwrap()));
     assert_eq!(state.cookies().len(), 1);
-    state.clear_cookies();
+    state.clear_cookies().unwrap();
     assert!(state.cookies().is_empty());
     assert_eq!(state.snapshot().cookie_revision, 5);
 }

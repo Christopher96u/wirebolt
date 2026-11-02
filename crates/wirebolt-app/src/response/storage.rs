@@ -668,7 +668,9 @@ impl ResponseCookieJar {
             }
         }
         self.expire(now);
-        self.persist();
+        if let Err(error) = self.persist() {
+            self.load_problem = Some(error.to_string());
+        }
         received
     }
     #[must_use]
@@ -703,30 +705,46 @@ impl ResponseCookieJar {
         self.expire(now);
         self.cookies().clone()
     }
-    pub fn delete(&mut self, id: &str) {
+    /// # Errors
+    /// Returns a persistence error and restores the previous jar on failure.
+    pub fn delete(&mut self, id: &str) -> ResponseResult<()> {
+        let previous = self.cookies().clone();
         self.cookies().retain(|c| c.id() != id);
-        self.persist();
+        self.finish_removal(previous)
     }
-    pub fn remove_all(&mut self) {
+    /// # Errors
+    /// Returns a persistence error and restores the previous jar on failure.
+    pub fn remove_all(&mut self) -> ResponseResult<()> {
+        let previous = self.cookies().clone();
         self.cookies = Some(vec![]);
-        self.persist();
+        self.finish_removal(previous)
+    }
+    fn finish_removal(&mut self, previous: Vec<StoredCookie>) -> ResponseResult<()> {
+        if let Err(error) = self.persist() {
+            self.cookies = Some(previous);
+            return Err(error);
+        }
+        Ok(())
     }
     fn expire(&mut self, now: f64) {
         self.cookies()
             .retain(|c| c.expires_at.is_none_or(|t| t > now));
     }
-    fn persist(&mut self) {
+    fn persist(&mut self) -> ResponseResult<()> {
         if let Some(path) = self.storage.clone() {
-            let cookies: Vec<_> = self
+            let cookies = self
                 .cookies()
                 .iter()
                 .filter(|c| c.expires_at.is_some())
+                .cloned()
                 .collect();
-            let cookies = cookies.into_iter().cloned().collect();
-            if let Ok(data) = serde_json::to_vec(&CookieFile { cookies }) {
-                let _ = atomic_write(&path, &data);
-            }
+            let data =
+                serde_json::to_vec(&CookieFile { cookies }).map_err(|error| ResponseError::Io {
+                    reason: error.to_string(),
+                })?;
+            atomic_write(&path, &data)?;
         }
+        Ok(())
     }
 }
 #[must_use]

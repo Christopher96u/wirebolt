@@ -100,6 +100,7 @@ enum DraftWorkProbe {
         try await auditNavigationAndSettings(root: root, defaults: defaults, screenshots: captureDirectory)
         try await auditRequestEditors(defaults: defaults)
         try await auditWebSocketComposer(root: root, defaults: defaults)
+        try await auditCookieRemovalFailure(root: root, defaults: defaults)
         try await auditPreparedRequestCopy(defaults: defaults)
         typingAssignmentsAvoidDraftWork()
         lastTabDirtyConfirmAndReopen(root: root, defaults: defaults)
@@ -292,6 +293,35 @@ extension NativeAdapterTests {
     }
 }
 
+
+extension NativeAdapterTests {
+    static func auditCookieRemovalFailure(root: URL, defaults: UserDefaults) async throws {
+        let restoreAccessibility = NativeTestSupport.enableAccessibility()
+        defer { restoreAccessibility() }
+        let directory = root.appending(path: "cookie-failure")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let jar = CookieJar(storageURL: directory.appending(path: "cookies.json"))
+        await jar.store(headers: [ResponseHeader(name: "Set-Cookie", value: "fixture=value; Max-Age=600; Path=/")], requestURL: URL(string: "https://example.invalid/")!)
+        let model = WireboltModel(runner: FixtureRunner(), persistence: FixtureWorkspaceStore(), history: HistoryRepository(root: root.appending(path: "cookie-failure-history")), cookieJar: jar, cookieDirectory: nil, proxyPreferences: ProxyPreferences(defaults: defaults))
+        let (window, host) = await NativeTestSupport.mount(CookiesView(model: model), defaults: defaults)
+        defer { window.close() }
+        let backup = root.appending(path: "cookie-failure-backup")
+        try FileManager.default.moveItem(at: directory, to: backup)
+        try Data("blocked".utf8).write(to: directory)
+        precondition(NativeTestSupport.press(host, named: "Clear All…"))
+        await NativeTestSupport.settle(host)
+        let confirmation = NSApp.windows.first { NativeTestSupport.elements($0).contains { $0.role == "AXButton" && $0.name == "Clear All" } }!
+        precondition(NativeTestSupport.press(confirmation, named: "Clear All"))
+        await NativeTestSupport.settle(host)
+        precondition(NativeTestSupport.elements(host).contains { $0.name.hasPrefix("Cookie error:") })
+        let retainedCookies = await model.cookies()
+        precondition(retainedCookies.count == 1)
+        precondition(NativeTestSupport.elements(host).contains { $0.name == "fixture" })
+        try FileManager.default.removeItem(at: directory)
+        try FileManager.default.moveItem(at: backup, to: directory)
+        print("cookieClearFailureRemainsVisibleAndRetainsRows: passed")
+    }
+}
 
 
 extension NativeAdapterTests {

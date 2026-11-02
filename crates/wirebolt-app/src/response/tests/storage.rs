@@ -163,9 +163,9 @@ fn cookie_domain_delete_and_dates() {
         Some("a=1".into())
     );
     assert_eq!(jar.header("https://sub.example.com/other", 0.0), None);
-    jar.delete(&received[0].id());
+    jar.delete(&received[0].id()).unwrap();
     assert!(jar.all(0.0).is_empty());
-    jar.remove_all();
+    jar.remove_all().unwrap();
 }
 
 #[test]

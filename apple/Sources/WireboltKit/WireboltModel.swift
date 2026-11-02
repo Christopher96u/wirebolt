@@ -562,12 +562,12 @@ public final class WireboltModel {
         mirrorRuntime()
         return values
     }
-    public func deleteCookie(id: CookieSnapshot.ID) async {
-        runtime.deleteCookie(id: id)
+    public func deleteCookie(id: CookieSnapshot.ID) async throws {
+        try runtime.deleteCookie(id: id)
         mirrorRuntime()
     }
-    public func clearCookies() async {
-        runtime.clearCookies()
+    public func clearCookies() async throws {
+        try runtime.clearCookies()
         mirrorRuntime()
     }
 

@@ -9,6 +9,7 @@ struct CookiesView: View {
     @State private var selection: Set<CookieSnapshot.ID> = []
     @State private var showsValues = false
     @State private var isConfirmingClear = false
+    @State private var errorMessage: String?
 
     var body: some View {
         VStack(spacing: 0) {
@@ -47,6 +48,12 @@ struct CookiesView: View {
                     )
                 }
             }
+            if let errorMessage {
+                Label(errorMessage, systemImage: "exclamationmark.triangle")
+                    .foregroundStyle(.red).textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .leading).padding(12)
+                    .accessibilityLabel("Cookie error: \(errorMessage)")
+            }
             Divider()
             HStack {
                 Toggle("Show Values", isOn: $showsValues).tint(WireboltTheme.controlAccent)
@@ -67,7 +74,12 @@ struct CookiesView: View {
             selection.formIntersection(cookies.map(\.id))
         }
         .confirmationDialog("Delete all cookies in this workspace?", isPresented: $isConfirmingClear) {
-            Button("Clear All", role: .destructive) { Task { await model.clearCookies() } }
+            Button("Clear All", role: .destructive) {
+                Task {
+                    do { try await model.clearCookies(); errorMessage = nil }
+                    catch { errorMessage = error.localizedDescription }
+                }
+            }
             Button("Cancel", role: .cancel) {}
         } message: {
             Text("Requests stop sending these cookies. Other workspaces keep their own cookies.")
@@ -85,7 +97,10 @@ struct CookiesView: View {
     private func delete(_ ids: Set<CookieSnapshot.ID>) {
         guard !ids.isEmpty else { return }
         Task {
-            for id in ids { await model.deleteCookie(id: id) }
+            do {
+                for id in ids { try await model.deleteCookie(id: id) }
+                errorMessage = nil
+            } catch { errorMessage = error.localizedDescription }
         }
     }
 }
