@@ -52,3 +52,5 @@ Expand **Timeouts, redirects & TLS** in workspace settings. Workspace transport 
 If the certificate or the CA file can't be loaded, the request fails with a TLS configuration error before it connects. **Copy cURL** includes `--cacert` with the CA path, and `--cert` and `--key` that read the certificate and key from Keychain with `security find-generic-password` when the command runs. The copied command never contains the key, and it works only on a Mac whose Keychain holds that item.
 
 In the workspace settings sheet, **Save** (Return) applies every edit and **Cancel** (Esc) discards them after confirmation.
+
+Client identity choices in Workspace Settings stay in memory until **Save**. **Cancel**, replacement and removal discard unused choices without creating Keychain items. Saved identities remain available while saved requests or undo can reference them; abandoned identities are removed at workspace replacement or quit.

@@ -7,7 +7,7 @@ Changes under **Unreleased** are on `main` but not in a published build yet. Dow
 ### Added
 
 - **QUERY** method (RFC 10008) in the method menu, with its own color.
-- **Clear All History…** in Settings → Privacy removes all saved history.
+- **Clear All History…** in Settings → General → History removes all saved history.
 - Custom themes from two colors and VS Code theme imports, with a live preview, checked contrast, and rename/delete controls (Settings → Appearance).
 - Black, Paper and Ember themes with checked contrast, Compact and Comfortable density, and Increase Contrast support (Settings → Appearance).
 - Settings open in the workspace window (**⌘,**); Esc or **⌘W** closes them.
@@ -15,6 +15,9 @@ Changes under **Unreleased** are on `main` but not in a published build yet. Dow
 - **Save and Close** when closing a tab with unsaved edits.
 
 ### Changed
+
+- **Raw Request** is now **Prepared Request**, with an explanation of reconstruction, redaction and body-preview limits.
+- **Format Body** appears only for JSON bodies.
 
 - Older Wirebolt workspaces, history and preferences are not migrated; the legacy Wirebolt v1 import and export are removed.
 
@@ -31,11 +34,29 @@ Changes under **Unreleased** are on `main` but not in a published build yet. Dow
 - Section tab counts are plain numbers and count only enabled, named rows. Before the first send, the response area shows a one-line hint.
 - The composer's method and authentication are menus. **Edit Long URL…** and **History** moved to its **⋯** menu, and the proxy shows only when the workspace or the request overrides the app default.
 
+### Removed
+
+- The duplicate **New Tab** command; **New Request** (⌘N) creates a request tab.
+- The sidebar’s Filter icon and redundant Network Settings entry. **Filter Requests** (⇧⌘F) and the toolbar’s **Workspace Settings** remain available.
+- The Privacy settings page and Privacy Policy sheet. **Clear All History…** is under **General → History**.
+- The static color swatches and contrast diagnostic rows in Appearance. Theme cards, previews and import notices remain.
+
 ### Fixed
+
+- **Filter Requests** reveals a hidden sidebar and focuses Search.
+- Custom HTTP methods accept the same tokens as Send, including underscores. Invalid input stays open with an explanation.
+- **Clear All** in Bulk Edit clears the editor buffer, so typing cannot restore deleted Headers or Params.
+- Multipart values have a keyboard-accessible **Edit Value…** button with a value preview.
+- Closing Find in headers or cookies clears its filter.
+- WebSocket message errors stay visible beside the composer. **Copy Message** copies the complete message as Text or Hex, and Disconnect stays available when the URL is cleared.
+- Globals has **Use Globals Only** and shows **Active** when no named environment is selected.
+- Abandoned client identities are cleaned up with other credentials. Cancelled and replaced choices in Workspace Settings stay out of Keychain until Save.
+- Switching workspaces retains each workspace’s session cookies until quit. Failed cookie deletion restores the previous jar and shows the error in Cookies.
+- Removed environment fields expose their unsaved edits with a discard action instead of silently blocking the inspector. Git replacement finishes inspector editing first.
 
 - Large multipart file uploads stream from disk instead of loading the complete upload into memory before Send. Bodies up to 64 KiB can still be resent on redirects. A user-set multipart **Content-Length** is replaced with the computed length.
 - Bulk Edit accepts pasted CRLF and CR line endings in headers, query parameters and form fields without adding carriage returns to values.
-- XML and HTML payloads stay unchanged by Format, which is now disabled for these types because inserted whitespace can change their content.
+- XML and HTML payloads stay unchanged by Format, which now appears only for JSON because inserted whitespace can change their content.
 - OAuth sign-in preserves literal plus signs and valueless URL parameters, and uses form encoding for authorization parameters and callbacks (spaces encode as `+`, as required by RFC 6749).
 - **Copy cURL** now encodes query parameters the same way as Send, including literal plus signs, punctuation and Unicode.
 - Query and form fields marked sensitive are redacted in Sent Request and History while their values are still sent.

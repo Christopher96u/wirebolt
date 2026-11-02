@@ -270,3 +270,5 @@ it also uses disposable fixtures.
 ## Documentation changes
 
 Use relative links, current UI labels and runnable examples. Keep screenshots in `docs/assets/screenshots` with descriptive alternative text. See [asset provenance](assets/README.md) before refreshing images. Check that docs describe the target revision, and update the changelog when documenting behavior that is not in a published release yet.
+
+The native adapter suite also covers sidebar search focus, Settings cleanup, custom method validation, bulk field reconciliation, multipart value access, Find dismissal, WebSocket errors and disconnect, cookie deletion failure, and removed inspector drafts. Set `WIREBOLT_NATIVE_CAPTURE_DIRECTORY` to capture the General, Appearance and Globals fixtures. Cookie jars remain scoped in memory across workspace switches; explicit deletions roll back on a failed atomic write. Staged TLS identity choices stay in a Rust secret editor until workspace Save.

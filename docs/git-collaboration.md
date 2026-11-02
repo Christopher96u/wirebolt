@@ -39,3 +39,5 @@ When a pull stops with conflicts, Git Collaboration lists the conflicted files a
 - Click **Show in Finder** to select the conflicted files, resolve them in a text editor or Git tool, finish the merge there (`git add` and `git commit`), then reopen the workspace.
 
 Git authentication failures come from your Git/remote setup, which is separate from request authentication and API proxy settings.
+
+Pull and Abort Merge finish environment inspector edits before replacing workspace files. Correct any invalid field or use **Discard Removed Edits** if an external change removed its row or environment.
