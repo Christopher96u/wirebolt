@@ -472,7 +472,7 @@ pub(super) fn resolve_borders(
     }
 }
 
-/// Persisted strings are decoded once at the preference boundary, including rc.1 aliases.
+/// Persisted strings are decoded at the preference boundary.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ThemeSelection {
     System,
@@ -482,24 +482,16 @@ pub enum ThemeSelection {
 impl ThemeSelection {
     #[must_use]
     pub fn from_preference(value: &str) -> Self {
-        match value {
-            "light" => Self::BuiltIn {
-                preset: DomainThemePreset::Paper,
+        DomainThemePreset::from_preference(value).map_or_else(
+            || {
+                if value.starts_with("custom:") {
+                    Self::Custom { id: value.into() }
+                } else {
+                    Self::System
+                }
             },
-            "dark" => Self::BuiltIn {
-                preset: DomainThemePreset::Black,
-            },
-            _ => DomainThemePreset::from_preference(value).map_or_else(
-                || {
-                    if value.starts_with("custom:") {
-                        Self::Custom { id: value.into() }
-                    } else {
-                        Self::System
-                    }
-                },
-                |preset| Self::BuiltIn { preset },
-            ),
-        }
+            |preset| Self::BuiltIn { preset },
+        )
     }
     #[must_use]
     pub fn preference_value(&self) -> String {

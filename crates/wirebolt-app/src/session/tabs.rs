@@ -1,4 +1,4 @@
-//! Editor groups, preview replacement, navigation and compatible layout persistence.
+//! Editor groups, preview replacement, navigation and layout persistence.
 use crate::domain::{DomainRequestDraft, identity::unique_id, url::separate_url_query};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
@@ -156,7 +156,7 @@ pub struct SessionLayoutTab {
 pub struct SessionLayoutGroup {
     pub tabs: Vec<SessionLayoutTab>,
     pub selected_index: Option<i64>,
-    #[serde(default)]
+    #[serde(deserialize_with = "Option::deserialize")]
     pub preview_index: Option<i64>,
 }
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]

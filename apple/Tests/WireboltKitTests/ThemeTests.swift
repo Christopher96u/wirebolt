@@ -2,15 +2,13 @@ import Testing
 @testable import WireboltKit
 
 struct ThemeTests {
-    @Test func persistedPresetSpellingsAndLegacySelections() {
+    @Test func persistedPresetSpellings() {
         for (preset, value) in [(ThemePreset.black, "black"), (.paper, "paper"), (.ember, "ember")] {
             #expect(preset.rawValue == value)
             #expect(ThemePreset(rawValue: value) == preset)
             #expect(domainSelectPreset(selection: ThemeSelection(rawValue: value), dark: true) == preset)
             #expect(domainSelectPreset(selection: ThemeSelection(rawValue: value), dark: false) == preset)
         }
-        #expect(domainSelectPreset(selection: ThemeSelection(rawValue: "dark"), dark: false) == .black)
-        #expect(domainSelectPreset(selection: ThemeSelection(rawValue: "light"), dark: true) == .paper)
         #expect(ThemePreset(rawValue: "dark") == nil)
     }
 

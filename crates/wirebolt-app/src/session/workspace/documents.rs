@@ -2,12 +2,9 @@
 //! at its save boundary and acknowledges its projection before the next save starts.
 use super::io::WorkspacePlatform;
 use super::operations::{WorkspaceOperations, WorkspaceSave};
-use crate::{
-    domain::DomainAuthentication,
-    session::{
-        secrets::{SessionSecretPlatform, SessionSecrets},
-        tabs::SessionDocument,
-    },
+use crate::session::{
+    secrets::{SessionSecretPlatform, SessionSecrets},
+    tabs::SessionDocument,
 };
 use async_trait::async_trait;
 #[async_trait]
@@ -39,19 +36,5 @@ impl WorkspaceOperations {
             }
         }
         true
-    }
-}
-/// A saved snapshot updates the saved revision, never the live editor contents.
-/// Apply a generated credential migration only if authentication is still unchanged.
-#[must_use]
-pub fn saved_authentication(
-    current: DomainAuthentication,
-    original: &DomainAuthentication,
-    saved: &DomainAuthentication,
-) -> DomainAuthentication {
-    if &current == original {
-        saved.clone()
-    } else {
-        current
     }
 }

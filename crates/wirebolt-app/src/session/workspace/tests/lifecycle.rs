@@ -185,13 +185,6 @@ async fn loaded_state_covers_no_store_success_and_failure() {
     assert!(h.ops.load(&h.store, false).await.is_some());
 }
 #[test]
-fn signed_layout_indices_preserve_legacy_decode() {
-    let layout=crate::session::tabs::decode_layout(br#"{"groups":[{"tabs":[{"collectionID":"api","requestID":"a"}],"selectedIndex":-1,"previewIndex":-1}],"activeGroupIndex":-1}"#).unwrap();
-    assert_eq!(layout.active_group_index, -1);
-    assert_eq!(layout.groups[0].selected_index, Some(-1));
-    assert_eq!(layout.groups[0].preview_index, Some(-1));
-}
-#[test]
 fn close_dirty_scope_blocks_atomically_then_discards_only_closed_documents() {
     let mut tabs = SessionTabs::default();
     let mut projections = HashMap::new();
@@ -244,32 +237,6 @@ fn close_dirty_scope_blocks_atomically_then_discards_only_closed_documents() {
             .unwrap()
             .note,
         ""
-    );
-}
-#[test]
-fn saved_authentication_migrates_only_unchanged_live_authentication() {
-    use crate::session::workspace::documents::saved_authentication;
-    let original = DomainAuthentication::Bearer {
-        token: DomainValueSource::Secret {
-            secret: "legacy.token".into(),
-        },
-    };
-    let saved = DomainAuthentication::Bearer {
-        token: DomainValueSource::Secret {
-            secret: "wirebolt.auth.owned.token".into(),
-        },
-    };
-    assert_eq!(
-        saved_authentication(original.clone(), &original, &saved),
-        saved
-    );
-    let current = DomainAuthentication::Basic {
-        username: DomainValueSource::literal("changed"),
-        password: DomainValueSource::literal(""),
-    };
-    assert_eq!(
-        saved_authentication(current.clone(), &original, &saved),
-        current
     );
 }
 #[tokio::test]

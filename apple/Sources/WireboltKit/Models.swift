@@ -85,17 +85,13 @@ public enum CredentialReference {
         domainCredentialReference(role: role, scope: scope)
     }
 
-    /// Names earlier versions gave every API Key and OAuth request. Other workspaces may still
-    /// use them, so Wirebolt copies their values to per-request names and never deletes them.
-    public static func isLegacyShared(_ name: String) -> Bool { domainLegacyReference(name: name) }
-
     public static func editableName(for source: ValueSource, role: String) -> String {
         domainEditableCredentialReference(source: source, role: role)
     }
 
     /// Whether Wirebolt generated `name` for exactly one request or variable, so the Keychain
     /// item can be deleted once nothing references it. Names people chose (such as proxy
-    /// credentials or `{{secret}}` references) and legacy shared names never qualify.
+    /// credentials or `{{secret}}` references) never qualify.
     public static func isOwned(_ name: String) -> Bool {
         domainOwnedReference(name: name)
     }
@@ -123,10 +119,9 @@ extension RequestAuthentication {
         return domainRenameAuth(authentication: self, names: names)
     }
 
-    /// Fresh per-request names for every credential, for a copy of a request (`all`) or for
-    /// migrating legacy shared names only. Returns the new authentication and old → new names.
-    public func withOwnKeychainNames(onlyLegacy: Bool) -> (RequestAuthentication, [String: String]) {
-        let result = domainOwnAuth(authentication: self, onlyLegacy: onlyLegacy)
+    /// Fresh per-request names for a copy of a request.
+    public func withOwnKeychainNames() -> (RequestAuthentication, [String: String]) {
+        let result = domainOwnAuth(authentication: self)
         return (result.authentication, result.renames)
     }
 }
@@ -429,9 +424,6 @@ public struct EnvironmentDraft: Identifiable, Equatable, Sendable {
         self.variables = variables
     }
 
-    public init(id: String, name: String, legacyVariables: [String: ValueSource]) {
-        self.init(domain: domainLegacyEnvironment(id: id, name: name, values: legacyVariables))
-    }
 
     public var enabledValues: [String: ValueSource] {
         domainEnabledValues(environment: domain)

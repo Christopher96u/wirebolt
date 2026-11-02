@@ -125,11 +125,6 @@ fn layout_roundtrip_remembers_preview_selection_and_split() {
     assert!(!restored.preview(&restored.groups[0].tab_ids[0], &docs));
 }
 #[test]
-fn legacy_layout_defaults_preview_to_none() {
-    let layout:SessionLayout=serde_json::from_str(r#"{"groups":[{"tabs":[{"collectionID":"api","requestID":"a"}],"selectedIndex":0}],"activeGroupIndex":0}"#).unwrap();
-    assert_eq!(layout.groups[0].preview_index, None);
-}
-#[test]
 fn close_scope_is_atomic_when_dirty_and_prunes_navigation() {
     let mut tabs = SessionTabs::default();
     let mut documents = HashMap::new();
@@ -212,33 +207,19 @@ fn kind_normalization_and_saved_state_do_not_touch_document() {
     assert!(!document.dirty() && !document.touched);
     assert_eq!(document.draft.query.len(), 1);
 }
+
 #[test]
-fn legacy_signed_layout_indices_remain_decodable_and_fall_back_to_last_tab() {
-    let layout=super::super::tabs::decode_layout(br#"{"groups":[{"tabs":[{"collectionID":"api","requestID":"a"},{"collectionID":"api","requestID":"b"}],"selectedIndex":-1,"previewIndex":-1}],"activeGroupIndex":-1}"#).unwrap();
-    assert_eq!(layout.groups[0].selected_index, Some(-1));
-    let resolved = ["a", "b"]
-        .into_iter()
-        .map(|id| {
-            Some(DomainLocation {
-                collection_id: "api".into(),
-                request: DomainRequestDraft {
-                    id: id.into(),
-                    ..Default::default()
-                },
-                ..Default::default()
-            })
-        })
-        .collect();
-    let mut tabs = SessionTabs::default();
-    let mut documents = HashMap::new();
-    tabs.restore(&layout, resolved, &mut documents);
-    assert_eq!(
-        tabs.groups[0].selected_tab_id,
-        tabs.groups[0].tab_ids.last().cloned()
-    );
-    assert!(tabs.groups[0].preview_tab_id.is_none());
+fn layout_requires_the_current_preview_field() {
     assert!(
+        super::super::tabs::decode_layout(
+            br#"{"groups":[{"tabs":[],"selectedIndex":null}],"activeGroupIndex":0}"#
+        )
+        .is_err()
+    );
+    let layout = SessionLayout::default();
+    assert_eq!(
         super::super::tabs::decode_layout(&super::super::tabs::encode_layout(&layout).unwrap())
-            .is_ok()
+            .unwrap(),
+        layout
     );
 }

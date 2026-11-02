@@ -109,30 +109,6 @@ async fn environment_secret_save_keeps_material_outside_workspace_and_reports_fa
     );
 }
 #[tokio::test]
-async fn legacy_migration_copies_only_shared_auth_names_and_keeps_legacy_items() {
-    let platform = Platform::default();
-    lock(&platform.values).insert("auth.api-key".into(), "fixture-shared-key".into());
-    let secrets = SessionSecrets::default();
-    let draft = DomainRequestDraft {
-        authentication: DomainAuthentication::ApiKey {
-            placement: ApiKeyPlacement::Header,
-            name: "X-API-Key".into(),
-            value: DomainValueSource::Secret {
-                secret: "auth.api-key".into(),
-            },
-        },
-        ..Default::default()
-    };
-    let migrated = secrets.migrate(draft, &platform).await.unwrap();
-    let references = request::auth_references(&migrated.authentication);
-    assert_eq!(references.len(), 1);
-    assert!(request::owned_reference(&references[0]));
-    assert_eq!(lock(&platform.values)[&references[0]], "fixture-shared-key");
-    assert_eq!(lock(&platform.values)["auth.api-key"], "fixture-shared-key");
-    secrets.purge(vec![], vec![], &platform).await;
-    assert!(lock(&platform.values).contains_key("auth.api-key"));
-}
-#[tokio::test]
 async fn purge_retains_open_drafts_saved_versions_and_workspace_references() {
     let platform = Platform::default();
     let secrets = SessionSecrets::default();
@@ -202,49 +178,6 @@ impl RuntimeAuthorizer for Authorizer {
             },
         ))
     }
-}
-#[tokio::test]
-async fn oauth_migrates_before_acquisition_and_never_overwrites_shared_token() {
-    let platform = Arc::new(Platform::default());
-    lock(&platform.values).extend([
-        ("oauth.client-secret".into(), "fixture-client-secret".into()),
-        ("oauth.access-token".into(), "fixture-old-token".into()),
-    ]);
-    let secrets = SessionSecrets::default();
-    let doc = document("a");
-    lock(&doc).draft.authentication = DomainAuthentication::Oauth2 {
-        configuration: DomainOAuthConfiguration {
-            client_secret_reference: "oauth.client-secret".into(),
-            access_token_reference: "oauth.access-token".into(),
-            ..Default::default()
-        },
-    };
-    let authorizer = Authorizer {
-        platform: platform.clone(),
-        configuration: Mutex::new(None),
-    };
-    let receipt = acquire_token(&secrets, &doc, platform.as_ref(), &authorizer, None)
-        .await
-        .unwrap()
-        .unwrap();
-    assert_eq!(receipt.scope.as_deref(), Some("read"));
-    let configuration = lock(&authorizer.configuration).clone().unwrap();
-    assert!(!request::legacy_reference(
-        &configuration.access_token_reference
-    ));
-    assert_eq!(
-        lock(&platform.values)[&configuration.access_token_reference],
-        "fixture-new-token"
-    );
-    assert_eq!(
-        lock(&platform.values)["oauth.access-token"],
-        "fixture-old-token"
-    );
-    assert!(
-        !serde_json::to_string(&lock(&doc).draft)
-            .unwrap()
-            .contains("fixture-new-token")
-    );
 }
 #[tokio::test]
 async fn clean_preview_needs_no_secret_store_but_dirty_material_does() {

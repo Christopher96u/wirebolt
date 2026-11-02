@@ -3,12 +3,11 @@ use super::{ThemeSelection, ThemeTokens, custom};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::HashSet,
-    fs,
     path::{Path, PathBuf},
 };
 
 const VERSION: u32 = 2;
-const NEWER_LIBRARY_MESSAGE: &str = "Custom themes were saved by a newer Wirebolt version. Update Wirebolt before changing custom themes; the file has been left unchanged.";
+const UNSUPPORTED_LIBRARY_MESSAGE: &str = "This custom theme library version is not supported. Built-in themes are still available; the file has been left unchanged.";
 const MAX_LIBRARY_BYTES: usize = 4 * 1_048_576;
 const MAX_THEMES: usize = 64;
 
@@ -34,7 +33,6 @@ struct Document {
 pub struct ThemeLibrary {
     path: PathBuf,
     snapshot: ThemeLibrarySnapshot,
-    preserve_corrupt: bool,
 }
 impl ThemeLibrary {
     #[must_use]
@@ -46,7 +44,6 @@ impl ThemeLibrary {
                 notices: vec![],
                 writable: true,
             },
-            preserve_corrupt: false,
         };
         if !path.exists() {
             return library;
@@ -54,8 +51,7 @@ impl ThemeLibrary {
         match load(path) {
             Ok(snapshot) => library.snapshot = snapshot,
             Err(message) => {
-                library.snapshot.notices.push(format!("Custom themes could not be loaded. {message} Built-in themes are still available. The original file will be preserved when you save a theme."));
-                library.preserve_corrupt = true;
+                library.snapshot.notices.push(format!("Custom themes could not be loaded. {message} Built-in themes are still available."));
             }
         }
         library
@@ -126,7 +122,7 @@ impl ThemeLibrary {
 
     fn persist(&mut self, themes: Vec<CustomTheme>) -> Result<(), String> {
         if !self.snapshot.writable {
-            return Err(NEWER_LIBRARY_MESSAGE.into());
+            return Err(UNSUPPORTED_LIBRARY_MESSAGE.into());
         }
         let document = Document {
             version: VERSION,
@@ -136,41 +132,27 @@ impl ThemeLibrary {
         if bytes.len() > MAX_LIBRARY_BYTES {
             return Err("The custom theme library is too large.".into());
         }
-        if self.preserve_corrupt && self.path.exists() {
-            let backup = self.path.with_extension(format!(
-                "corrupt-{}.json",
-                crate::domain::identity::unique_id()
-            ));
-            fs::copy(&self.path, backup)
-                .map_err(|e| format!("Could not preserve custom themes: {e}"))?;
-        }
         crate::response::atomic_write(&self.path, &bytes)
             .map_err(|e| format!("Could not save custom themes: {e}"))?;
         self.snapshot.themes = document.themes;
-        self.preserve_corrupt = false;
         Ok(())
     }
 }
 
 fn load(path: &Path) -> Result<ThemeLibrarySnapshot, String> {
     let bytes = super::read_bounded(path, MAX_LIBRARY_BYTES, "custom theme library")?;
-    let mut header: serde_json::Value =
+    let header: serde_json::Value =
         serde_json::from_slice(&bytes).map_err(|_| "The theme library is corrupt.")?;
     let version = header
         .get("version")
         .and_then(serde_json::Value::as_u64)
         .ok_or("The theme library has no valid version.")?;
-    if version > u64::from(VERSION) {
+    if version != u64::from(VERSION) {
         return Ok(ThemeLibrarySnapshot {
             themes: vec![],
             writable: false,
-            notices: vec![NEWER_LIBRARY_MESSAGE.into()],
+            notices: vec![UNSUPPORTED_LIBRARY_MESSAGE.into()],
         });
-    }
-    if version == 1 {
-        migrate_method_tokens(&mut header)?;
-    } else if version != u64::from(VERSION) {
-        return Err(format!("Theme library version {version} is not supported."));
     }
     let mut document: Document =
         serde_json::from_value(header).map_err(|_| "The theme library is corrupt.")?;
@@ -198,53 +180,4 @@ fn checked_name(name: &str) -> Result<String, String> {
         return Err("Give the theme a name of 1–64 characters, without control characters.".into());
     }
     Ok(name.into())
-}
-
-fn migrate_method_tokens(document: &mut serde_json::Value) -> Result<(), String> {
-    let themes = document
-        .get_mut("themes")
-        .and_then(serde_json::Value::as_array_mut)
-        .ok_or("The theme library is corrupt.")?;
-    for theme in themes {
-        let tokens = theme
-            .get_mut("tokens")
-            .and_then(serde_json::Value::as_object_mut)
-            .ok_or("The theme library is corrupt.")?;
-        let backgrounds = tokens
-            .remove("method_backgrounds")
-            .and_then(|value| value.as_array().cloned())
-            .ok_or("The custom theme has an incomplete method palette.")?;
-        let foregrounds = tokens
-            .remove("method_foregrounds")
-            .and_then(|value| value.as_array().cloned())
-            .ok_or("The custom theme has an incomplete method palette.")?;
-        let names = [
-            "get",
-            "post",
-            "put",
-            "patch",
-            "delete",
-            "head",
-            "options",
-            "query",
-            "custom",
-            "web_socket",
-        ];
-        if backgrounds.len() != names.len() || foregrounds.len() != names.len() {
-            return Err("The custom theme has an incomplete method palette.".into());
-        }
-        let methods: serde_json::Map<_, _> = names
-            .into_iter()
-            .zip(backgrounds.into_iter().zip(foregrounds))
-            .map(|(name, (background, foreground))| {
-                (
-                    name.into(),
-                    serde_json::json!({"background": background, "foreground": foreground}),
-                )
-            })
-            .collect();
-        tokens.insert("methods".into(), methods.into());
-    }
-    document["version"] = VERSION.into();
-    Ok(())
 }

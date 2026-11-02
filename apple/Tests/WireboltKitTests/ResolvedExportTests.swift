@@ -10,7 +10,7 @@ struct ResolvedExportTests {
         let runner = ExportResolver()
         let model = WireboltModel(runner: runner)
         model.workspace.environments = [EnvironmentDraft(id: WorkspaceDraft.globalEnvironmentID, name: "Global",
-            legacyVariables: ["host": .literal("example.com"), "payload": .literal("resolved body")])]
+            variables: [EnvironmentVariableDraft(key: "host", value: .literal("example.com"), order: 0), EnvironmentVariableDraft(key: "payload", value: .literal("resolved body"), order: 1)])]
         model.workspace.transport.followRedirects = true
         let draft = RequestDraft(method: .post, url: "https://{{host}}/echo", headers: [RequestField(name: "X-Token", value: .secret("token"))], body: .text(contentType: nil, value: "{{payload}}"))
         let command = try #require(await model.curlCommand(for: draft))
@@ -50,7 +50,7 @@ struct ResolvedExportTests {
     func secretsAreReferenced() async throws {
         let model = WireboltModel(runner: ExportResolver())
         model.workspace.environments = [EnvironmentDraft(id: WorkspaceDraft.globalEnvironmentID, name: "Global",
-            legacyVariables: ["pem": .secret("multiline")])]
+            variables: [EnvironmentVariableDraft(key: "pem", value: .secret("multiline"), order: 0)])]
         var draft = RequestDraft(url: "https://example.com/", headers: [RequestField(name: "X-Token", value: .secret("token"))])
         draft.body = .text(contentType: nil, value: "{{pem}}")
         let command = try #require(await model.curlCommand(for: draft))

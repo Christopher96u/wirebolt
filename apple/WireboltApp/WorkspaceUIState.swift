@@ -231,11 +231,9 @@ final class WorkspaceUIState {
         requestSection = defaults.string(forKey: Self.requestSectionKey)
             .flatMap(RequestPanelSection.init(rawValue:)) ?? .params
         responseSection = defaults.string(forKey: Self.responseSectionKey)
-            .map(workspaceResponseSection(value:))
             .flatMap(ResponsePanelSection.init(rawValue:)) ?? .body
         responseRenderer =
             defaults.string(forKey: Self.responseRendererKey)
-            .map(workspaceResponseRenderer(value:))
             .flatMap(ResponseRenderer.init(rawValue:)) ?? .json
         responseOrientation = defaults.string(forKey: Self.responseOrientationKey)
             .flatMap(ResponseOrientation.init(rawValue:)) ?? .bottom

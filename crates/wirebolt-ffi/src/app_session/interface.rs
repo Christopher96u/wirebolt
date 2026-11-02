@@ -143,14 +143,6 @@ pub fn workspace_unsaved_prompt(titles: Vec<String>, quitting: bool) -> Workspac
 }
 
 #[uniffi::export]
-pub fn workspace_response_section(value: String) -> String {
-    wirebolt_app::session::workspace::presentation::response_section(value)
-}
-#[uniffi::export]
-pub fn workspace_response_renderer(value: String) -> String {
-    wirebolt_app::session::workspace::presentation::response_renderer(value)
-}
-#[uniffi::export]
 pub fn workspace_request_section(body: DomainBody) -> String {
     wirebolt_app::session::workspace::presentation::request_section(&body)
 }

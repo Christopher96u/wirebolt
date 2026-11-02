@@ -240,14 +240,11 @@ fn library_round_trips_renames_deletes_and_falls_back_only_for_active_theme() {
 }
 
 #[test]
-fn corrupt_library_recovers_preserves_original_and_future_versions_are_read_only() {
+fn corrupt_library_reports_damage_and_unsupported_versions_are_read_only() {
     let root = tempfile::tempdir().unwrap();
     let path = root.path().join("themes.json");
-    for original in [
-        "broken",
-        "{\"version\":0,\"themes\":[]}",
-        "{\"version\":1,\"themes\":[{}]}",
-    ] {
+    {
+        let original = "broken";
         fs::write(&path, original).unwrap();
         let mut library = ThemeLibrary::open(&path);
         assert!(library.snapshot().themes.is_empty());
@@ -258,11 +255,6 @@ fn corrupt_library_recovers_preserves_original_and_future_versions_are_read_only
                 custom::derive(RgbColor::hex(0), RgbColor::hex(0x0077_ccff)).tokens,
             )
             .unwrap();
-        assert!(
-            fs::read_dir(root.path())
-                .unwrap()
-                .any(|p| fs::read_to_string(p.unwrap().path()).is_ok_and(|s| s == original))
-        );
     }
     let future = "{\"version\":99,\"themes\":[],\"future\":true}";
     fs::write(&path, future).unwrap();
@@ -437,53 +429,6 @@ fn saved_selection_resolves_custom_builtin_system_and_missing_themes_in_rust() {
                 assert!(color.contrast(resolved.tokens.definition.window) >= 4.5);
             }
         }
-    }
-}
-
-#[test]
-fn version_one_method_palettes_migrate_without_reassigning_colors() {
-    let root = tempfile::tempdir().unwrap();
-    let path = root.path().join("themes.json");
-    let mut library = ThemeLibrary::open(&path);
-    let theme = library
-        .add(
-            "Fixture",
-            custom::derive(RgbColor::hex(0), RgbColor::hex(0x0044_aacc)).tokens,
-        )
-        .unwrap();
-    let mut document: serde_json::Value =
-        serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
-    document["version"] = 1.into();
-    let tokens = document["themes"][0]["tokens"].as_object_mut().unwrap();
-    tokens.remove("methods");
-    tokens.insert(
-        "method_backgrounds".into(),
-        serde_json::to_value(
-            MethodChipKind::ALL.map(|kind| theme.tokens.methods.get(kind).background),
-        )
-        .unwrap(),
-    );
-    tokens.insert(
-        "method_foregrounds".into(),
-        serde_json::to_value(
-            MethodChipKind::ALL.map(|kind| theme.tokens.methods.get(kind).foreground),
-        )
-        .unwrap(),
-    );
-    fs::write(&path, serde_json::to_vec(&document).unwrap()).unwrap();
-    let mut migrated = ThemeLibrary::open(&path);
-    assert_eq!(
-        migrated.snapshot().themes.as_slice(),
-        std::slice::from_ref(&theme)
-    );
-    migrated.rename(&theme.id, "Migrated").unwrap();
-    let document: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
-    assert_eq!(document["version"], 2);
-    for kind in MethodChipKind::ALL {
-        assert_eq!(
-            migrated.snapshot().themes[0].tokens.methods.get(kind),
-            theme.tokens.methods.get(kind)
-        );
     }
 }
 

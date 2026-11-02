@@ -123,7 +123,7 @@ struct SilentRunner: RequestRunner {
 
 extension AuthenticationReferenceTests {
     @Test func credentialNamePolicyComesFromTheDomain() {
-        for name in ["auth.api-key", "oauth.client-secret", "oauth.access-token", ""] {
+        for name in [""] {
             let replacement = CredentialReference.editableName(for: .secret(name), role: "token")
             #expect(replacement != name)
             #expect(CredentialReference.isOwned(replacement))

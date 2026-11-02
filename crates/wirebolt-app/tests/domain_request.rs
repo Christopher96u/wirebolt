@@ -145,7 +145,7 @@ fn authentication_defaults_never_use_shared_names() {
         DomainAuthenticationKind::Oauth2,
     ] {
         for name in auth_references(&new_auth(kind)) {
-            assert!(!legacy_reference(&name));
+            assert!(owned_reference(&name));
         }
     }
     if let DomainAuthentication::Oauth2 { configuration: c } =
@@ -192,7 +192,7 @@ fn environment_secret_names_are_unique_and_owned() {
     assert!(a.len() <= 128);
 }
 #[test]
-fn owned_reference_recognizes_legacy_and_import_names() {
+fn owned_reference_recognizes_generated_and_import_names() {
     for n in [
         "auth.12345678-1234-1234-1234-123456789abc.token",
         "request.12345678-1234-1234-1234-123456789ABC.password",
@@ -217,7 +217,7 @@ fn auth_renames_preserve_sharing_within_one_copy() {
         username: secret("auth.api-key"),
         password: secret("auth.api-key"),
     };
-    let (fresh, names) = own_auth(auth, true);
+    let (fresh, names) = own_auth(auth);
     assert_eq!(names.len(), 1);
     let refs = auth_references(&fresh);
     assert_eq!(refs[0], refs[1]);
@@ -225,8 +225,7 @@ fn auth_renames_preserve_sharing_within_one_copy() {
     let unchanged = DomainAuthentication::Bearer {
         token: secret("personal"),
     };
-    assert_eq!(own_auth(unchanged.clone(), true).0, unchanged);
-    assert_ne!(own_auth(unchanged.clone(), false).0, unchanged);
+    assert_ne!(own_auth(unchanged.clone()).0, unchanged);
 }
 #[test]
 fn method_normalization_accepts_custom_tokens() {
@@ -345,24 +344,6 @@ fn run_inputs_project_one_immutable_transport_snapshot() {
     assert!(input.max_response_bytes.is_none());
 }
 #[test]
-fn legacy_environment_rows_sort_keys_and_keep_stable_ids() {
-    let values = std::collections::BTreeMap::from([
-        ("b".into(), DomainValueSource::literal("two")),
-        ("a".into(), secret("fixture")),
-    ]);
-    let env = legacy_environment("legacy".into(), "Legacy".into(), values);
-    assert_eq!(
-        env.variables
-            .iter()
-            .map(|v| v.key.as_str())
-            .collect::<Vec<_>>(),
-        ["a", "b"]
-    );
-    assert_eq!(env.variables[0].id, "variable-0");
-    assert_eq!(env.variables[1].order, 1);
-    assert!(env.variables.iter().all(|v| v.enabled));
-}
-#[test]
 fn url_bridge_results_include_display_and_preserve_field_identity() {
     let edited = edit_url_query(
         String::new(),
@@ -412,20 +393,15 @@ fn credential_role_sanitizing_uses_extended_grapheme_clusters() {
 }
 
 #[test]
-fn credential_edits_copy_shared_names_and_reuse_private_names() {
-    for name in [
-        "auth.api-key",
-        "oauth.client-secret",
-        "oauth.access-token",
-        "",
-    ] {
+fn credential_edits_create_names_for_empty_values_and_reuse_existing_names() {
+    {
+        let name = "";
         let source = secret(name);
         let first = editable_credential_reference(&source, "api-key");
         let second = editable_credential_reference(&source, "api-key");
         assert_ne!(first, name);
         assert_ne!(first, second);
         assert!(owned_reference(&first));
-        assert!(!legacy_reference(&first));
     }
     assert_eq!(
         editable_credential_reference(&secret("chosen.name"), "token"),

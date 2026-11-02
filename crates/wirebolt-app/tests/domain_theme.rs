@@ -53,14 +53,6 @@ fn theme_selection_and_density_keep_existing_values() {
         ThemeSelection::from_preference("system").preset(true),
         DomainThemePreset::Black
     );
-    assert_eq!(
-        ThemeSelection::from_preference("light").preset(true),
-        DomainThemePreset::Paper
-    );
-    assert_eq!(
-        ThemeSelection::from_preference("dark").preset(false),
-        DomainThemePreset::Black
-    );
     assert!((typography(false).body - 16.0).abs() < f64::EPSILON);
     assert!((typography(true).field - 11.0).abs() < f64::EPSILON);
 }
