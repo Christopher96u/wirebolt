@@ -112,16 +112,37 @@ pub fn global_environment() -> DomainEnvironment {
 }
 
 /// Inspector browsing is independent of the runtime's active environment.
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct EnvironmentInspector {
     pub editing_id: String,
+    drafts: Vec<EnvironmentFieldDraft>,
+    notice: Option<String>,
+}
+impl std::fmt::Debug for EnvironmentInspector {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("EnvironmentInspector")
+            .field("editing_id", &self.editing_id)
+            .field("drafts", &self.drafts)
+            .field("has_notice", &self.notice.is_some())
+            .finish()
+    }
+}
+fn available_active_id(environments: &[DomainEnvironment], active: Option<String>) -> String {
+    active
+        .filter(|id| environments.iter().any(|e| e.id == *id))
+        .unwrap_or_else(|| wirebolt_core::GLOBAL_ENVIRONMENT_ID.into())
 }
 impl EnvironmentInspector {
     #[must_use]
     pub fn new(active: Option<String>) -> Self {
         Self {
             editing_id: active.unwrap_or_else(|| wirebolt_core::GLOBAL_ENVIRONMENT_ID.into()),
+            drafts: Vec::new(),
+            notice: None,
         }
+    }
+    pub fn browse_active(&mut self, environments: Vec<DomainEnvironment>, active: Option<String>) {
+        self.editing_id = available_active_id(&inspector_environments(environments), active);
     }
     pub fn browse(&mut self, id: String) {
         self.editing_id = id;
@@ -130,4 +151,136 @@ impl EnvironmentInspector {
     pub fn use_for_requests(&self) -> Option<String> {
         (self.editing_id != wirebolt_core::GLOBAL_ENVIRONMENT_ID).then(|| self.editing_id.clone())
     }
+}
+
+/// An unfinished native field, identified independently of its current row index.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub enum EnvironmentField {
+    Name { environment_id: String },
+    Key { environment_id: String, id: String },
+    Value { environment_id: String, id: String },
+}
+#[derive(Clone, PartialEq, Eq)]
+pub struct EnvironmentFieldDraft {
+    pub field: EnvironmentField,
+    pub text: String,
+}
+// Draft values may be secrets; diagnostics must never print their contents.
+impl std::fmt::Debug for EnvironmentFieldDraft {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("EnvironmentFieldDraft")
+            .field("field", &self.field)
+            .finish_non_exhaustive()
+    }
+}
+#[derive(Clone, Debug)]
+pub struct EnvironmentFieldCommit {
+    pub environment_id: String,
+    pub commit: EnvironmentCommit,
+}
+impl EnvironmentField {
+    fn environment_id(&self) -> &str {
+        match self {
+            Self::Name { environment_id }
+            | Self::Key { environment_id, .. }
+            | Self::Value { environment_id, .. } => environment_id,
+        }
+    }
+    #[must_use]
+    pub fn commit(&self, text: String) -> EnvironmentFieldCommit {
+        let commit = match self {
+            Self::Name { .. } => EnvironmentCommit::Rename { name: text },
+            Self::Key { id, .. } => EnvironmentCommit::VariableName {
+                id: id.clone(),
+                name: text,
+            },
+            Self::Value { id, .. } => EnvironmentCommit::VariableValue {
+                id: id.clone(),
+                value: text,
+            },
+        };
+        EnvironmentFieldCommit {
+            environment_id: self.environment_id().into(),
+            commit,
+        }
+    }
+    fn exists(&self, environments: &[DomainEnvironment]) -> bool {
+        environments
+            .iter()
+            .find(|e| e.id == self.environment_id())
+            .is_some_and(|e| match self {
+                Self::Name { .. } => true,
+                Self::Key { id, .. } | Self::Value { id, .. } => {
+                    e.variables.iter().any(|v| v.id == *id)
+                }
+            })
+    }
+}
+impl EnvironmentInspector {
+    pub fn dismiss_notice(&mut self) {
+        self.notice = None;
+    }
+    #[must_use]
+    pub fn drafts(&self) -> Vec<EnvironmentFieldDraft> {
+        self.drafts.clone()
+    }
+    pub fn edit(&mut self, field: EnvironmentField, text: String) {
+        if let Some(draft) = self.drafts.iter_mut().find(|d| d.field == field) {
+            draft.text = text;
+        } else {
+            self.drafts.push(EnvironmentFieldDraft { field, text });
+        }
+    }
+    pub fn committed(&mut self, field: &EnvironmentField, text: &str) {
+        self.drafts.retain(|d| d.field != *field || d.text != text);
+    }
+    /// Orphaned buffers cannot be committed and never block navigation. The returned
+    /// notice is for the local UI only and includes all discarded text for copying.
+    pub fn reconcile(
+        &mut self,
+        environments: Vec<DomainEnvironment>,
+        active: Option<String>,
+    ) -> Option<String> {
+        let environments = inspector_environments(environments);
+        let mut notices = Vec::new();
+        self.drafts.retain(|draft| {
+            if draft.field.exists(&environments) {
+                return true;
+            }
+            let removed = if environments
+                .iter()
+                .any(|e| e.id == draft.field.environment_id())
+            {
+                "variable"
+            } else {
+                "environment"
+            };
+            notices.push(format!(
+                "Discarded an unfinished edit to “{}” because its {removed} was removed.",
+                draft.text
+            ));
+            false
+        });
+        if !environments.iter().any(|e| e.id == self.editing_id) {
+            self.editing_id = available_active_id(&environments, active);
+        }
+        if notices.is_empty() {
+            return None;
+        }
+        let discarded = notices.join("\n");
+        self.notice = Some(self.notice.take().map_or_else(
+            || discarded.clone(),
+            |previous| format!("{previous}\n{discarded}"),
+        ));
+        self.notice.clone()
+    }
+}
+#[must_use]
+pub fn environment_use_label(id: &str) -> String {
+    if id == wirebolt_core::GLOBAL_ENVIRONMENT_ID {
+        "Use Globals Only"
+    } else {
+        "Use for Requests"
+    }
+    .into()
 }

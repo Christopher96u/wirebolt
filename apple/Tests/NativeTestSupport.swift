@@ -1,4 +1,5 @@
 import AppKit
+import SwiftUI
 
 // SwiftUI AX nodes expose the Objective-C selector without protocol conformance.
 // AnyObject's dynamic dispatch preserves its BOOL signature without an IMP cast.
@@ -13,7 +14,29 @@ struct FixtureRunner: RequestRunner {
     func cancel(runID: RunID) {}
 }
 
+actor FixtureWorkspaceStore: WorkspacePersistence {
+    func save(request: RequestDraft, in collectionID: String) async throws {}
+    func save(environment: EnvironmentDraft) async throws {}
+    func saveSecret(name: String, value: String) async throws { preconditionFailure("Native fixtures never write real secrets") }
+}
+
+private final class FixtureWindow: NSWindow { override var canBecomeKey: Bool { true } }
+
 @MainActor enum NativeTestSupport {
+    static func mount<V: View>(_ view: V, defaults: UserDefaults, width: CGFloat = 1248, height: CGFloat = 900) async -> (NSWindow, NSView) {
+        let window = FixtureWindow(contentRect: NSRect(x: 50, y: 50, width: width, height: height), styleMask: [.titled, .resizable], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        let host = NSHostingView(rootView: view.defaultAppStorage(defaults))
+        window.contentView = host
+        window.orderFront(nil)
+        window.makeKey()
+        await settle(host)
+        return (window, host)
+    }
+    static func textViews(_ view: NSView) -> [NSTextView] {
+        (view as? NSTextView).map { [$0] } ?? view.subviews.flatMap(textViews)
+    }
+
     struct Element {
         let object: NSObject
         let role: String
@@ -36,7 +59,7 @@ struct FixtureRunner: RequestRunner {
     }
     @discardableResult
     static func press(_ object: Any, named name: String) -> Bool {
-        guard let item = elements(object).first(where: { ["AXButton", "AXMenuItem"].contains($0.role) && $0.name == name }) else { return false }
+        guard let item = elements(object).first(where: { ["AXButton", "AXMenuItem", "AXCheckBox", "AXDisclosureTriangle"].contains($0.role) && $0.name == name }) else { return false }
         if let button = item.object as? NSButton { button.performClick(nil); return true }
         guard item.object.responds(to: NSSelectorFromString("accessibilityPerformPress")) else { return false }
         _ = (item.object as AnyObject).accessibilityPerformPress?()
@@ -76,5 +99,50 @@ struct FixtureRunner: RequestRunner {
         return {
             for (attribute, value) in zip(attributes, previous) { NSApp.accessibilitySetValue(value ?? false, forAttribute: attribute) }
         }
+    }
+}
+
+
+final class FixtureSocket: WebSocketTransport, @unchecked Sendable {
+    let stream: AsyncThrowingStream<WebSocketEvent, any Error>
+    let continuation: AsyncThrowingStream<WebSocketEvent, any Error>.Continuation
+    var acceptsMessages = true
+    init() { (stream, continuation) = AsyncThrowingStream.makeStream() }
+    func events() -> AsyncThrowingStream<WebSocketEvent, any Error> { stream }
+    func send(_ data: Data, binary: Bool) -> Bool { acceptsMessages }
+    func disconnect() { continuation.finish() }
+}
+struct FixtureConnector: WebSocketConnecting {
+    let socket: FixtureSocket
+    func connection(for input: RunInput, state: AppSessionSocket, generation: String) -> any WebSocketTransport { socket }
+}
+
+final class FixtureCredentialGate: @unchecked Sendable {
+    private let lock = NSLock()
+    private var continuation: CheckedContinuation<Void, Never>?
+    private var began = false
+    var started: Bool { lock.withLock { began } }
+    func wait() async {
+        await withCheckedContinuation { continuation in
+            lock.withLock { self.continuation = continuation; began = true }
+        }
+    }
+    func release() {
+        let continuation = lock.withLock { let value = self.continuation; self.continuation = nil; return value }
+        continuation?.resume()
+    }
+}
+
+actor FixtureIdentityStore: WorkspacePersistence {
+    nonisolated let gate = FixtureCredentialGate()
+    private(set) var saved: [String] = []
+    func save(request: RequestDraft, in collectionID: String) async throws {}
+    func save(environment: EnvironmentDraft) async throws {}
+    func saveSecret(name: String, value: String) async throws {
+        saved.append(name)
+    }
+    func apply(_ command: SessionWorkspaceCommand) async throws -> WorkspaceDelta {
+        await gate.wait()
+        return WorkspaceDelta(version: 1, kind: .workspace, affectedIDs: [])
     }
 }

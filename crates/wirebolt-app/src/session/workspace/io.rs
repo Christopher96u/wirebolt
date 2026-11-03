@@ -164,6 +164,12 @@ pub enum WorkspaceGitAction {
     Abort,
     Initialize,
 }
+impl WorkspaceGitAction {
+    #[must_use]
+    pub const fn replaces_workspace(&self) -> bool {
+        matches!(self, Self::Pull | Self::Abort)
+    }
+}
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum WorkspaceIO {
     Load,

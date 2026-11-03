@@ -9,6 +9,7 @@ struct CookiesView: View {
     @State private var selection: Set<CookieSnapshot.ID> = []
     @State private var showsValues = false
     @State private var isConfirmingClear = false
+    @State private var errorMessage: String?
 
     var body: some View {
         VStack(spacing: 0) {
@@ -47,6 +48,11 @@ struct CookiesView: View {
                     )
                 }
             }
+            if let errorMessage {
+                Label("Cookie error: \(errorMessage)", systemImage: "exclamationmark.triangle")
+                    .foregroundStyle(.red)
+                    .frame(maxWidth: .infinity, alignment: .leading).padding(12)
+            }
             Divider()
             HStack {
                 Toggle("Show Values", isOn: $showsValues).tint(WireboltTheme.controlAccent)
@@ -67,7 +73,12 @@ struct CookiesView: View {
             selection.formIntersection(cookies.map(\.id))
         }
         .confirmationDialog("Delete all cookies in this workspace?", isPresented: $isConfirmingClear) {
-            Button("Clear All", role: .destructive) { Task { await model.clearCookies() } }
+            Button("Clear All", role: .destructive) {
+                Task {
+                    do { try await model.clearCookies(); errorMessage = nil }
+                    catch { errorMessage = error.localizedDescription }
+                }
+            }
             Button("Cancel", role: .cancel) {}
         } message: {
             Text("Requests stop sending these cookies. Other workspaces keep their own cookies.")
@@ -85,7 +96,10 @@ struct CookiesView: View {
     private func delete(_ ids: Set<CookieSnapshot.ID>) {
         guard !ids.isEmpty else { return }
         Task {
-            for id in ids { await model.deleteCookie(id: id) }
+            do {
+                try await model.deleteCookies(ids: Array(ids))
+                errorMessage = nil
+            } catch { errorMessage = error.localizedDescription }
         }
     }
 }

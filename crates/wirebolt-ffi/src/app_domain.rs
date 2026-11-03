@@ -1774,3 +1774,8 @@ pub fn domain_theme_preset_value(preset: DomainThemePreset) -> String {
 pub fn domain_theme_preset_from_value(value: String) -> Option<DomainThemePreset> {
     DomainThemePreset::from_preference(&value)
 }
+
+#[uniffi::export]
+pub fn domain_serialize_bulk(fields: Vec<DomainField>) -> String {
+    domain::request::serialize_bulk(&fields)
+}

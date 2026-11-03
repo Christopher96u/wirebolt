@@ -632,6 +632,10 @@ private enum PerformanceContract {
                 }
             }
 
+            let fileMenu = try JSONSerialization.jsonObject(with: Data(contentsOf: readyFile)) as? [[String: String]] ?? []
+            guard fileMenu.filter({ $0["title"] == "New Request" && $0["key"] == "n" }).count == 1,
+                  !fileMenu.contains(where: { $0["title"] == "New Tab" || ($0["key"] == "t" && $0["modifiers"] == String(NSEvent.ModifierFlags.command.rawValue)) })
+            else { stop(process); throw HarnessError.invalidMeasurement("File menu must offer one New Request command and no New Tab") }
             let elapsed = DispatchTime.now().uptimeNanoseconds - started
             milliseconds.append(Double(elapsed) / 1_000_000)
             usleep(250_000)

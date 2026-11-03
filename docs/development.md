@@ -69,6 +69,8 @@ Unicode line/paragraph separators. The Markdown corpus compares every attributed
 run and visible text, including unfinished fenced-code-block newlines and inserted
 block separators.
 
+The native adapter suite also covers sidebar search focus, Settings cleanup, custom method validation, bulk field reconciliation, multipart text/file value access, Find dismissal, WebSocket error placement and disconnect, atomic cookie deletion failure, and non-blocking orphaned inspector drafts. The isolated launch smoke also checks the native File menu. Set `WIREBOLT_NATIVE_CAPTURE_DIRECTORY` to capture the General, Appearance, Globals and orphaned-edit notice fixtures. Cookie jars remain scoped in memory across workspace switches; explicit deletions roll back on a failed atomic write. Staged TLS identity choices stay in a Rust secret editor until workspace Save.
+
 ## Workspace persistence
 
 Read and write limits both apply to the complete serialized document (16 MiB),

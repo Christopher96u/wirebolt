@@ -39,6 +39,7 @@ pub struct SessionSocketSnapshot {
     pub status: SessionSocketStatus,
     pub messages: Vec<SessionSocketMessage>,
     pub error: Option<String>,
+    pub send_error: Option<String>,
     pub headers: Vec<ResponseHeaderValue>,
 }
 #[derive(Debug)]
@@ -49,6 +50,7 @@ pub struct SessionSocket {
     messages: VecDeque<SessionSocketMessage>,
     bytes: usize,
     error: Option<String>,
+    send_error: Option<String>,
     headers: Vec<ResponseHeaderValue>,
 }
 impl Default for SessionSocket {
@@ -60,6 +62,7 @@ impl Default for SessionSocket {
             messages: VecDeque::new(),
             bytes: 0,
             error: None,
+            send_error: None,
             headers: vec![],
         }
     }
@@ -84,6 +87,7 @@ impl SessionSocket {
                 .cloned()
                 .collect(),
             error: self.error.clone(),
+            send_error: self.send_error.clone(),
             headers: self.headers.clone(),
         }
     }
@@ -93,6 +97,7 @@ impl SessionSocket {
         }
         self.generation = unique_id();
         self.error = None;
+        self.send_error = None;
         self.headers.clear();
         self.status = SessionSocketStatus::Connecting;
         Some(self.generation.clone())
@@ -189,8 +194,8 @@ impl SessionSocket {
         self.messages.clear();
         self.bytes = 0;
     }
-    pub fn set_error(&mut self, error: Option<String>) {
-        self.error = error;
+    pub fn set_send_error(&mut self, error: Option<String>) {
+        self.send_error = error;
     }
 }
 const BINARY_CONTENT_TYPE: &str = "application/octet-stream";
@@ -218,14 +223,22 @@ impl SessionBinaryEncoding {
             Self::Hex => HEX_CONTENT_TYPE,
         }
     }
-    fn encode(self, bytes: &[u8]) -> String {
+    #[must_use]
+    pub fn encode(self, bytes: &[u8]) -> String {
         match self {
             Self::Base64 => base64::engine::general_purpose::STANDARD.encode(bytes),
-            Self::Hex => bytes
-                .iter()
-                .map(|byte| format!("{byte:02x}"))
-                .collect::<Vec<_>>()
-                .join(" "),
+            Self::Hex => {
+                const DIGITS: &[u8; 16] = b"0123456789abcdef";
+                let mut text = String::with_capacity(bytes.len().saturating_mul(3));
+                for (index, byte) in bytes.iter().enumerate() {
+                    if index > 0 {
+                        text.push(' ');
+                    }
+                    text.push(char::from(DIGITS[usize::from(byte >> 4)]));
+                    text.push(char::from(DIGITS[usize::from(byte & 15)]));
+                }
+                text
+            }
         }
     }
 }
@@ -382,4 +395,10 @@ pub fn message_body(body: &DomainBody) -> Result<(Vec<u8>, bool), String> {
         return Err("The message exceeds the 16 MB limit.".into());
     }
     Ok(result)
+}
+
+/// Connecting and connected sockets can always be disconnected, even after clearing the URL.
+#[must_use]
+pub fn can_toggle(status: &SessionSocketStatus, has_url: bool) -> bool {
+    *status != SessionSocketStatus::Disconnected || has_url
 }

@@ -474,8 +474,8 @@ impl AppWorkspaceOperations {
     pub fn reverse_token(&self, token: u64) -> Option<WorkspaceUndoToken> {
         self.inner.reverse_token(token)
     }
-    pub fn begin_git(&self, configured: bool, action: WorkspaceGitAction, dirty: bool) -> bool {
-        self.inner.begin_git(configured, action, dirty)
+    pub fn begin_git(&self, action: WorkspaceGitAction, readiness: WorkspaceGitReadiness) -> bool {
+        self.inner.begin_git(action, readiness)
     }
     pub fn begin_import(&self, configured: bool, pasted: bool) -> bool {
         self.inner.begin_import(configured, pasted)
@@ -874,12 +874,92 @@ impl AppEnvironmentInspector {
             ),
         })
     }
+    pub fn browse_active(
+        &self,
+        environments: Vec<DomainEnvironment>,
+        active: Option<String>,
+    ) -> String {
+        let mut inspector = crate::lock(&self.inner);
+        inspector.browse_active(environments, active);
+        inspector.editing_id.clone()
+    }
     pub fn browse(&self, id: String) -> String {
         let mut inspector = crate::lock(&self.inner);
         inspector.browse(id);
         inspector.editing_id.clone()
     }
+    pub fn dismiss_notice(&self) {
+        crate::lock(&self.inner).dismiss_notice();
+    }
+    pub fn drafts(&self) -> Vec<EnvironmentFieldDraft> {
+        crate::lock(&self.inner).drafts()
+    }
+    pub fn edit(&self, field: EnvironmentField, text: String) {
+        crate::lock(&self.inner).edit(field, text);
+    }
+    pub fn committed(&self, field: EnvironmentField, text: String) {
+        crate::lock(&self.inner).committed(&field, &text);
+    }
+    pub fn reconcile(
+        &self,
+        environments: Vec<DomainEnvironment>,
+        active: Option<String>,
+    ) -> Option<String> {
+        crate::lock(&self.inner).reconcile(environments, active)
+    }
+    pub fn editing_id(&self) -> String {
+        crate::lock(&self.inner).editing_id.clone()
+    }
     pub fn use_for_requests(&self) -> Option<String> {
         crate::lock(&self.inner).use_for_requests()
     }
+}
+
+#[uniffi::export]
+#[must_use]
+pub fn workspace_git_replaces_workspace(action: WorkspaceGitAction) -> bool {
+    action.replaces_workspace()
+}
+
+use wirebolt_app::session::workspace::environment::{
+    EnvironmentField, EnvironmentFieldCommit, EnvironmentFieldDraft,
+};
+#[uniffi::remote(Enum)]
+pub enum EnvironmentField {
+    Name { environment_id: String },
+    Key { environment_id: String, id: String },
+    Value { environment_id: String, id: String },
+}
+#[uniffi::remote(Record)]
+pub struct EnvironmentFieldDraft {
+    pub field: EnvironmentField,
+    pub text: String,
+}
+#[uniffi::remote(Record)]
+pub struct EnvironmentFieldCommit {
+    pub environment_id: String,
+    pub commit: EnvironmentCommit,
+}
+#[uniffi::export]
+pub fn environment_field_commit(field: EnvironmentField, text: String) -> EnvironmentFieldCommit {
+    field.commit(text)
+}
+#[uniffi::export]
+pub fn environment_use_label(id: String) -> String {
+    wirebolt_app::session::workspace::environment::environment_use_label(&id)
+}
+
+use wirebolt_app::session::workspace::operations::{
+    EnvironmentEditingReadiness, WorkspaceGitReadiness,
+};
+#[uniffi::remote(Enum)]
+pub enum EnvironmentEditingReadiness {
+    Ready,
+    Unfinished,
+}
+#[uniffi::remote(Record)]
+pub struct WorkspaceGitReadiness {
+    pub configured: bool,
+    pub dirty_requests: bool,
+    pub inspector: EnvironmentEditingReadiness,
 }

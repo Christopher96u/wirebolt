@@ -574,3 +574,83 @@ async fn failed_live_environment_commit_reports_inline_once_and_can_be_retried()
     assert!(retried.mutation.succeeded && retried.problem.is_none());
     assert!(h.ops.presentation().operation_failure.is_none());
 }
+
+#[test]
+fn orphaned_inspector_drafts_are_discarded_with_copyable_text_and_browse_reconciles() {
+    use super::super::environment::{
+        EnvironmentField, EnvironmentInspector, environment_use_label,
+    };
+    for remove_environment in [false, true] {
+        let mut environments = fixture().environments;
+        let mut inspector = EnvironmentInspector::new(Some("local".into()));
+        inspector.edit(
+            EnvironmentField::Key {
+                environment_id: "local".into(),
+                id: "url".into(),
+            },
+            "bad name".into(),
+        );
+        inspector.edit(
+            EnvironmentField::Value {
+                environment_id: "local".into(),
+                id: "url".into(),
+            },
+            "unfinished value".into(),
+        );
+        if remove_environment {
+            environments.retain(|e| e.id != "local");
+        } else {
+            environments
+                .iter_mut()
+                .find(|e| e.id == "local")
+                .unwrap()
+                .variables
+                .clear();
+        }
+        let notice = inspector
+            .reconcile(environments.clone(), Some("other".into()))
+            .unwrap();
+        assert!(notice.contains("bad name") && notice.contains("unfinished value"));
+        assert!(inspector.drafts().is_empty());
+        assert_eq!(
+            inspector.editing_id,
+            if remove_environment { "other" } else { "local" }
+        );
+        assert!(inspector.reconcile(environments, None).is_none());
+        inspector.reconcile(vec![], Some("missing".into()));
+        assert_eq!(inspector.editing_id, "global");
+        inspector.reconcile(fixture().environments, None);
+        assert!(
+            inspector.drafts().is_empty(),
+            "Redo never resurrects a discarded draft"
+        );
+    }
+    assert_eq!(environment_use_label("global"), "Use Globals Only");
+    assert_eq!(environment_use_label("local"), "Use for Requests");
+}
+
+#[test]
+fn inspector_debug_redacts_drafts_and_discard_notices() {
+    use super::super::environment::{EnvironmentField, EnvironmentInspector};
+    let secret = "fixture-secret-never-in-diagnostics";
+    let mut inspector = EnvironmentInspector::new(Some("local".into()));
+    inspector.edit(
+        EnvironmentField::Value {
+            environment_id: "local".into(),
+            id: "token".into(),
+        },
+        secret.into(),
+    );
+    assert!(!format!("{inspector:?}").contains(secret));
+    assert!(inspector.reconcile(vec![], None).unwrap().contains(secret));
+    assert!(!format!("{inspector:?}").contains(secret));
+}
+#[test]
+fn reopening_inspector_browses_only_an_existing_active_environment() {
+    use super::super::environment::EnvironmentInspector;
+    let mut inspector = EnvironmentInspector::new(Some("removed".into()));
+    inspector.browse_active(fixture().environments, Some("removed".into()));
+    assert_eq!(inspector.editing_id, "global");
+    inspector.browse_active(fixture().environments, Some("other".into()));
+    assert_eq!(inspector.editing_id, "other");
+}

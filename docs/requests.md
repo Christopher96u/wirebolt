@@ -19,7 +19,9 @@ Below the URL, the composer sets the method, the environment and the authenticat
 
 Switch panels with **⌥⌘1** – **⌥⌘6** (**Navigate → Request Section**). **Request → Add Key** (**⇧⌘K**) adds a Params or Headers row; from any other panel it switches to Params first.
 
-For multipart uploads, choose text or file parts and select the local files. File bodies refer to local paths: sharing a workspace does not upload the file or make that path exist on another Mac.
+**Format Body** appears only for JSON.
+
+For multipart uploads, choose text or file parts and select the local files. Use **Edit Value…** to edit a part's value from the keyboard. File bodies refer to local paths: sharing a workspace does not upload the file or make that path exist on another Mac.
 
 ## Send and cancel
 
@@ -33,7 +35,7 @@ Sending and saving are separate operations. **Send** uses the current draft; **�
 
 ![Native JSON response view](assets/screenshots/overview.png)
 
-The response area shows status, timing and size. Use its panels to inspect the body, headers, cookies and executed request, or switch with **⌃⌘1** – **⌃⌘5** (**Navigate → Response Section**). **Navigate → Focus Response** (**⌥⌘0**) moves the keyboard focus into the response. The **Request** panel records the prepared execution, including the proxy policy used for that send.
+The response area shows status, timing and size. Use its panels to inspect the body, headers, cookies and executed request, or switch with **⌃⌘1** – **⌃⌘5** (**Navigate → Response Section**). **Navigate → Focus Response** (**⌥⌘0**) moves the keyboard focus into the response. The **Request** panel shows **Prepared Request**: a reconstruction of the prepared execution, including its proxy policy. Secrets are redacted and the body may be only a preview; it is not a capture of bytes on the connection.
 
 While a request is resent, the previous response stays visible, dimmed, until the new one arrives. When a request fails, the response area explains the failure and offers **Retry**, **Network Settings** and, when available, **View Request**.
 
@@ -56,7 +58,7 @@ Moving a request or saving a tab for the first time carries its history, includi
 runs already in flight. History for a workspace without a saved folder also
 survives relaunch.
 
-**Clear History** deletes this request's entries. **Settings → Privacy → Clear All
+**Clear History** deletes this request's entries. **Settings → General → History → Clear All
 History** deletes history from every workspace. Responses already displayed in tabs
 keep their own temporary body and remain readable after clearing or quota eviction.
 

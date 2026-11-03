@@ -79,6 +79,29 @@ struct GitMergeRecoveryTests {
         #expect(await collaboration.calls == ["abort", "initialize"])
     }
 
+    @Test("Workspace replacement checks the native inspector before Git or loading")
+    @MainActor
+    func inspectorGuardBlocksPullAndAbortBeforeReplacement() async {
+        let collaboration = MergeRecorder()
+        let persistence = RenamingPersistence()
+        let model = WireboltModel(runner: SilentRunner(), persistence: persistence, gitCollaboration: collaboration)
+        await model.loadWorkspace()
+        model.workspace.environments = [EnvironmentDraft(id: "local", name: "Local", variables: [EnvironmentVariableDraft(id: "row", key: "key", value: .literal("fixture"))])]
+        model.environmentEditing.edit(.key(environmentId: "local", id: "row"), text: "bad name")
+        await model.pullGit()
+        await model.abortGitMerge()
+        #expect(await collaboration.calls.isEmpty)
+        #expect(model.workspace.name == "Conflicted")
+        #expect(model.gitFailure?.reason.contains("environment inspector") == true)
+        model.workspace.environments = []
+        #expect(await model.finishEnvironmentEditing())
+        #expect(model.environmentEditingNotice?.contains("bad name") == true)
+        await model.pullGit()
+        await model.abortGitMerge()
+        #expect(model.workspace.name == "Reloaded")
+        #expect(await collaboration.calls == ["pull", "abort"])
+    }
+
     @Test("Persistence without Git recovery reports the action as unsupported")
     @MainActor
     func unsupportedRecovery() async {
@@ -93,7 +116,10 @@ private actor MergeRecorder: GitCollaboration {
     private let clean = GitStatusSnapshot(branch: "main", upstream: "origin/main", ahead: 1, behind: 0, changes: [])
 
     func status() async throws -> GitStatusSnapshot { clean }
-    func pull() async throws -> GitOperationSnapshot { GitOperationSnapshot(outcome: .upToDate, revision: nil, status: clean) }
+    func pull() async throws -> GitOperationSnapshot {
+        calls.append("pull")
+        return GitOperationSnapshot(outcome: .upToDate, revision: nil, status: clean)
+    }
     func commit(message _: String) async throws -> GitOperationSnapshot { GitOperationSnapshot(outcome: .committed, revision: nil, status: clean) }
     func push() async throws -> GitOperationSnapshot { GitOperationSnapshot(outcome: .pushed, revision: nil, status: clean) }
     func abortMerge() async throws -> GitOperationSnapshot {

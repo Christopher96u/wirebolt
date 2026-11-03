@@ -36,6 +36,9 @@ struct WorkspaceIdentityTests {
         #expect(await model.openWorkspace(using: second))
         #expect(await model.cookies().isEmpty)
 
+        #expect(await model.openWorkspace(using: first))
+        #expect(await model.cookies().map(\.name) == ["remember", "session"])
+
         // A relaunch (a new jar on the same file) keeps only cookies that have an expiry.
         let relaunched = WireboltModel(runner: SilentRunner(), cookieDirectory: cookieDirectory)
         relaunched.configurePersistence(first)
@@ -50,9 +53,9 @@ struct WorkspaceIdentityTests {
         let revision = model.cookieRevision
         let session = try #require(await model.cookies().first { $0.name == "session" })
 
-        await model.deleteCookie(id: session.id)
+        try await model.deleteCookies(ids: [session.id])
         #expect(await model.cookies().map(\.name) == ["remember"])
-        await model.clearCookies()
+        try await model.clearCookies()
         #expect(await model.cookies().isEmpty)
         #expect(model.cookieRevision == revision + 2)
     }

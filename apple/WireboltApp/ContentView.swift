@@ -117,6 +117,9 @@ struct ContentView: View {
         let groupCount = model.sessions.groupCount
         return workspacePanels
         .safeAreaInset(edge: .top, spacing: 0) {
+            if let message = model.environmentEditingNotice, !interface.isShowingEnvironmentInspector {
+                EnvironmentEditNotice(message: message) { model.dismissEnvironmentEditingNotice() }
+            }
             if let message = model.workspaceLoadNotice {
                 WorkspaceLoadNotice(message: message) { model.workspaceLoadNotice = nil }
             }
@@ -578,7 +581,9 @@ private struct WorkspaceSidebar: View {
             if showsMaterial { SidebarFooter(model: model) }
         }
         .background(WireboltTheme.sidebarBackground)
-        .onChange(of: interface.focusSearchTrigger) {
+        .task(id: interface.focusSearchTrigger) {
+            await Task.yield()
+            guard !Task.isCancelled, interface.consumeSearchFocusRequest() else { return }
             filterIsFocused = true
         }
 
@@ -1593,8 +1598,6 @@ private struct SidebarSearchRow: View {
             TextField("Search", text: $interface.sidebarFilter)
                 .textFieldStyle(.plain).focused(filterIsFocused)
                 .help("Filter Requests (⇧⌘F)")
-            Button("Filter Requests", systemImage: "line.3.horizontal.decrease") { filterIsFocused.wrappedValue = true }
-                .labelStyle(.iconOnly).buttonStyle(GhostIconStyle())
             Button("New Folder", systemImage: "folder.badge.plus") { interface.makeNewFolder(model: model) }
                 .labelStyle(.iconOnly).buttonStyle(GhostIconStyle())
             Button("New Request", systemImage: "square.and.pencil") { interface.makeNewRequest(model: model) }
@@ -1675,7 +1678,6 @@ private struct SidebarFooter: View {
             Button("Settings", systemImage: "gearshape") { presentAppSettings(model) }
             Button("Git Collaboration", systemImage: "arrow.triangle.branch") { model.isShowingGitCollaboration = true }
             Button("Cookies", systemImage: "circle.hexagongrid") { openWindow(id: CookiesView.windowID) }
-            Button("Network Settings", systemImage: "chart.bar") { model.isShowingWorkspaceSettings = true }
             Spacer(minLength: 0)
         }
         .labelStyle(.iconOnly).buttonStyle(GhostIconStyle())
@@ -2334,6 +2336,12 @@ private struct WebSocketRequestWorkspace: View {
             .background(WireboltTheme.barBackground)
             Divider()
 
+            if interface.requestSection == .body, let error = session.socket.sendErrorMessage {
+                Label(error, systemImage: "exclamationmark.triangle")
+                    .font(.callout).foregroundStyle(.red)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(WireboltTheme.Spacing.large)
+            }
             content
         }
         .background(WireboltTheme.paneBackground)
@@ -2469,16 +2477,8 @@ private struct RequestURLBar: View {
                 set: { session.draft.editURL($0) }
             ))
         }
-        .alert("Custom HTTP Method", isPresented: $isEnteringCustomMethod) {
-            TextField("METHOD", text: $customMethod)
-            Button("Cancel", role: .cancel) {}
-            Button("Set") {
-                if let method = HTTPMethod(rawValue: customMethod) {
-                    session.draft.method = method
-                }
-            }
-        } message: {
-            Text("Use an RFC token such as PROPFIND or REPORT.")
+        .sheet(isPresented: $isEnteringCustomMethod) {
+            CustomHTTPMethodEditor(method: $session.draft.method, text: customMethod)
         }
     }
 
@@ -2553,7 +2553,7 @@ private struct RequestURLBar: View {
                 Button(session.socket.status == .disconnected ? "Connect" : "Disconnect", action: toggleConnection)
                     .buttonStyle(.plain)
                     .frame(minHeight: theme.density.controlHeight)
-                    .disabled(session.draft.url.isEmpty)
+                    .disabled(!sessionSocketCanToggle(status: session.socket.status, hasUrl: !session.draft.url.isEmpty))
             }
             Button(action: { if session.isRunning { cancel() } else { send() } }) {
                 Image(systemName: session.isRunning ? "stop.fill" : "arrow.up")
@@ -2868,8 +2868,13 @@ private struct WebSocketResponseView: View {
             .ghostMenuStyle().menuIndicator(.hidden).labelStyle(.iconOnly).fixedSize()
             .help("View Options")
             Button("Copy Message", systemImage: "doc.on.doc") {
-                NSPasteboard.general.clearContents()
-                NSPasteboard.general.setString(preview, forType: .string)
+                guard let selected else { return }
+                let hex = hex
+                Task {
+                    let text = await Task.detached(priority: .userInitiated) { selected.copyText(hex: hex) }.value
+                    NSPasteboard.general.clearContents()
+                    NSPasteboard.general.setString(text, forType: .string)
+                }
             }
             .labelStyle(.iconOnly).buttonStyle(.borderless)
             .disabled(selected == nil).help("Copy Selected Message")
@@ -2885,7 +2890,7 @@ private struct WebSocketResponseView: View {
         guard let selected else { return "" }
         if !hex && selected.data.count <= DocumentSession.previewByteLimit { return selected.text }
         let data = selected.data.prefix(DocumentSession.previewByteLimit)
-        return hex ? data.map { String(format: "%02X", $0) }.joined(separator: " ") : String(decoding: data, as: UTF8.self)
+        return hex ? sessionEncodeBinary(data: Data(data), encoding: .hex) : String(decoding: data, as: UTF8.self)
     }
     private static func icon(for message: WebSocketMessage) -> (symbol: String, color: Color, label: String) {
         switch message.notice {
@@ -3499,18 +3504,29 @@ private struct BulkFieldEditor: View {
     @Environment(\.dismiss) private var dismiss
     @State private var text: String
     @State private var originalFields: [RequestField]
+    @State private var projectedFields: [RequestField]
 
     init(fields: Binding<[RequestField]>) {
         _fields = fields
+        _projectedFields = State(initialValue: fields.wrappedValue)
         _originalFields = State(initialValue: fields.wrappedValue)
-        _text = State(initialValue: fields.wrappedValue.map {
-            "\($0.enabled ? "" : "# ")\($0.name): \($0.value.editableValue)"
-        }.joined(separator: "\n"))
+        _text = State(initialValue: domainSerializeBulk(fields: fields.wrappedValue))
     }
 
     var body: some View {
         BodyTextEditor(text: $text)
-            .onChange(of: text) { fields = parse(text) }
+            .onChange(of: text) {
+                guard text != domainSerializeBulk(fields: projectedFields) else { return }
+                let parsed = parse(text)
+                projectedFields = parsed
+                fields = parsed
+            }
+            .onChange(of: fields) {
+                guard fields != projectedFields else { return }
+                projectedFields = fields
+                originalFields = fields
+                text = domainSerializeBulk(fields: fields)
+            }
     }
 
     private func parse(_ source: String) -> [RequestField] {
@@ -4271,9 +4287,9 @@ private struct BodyTools: View {
                 Button("Add Part", systemImage: "plus") { requestBody = .multipart(parts: parts + [MultipartPart()]) }
                     .labelStyle(.iconOnly).buttonStyle(.borderless)
                     .help("Add Part")
-            } else {
+            } else if requestBody.canFormat {
                 Button("Format Body", systemImage: "wand.and.stars", action: formatBody)
-                    .labelStyle(.iconOnly).buttonStyle(.borderless).disabled(!requestBody.canFormat)
+                    .labelStyle(.iconOnly).buttonStyle(.borderless)
                     .help("Format Body")
             }
             Menu("Body Actions", systemImage: "ellipsis") {
@@ -4444,11 +4460,17 @@ private struct MultipartPartEditor: View {
                 GridRow(alignment: .top) {
                     Text("Value:").padding(.top, WireboltTheme.Spacing.xSmall)
                     VStack(alignment: .leading, spacing: 8) {
-                        Text("<Double-click to edit>").padding(WireboltTheme.Spacing.xSmall)
+                        Button(action: editValue) {
+                            VStack(alignment: .leading, spacing: WireboltTheme.Spacing.small) {
+                                Text("Edit Value…")
+                                Text(valuePreview)
+                                    .font(.system(.body, design: .monospaced)).lineLimit(3)
+                                    .foregroundStyle(.secondary)
+                            }
                             .frame(maxWidth: .infinity, minHeight: 82, maxHeight: 82, alignment: .topLeading)
-                            .background(WireboltTheme.paneBackground).border(WireboltTheme.separator)
-                            .onTapGesture(count: 2, perform: editValue)
-                            .accessibilityAction(named: "Edit Value", editValue)
+                        }
+                        .accessibilityLabel("Edit Value…")
+                        .accessibilityValue(valuePreview)
                         Button("Select File…", action: selectFile).controlSize(.small)
                     }.padding(.top, WireboltTheme.Spacing.small)
                 }
@@ -4477,6 +4499,9 @@ private struct MultipartPartEditor: View {
                     }
                 }.padding(WireboltTheme.Spacing.xLarge).frame(width: 566, height: 362)
             }
+    }
+    private var valuePreview: String {
+        String((part.kind == .file ? (part.filePath ?? part.fileName ?? "") : part.value.editableValue).prefix(300))
     }
     private func optional(_ keyPath: WritableKeyPath<MultipartPart, String?>) -> Binding<String> {
         Binding(get: { part[keyPath: keyPath] ?? "" }, set: { part[keyPath: keyPath] = $0.isEmpty ? nil : $0 })

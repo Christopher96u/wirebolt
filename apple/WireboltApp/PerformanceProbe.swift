@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 import os
 
@@ -34,13 +35,18 @@ enum PerformanceProbe {
         os_signpost(.begin, log: log, name: "Launch")
     }
 
-    static func markReady() {
+    @MainActor static func markReady() {
         os_signpost(.end, log: log, name: "Launch")
         guard let path = ProcessInfo.processInfo.environment["WIREBOLT_READY_FILE"] else {
             return
         }
 
-        _ = FileManager.default.createFile(atPath: path, contents: Data([1]))
+        guard let menu = NSApp.mainMenu?.items.first(where: { $0.title == "File" })?.submenu else {
+            preconditionFailure("Launch smoke requires the native File menu")
+        }
+        let items = menu.items.map { ["title": $0.title, "key": $0.keyEquivalent, "modifiers": String($0.keyEquivalentModifierMask.rawValue)] }
+        do { try JSONSerialization.data(withJSONObject: items).write(to: URL(fileURLWithPath: path), options: .atomic) }
+        catch { preconditionFailure("Could not record launch readiness: \(error)") }
     }
 
     static func beginWorkspaceLoad() {

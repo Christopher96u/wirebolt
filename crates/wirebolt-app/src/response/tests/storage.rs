@@ -163,9 +163,9 @@ fn cookie_domain_delete_and_dates() {
         Some("a=1".into())
     );
     assert_eq!(jar.header("https://sub.example.com/other", 0.0), None);
-    jar.delete(&received[0].id());
+    jar.delete(&[received[0].id()]).unwrap();
     assert!(jar.all(0.0).is_empty());
-    jar.remove_all();
+    jar.remove_all().unwrap();
 }
 
 #[test]
@@ -606,11 +606,11 @@ fn cookie_files_reject_foreign_shapes_and_report_damage_once() {
         let mut jar = ResponseCookieJar::new(Some(path.clone()));
         assert!(jar.all(0.0).is_empty());
         assert!(
-            jar.take_load_problem()
+            jar.take_storage_problem()
                 .unwrap()
                 .contains("cookie file is invalid")
         );
-        assert!(jar.take_load_problem().is_none());
+        assert!(jar.take_storage_problem().is_none());
         assert_eq!(std::fs::read_to_string(&path).unwrap(), source);
     }
 }

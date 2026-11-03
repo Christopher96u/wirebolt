@@ -455,7 +455,7 @@ final class ProbeWindow: NSWindow { override var canBecomeKey: Bool { true } }
                 "Resize dividers must expose a named, full-height accessibility target")
         }
         precondition(!NativeTestSupport.elements(host).contains { $0.role == "AXButton" && ["Apply", "Cancel"].contains($0.name) })
-        let closed = await finishEnvironmentEditing(interface: interface, in: window)
+        let closed = await finishEnvironmentEditing(model: model, interface: interface, in: window)
         precondition(closed && !interface.isShowingEnvironmentInspector)
         print("environment_live_exit_guard=passed")
 
@@ -711,7 +711,7 @@ final class ProbeWindow: NSWindow { override var canBecomeKey: Bool { true } }
         }
         guard let searchEditor = window.firstResponder as? NSTextView, let searchField = searchEditor.delegate as? NSTextField,
               searchField.placeholderString == "Search" else { preconditionFailure("Opening Settings must focus its search field") }
-        let navigation = ["General", "Appearance", "Network", "Keyboard", "Privacy"]
+        let navigation = ["General", "Appearance", "Network", "Keyboard"]
         let buttons = NativeTestSupport.elements(host).filter { $0.role == "AXButton" && navigation.contains($0.name) }
         precondition(buttons.count == navigation.count && buttons.allSatisfy { $0.frame.width >= 180 && $0.frame.height >= 28 },
             "Settings must use the approved sidebar, with every section reachable")
@@ -732,13 +732,17 @@ final class ProbeWindow: NSWindow { override var canBecomeKey: Bool { true } }
         precondition(NativeTestSupport.elements(host).contains { $0.name == "Word wrap" })
         await press("Keyboard")
         precondition(NativeTestSupport.elements(host).contains { $0.name == "Send request or message" })
-        await press("Privacy")
-        await press("Privacy Policy")
-        await NativeTestSupport.wait(host) { window.attachedSheet != nil }
-        guard let sheet = window.attachedSheet else { preconditionFailure("Privacy Policy must open its content") }
-        await press("Done", in: sheet)
-        await NativeTestSupport.wait(host) { window.attachedSheet == nil }
-        precondition(window.attachedSheet == nil)
+        await press("General")
+        precondition(NativeTestSupport.elements(host).contains { $0.name == "History" })
+        precondition(NativeTestSupport.press(host, named: "Clear All History…"))
+        func historyConfirmation() -> NSWindow? {
+            NSApp.windows.first { candidate in
+                candidate.isVisible && NativeTestSupport.elements(candidate).contains { $0.role == "AXButton" && $0.name == "Clear All History" }
+            }
+        }
+        await NativeTestSupport.wait(host) { historyConfirmation() != nil }
+        precondition(NativeTestSupport.press(historyConfirmation()!, named: "Cancel"))
+        await NativeTestSupport.wait(host) { historyConfirmation() == nil }
         await press("Network")
         precondition(fields(host).contains { $0.isEditable && $0.stringValue == "edited.proxy.invalid" },
             "Switching settings sections must preserve unapplied proxy edits")
@@ -774,7 +778,7 @@ final class ProbeWindow: NSWindow { override var canBecomeKey: Bool { true } }
         precondition(model.settingsTab == "network" && NativeTestSupport.elements(host).filter { $0.role == "AXButton" && navigation.contains($0.name) }.count == navigation.count,
             "Reopening a settings destination must clear the old search filter")
         await press("Close Settings")
-        print("settings_modal_search_navigation_staged_proxy_and_privacy=passed")
+        print("settings_modal_search_navigation_staged_proxy_and_history=passed")
     }
 
     static func composerFocus(root: URL) {

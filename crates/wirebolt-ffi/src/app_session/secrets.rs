@@ -190,6 +190,17 @@ impl AppSessionSecrets {
             .await
             .map_err(secret_error)
     }
+    pub async fn commit_identity(
+        &self,
+        reference: Option<String>,
+        target: Arc<AppSessionSecrets>,
+        platform: Arc<AppSecretPlatform>,
+    ) -> Result<(), crate::WorkspaceBridgeError> {
+        self.inner
+            .commit_identity(reference.as_deref(), &target.inner, platform.as_ref())
+            .await
+            .map_err(secret_error)
+    }
     pub async fn copy(
         &self,
         renames: HashMap<String, String>,

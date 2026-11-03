@@ -62,6 +62,13 @@ private actor InspectorStore: WorkspacePersistence {
         precondition(NativeTestSupport.press(host, named: "Globals"))
         await NativeTestSupport.settle(host)
         precondition(model.selectedEnvironmentID == "production", "Browsing Globals never clears the active environment")
+        precondition(NativeTestSupport.press(host, named: "Use Globals Only"))
+        await NativeTestSupport.settle(host)
+        precondition(model.selectedEnvironmentID == nil)
+        let globals = NativeTestSupport.elements(host).first { $0.role == "AXButton" && $0.name == "Globals" }!
+        precondition(globals.object.value(forKey: "accessibilityValue") as? String == "Active")
+        if let screenshots { try NativeTestSupport.capture(host, directory: screenshots, name: "audit-inspector-globals-active") }
+        print("inspectorGlobalsActivationAndActiveMarker: passed")
         precondition(NativeTestSupport.press(host, named: "Local"))
         await NativeTestSupport.settle(host)
         precondition(NativeTestSupport.press(host, named: "Use for Requests"))
@@ -132,8 +139,54 @@ private actor InspectorStore: WorkspacePersistence {
         await NativeTestSupport.settle(host)
         precondition(closeCount == 3 && model.workspace.environments[0].variables[0].key == "escape_key", "Escape closes without dropping the active field")
         print("inspectorEscapeCommits: passed")
+        try await removedDrafts(model: model, interface: interface, window: window, host: host, defaults: defaults, screenshots: screenshots)
         try await layoutFixtures(model: model, defaults: defaults, screenshots: screenshots)
     }
+    static func removedDrafts(model: WireboltModel, interface: WorkspaceUIState, window: NSWindow, host: NSView, defaults: UserDefaults, screenshots: URL?) async throws {
+        for removesEnvironment in [false, true] {
+            model.workspace.environments = [EnvironmentDraft(id: "local", name: "Local", variables: [EnvironmentVariableDraft(id: "removed", key: "base_url", value: .literal("fixture"))])]
+            model.selectedEnvironmentID = "local"
+            await NativeTestSupport.settle(host)
+            precondition(NativeTestSupport.press(host, named: "Local"))
+            await NativeTestSupport.settle(host)
+            let key = fields(host).first { $0.accessibilityLabel() == "Variable name" }!
+            replace(key, with: "bad name", window: window)
+            window.makeFirstResponder(nil)
+            await NativeTestSupport.settle(host)
+            precondition(model.environmentEditing.hasEdits)
+            if removesEnvironment { model.workspace.environments = [] }
+            else { model.workspace.environments[0].variables = [] }
+            await NativeTestSupport.settle(host)
+            precondition(!fields(host).contains { $0.accessibilityLabel() == "Variable name" })
+            precondition(!model.environmentEditing.hasEdits, "Orphaned edits are discarded automatically")
+            precondition(model.environmentEditingNotice?.contains("bad name") == true)
+            precondition(accessibility(host).contains { $0.1.contains("bad name") }, "Discarded text is visible above scrolling content")
+            precondition(NativeTestSupport.elements(host).contains { $0.name == "Copy Discarded Edits" })
+            if let screenshots, !removesEnvironment { try NativeTestSupport.capture(host, directory: screenshots, name: "audit-orphaned-edit-notice") }
+            precondition(NativeTestSupport.press(host, named: "Globals"))
+            await NativeTestSupport.settle(host)
+            let closed = await interface.closeEnvironmentInspector!()
+            precondition(closed && !model.environmentEditing.hasEdits, "Orphaned fields never block switching or closing")
+            let canQuit = await model.finishEnvironmentEditing()
+            precondition(canQuit, "Quit uses the model-owned flush path")
+            if removesEnvironment {
+                let (reopenedWindow, reopenedHost) = await NativeTestSupport.mount(
+                    EnvironmentEditor(model: model, interface: interface, closeTrigger: 0, onClose: {}), defaults: defaults)
+                precondition(NativeTestSupport.elements(reopenedHost).contains { $0.name == "Use Globals Only" }, "Remount reconciles a removed active environment through Rust")
+                precondition(!NativeTestSupport.elements(reopenedHost).contains { $0.name == "Use for Requests" })
+                reopenedWindow.close()
+            }
+        }
+        model.environmentEditing.edit(.name(environmentId: "removed"), text: "workspace switch fixture")
+        let canSwitch = await finishEnvironmentEditing(model: model, interface: interface, in: window)
+        precondition(canSwitch, "Workspace switch guard never blocks on an orphan")
+        model.environmentEditing.edit(.name(environmentId: "removed"), text: "window close fixture")
+        requestWorkspaceWindowClose(window, model: model, interface: interface)
+        await NativeTestSupport.wait(host) { !window.isVisible }
+        precondition(model.environmentEditingNotice?.contains("window close fixture") == true)
+        print("inspectorOrphansNeverBlockCloseSwitchOrQuitAndNoticeIncludesText: passed")
+    }
+
     static func layoutFixtures(model: WireboltModel, defaults: UserDefaults, screenshots: URL?) async throws {
         model.workspace.environments = [
             EnvironmentDraft(id: "local", name: "Local", variables: [EnvironmentVariableDraft(id: "local-url", key: "base_url", value: .literal("https://local.example.invalid/api"))]),

@@ -241,7 +241,9 @@ pub fn prepare_request(draft: RequestDraft) -> Result<PreparedRequest, RequestPr
 
 /// Parses a method token. ASCII letters are upper-cased first so that a
 /// hand-typed `get` is sent as `GET`, which is what every server expects.
-pub(crate) fn parse_method(method: &str) -> Result<Method, RequestPreparationError> {
+/// # Errors
+/// Returns an invalid-method error for input outside the HTTP token grammar.
+pub fn parse_method(method: &str) -> Result<Method, RequestPreparationError> {
     let method = method.trim();
     if method.bytes().any(|byte| byte.is_ascii_lowercase()) {
         Method::from_bytes(method.to_ascii_uppercase().as_bytes())

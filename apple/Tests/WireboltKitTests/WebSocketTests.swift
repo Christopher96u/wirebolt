@@ -82,7 +82,7 @@ struct WebSocketTests {
             catch { failure = error.localizedDescription }
             let sent = socket.sent.count
             await state.send(body: .json(value: value))
-            #expect(state.errorMessage == failure, "JSON: \(value.prefix(80))")
+            #expect(state.sendErrorMessage == failure, "JSON: \(value.prefix(80))")
             #expect(socket.sent.count == sent + (failure == nil ? 1 : 0))
             if failure == nil { #expect(socket.sent.last?.data == Data(value.utf8)) }
         }
@@ -115,7 +115,7 @@ struct WebSocketTests {
         await eventually { state.status == .disconnected }
     }
 
-    @Test("A normal server close keeps the last send error and failed notice")
+    @Test("A normal close keeps send errors in the composer without a failed connection notice")
     @MainActor func closeAfterInvalidJSON() async {
         let state = WebSocketDocumentState()
         let socket = SocketFixture()
@@ -123,14 +123,15 @@ struct WebSocketTests {
         socket.yield(.connected([]))
         await eventually { state.status == .connected }
         await state.send(body: .json(value: "{"))
-        let error = state.errorMessage
+        let error = state.sendErrorMessage
         #expect(error != nil)
         socket.yield(.closed)
         socket.finish()
-        await eventually { state.messages.last?.notice == .failed }
+        await eventually { state.messages.last?.notice == .disconnected }
         #expect(state.status == .disconnected)
-        #expect(state.errorMessage == error)
-        #expect(state.messages.last?.text == error)
+        #expect(state.sendErrorMessage == error)
+        #expect(state.messages.last?.text == "Disconnected")
+        #expect(state.errorMessage == nil)
     }
 
     @Test("Text, JSON, binary and file messages use the selected transport representation")
@@ -152,11 +153,11 @@ struct WebSocketTests {
         #expect(socket.sent.map(\.data) == [Data("café 東京".utf8), Data("{\"count\":1}".utf8), Data([0, 255]), Data([1, 2, 3])])
         #expect(socket.sent.map(\.binary) == [false, false, true, true])
         await state.send(body: .json(value: "{"))
-        #expect(state.errorMessage != nil)
+        #expect(state.sendErrorMessage != nil)
         #expect(socket.sent.count == 4)
         socket.acceptsMessages = false
         await state.send(body: .text(contentType: nil, value: "queue is full"))
-        #expect(state.errorMessage?.contains("queued") == true)
+        #expect(state.sendErrorMessage?.contains("queued") == true)
         state.disconnect()
     }
 
@@ -311,5 +312,20 @@ extension WebSocketTests {
         #expect(received.messages.count == limit)
         #expect(received.messages.last?.data.count == bytes)
         buffer.finish()
+    }
+}
+
+
+struct WebSocketCopyTests {
+    @Test @MainActor func copiesCompleteMessageBeyondViewportInTextAndHex() throws {
+        let text = String(repeating: "fixture", count: 10_000) + "END"
+        let data = Data(text.utf8)
+        let message = WebSocketMessage(data: data, binary: false, outgoing: false, notice: nil, control: nil)
+        #expect(data.count > DocumentSession.previewByteLimit)
+        #expect(message.copyText(hex: false) == text)
+        let hex = message.copyText(hex: true)
+        #expect(hex.split(separator: " ").count == data.count)
+        #expect(hex.hasSuffix("45 4e 44"))
+        #expect(try WebSocketBinaryEncoding.hex.decode(hex) == data)
     }
 }

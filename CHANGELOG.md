@@ -7,7 +7,7 @@ Changes under **Unreleased** are on `main` but not in a published build yet. Dow
 ### Added
 
 - **QUERY** method (RFC 10008) in the method menu, with its own color.
-- **Clear All History…** in Settings → Privacy removes all saved history.
+- **Clear All History…** in Settings → General → History removes all saved history.
 - Custom themes from two colors and VS Code theme imports, with a live preview, checked contrast, and rename/delete controls (Settings → Appearance).
 - Black, Paper and Ember themes with checked contrast, Compact and Comfortable density, and Increase Contrast support (Settings → Appearance).
 - Settings open in the workspace window (**⌘,**); Esc or **⌘W** closes them.
@@ -15,6 +15,9 @@ Changes under **Unreleased** are on `main` but not in a published build yet. Dow
 - **Save and Close** when closing a tab with unsaved edits.
 
 ### Changed
+
+- **Raw Request** is now **Prepared Request**, with an explanation of reconstruction, redaction and body-preview limits.
+- **Format Body** appears only for JSON bodies.
 
 - Older Wirebolt workspaces, history and preferences are not migrated; the legacy Wirebolt v1 import and export are removed.
 
@@ -31,14 +34,32 @@ Changes under **Unreleased** are on `main` but not in a published build yet. Dow
 - Section tab counts are plain numbers and count only enabled, named rows. Before the first send, the response area shows a one-line hint.
 - The composer's method and authentication are menus. **Edit Long URL…** and **History** moved to its **⋯** menu, and the proxy shows only when the workspace or the request overrides the app default.
 
+### Removed
+
+- The duplicate **New Tab** command; **New Request** (⌘N) creates a request tab.
+- The sidebar's Filter icon and redundant Network Settings entry. **Filter Requests** (⇧⌘F) and the toolbar's **Workspace Settings** remain available.
+- The Privacy settings page and Privacy Policy sheet. **Clear All History…** is under **General → History**.
+- The static color swatches and contrast diagnostic rows in Appearance. Theme cards, previews and import notices remain.
+
 ### Fixed
+
+- **Filter Requests** reveals a hidden sidebar and focuses Search.
+- Custom HTTP methods accept the same tokens as Send, including underscores. Invalid input stays open with an explanation.
+- **Clear All** in Bulk Edit clears the editor buffer, so typing cannot restore deleted Headers or Params.
+- Multipart values have a keyboard-accessible **Edit Value…** button with a value preview.
+- Closing Find in headers or cookies clears its filter.
+- WebSocket message errors stay visible beside the composer. **Copy Message** copies the complete message as Text or Hex, and Disconnect stays available when the URL is cleared.
+- Globals has **Use Globals Only** and shows **Active** when no named environment is selected.
+- Abandoned client identities are cleaned up with other credentials. Canceled and replaced choices in Workspace Settings stay out of Keychain until Save.
+- Switching workspaces retains each workspace's session cookies until quit. Failed cookie deletion restores the previous jar and shows the error in Cookies.
+- Removed environment fields automatically discard unfinished edits and show their text in a copyable notice without blocking close, switch, quit or Git replacement. Git replacement still finishes edits to existing fields first.
 
 - Large multipart file uploads stream from disk instead of loading the complete upload into memory before Send. Bodies up to 64 KiB can still be resent on redirects. A user-set multipart **Content-Length** is replaced with the computed length.
 - Bulk Edit accepts pasted CRLF and CR line endings in headers, query parameters and form fields without adding carriage returns to values.
-- XML and HTML payloads stay unchanged by Format, which is now disabled for these types because inserted whitespace can change their content.
+- XML and HTML payloads stay unchanged by Format, which now appears only for JSON because inserted whitespace can change their content.
 - OAuth sign-in preserves literal plus signs and valueless URL parameters, and uses form encoding for authorization parameters and callbacks (spaces encode as `+`, as required by RFC 6749).
 - **Copy cURL** now encodes query parameters the same way as Send, including literal plus signs, punctuation and Unicode.
-- Query and form fields marked sensitive are redacted in Sent Request and History while their values are still sent.
+- Query and form fields marked sensitive are redacted in Prepared Request and History while their values are still sent.
 - Cookie expiry now gives valid `Max-Age` precedence over `Expires`, regardless of attribute order, and ignores invalid expiry attributes.
 - Cookies keep directory scope and encoded path separators when choosing which requests receive them.
 - Saving while deleting or moving a request could recreate stale files. Save now runs in order with workspace edits and refuses a target moved or deleted inside the app; saving recreates a request file removed externally.
@@ -87,7 +108,7 @@ First release candidate for Wirebolt 1.0. It collects everything since 0.1.0-bet
 - An import summary lists what was imported, the environment created and anything skipped.
 - Insomnia (v4 JSON, v5 YAML) and Bruno (collection folder, `.bru` file or JSON export) import, including folders, bodies, authentication and environments.
 - Response pane: elapsed time and Cancel while sending, the previous response stays visible until the new one arrives, and failures explain the cause with Retry, Network Settings and View Request.
-- VoiceOver announcements for finished, failed and cancelled requests; clearer labels for credential, multipart and key-value fields, checkboxes and sidebar rows; help tags on icon-only buttons.
+- VoiceOver announcements for finished, failed and canceled requests; clearer labels for credential, multipart and key-value fields, checkboxes and sidebar rows; help tags on icon-only buttons.
 - Local Markdown Edit/Preview for request notes, Git Collaboration commands, in-app help in its own window, user documentation and a local quick-start API example.
 
 ### Changed
@@ -98,7 +119,7 @@ First release candidate for Wirebolt 1.0. It collects everything since 0.1.0-bet
 - New workspaces are named after their folder. Cookies are kept per workspace and session cookies are no longer saved.
 
 - Native Send, Cancel, Connect and Disconnect buttons in title case; an unavailable Send or Connect looks disabled.
-- The URL bar keeps a fixed-width status that shows the response status, **Failed** or **Cancelled**, and collapses to icons in narrow split editors so the URL stays readable.
+- The URL bar keeps a fixed-width status that shows the response status, **Failed** or **Canceled**, and collapses to icons in narrow split editors so the URL stays readable.
 - Method and status colors are adaptive and meet 4.5:1 contrast in light and dark appearances; each method has its own color.
 - Durations, sizes and status lines read naturally (“<0.1 ms”, “1.23 s”, “18.6 KB”, “302 Found”).
 - Invisible characters are hidden by default. JSON can decode Unicode escapes for display.

@@ -11,9 +11,9 @@ use wirebolt_app::response::{
     LineIndex, LineIndexChange, MarkdownCache, MarkdownCacheStats, MarkdownDocument,
     MarkdownInputRun, MarkdownListItem, MarkdownParser, MarkdownRun, MarkdownStyle,
     ResponseCancellation, ResponseCookieJar, ResponseError, ResponseFailureKind,
-    ResponseHeaderValue, ResponseIssueKind, ResponseTextRange, RunHistory, SearchPosition,
-    SearchQuery, ShapingGroup, ShapingMetrics, ShapingRequest, StoredCookie, TextIndex,
-    TextIndexCache, TextRow, TextShaper, WrapBreakIndex, WrapBreakSnapshot, WrapLayout,
+    ResponseHeaderValue, ResponseIssueKind, ResponseResult, ResponseTextRange, RunHistory,
+    SearchPosition, SearchQuery, ShapingGroup, ShapingMetrics, ShapingRequest, StoredCookie,
+    TextIndex, TextIndexCache, TextRow, TextShaper, WrapBreakIndex, WrapBreakSnapshot, WrapLayout,
     completion_summary, cookie_storage_path, describe_issue, failure_host, failure_message,
     format_duration, format_elapsed, json_tree, json_tree_file, reason_phrase, space_runs,
     status_line, unix_time, uses_text_index,
@@ -542,11 +542,11 @@ impl AppCookieJar {
     pub fn all(&self) -> Vec<StoredCookie> {
         lock(&self.inner).all(unix_time())
     }
-    pub fn delete(&self, id: String) {
-        lock(&self.inner).delete(&id);
+    pub fn delete(&self, ids: Vec<String>) -> ResponseResult<()> {
+        lock(&self.inner).delete(&ids)
     }
-    pub fn remove_all(&self) {
-        lock(&self.inner).remove_all();
+    pub fn remove_all(&self) -> ResponseResult<()> {
+        lock(&self.inner).remove_all()
     }
 }
 #[uniffi::export]

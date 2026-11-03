@@ -187,12 +187,22 @@ final class WorkspaceUIState {
         var importFormat: ImportFormat = .postmanV2
     var focusURLTrigger = 0
     var pendingURLFocusID: String?
+    func focusRequestSearch() {
+        columnVisibility = .all
+        focusSearchTrigger += 1
+    }
+
     var focusSearchTrigger = 0
+    private var consumedSearchTrigger = 0
+    func consumeSearchFocusRequest() -> Bool {
+        guard focusSearchTrigger != consumedSearchTrigger else { return false }
+        consumedSearchTrigger = focusSearchTrigger
+        return true
+    }
     /// Moves keyboard focus into the active editor group's response content.
     var focusResponseTrigger = 0
     var collectionsExpanded = true
     var isShowingEnvironmentInspector = false
-    var hasEnvironmentEdits = false
     @ObservationIgnored var closeEnvironmentInspector: (@MainActor () async -> Bool)?
     var environmentCloseTrigger = 0
 
@@ -264,7 +274,7 @@ final class WorkspaceUIState {
         PerformanceProbe.tabSwitched()
     }
 
-    func makeNewRequest(model: WireboltModel, kind: DocumentKind = .http, rename: Bool = false) {
+    func makeNewRequest(model: WireboltModel, kind: DocumentKind = .http) {
         persistActivePresentation()
         Task {
             guard let session = await model.createRequest(kind: kind) else { return }
@@ -272,8 +282,9 @@ final class WorkspaceUIState {
             presentationByTabID[session.id] = DocumentPresentationState()
             requestSection = kind == .http ? .params : .body
             responseSection = .body
-            renamingRequestID = rename ? model.selectedRequestID : nil
-            if rename { focusSidebarTrigger += 1 } else { pendingURLFocusID = session.id; focusURLTrigger += 1 }
+            renamingRequestID = nil
+            pendingURLFocusID = session.id
+            focusURLTrigger += 1
         }
     }
 
@@ -304,7 +315,6 @@ final class WorkspaceUIState {
         rustInterface.reset()
         closeRevision += 1
         isShowingEnvironmentInspector = false
-        hasEnvironmentEdits = false
         closeEnvironmentInspector = nil
         pendingURLFocusID = nil
         presentationByTabID = [:]

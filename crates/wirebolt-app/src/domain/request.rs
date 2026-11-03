@@ -14,11 +14,9 @@ use std::{
 
 #[must_use]
 pub fn normalize_method(value: &str) -> Option<String> {
-    let s = value.trim().to_uppercase();
-    (!s.is_empty()
-        && s.bytes()
-            .all(|b| b.is_ascii_uppercase() || b.is_ascii_digit() || b == b'-'))
-    .then_some(s)
+    wirebolt_core::parse_method(value)
+        .ok()
+        .map(|method| method.to_string())
 }
 #[must_use]
 pub fn credential_reference(role: &str, scope: &str) -> String {
@@ -41,7 +39,7 @@ pub fn editable_credential_reference(source: &DomainValueSource, role: &str) -> 
 #[must_use]
 pub fn owned_reference(name: &str) -> bool {
     static PATTERN: LazyLock<regex::Regex> = LazyLock::new(|| {
-        regex::Regex::new(r"\A(?:(?:auth|env|request)\.[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\.[A-Za-z0-9._-]+|import-[0-9a-f]+-[0-9a-f]+-[0-9a-f]+-request-[0-9]+-[a-z-]+)\z").expect("credential reference pattern")
+        regex::Regex::new(r"\A(?:(?:auth|env|request|tls)\.[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\.[A-Za-z0-9._-]+|import-[0-9a-f]+-[0-9a-f]+-[0-9a-f]+-request-[0-9]+-[a-z-]+)\z").expect("credential reference pattern")
     });
     PATTERN.is_match(name)
 }
@@ -161,6 +159,22 @@ pub fn new_auth(kind: DomainAuthenticationKind) -> DomainAuthentication {
         DomainAuthenticationKind::None => DomainAuthentication::None,
     }
 }
+/// The editable bulk representation uses the same value projection as its parser.
+#[must_use]
+pub fn serialize_bulk(fields: &[DomainField]) -> String {
+    fields
+        .iter()
+        .map(|field| {
+            format!(
+                "{}{}: {}",
+                if field.enabled { "" } else { "# " },
+                field.name,
+                field.value.editable()
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
 #[must_use]
 pub fn parse_bulk(source: &str, previous: Vec<DomainField>) -> Vec<DomainField> {
     let mut unused = previous;
@@ -224,6 +238,7 @@ pub fn request_references(d: &DomainRequestDraft) -> HashSet<String> {
             .filter_map(|v| v.secret_name().map(str::to_owned)),
     );
     refs.extend(proxy_references(d.proxy.as_ref()));
+    refs.extend(d.transport.client_certificate_reference.iter().cloned());
     refs
 }
 #[must_use]
@@ -255,6 +270,7 @@ pub fn workspace_references(w: &DomainWorkspace) -> Vec<String> {
         }
     }
     refs.extend(proxy_references(w.proxy.as_ref()));
+    refs.extend(w.transport.client_certificate_reference.iter().cloned());
     refs.into_iter().collect()
 }
 #[must_use]

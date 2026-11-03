@@ -26,12 +26,14 @@ wirebolt_app_inputs=(
   apple/Sources/WireboltKit/CollectionImportSources.swift
   apple/Sources/WireboltKit/RuntimeAdapters.swift
   apple/Sources/WireboltKit/WireboltModel.swift
+  apple/Sources/WireboltKit/EnvironmentInspectorEditing.swift
   apple/Sources/WireboltKit/WorkspaceOperations.swift
   apple/Sources/WireboltKit/SidebarSnapshot.swift
   apple/Sources/WireboltKit/VariableTemplates.swift
   apple/Sources/WireboltKit/WorkspaceChrome.swift
   apple/WireboltApp/WorkspaceUIState.swift
   apple/WireboltApp/ContentView.swift
+  apple/WireboltApp/CustomHTTPMethodEditor.swift
   apple/WireboltApp/WorkspaceLoadNotice.swift
   apple/WireboltApp/WorkspaceActions.swift
   apple/WireboltApp/ImportSummaryView.swift

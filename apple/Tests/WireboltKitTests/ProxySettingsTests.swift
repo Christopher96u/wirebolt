@@ -291,3 +291,54 @@ extension ProxySettingsTests {
         #expect(ProxyFormDraft.Mode(rawValue: "unknown") == nil)
     }
 }
+
+private actor NetworkSavePersistence: WorkspacePersistence {
+    let failure: String?
+    private(set) var events: [String] = []
+    init(failure: String?) { self.failure = failure }
+    func save(request: RequestDraft, in collectionID: String) async throws {}
+    func save(environment: EnvironmentDraft) async throws {}
+    private func record(_ event: String) throws {
+        events.append(event)
+        if failure == event { throw WorkspaceMutationError.unsupported }
+    }
+    func saveSecret(name: String, value: String) async throws { try record("identity") }
+    func apply(_ command: SessionWorkspaceCommand) async throws -> WorkspaceDelta {
+        switch command {
+        case .saveWorkspaceProxy: try record("proxy")
+        case .saveWorkspaceSettings: try record("transport")
+        default: preconditionFailure("Unexpected network command")
+        }
+        return WorkspaceDelta(version: UInt64(events.count), kind: .workspace, affectedIDs: [])
+    }
+}
+
+extension ProxySettingsTests {
+    @Test("Workspace Save orders proxy, staged identity and transport and stops at each failure")
+    @MainActor func networkSaveOrderingAndFailures() async throws {
+        for failure in [nil, "proxy", "identity", "transport"] as [String?] {
+            let persistence = NetworkSavePersistence(failure: failure)
+            let model = WireboltModel(runner: SilentRunner(), persistence: persistence)
+            let staged = AppSessionSecrets()
+            let reference = CredentialReference.unique(role: "client-identity", scope: "tls")
+            staged.edit(name: reference, value: "fixture material")
+            var transport = model.workspace.transport
+            transport.clientCertificateReference = reference
+            transport.validateTLS = false
+            do {
+                try await model.saveNetworkSettings(proxy: ProxyFormDraft(configuration: .direct), scope: .workspace,
+                    session: nil, transport: transport, stagedIdentities: staged)
+                #expect(failure == nil)
+                #expect(model.workspace.transport == transport)
+            } catch {
+                #expect(failure != nil)
+                #expect(model.workspace.transport.clientCertificateReference == nil)
+                #expect(model.workspace.transport.validateTLS)
+            }
+            let events = await persistence.events
+            let sequence = ["proxy", "identity", "transport"]
+            let count = failure.flatMap { sequence.firstIndex(of: $0) }.map { $0 + 1 } ?? sequence.count
+            #expect(events == Array(sequence.prefix(count)))
+        }
+    }
+}

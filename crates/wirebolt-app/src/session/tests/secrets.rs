@@ -95,7 +95,7 @@ async fn discarded_undo_releases_owned_names_and_keeps_chosen_names() {
     assert!(platform.values.lock().unwrap().contains_key("chosen-name"));
 }
 #[test]
-fn scan_reads_only_request_and_environment_toml_files() {
+fn scan_reads_request_environment_and_workspace_toml_files() {
     let root = tempfile::tempdir().unwrap();
     std::fs::create_dir_all(root.path().join("collections/api/requests")).unwrap();
     std::fs::create_dir_all(root.path().join("environments")).unwrap();
@@ -109,8 +109,8 @@ fn scan_reads_only_request_and_environment_toml_files() {
         "secret = \"environment-secret\"",
     )
     .unwrap();
-    std::fs::write(root.path().join("wirebolt.toml"), "'ignored'").unwrap();
-    let candidates: Vec<String> = ["request-secret", "environment-secret", "ignored"]
+    std::fs::write(root.path().join("wirebolt.toml"), "'workspace-secret'").unwrap();
+    let candidates: Vec<String> = ["request-secret", "environment-secret", "workspace-secret"]
         .map(str::to_owned)
         .into_iter()
         .collect();
@@ -123,7 +123,11 @@ fn scan_reads_only_request_and_environment_toml_files() {
     );
     assert_eq!(
         found,
-        HashSet::from(["request-secret".into(), "environment-secret".into()])
+        HashSet::from([
+            "request-secret".into(),
+            "environment-secret".into(),
+            "workspace-secret".into()
+        ])
     );
 }
 #[tokio::test]
@@ -227,4 +231,71 @@ async fn loading_does_not_overwrite_an_edited_value() {
         ledger.load("token".into(), &platform).await.unwrap(),
         "edited"
     );
+}
+
+#[tokio::test]
+async fn staged_tls_cancel_replace_and_remove_never_write_abandoned_keys() {
+    use crate::domain::request::credential_reference;
+    let platform = Platform::default();
+    let ledger = SessionSecrets::default();
+    let abandoned = credential_reference("client-identity", "tls");
+    {
+        let cancelled = SessionSecrets::default();
+        cancelled.edit_batch(HashMap::from([(abandoned.clone(), "fixture-key".into())]));
+    }
+    assert!(platform.values.lock().unwrap().is_empty());
+    let staged = SessionSecrets::default();
+    let selected = credential_reference("client-identity", "tls");
+    staged.edit_batch(HashMap::from([
+        (abandoned.clone(), "old-key".into()),
+        (selected.clone(), "new-key".into()),
+    ]));
+    staged
+        .commit_identity(None, &ledger, &platform)
+        .await
+        .unwrap();
+    assert!(platform.values.lock().unwrap().is_empty());
+    staged
+        .commit_identity(Some(&selected), &ledger, &platform)
+        .await
+        .unwrap();
+    assert_eq!(platform.values.lock().unwrap().len(), 1);
+    assert!(!platform.values.lock().unwrap().contains_key(&abandoned));
+    ledger
+        .purge(vec![selected.clone()], vec![], &platform)
+        .await;
+    assert!(
+        platform.deleted.lock().unwrap().is_empty(),
+        "Retain identity while saved or undoable"
+    );
+    ledger.purge(vec![], vec![], &platform).await;
+    assert_eq!(*platform.deleted.lock().unwrap(), [selected]);
+}
+
+#[tokio::test]
+async fn tls_reference_in_another_workspace_prevents_key_deletion() {
+    let root = tempfile::tempdir().unwrap();
+    let name = crate::domain::request::credential_reference("client-identity", "tls");
+    std::fs::write(
+        root.path().join("wirebolt.toml"),
+        format!("[transport]\nclient_certificate_reference = '{name}'"),
+    )
+    .unwrap();
+    let ledger = SessionSecrets::default();
+    let platform = Platform::default();
+    ledger
+        .save(
+            HashMap::from([(name.clone(), "fixture-key".into())]),
+            &platform,
+        )
+        .await
+        .unwrap();
+    ledger
+        .purge(
+            vec![],
+            vec![root.path().to_string_lossy().into_owned()],
+            &platform,
+        )
+        .await;
+    assert!(platform.deleted.lock().unwrap().is_empty());
 }

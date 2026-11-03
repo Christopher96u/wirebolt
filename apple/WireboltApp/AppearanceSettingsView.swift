@@ -62,19 +62,6 @@ struct AppearanceSettingsView: View {
                 }
             }
             SettingsCard {
-                SettingsRow(title: "Canvas & variables", detail: "Theme colors; controls stay neutral.") {
-                    HStack(spacing: WireboltTheme.Spacing.xLarge) {
-                        swatch(theme.definition.window)
-                        swatch(theme.definition.variableForeground)
-                    }
-                }
-                SettingsRow(title: "Contrast", detail: "Checked against the window, sidebar and card surfaces.") {
-                    let surfaces = [theme.definition.window, theme.definition.sidebar, theme.definition.card]
-                    let primary = surfaces.map { theme.primary.contrast(with: $0) }.min() ?? 0
-                    let muted = surfaces.map { theme.muted.contrast(with: $0) }.min() ?? 0
-                    Label(String(format: "Text %.1f:1 · Muted %.1f:1", primary, muted), systemImage: "checkmark")
-                        .foregroundStyle(theme.definition.success.color)
-                }
                 SettingsRow(title: "VS Code theme", detail: "Import a .json color theme, or drop it here. Comments and trailing commas are accepted.") {
                     Button(readingImport ? "Importing…" : "Import…", systemImage: "doc.text") { store.clearError(); importing = true }
                         .disabled(readingImport || !store.isWritable)
@@ -168,15 +155,7 @@ struct AppearanceSettingsView: View {
         .help("Derive a complete theme from a background and an accent color.")
     }
 
-    private func swatch(_ color: PaletteColor) -> some View {
-        HStack(spacing: WireboltTheme.Spacing.medium) {
-            RoundedRectangle(cornerRadius: theme.geometry.chip)
-                .fill(color.color).frame(width: 18, height: 18)
-                .overlay { RoundedRectangle(cornerRadius: theme.geometry.chip).strokeBorder(theme.cardBorder.color) }
-            Text(String(format: "#%02X%02X%02X", Int(color.red), Int(color.green), Int(color.blue)))
-                .font(.system(size: theme.typography.settingsDetail, design: .monospaced))
-        }.foregroundStyle(theme.definition.secondary.color)
-    }
+
 }
 
 struct ThemePreviewCard: View {

@@ -35,7 +35,8 @@ pub use proxy::{
     SecretResolutionError, SecretResolutionErrorKind, SecretResolver,
 };
 pub use request::{
-    HeaderField, PreparedRequest, RequestDraft, RequestPreparationError, prepare_request,
+    HeaderField, PreparedRequest, RequestDraft, RequestPreparationError, parse_method,
+    prepare_request,
 };
 pub use request_pipeline::{
     RequestIssue, RequestIssueKind, RequestPipeline, RequestPipelineError, append_query_pairs,

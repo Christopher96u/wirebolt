@@ -92,20 +92,21 @@ fn json_messages_preserve_foundation_tolerance_and_original_bytes() {
 }
 
 #[test]
-fn normal_server_close_preserves_the_last_send_error_and_failed_notice() {
+fn normal_server_close_preserves_send_error_beside_composer() {
     let mut socket = SessionSocket::default();
     let generation = socket.begin().unwrap();
     socket.connected(&generation, vec![], "wss://example.com");
     let error = message_body(&DomainBody::Json { value: "{".into() }).unwrap_err();
-    socket.set_error(Some(error.clone()));
+    socket.set_send_error(Some(error.clone()));
     socket.closed(&generation);
     socket.finish(&generation, None);
     let snapshot = socket.snapshot();
     assert_eq!(snapshot.status, SessionSocketStatus::Disconnected);
-    assert_eq!(snapshot.error.as_deref(), Some(error.as_str()));
+    assert_eq!(snapshot.send_error.as_deref(), Some(error.as_str()));
+    assert!(snapshot.error.is_none());
     let notice = snapshot.messages.last().unwrap();
-    assert_eq!(notice.notice, Some(SessionSocketNotice::Failed));
-    assert_eq!(notice.text, error);
+    assert_eq!(notice.notice, Some(SessionSocketNotice::Disconnected));
+    assert_eq!(notice.text, "Disconnected");
 }
 
 #[test]
@@ -113,7 +114,7 @@ fn receive_error_replaces_a_send_error_but_a_clean_close_stays_disconnected() {
     for previous in [None, Some("send failed".into())] {
         let mut socket = SessionSocket::default();
         let generation = socket.begin().unwrap();
-        socket.set_error(previous);
+        socket.set_send_error(previous);
         socket.finish(&generation, Some("receive failed".into()));
         let snapshot = socket.snapshot();
         assert_eq!(snapshot.error.as_deref(), Some("receive failed"));
@@ -261,5 +262,42 @@ fn composer_edits_keep_the_kind_and_encoding() {
     assert_eq!(
         message_draft(&editing_message(&typed_path, "/tmp/a".into())).kind,
         SessionMessageKind::File
+    );
+}
+
+#[test]
+fn binary_encoding_formats_complete_large_payloads_in_lowercase_hex() {
+    let mut data = vec![b'x'; 65_536];
+    data.extend_from_slice(b"END");
+    let hex = SessionBinaryEncoding::Hex.encode(&data);
+    assert_eq!(hex.len(), data.len() * 3 - 1);
+    assert!(hex.ends_with("45 4e 44"));
+    assert_eq!(
+        SessionBinaryEncoding::Hex.encode(&[0, 15, 16, 255]),
+        "00 0f 10 ff"
+    );
+    assert!(SessionBinaryEncoding::Hex.encode(&[]).is_empty());
+}
+
+#[test]
+fn socket_toggle_allows_disconnect_without_url() {
+    for status in [
+        SessionSocketStatus::Connecting,
+        SessionSocketStatus::Connected,
+    ] {
+        assert!(can_toggle(&status, false));
+    }
+    assert!(!can_toggle(&SessionSocketStatus::Disconnected, false));
+    assert!(can_toggle(&SessionSocketStatus::Disconnected, true));
+}
+#[test]
+fn connect_failure_has_no_composer_send_error() {
+    let mut socket = SessionSocket::default();
+    let generation = socket.begin().unwrap();
+    socket.finish(&generation, Some("connection refused".into()));
+    assert!(socket.snapshot().send_error.is_none());
+    assert_eq!(
+        socket.snapshot().error.as_deref(),
+        Some("connection refused")
     );
 }

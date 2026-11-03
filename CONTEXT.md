@@ -95,7 +95,7 @@ its workspace. Runtime storage remains outside Git-visible workspace files.
 ## Invariants
 
 1. No secret material is serialized to workspace, Git, history, diagnostics,
-   raw-request views, or exports.
+   prepared-request views, or exports.
 2. A run snapshot is immutable and attributable to exactly one `RunID`.
 3. Tabs and editor groups never share mutable draft or response state.
 4. Large uploads and downloads stay streaming and file-backed.

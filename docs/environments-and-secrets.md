@@ -7,8 +7,8 @@
 1. Open the environment menu in the toolbar and choose **Configure Environments…**.
 2. Select **Globals**, or create a named environment with **New Environment**.
 3. Click **New Entry**, then edit the variable name and value. Keep the row checked to enable it. Click the lock button to make the value a secret.
-4. Finish a field with Return, Tab or by moving focus. Each change saves immediately and can be undone with **⌘Z** or redone with **⇧⌘Z**. Closing the inspector also saves the field you are editing. Invalid names stay visible with an inline explanation; correct them before closing or switching environments.
-5. Choose **Use for Requests** for the environment you are editing, or select it in the composer's environment picker. Browsing the inspector, including Globals, never changes the active environment. The active environment is marked **Active**.
+4. Finish a field with Return, Tab or by moving focus. Each change saves immediately and can be undone with **⌘Z** or redone with **⇧⌘Z**. Closing the inspector also saves the field you are editing. Invalid names stay visible with an inline explanation; correct them before closing or switching environments. If an edited row or environment is removed, its unfinished edit is discarded automatically. A notice above the inspector includes the discarded text and a **Copy Discarded Edits** button; it never blocks closing, switching or quitting.
+5. Choose **Use Globals Only** for Globals or **Use for Requests** for the environment you are editing, or select it in the composer's environment picker. Browsing the inspector, including Globals, never changes the active environment. The active environment is marked **Active**.
 
 Use variables in request fields with double braces:
 
@@ -30,7 +30,7 @@ In **Configure Environments…**, click a variable's lock button (or choose **Ma
 
 - The value field is masked; use the eye button to show it.
 - Finishing an edit writes the value to a fresh Keychain item and saves only its reference in the environment file. Undo and redo restore the previous value without storing credential material in workspace files or undo steps.
-- Requests use a secret variable like any other: `{{token}}`. Headers and bodies that use it are redacted in the sent-request view.
+- Requests use a secret variable like any other: `{{token}}`. Headers and bodies that use it are redacted in the Prepared Request view.
 - Click the lock again (**Store in Workspace File**) to turn it back into a literal; the value is then saved in the environment file.
 
 Each secret variable has its own Keychain item, so renaming the key keeps its value. A teammate who pulls the workspace sees the variable with an empty value and enters their own. Removing a secret variable or its environment deletes the Keychain item when you open another workspace, a pull reloads the workspace, or you quit; references you typed yourself, such as proxy credentials, are never deleted, and neither are items another workspace in **File → Open Recent** still references.

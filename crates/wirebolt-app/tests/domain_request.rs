@@ -229,7 +229,15 @@ fn auth_renames_preserve_sharing_within_one_copy() {
 }
 #[test]
 fn method_normalization_accepts_custom_tokens() {
-    for input in ["get", " GET ", "pRopFind", "QUERY", "X-42"] {
+    for input in [
+        "get",
+        " GET ",
+        "pRopFind",
+        "QUERY",
+        "X-42",
+        "FOO_BAR",
+        "!#$%&'*+-.^_`|~",
+    ] {
         assert!(normalize_method(input).is_some());
     }
     for input in ["", " \n", "BAD METHOD", "GET/", "💥"] {
@@ -429,4 +437,61 @@ fn bulk_fields_accept_crlf_cr_and_lf_without_changing_value_content() {
         assert_eq!(fields[1].value.editable(), "a  b\tc:d");
         assert!(!fields[2].enabled);
     }
+}
+
+#[test]
+fn custom_method_uses_transport_validation() {
+    for byte in 0..=127u8 {
+        let method = format!("FOO{}BAR", char::from(byte));
+        assert_eq!(
+            normalize_method(&method).is_some(),
+            wirebolt_core::parse_method(&method).is_ok(),
+            "{method:?}"
+        );
+    }
+    assert_eq!(normalize_method(" foo_bar ").as_deref(), Some("FOO_BAR"));
+}
+
+#[test]
+fn tls_identity_references_belong_to_requests_and_workspaces() {
+    let name = credential_reference("client-identity", "tls");
+    assert!(owned_reference(&name));
+    let transport = DomainTransport {
+        client_certificate_reference: Some(name.clone()),
+        ..Default::default()
+    };
+    let draft = DomainRequestDraft {
+        transport: transport.clone(),
+        ..Default::default()
+    };
+    assert!(request_references(&draft).contains(&name));
+    let workspace = DomainWorkspace {
+        transport,
+        ..Default::default()
+    };
+    assert!(workspace_references(&workspace).contains(&name));
+}
+
+#[test]
+fn bulk_serialization_round_trips_disabled_rows_secrets_and_metadata() {
+    let mut rows = vec![
+        field("X-Enabled", "value: with colon"),
+        field("X-Disabled", "off"),
+    ];
+    rows[1].enabled = false;
+    rows.push(DomainField {
+        id: "secret".into(),
+        name: "Authorization".into(),
+        value: DomainValueSource::Secret {
+            secret: "fixture.token".into(),
+        },
+        enabled: true,
+        ..Default::default()
+    });
+    let text = serialize_bulk(&rows);
+    assert_eq!(
+        text,
+        "X-Enabled: value: with colon\n# X-Disabled: off\nAuthorization: fixture.token"
+    );
+    assert_eq!(parse_bulk(&text, rows.clone()), rows);
 }
