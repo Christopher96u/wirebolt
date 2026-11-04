@@ -53,7 +53,8 @@ Native title/method updates carry bounded metadata, without synchronizing drafts
   highlight. Esc or Backspace on an empty query restores that parent.
 - Esc at root, ⌘K, ⌘W or scrim/close button → closed: remove isolation, then restore
   the original responder and bounded UTF-16 selection after layout, provided the
-  workspace, active group/tab and responder are still valid.
+  workspace, active group/tab and responder are still valid. Otherwise, within
+  the same workspace, focus the current editor or sidebar.
 - Confirm: refresh metadata and eligibility; resolve stable identity once. Missing
   or unavailable destinations keep the palette open with a reason. A request
   selects its existing tab in the active group first, then another group, or opens

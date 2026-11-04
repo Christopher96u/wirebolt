@@ -37,6 +37,12 @@ and does not generate a warning when the workspace opens again.
 
 ### Keyboard
 
+**Navigate → Command Palette…** (**⌘K**) finds requests across the workspace,
+including collapsed folders and requests hidden by the sidebar filter, plus open
+tabs and navigation actions. Highlight with ↑ / ↓ and confirm with Return; Esc
+closes it. See [Keyboard shortcuts](keyboard-shortcuts.md#in-context) for filters
+and submenu keys.
+
 When the sidebar has focus, its selection is outlined:
 
 - **↑ / ↓** move through every visible row, including collections and folders. Selecting a request opens it.
