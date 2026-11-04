@@ -19,5 +19,6 @@ swiftc -O -g -whole-module-optimization -parse-as-library -emit-executable -swif
   -emit-module-path build/native-adapter-tests.swiftmodule \
   -target arm64-apple-macosx15.0 -o build/native-adapter-tests \
   apple/Tests/NativeAdapterTests.swift apple/Tests/NativeTestSupport.swift apple/Tests/CustomThemeNativeTests.swift \
-  apple/Tests/EnvironmentInspectorTests.swift "${wirebolt_app_inputs[@]}"
+  apple/Tests/EnvironmentInspectorTests.swift apple/Tests/CommandPaletteNativeTests.swift \
+  apple/Tests/WireboltKitTests/RuntimeRunFixture.swift "${wirebolt_app_inputs[@]}"
 python3 scripts/swift-tests.py --log build/native-adapter-tests.log build/native-adapter-tests

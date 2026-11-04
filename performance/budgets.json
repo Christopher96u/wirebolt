@@ -30,5 +30,9 @@
   "indexedSearchCappedP95Milliseconds": 200,
   "indexedSearchAbsentP95Milliseconds": 350,
   "indexedSearchTwoQueryPeakMebibytes": 550,
-  "nativeTabCloseCommandP95Milliseconds": 8
+  "nativeTabCloseCommandP95Milliseconds": 8,
+  "commandPaletteCalibrationMachine": "Apple M5 Pro, 15 cores, 24 GB; nativeCommandPalette* only",
+  "nativeCommandPaletteWarmOpenP95Milliseconds": 50,
+  "nativeCommandPaletteQueryP95Milliseconds": 25,
+  "nativeCommandPaletteTypingP95Milliseconds": 16
 }

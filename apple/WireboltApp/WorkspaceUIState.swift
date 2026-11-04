@@ -109,8 +109,12 @@ struct SidebarMoveCommands: Equatable {
 @MainActor
 @Observable
 final class WorkspaceUIState {
+    var commandPalette: CommandPaletteController?
+    @ObservationIgnored var isWorkspaceWindowActive: (NSWindow) -> Bool = { $0 === NSApp.keyWindow }
+    @ObservationIgnored var openAuxiliaryWindow: ((String) -> Void)?
+    @ObservationIgnored var sidebarHasFocus = false
     var sidebarDragIdentifier: String?
-    @ObservationIgnored private let defaults: UserDefaults
+    @ObservationIgnored let defaults: UserDefaults
     @ObservationIgnored private let rustInterface = AppWorkspaceInterface()
 
     var columnVisibility = NavigationSplitViewVisibility.all
@@ -201,10 +205,12 @@ final class WorkspaceUIState {
     }
     /// Moves keyboard focus into the active editor group's response content.
     var focusResponseTrigger = 0
+    var focusRequestContentTrigger = 0
     var collectionsExpanded = true
     var isShowingEnvironmentInspector = false
     @ObservationIgnored var closeEnvironmentInspector: (@MainActor () async -> Bool)?
     var environmentCloseTrigger = 0
+    var environmentFocusTrigger = 0
 
     func toggleEnvironmentInspector() {
         if isShowingEnvironmentInspector { environmentCloseTrigger += 1 }
@@ -274,44 +280,30 @@ final class WorkspaceUIState {
         PerformanceProbe.tabSwitched()
     }
 
-    func makeNewRequest(model: WireboltModel, kind: DocumentKind = .http) {
-        persistActivePresentation()
+    func makeNewRequest(model: WireboltModel, kind: DocumentKind = .http, collectionID: String? = nil, groupID: String? = nil) {
         Task {
-            guard let session = await model.createRequest(kind: kind) else { return }
-            activeTabID = session.id
-            presentationByTabID[session.id] = DocumentPresentationState()
-            requestSection = kind == .http ? .params : .body
-            responseSection = .body
-            renamingRequestID = nil
-            pendingURLFocusID = session.id
-            focusURLTrigger += 1
+            guard let session = await prepareNewRequest(model: model, kind: kind, collectionID: collectionID, groupID: groupID) else { return }
+            finishNewRequest(session)
         }
     }
 
-    func makeNewRequest(
-        model: WireboltModel,
-        kind: DocumentKind = .http,
-        collectionID: String,
-        groupID: String? = nil
-    ) {
+    func prepareNewRequest(model: WireboltModel, kind: DocumentKind, collectionID: String? = nil, groupID: String? = nil) async -> DocumentSession? {
         persistActivePresentation()
-        Task {
-            guard let session = await model.createRequest(
-                kind: kind,
-                collectionID: collectionID,
-                groupID: groupID
-            ) else { return }
-            activeTabID = session.id
-            presentationByTabID[session.id] = DocumentPresentationState()
-            requestSection = kind == .http ? .params : .body
-            responseSection = .body
-            renamingRequestID = nil
-            pendingURLFocusID = session.id
-            focusURLTrigger += 1
-        }
+        return await model.createRequest(kind: kind, collectionID: collectionID, groupID: groupID)
+    }
+
+    func finishNewRequest(_ session: DocumentSession) {
+        activeTabID = session.id
+        presentationByTabID[session.id] = DocumentPresentationState()
+        requestSection = session.kind == .http ? .params : .body
+        responseSection = .body
+        renamingRequestID = nil
+        pendingURLFocusID = session.id
+        focusURLTrigger += 1
     }
 
     func resetForWorkspace(model: WireboltModel) {
+        commandPalette?.dismiss(restoringFocus: false)
         rustInterface.reset()
         closeRevision += 1
         isShowingEnvironmentInspector = false

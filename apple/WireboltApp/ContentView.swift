@@ -16,6 +16,7 @@ struct ContentView: View {
     @State private var liveSidebarWidth: Double?
     @State private var sidebarDragOrigin: Double?
     @Environment(\.wireboltTheme) private var theme
+    @Environment(\.openWindow) private var openWindow
     @State private var isDropTargeted = false
     private var sidebarWidth: Double { liveSidebarWidth ?? storedSidebarWidth }
     /// Until the first workspace load finishes, show placeholders instead of an empty sidebar
@@ -25,10 +26,23 @@ struct ContentView: View {
     var body: some View {
         workspaceWithDialogs
             .blur(radius: model.isShowingAppSettings ? 4 : 0)
-            .disabled(model.isShowingAppSettings)
-            .allowsHitTesting(!model.isShowingAppSettings)
-            .accessibilityHidden(model.isShowingAppSettings)
+            .disabled(model.isShowingAppSettings || interface.commandPalette?.blocksWorkspace == true)
+            .allowsHitTesting(!model.isShowingAppSettings && interface.commandPalette?.blocksWorkspace != true)
+            .accessibilityHidden(model.isShowingAppSettings || interface.commandPalette?.blocksWorkspace == true)
             .overlay { SettingsModal(model: model) }
+            .overlay {
+                if let palette = interface.commandPalette, palette.presentation == .presented || palette.presentation == .executing {
+                    CommandPaletteView(controller: palette)
+                }
+            }
+            .onAppear {
+                let open = openWindow
+                interface.openAuxiliaryWindow = { open(id: $0) }
+            }
+            .onChange(of: model.workspaceEpoch) { interface.commandPalette?.dismiss(restoringFocus: false) }
+            .onChange(of: interface.workspaceInteractionBlocked(model: model)) {
+                if interface.workspaceInteractionBlocked(model: model) { interface.commandPalette?.dismiss(restoringFocus: false) }
+            }
     }
 
     private var workspacePanels: some View {
@@ -528,6 +542,7 @@ private struct WorkspaceSidebar: View {
             if sidebarIsFocused { SidebarFocusRing(model: model, interface: interface) }
         }
         .focusable().focusEffectDisabled().focused($sidebarIsFocused)
+        .onChange(of: sidebarIsFocused, initial: true) { interface.sidebarHasFocus = sidebarIsFocused }
         .modifier(SidebarMoveFocusedValue(model: model, interface: interface, isFocused: sidebarIsFocused))
         .onChange(of: interface.focusSidebarTrigger) {
             if !interface.isRenamingInSidebar { sidebarIsFocused = true }
@@ -1746,6 +1761,7 @@ private struct EditorGroupDeck: View {
                         session: session,
                         groupID: groupID
                     )
+                    .background { ContentFocusAnchor(trigger: interface.focusRequestContentTrigger, isActive: model.sessions.activeGroupID == groupID) }
                 } response: {
                     Group {
                     if session.kind == .http {
@@ -1766,7 +1782,7 @@ private struct EditorGroupDeck: View {
                             .id(session.id)
                     }
                     }
-                    .background { ResponseFocusAnchor(model: model, interface: interface, groupID: groupID) }
+                    .background { ContentFocusAnchor(trigger: interface.focusResponseTrigger, isActive: model.sessions.activeGroupID == groupID) }
                 }
                 .environment(\.editorStorage, presentation.editorStorage)
                 .simultaneousGesture(TapGesture().onEnded {
@@ -2115,39 +2131,28 @@ private struct DocumentTabLabel: View {
     }
 }
 
-/// Navigate ▸ Focus Response: moves keyboard focus to the largest focusable view inside the
-/// active group's response pane (the body editor, hex view, JSON tree or message table).
+/// Moves keyboard focus into the active group's selected request or response content.
+/// Editable content uses its native responder; static content uses the pane responder.
 /// Isolated so only this view observes the trigger and the active group.
-private struct ResponseFocusAnchor: View {
-    let model: WireboltModel
-    let interface: WorkspaceUIState
-    let groupID: String
-    /// The trigger when this pane appeared: a pane that appears later must not steal focus
-    /// for an earlier request.
+private struct ContentFocusAnchor: View {
+    let trigger: Int
+    let isActive: Bool
     @State private var appearedTrigger: Int
 
-    init(model: WireboltModel, interface: WorkspaceUIState, groupID: String) {
-        self.model = model
-        self.interface = interface
-        self.groupID = groupID
-        _appearedTrigger = State(initialValue: interface.focusResponseTrigger)
+    init(trigger: Int, isActive: Bool) {
+        self.trigger = trigger
+        self.isActive = isActive
+        _appearedTrigger = State(initialValue: trigger)
     }
-
     var body: some View {
-        // The anchor view is added on the first Focus Response for this pane, so switching
-        // tabs (which remounts the pane) does not create an AppKit view each time.
-        if interface.focusResponseTrigger != appearedTrigger {
-            ResponseFocusBridge(
-                trigger: interface.focusResponseTrigger,
-                handledTrigger: appearedTrigger,
-                isActive: model.sessions.activeGroupID == groupID
-            )
-            .accessibilityHidden(true)
+        if trigger != appearedTrigger {
+            ContentFocusBridge(trigger: trigger, handledTrigger: appearedTrigger, isActive: isActive)
+                .accessibilityHidden(true)
         }
     }
 }
 
-private struct ResponseFocusBridge: NSViewRepresentable {
+private struct ContentFocusBridge: NSViewRepresentable {
     let trigger: Int
     /// The last trigger this pane already handled when the anchor is created.
     let handledTrigger: Int
@@ -2170,6 +2175,7 @@ private struct ResponseFocusBridge: NSViewRepresentable {
         var handledTrigger = 0
 
         override func hitTest(_: NSPoint) -> NSView? { nil }
+        override var acceptsFirstResponder: Bool { true }
 
         func focusLargestResponder() {
             guard let window, let root = window.contentView else { return }
@@ -2188,7 +2194,8 @@ private struct ResponseFocusBridge: NSViewRepresentable {
                 }
             }
             visit(root)
-            if let target = best?.view { window.makeFirstResponder(target) } else { NSSound.beep() }
+            // Empty sections and static tables still need a content responder.
+            window.makeFirstResponder(best?.view ?? self)
         }
     }
 }

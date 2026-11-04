@@ -95,6 +95,10 @@ enum DraftWorkProbe {
             try? FileManager.default.removeItem(at: root)
         }
         let captureDirectory = ProcessInfo.processInfo.environment["WIREBOLT_NATIVE_CAPTURE_DIRECTORY"].map { URL(fileURLWithPath: $0) }
+        if ProcessInfo.processInfo.environment["WIREBOLT_NATIVE_TEST_FILTER"] == "command-palette" {
+            try await CommandPaletteNativeTests.run(root: root, defaults: defaults, screenshots: captureDirectory)
+            return
+        }
         try await CustomThemeNativeTests.run(root: root, defaults: defaults, screenshots: captureDirectory)
         try await EnvironmentInspectorTests.run(root: root, defaults: defaults, screenshots: captureDirectory)
         try await auditNavigationAndSettings(root: root, defaults: defaults, screenshots: captureDirectory)
@@ -103,6 +107,7 @@ enum DraftWorkProbe {
         try await auditCookieRemovalFailure(root: root, defaults: defaults)
         try await auditPreparedRequestCopy(defaults: defaults)
         try await workspaceIdentitySaveFreezesSelection(root: root, defaults: defaults)
+        try await CommandPaletteNativeTests.run(root: root, defaults: defaults, screenshots: captureDirectory)
         typingAssignmentsAvoidDraftWork()
         lastTabDirtyConfirmAndReopen(root: root, defaults: defaults)
     }

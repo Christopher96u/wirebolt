@@ -12,6 +12,7 @@ struct EnvironmentEditor: View {
     @State private var inspector: AppEnvironmentInspector
     @State private var selectedID: String
     @State private var editingNameID: String?
+    @FocusState private var closeIsFocused: Bool
     @State private var revealedSecretIDs: Set<String> = []
 
     init(model: WireboltModel, interface: WorkspaceUIState, closeTrigger: Int, onClose: @escaping () -> Void) {
@@ -36,6 +37,7 @@ struct EnvironmentEditor: View {
                 Spacer()
                 Button("Close Inspector", systemImage: "xmark") { Task { _ = await close() } }
                     .labelStyle(.iconOnly).buttonStyle(GhostIconStyle())
+                    .focused($closeIsFocused)
             }
             if let message = model.environmentEditingNotice {
                 EnvironmentEditNotice(message: message) { model.dismissEnvironmentEditingNotice() }
@@ -69,6 +71,14 @@ struct EnvironmentEditor: View {
             editing.reconcile()
             selectedID = inspector.browseActive(environments: model.workspace.environments.map(\.domain), active: model.selectedEnvironmentID)
             interface.closeEnvironmentInspector = close
+        }
+        .onChange(of: interface.environmentFocusTrigger, initial: true) {
+            guard interface.environmentFocusTrigger > 0, !interface.isCommandPaletteOpen else { return }
+            closeIsFocused = true
+            if let problem = editing.drafts.first(where: { editing.problems[$0.field] != nil }) {
+                selectedID = inspector.browse(id: environmentFieldCommit(field: problem.field, text: problem.text).environmentId)
+                if case .name = problem.field { editingNameID = selectedID }
+            }
         }
         .onDisappear { interface.closeEnvironmentInspector = nil }
         .focusedValue(\.environmentAddRow, addRow)
@@ -199,7 +209,8 @@ struct EnvironmentEditor: View {
 
     private func field(_ id: EnvironmentField, text: String, label: String, secret: Bool = false) -> some View {
         EnvironmentInspectorField(text: Binding(get: { editing.text(for: id) ?? text }, set: { editing.edit(id, text: $0) }), label: label, secret: secret,
-            font: .monospacedSystemFont(ofSize: theme.typography.field * fieldScale, weight: .regular)) { editing.commit(id) }
+            font: .monospacedSystemFont(ofSize: theme.typography.field * fieldScale, weight: .regular),
+            focusRequest: editing.problems[id] != nil ? interface.environmentFocusTrigger : 0) { editing.commit(id) }
             .id(secret)
             .frame(minHeight: max(theme.density.controlHeight, theme.typography.field * fieldScale + 8))
     }
@@ -247,6 +258,7 @@ struct EnvironmentInspectorField: NSViewRepresentable {
     let label: String
     let secret: Bool
     let font: NSFont
+    var focusRequest = 0
     let onCommit: () -> Void
 
     func makeCoordinator() -> Coordinator { Coordinator(self) }
@@ -270,9 +282,17 @@ struct EnvironmentInspectorField: NSViewRepresentable {
         field.placeholderString = label
         field.setAccessibilityLabel(label)
         field.toolTip = secret ? nil : text
+        if focusRequest > 0, context.coordinator.consumedFocus != focusRequest {
+            context.coordinator.consumedFocus = focusRequest
+            DispatchQueue.main.async { [weak field] in
+                guard let field, let window = field.window else { return }
+                window.makeFirstResponder(field)
+            }
+        }
     }
     final class Coordinator: NSObject, NSTextFieldDelegate {
         var parent: EnvironmentInspectorField
+        var consumedFocus = 0
         init(_ parent: EnvironmentInspectorField) { self.parent = parent }
         func controlTextDidChange(_ notification: Notification) {
             guard let field = notification.object as? NSTextField else { return }

@@ -30,7 +30,11 @@ wirebolt_app_inputs=(
   apple/Sources/WireboltKit/WorkspaceOperations.swift
   apple/Sources/WireboltKit/SidebarSnapshot.swift
   apple/Sources/WireboltKit/VariableTemplates.swift
+  apple/Sources/WireboltKit/CommandPalette.swift
   apple/Sources/WireboltKit/WorkspaceChrome.swift
+  apple/WireboltApp/CommandPaletteController.swift
+  apple/WireboltApp/CommandPaletteView.swift
+  apple/WireboltApp/WorkspaceCommandDispatch.swift
   apple/WireboltApp/WorkspaceUIState.swift
   apple/WireboltApp/ContentView.swift
   apple/WireboltApp/CustomHTTPMethodEditor.swift

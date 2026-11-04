@@ -197,6 +197,7 @@ pub enum SessionWorkspaceCommand {
 
 #[uniffi::remote(Record)]
 pub struct SessionWorkspacePlan {
+    palette_change: wirebolt_app::domain::palette::PaletteWorkspaceChange,
     commands: Vec<SessionWorkspaceCommand>,
     inverse: SessionWorkspaceEdit,
     collections: Vec<DomainCollection>,

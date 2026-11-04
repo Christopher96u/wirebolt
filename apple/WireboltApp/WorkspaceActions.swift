@@ -1,6 +1,8 @@
 import AppKit
 import SwiftUI
 
+let helpWindowID = "help"
+
 @MainActor
 func chooseWorkspace(model: WireboltModel, interface: WorkspaceUIState, create: Bool) {
     guard !model.isLoadingWorkspace, !model.isGitBusy, !model.isOAuthBusy else { return }
@@ -134,6 +136,7 @@ func finishEnvironmentEditing(model: WireboltModel, interface: WorkspaceUIState,
 /// The window close button and File ▸ Close Window route here so unsaved edits are confirmed.
 @MainActor
 func requestWorkspaceWindowClose(_ window: NSWindow, model: WireboltModel, interface: WorkspaceUIState) {
+    interface.commandPalette?.dismiss(restoringFocus: false)
     Task {
         guard await finishEnvironmentEditing(model: model, interface: interface, in: window) else { return }
         guard await confirmUnsavedChanges(model: model, in: window, quitting: false) else { return }
@@ -227,7 +230,7 @@ struct WireboltHelpView: View {
         ("WebSocket", "Create a WebSocket request, enter ws:// or wss:// and Connect. Choose Text, JSON, Binary (Hex/Base64) or File for messages. Send transmits the selected representation. Disconnect ends the connection; reconnect applies updated settings."),
         ("Notes", "Write Markdown in Note → Edit. Preview renders headings, lists, emphasis, links and code locally when opened. Save with ⌘S. Images show alternative text; previews do not fetch remote content."),
         ("Git collaboration", "Workspace → Git Collaboration opens status, commit, pull and push. The workspace folder must be the root of its Git repository; if it isn't a repository yet, choose Initialize Git Repository. Configure its remote/upstream and authentication with Git. Only saved workspace documents are committed. Save or discard edits before pulling. After a conflicted pull, resolve the listed files with Git or choose Abort Merge to return to your last commit. Wirebolt does not sync in the background."),
-        ("Keyboard shortcuts", "⌘N new request · ⌥⌘N new folder · ⇧⌘N new collection · ⌘S save · ⌘W close tab · ⇧⌘W close window · ⌘Return send · ⌘. cancel request · ⌃⌘Return connect/disconnect · ⌘L edit URL · ⇧⌘K add key · ⌘B bulk edit · ⌥⇧⌘C copy cURL · ⇧⌘F filter requests · ⌘0 focus sidebar · ⌥⌘0 focus response · ⌥⌘1–6 request sections · ⌃⌘1–5 response sections · ⇧⌘D split right · ⇧⌘] / ⇧⌘[ or ⌃Tab / ⌃⇧Tab next / previous tab · ⌘1–9 select tab · ⌃⌘G Git collaboration. The menus list every shortcut."),
+        ("Keyboard shortcuts", "⌘K command palette · ⌘N new request · ⌥⌘N new folder · ⇧⌘N new collection · ⌘S save · ⌘W close tab · ⇧⌘W close window · ⌘Return send · ⌘. cancel request · ⌃⌘Return connect/disconnect · ⌘L edit URL · ⇧⌘K add key · ⌘B bulk edit · ⌥⇧⌘C copy cURL · ⇧⌘F filter requests · ⌘0 focus sidebar · ⌥⌘0 focus response · ⌥⌘1–6 request sections · ⌃⌘1–5 response sections · ⇧⌘D split right · ⇧⌘] / ⇧⌘[ or ⌃Tab / ⌃⇧Tab next / previous tab · ⌘1–9 select tab · ⌃⌘G Git collaboration. The menus list every shortcut."),
     ]
     var body: some View {
         ScrollView {

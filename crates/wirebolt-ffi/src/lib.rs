@@ -1,3 +1,4 @@
+mod command_palette;
 uniffi::setup_scaffolding!();
 mod app_domain;
 mod app_pem;

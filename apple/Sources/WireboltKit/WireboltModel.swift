@@ -128,6 +128,15 @@ public final class WireboltModel {
             if !mirroringWorkspace { workspaceNeedsSynchronization = true }
         }
     }
+    public private(set) var workspaceEpoch: UInt64 = 0
+    @ObservationIgnored private var cachedCommandPalette: CommandPaletteProjection?
+    /// Created only when the native palette is first requested.
+    public func commandPaletteProjection() -> CommandPaletteProjection {
+        if let cachedCommandPalette { return cachedCommandPalette }
+        let projection = CommandPaletteProjection()
+        cachedCommandPalette = projection
+        return projection
+    }
     @ObservationIgnored private let rustWorkspace: AppWorkspaceSession
     @ObservationIgnored private let rustOperations: AppWorkspaceOperations
     @ObservationIgnored private var mirroringWorkspace = false
@@ -934,6 +943,7 @@ public final class WireboltModel {
     }
 
     private func applyLoadedWorkspace(_ loaded: WorkspaceLoad, restoring layout: SessionLayout? = nil) {
+        workspaceEpoch &+= 1
         mirroringWorkspace = true
         workspaceLoadNotice = loaded.diagnostics.notice
         workspace = WorkspaceDraft(domain: loaded.workspace)
@@ -1095,13 +1105,15 @@ extension WireboltModel {
     }
 
     private func applyMutation(_ result: WorkspaceMutation) {
+        let previousRevision = workspace.collectionsRevision
+        let refreshSidebar = sidebarSnapshot != nil
         mirroringWorkspace = true
         defer { mirroringWorkspace = false }
         if let root = result.root, !workspace.collections.contains(where: { $0.id == root.id }) {
             workspace.collections.insert(CollectionDraft(domain: root), at: 0)
         }
         guard let plan = result.plan else { return }
-        workspace.collections.removeAll { plan.removedCollectionIds.contains($0.id) }
+        if !plan.removedCollectionIds.isEmpty { workspace.collections.removeAll { plan.removedCollectionIds.contains($0.id) } }
         for collection in plan.collections {
             let projected = CollectionDraft(domain: collection)
             if let index = workspace.collections.firstIndex(where: { $0.id == collection.id }) {
@@ -1127,6 +1139,12 @@ extension WireboltModel {
                 mirrorRuntime()
             }
         }
+        // Publish a current retained outline before the edit completes. Otherwise its
+        // deferred 10k-row rebuild lands in the next palette's first layout/display.
+        if refreshSidebar, workspace.collectionsRevision != previousRevision {
+            sidebarSnapshot = SidebarSnapshot(collections: workspace.collections)
+        }
+        cachedCommandPalette?.applyWorkspaceChange(plan.paletteChange, previousRevision: previousRevision, model: self)
     }
 }
 
