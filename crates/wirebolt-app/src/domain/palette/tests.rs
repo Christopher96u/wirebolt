@@ -1,7 +1,7 @@
 use super::*;
 use crate::domain::{
-    DomainAuthentication, DomainBody, DomainCollection, DomainField, DomainLocation,
-    DomainRequestDraft, DomainValueSource,
+    DomainAuthentication, DomainBody, DomainCollection, DomainEnvironment, DomainField,
+    DomainLocation, DomainRequestDraft, DomainValueSource, DomainVariable,
 };
 
 fn collection(names: &[&str]) -> PaletteCollection {
@@ -256,10 +256,21 @@ fn privacy_projection_excludes_all_content_sentinels() {
     };
     let mut palette = CommandPalette::default();
     palette.replace_workspace(vec![PaletteCollection::from(&collection)]);
+    let environment = DomainEnvironment {
+        id: "env".into(),
+        name: "Staging".into(),
+        variables: vec![DomainVariable {
+            key: "environment-variable-sentinel".into(),
+            value: DomainValueSource::Secret {
+                secret: "secret-material-sentinel".into(),
+            },
+            ..DomainVariable::default()
+        }],
+    };
     palette.update_choices(
         vec![PaletteChoice {
-            id: "env".into(),
-            name: "Staging".into(),
+            id: environment.id,
+            name: environment.name,
         }],
         vec![],
         None,

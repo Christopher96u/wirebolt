@@ -419,7 +419,11 @@ impl CommandPalette {
                     } else {
                         ""
                     },
-                    descriptor.key.to_uppercase()
+                    match descriptor.key.as_str() {
+                        "\u{f702}" => "←".into(),
+                        "\u{f703}" => "→".into(),
+                        _ => descriptor.key.to_uppercase(),
+                    }
                 );
                 Entry::new(
                     PaletteResult {

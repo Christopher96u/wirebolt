@@ -146,3 +146,18 @@ actor FixtureIdentityStore: WorkspacePersistence {
         return WorkspaceDelta(version: 1, kind: .workspace, affectedIDs: [])
     }
 }
+
+/// Workspace loaded entirely in process; secret access is an immediate fixture failure.
+actor PaletteFixtureStore: WorkspacePersistence {
+    let workspace: WorkspaceDraft
+    init(_ workspace: WorkspaceDraft) { self.workspace = workspace }
+    func loadResult() async throws -> WorkspaceLoadResult {
+        WorkspaceLoadResult(workspace: workspace.domain, diagnostics: WorkspaceLoadDiagnostics(problems: [], omitted: 0, notice: nil))
+    }
+    func apply(_ command: SessionWorkspaceCommand) async throws -> WorkspaceDelta {
+        WorkspaceDelta(version: 1, kind: .workspace, affectedIDs: [])
+    }
+    func save(request: RequestDraft, in collectionID: String) async throws {}
+    func save(environment: EnvironmentDraft) async throws {}
+    func saveSecret(name: String, value: String) async throws { preconditionFailure("Palette fixtures never write secrets") }
+}
