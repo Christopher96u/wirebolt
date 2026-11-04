@@ -129,6 +129,14 @@ public final class WireboltModel {
         }
     }
     public private(set) var workspaceEpoch: UInt64 = 0
+    @ObservationIgnored private var cachedCommandPalette: CommandPaletteProjection?
+    /// Created only when the native palette is first requested.
+    public func commandPaletteProjection() -> CommandPaletteProjection {
+        if let cachedCommandPalette { return cachedCommandPalette }
+        let projection = CommandPaletteProjection()
+        cachedCommandPalette = projection
+        return projection
+    }
     @ObservationIgnored private let rustWorkspace: AppWorkspaceSession
     @ObservationIgnored private let rustOperations: AppWorkspaceOperations
     @ObservationIgnored private var mirroringWorkspace = false
@@ -1097,6 +1105,8 @@ extension WireboltModel {
     }
 
     private func applyMutation(_ result: WorkspaceMutation) {
+        let previousRevision = workspace.collectionsRevision
+        let refreshSidebar = sidebarSnapshot != nil
         mirroringWorkspace = true
         defer { mirroringWorkspace = false }
         if let root = result.root, !workspace.collections.contains(where: { $0.id == root.id }) {
@@ -1129,6 +1139,12 @@ extension WireboltModel {
                 mirrorRuntime()
             }
         }
+        // Publish a current retained outline before the edit completes. Otherwise its
+        // deferred 10k-row rebuild lands in the next palette's first layout/display.
+        if refreshSidebar, workspace.collectionsRevision != previousRevision {
+            sidebarSnapshot = SidebarSnapshot(collections: workspace.collections)
+        }
+        cachedCommandPalette?.applyWorkspaceChange(plan.paletteChange, previousRevision: previousRevision, model: self)
     }
 }
 

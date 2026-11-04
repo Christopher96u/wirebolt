@@ -104,8 +104,12 @@ results break ties, and stable source order resolves remaining ties.
 
 The metadata index is built lazily on first presentation. Collection revision
 changes update the request projection; environment-variable edits leave it intact.
-Rust reuses unchanged normalized request entries, so a request rename normalizes
-only the changed entry. Tabs, environments and themes compare their own bounded
+Rust reuses unchanged normalized request entries. Workspace edit plans emit a
+metadata-only rename effect that updates one entry in the retained lazy index;
+the next open does not transfer or reconstruct the other requests. A discontinuous
+native projection revision invalidates that update and rebuilds current metadata.
+A retained sidebar outline refreshes with a successful collection edit before the
+edit completes, so its deferred indexing does not enter the next palette frame. Tabs, environments and themes compare their own bounded
 metadata independently; an unrelated change cannot rebuild the request index. Query
 updates stay in the palette's observation subtree. The native `command-palette` workload uses 10,000
 requests, 20 tabs and a 1 MiB draft; it measures cold/warm opening, warm opening

@@ -33,6 +33,13 @@ public final class CommandPaletteProjection {
             themes: themes, selectedEnvironment: model.selectedEnvironmentID.map { .environment(id: $0) } ?? .globals, selectedTheme: appearance)
         rust.setContext(context: context)
     }
+    /// Only a contiguous Rust-produced edit may advance this projection's cache token.
+    func applyWorkspaceChange(_ change: PaletteWorkspaceChange, previousRevision: UInt64, model: WireboltModel) {
+        guard workspaceRevision?.epoch == model.workspaceEpoch, workspaceRevision?.collections == previousRevision,
+              rust.applyWorkspaceChange(change: change) else { return }
+        workspaceRevision = (model.workspaceEpoch, model.workspace.collectionsRevision)
+        if snapshot != nil { refresh() }
+    }
     public func open() { snapshot = rust.open() }
     public func refresh() { snapshot = rust.refresh() }
     public func query(_ query: String, filter: PaletteFilter) { snapshot = rust.query(query: query, filter: filter) }

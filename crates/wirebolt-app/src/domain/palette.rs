@@ -83,6 +83,16 @@ impl PaletteEnvironmentSelection {
         }
     }
 }
+/// Metadata-only effects emitted by Rust workspace edit plans.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum PaletteWorkspaceChange {
+    Rebuild,
+    RenameRequest {
+        collection_id: String,
+        request_id: String,
+        name: String,
+    },
+}
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PaletteTabTarget {
     pub group_id: String,
@@ -261,6 +271,7 @@ impl Entry {
 #[derive(Debug, Default)]
 pub struct CommandPalette {
     saved: Vec<Entry>,
+    request_positions: HashMap<(String, String), usize>,
     requests: Vec<Entry>,
     tabs: Vec<Entry>,
     tab_metadata: Vec<PaletteTab>,
@@ -323,8 +334,54 @@ impl CommandPalette {
                 }
             }
         }
+        self.request_positions = self
+            .saved
+            .iter()
+            .enumerate()
+            .filter_map(|(index, entry)| match &entry.result.destination {
+                PaletteDestination::Request {
+                    collection_id,
+                    request_id,
+                } => Some(((collection_id.clone(), request_id.clone()), index)),
+                _ => None,
+            })
+            .collect();
         self.merge_tabs();
         self.state.revision += 1;
+    }
+    /// Applies a workspace edit without transferring or reconstructing other request entries.
+    pub fn apply_workspace_change(&mut self, change: PaletteWorkspaceChange) -> bool {
+        let PaletteWorkspaceChange::RenameRequest {
+            collection_id,
+            request_id,
+            name,
+        } = change
+        else {
+            return false;
+        };
+        let Some(&index) = self
+            .request_positions
+            .get(&(collection_id.clone(), request_id.clone()))
+        else {
+            return false;
+        };
+        let mut result = self.saved[index].result.clone();
+        if result.title == name {
+            return true;
+        }
+        result.title = name;
+        self.saved[index] = Entry::new(result.clone().accessible(), &result.subtitle, "");
+        self.normalized_requests += 1;
+        let tabs: Vec<_> = self
+            .tab_metadata
+            .iter()
+            .filter(|t| {
+                t.collection_id.as_deref() == Some(&collection_id) && t.request_id == request_id
+            })
+            .collect();
+        self.requests[index] = Self::merge_request(&self.saved[index], &tabs, &self.active_group);
+        self.state.revision += 1;
+        true
     }
     #[must_use]
     pub const fn normalized_requests(&self) -> u64 {
@@ -348,78 +405,53 @@ impl CommandPalette {
     fn merge_tabs(&mut self) {
         self.requests = self.saved.clone();
         self.tabs.clear();
-        let mut saved: HashMap<_, _> = self
-            .requests
-            .iter_mut()
-            .filter_map(|entry| match &entry.result.destination {
-                PaletteDestination::Request {
-                    collection_id,
-                    request_id,
-                } => Some(((collection_id.clone(), request_id.clone()), entry)),
-                _ => None,
-            })
-            .collect();
-        let multiple_groups = self.group_count > 1;
+        let mut open: HashMap<usize, Vec<&PaletteTab>> = HashMap::new();
         for tab in &self.tab_metadata {
-            if let Some(entry) = tab
-                .collection_id
-                .as_ref()
-                .and_then(|id| saved.get_mut(&(id.clone(), tab.request_id.clone())))
-            {
-                if entry.result.open_tab.is_some()
-                    && (tab.group_id != self.active_group
-                        || entry
-                            .result
-                            .open_tab
-                            .as_ref()
-                            .is_some_and(|t| t.group_id == self.active_group))
-                {
-                    continue;
-                }
-                let mut result = entry.result.clone();
-                result.title.clone_from(&tab.title);
-                result.method = method_label(tab.method.clone(), tab.web_socket);
-                result.web_socket = tab.web_socket;
-                result.open_tab = Some(PaletteTabTarget {
-                    group_id: tab.group_id.clone(),
-                    tab_id: tab.tab_id.clone(),
-                });
-                result.marker = if tab.group_id == self.active_group {
-                    "Open".into()
-                } else {
-                    format!("Open in split {}", tab.group_index + 1)
-                };
-                **entry = Entry::new(result.clone().accessible(), &result.subtitle, "");
+            let position = tab.collection_id.as_ref().and_then(|id| {
+                self.request_positions
+                    .get(&(id.clone(), tab.request_id.clone()))
+            });
+            if let Some(&index) = position {
+                open.entry(index).or_default().push(tab);
             } else {
-                self.tabs.push(Self::unsaved_tab(tab, multiple_groups));
+                self.tabs.push(Self::unsaved_tab(tab, self.group_count > 1));
             }
         }
-        for tab in &self.tab_metadata {
-            if let Some(entry) = tab
-                .collection_id
-                .as_ref()
-                .and_then(|id| saved.get_mut(&(id.clone(), tab.request_id.clone())))
-            {
-                entry.add_title(normalize(&tab.title));
-                entry.corpus.push(' ');
-                entry.corpus.push_str(&normalize(&method_label(
-                    tab.method.clone(),
-                    tab.web_socket,
-                )));
-            }
+        for (index, tabs) in open {
+            self.requests[index] =
+                Self::merge_request(&self.saved[index], &tabs, &self.active_group);
         }
-        for source in &self.saved {
-            if let PaletteDestination::Request {
-                collection_id,
-                request_id,
-            } = &source.result.destination
-                && let Some(entry) = saved.get_mut(&(collection_id.clone(), request_id.clone()))
-            {
-                entry.add_title(source.title.clone());
-                entry.corpus.push(' ');
-                entry.corpus.push_str(&normalize(&source.result.method));
-            }
+    }
+    fn merge_request(source: &Entry, tabs: &[&PaletteTab], active_group: &str) -> Entry {
+        let Some(tab) = tabs.iter().min_by_key(|t| t.group_id != active_group) else {
+            return source.clone();
+        };
+        let mut result = source.result.clone();
+        result.title.clone_from(&tab.title);
+        result.method = method_label(tab.method.clone(), tab.web_socket);
+        result.web_socket = tab.web_socket;
+        result.open_tab = Some(PaletteTabTarget {
+            group_id: tab.group_id.clone(),
+            tab_id: tab.tab_id.clone(),
+        });
+        result.marker = if tab.group_id == active_group {
+            "Open".into()
+        } else {
+            format!("Open in split {}", tab.group_index + 1)
+        };
+        let mut entry = Entry::new(result.clone().accessible(), &result.subtitle, "");
+        entry.add_title(source.title.clone());
+        entry.corpus.push(' ');
+        entry.corpus.push_str(&normalize(&source.result.method));
+        for tab in tabs {
+            entry.add_title(normalize(&tab.title));
+            entry.corpus.push(' ');
+            entry.corpus.push_str(&normalize(&method_label(
+                tab.method.clone(),
+                tab.web_socket,
+            )));
         }
+        entry
     }
     fn unsaved_tab(tab: &PaletteTab, multiple_groups: bool) -> Entry {
         let mut result = PaletteResult::new(

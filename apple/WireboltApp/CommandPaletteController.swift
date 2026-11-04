@@ -51,7 +51,7 @@ final class CommandPaletteController {
     private(set) var presentation = Presentation.closed
     var isOpen: Bool { presentation != .closed }
     var blocksWorkspace: Bool { presentation == .presented || presentation == .executing }
-    let projection = CommandPaletteProjection()
+    let projection: CommandPaletteProjection
     private(set) var failureReason: PaletteFailure?
     var failure: String? { failureReason.map { domainPaletteFailureMessage(reason: $0) } }
     @ObservationIgnored private weak var model: WireboltModel?
@@ -67,6 +67,7 @@ final class CommandPaletteController {
 
     init(model: WireboltModel, interface: WorkspaceUIState, defaults: UserDefaults, themes: ThemeStore = .shared) {
         self.model = model; self.interface = interface; self.defaults = defaults; self.themes = themes
+        projection = model.commandPaletteProjection()
     }
 
     func owns(_ window: NSWindow?) -> Bool { isOpen && self.window === window }

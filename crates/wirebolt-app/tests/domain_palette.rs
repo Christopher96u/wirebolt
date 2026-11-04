@@ -505,3 +505,75 @@ fn globals_and_an_environment_named_globals_have_distinct_stable_destinations() 
         PaletteResolution::Failed { reason } => panic!("unexpected {reason:?}"),
     }
 }
+
+#[test]
+fn workspace_rename_effect_updates_only_its_request_and_preserves_open_metadata() {
+    use wirebolt_app::session::workspace::{SessionWorkspaceEdit, plan_edit};
+    let workspace = wirebolt_app::domain::DomainWorkspace {
+        collections: vec![DomainCollection {
+            id: "api".into(),
+            name: "Catalog".into(),
+            requests: vec![DomainLocation {
+                collection_id: "api".into(),
+                request: DomainRequestDraft {
+                    id: "0".into(),
+                    name: "Before".into(),
+                    ..Default::default()
+                },
+                ..Default::default()
+            }],
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+    let plan = plan_edit(
+        &workspace,
+        None,
+        SessionWorkspaceEdit::RenameRequest {
+            collection_id: "api".into(),
+            id: "0".into(),
+            name: "After".into(),
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        plan.palette_change,
+        PaletteWorkspaceChange::RenameRequest {
+            collection_id: "api".into(),
+            request_id: "0".into(),
+            name: "After".into(),
+        }
+    );
+    let mut palette = CommandPalette::default();
+    palette.replace_workspace(vec![collection(&["Before", "Keep"])]);
+    palette.update_tabs(vec![tab("left", "open", "Draft title")], "left".into(), 1);
+    let normalized = palette.normalized_requests();
+    assert!(palette.apply_workspace_change(plan.palette_change));
+    assert_eq!(palette.normalized_requests(), normalized + 1);
+    let snapshot = palette.query("After".into(), PaletteFilter::Requests);
+    assert_eq!(snapshot.results.len(), 1);
+    assert_eq!(snapshot.results[0].title, "Draft title");
+    assert_eq!(snapshot.results[0].marker, "Open");
+    assert!(
+        palette
+            .query("Before".into(), PaletteFilter::Requests)
+            .results
+            .is_empty()
+    );
+    assert_eq!(
+        palette
+            .query("Keep".into(), PaletteFilter::Requests)
+            .results
+            .len(),
+        1
+    );
+    assert!(!palette.apply_workspace_change(PaletteWorkspaceChange::Rebuild));
+    assert!(
+        !palette.apply_workspace_change(PaletteWorkspaceChange::RenameRequest {
+            collection_id: "api".into(),
+            request_id: "gone".into(),
+            name: "Gone".into(),
+        })
+    );
+    assert_eq!(palette.normalized_requests(), normalized + 1);
+}

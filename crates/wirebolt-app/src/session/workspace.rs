@@ -193,6 +193,7 @@ pub enum SessionDocumentEffect {
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SessionWorkspacePlan {
+    pub palette_change: crate::domain::palette::PaletteWorkspaceChange,
     pub commands: Vec<SessionWorkspaceCommand>,
     pub inverse: SessionWorkspaceEdit,
     pub collections: Vec<DomainCollection>,
@@ -257,7 +258,20 @@ pub fn plan_edit(
     use SessionDocumentEffect as F;
     use SessionWorkspaceCommand as C;
     use SessionWorkspaceEdit as E;
+    let palette_change = match &step {
+        E::RenameRequest {
+            collection_id,
+            id,
+            name,
+        } => crate::domain::palette::PaletteWorkspaceChange::RenameRequest {
+            collection_id: collection_id.clone(),
+            request_id: id.clone(),
+            name: name.clone(),
+        },
+        _ => crate::domain::palette::PaletteWorkspaceChange::Rebuild,
+    };
     let mut plan = SessionWorkspacePlan {
+        palette_change,
         commands: vec![],
         inverse: step.clone(),
         collections: vec![],

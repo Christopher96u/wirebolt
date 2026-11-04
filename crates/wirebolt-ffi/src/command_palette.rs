@@ -11,7 +11,7 @@ use wirebolt_app::domain::palette::{
     CommandPalette, PaletteChoice, PaletteCollection, PaletteDestination,
     PaletteEnvironmentSelection, PaletteFailure, PaletteFilter, PalettePage, PaletteRequest,
     PaletteResolution, PaletteResult, PaletteSnapshot, PaletteTab, PaletteTabTarget, PaletteTheme,
-    PaletteThemeKind,
+    PaletteThemeKind, PaletteWorkspaceChange,
 };
 
 #[uniffi::remote(Enum)]
@@ -154,6 +154,16 @@ pub struct PaletteTabTarget {
 }
 
 #[uniffi::remote(Enum)]
+pub enum PaletteWorkspaceChange {
+    Rebuild,
+    RenameRequest {
+        collection_id: String,
+        request_id: String,
+        name: String,
+    },
+}
+
+#[uniffi::remote(Enum)]
 pub enum PaletteFailure {
     DestinationRemoved,
     RequestRemoved,
@@ -261,6 +271,9 @@ impl AppCommandPalette {
     }
     pub fn replace_workspace(&self, collections: Vec<PaletteCollection>) {
         lock(&self.inner).replace_workspace(collections);
+    }
+    pub fn apply_workspace_change(&self, change: PaletteWorkspaceChange) -> bool {
+        lock(&self.inner).apply_workspace_change(change)
     }
     pub fn normalized_requests(&self) -> u64 {
         lock(&self.inner).normalized_requests()

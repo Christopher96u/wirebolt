@@ -381,8 +381,20 @@ import SwiftUI
         controller.dismiss(restoringFocus: false)
         let renamedID = model.workspace.collections.first { $0.id == "catalog" }!.requests[0].request.id
         await model.renameRequest(collectionID: "catalog", requestID: renamedID, name: "Renamed palette fixture")
+        precondition(controller.projection === model.commandPaletteProjection())
+        precondition(controller.projection.rust.normalizedRequests() == normalized + 1)
         _ = await open(interface, model: model, window: window, host: host)
         precondition(controller.projection.rust.normalizedRequests() == normalized + 1)
+        controller.dismiss(restoringFocus: false)
+        // A native collection edit breaks the revision chain; the next update must include it.
+        let catalogIndex = model.workspace.collections.firstIndex { $0.id == "catalog" }!
+        model.workspace.collections[catalogIndex].requests.append(RequestLocation(collectionID: "catalog", request: RequestDraft(id: "late-fixture", name: "Late fixture")))
+        await model.renameRequest(collectionID: "catalog", requestID: renamedID, name: "Renamed after native edit")
+        _ = await open(interface, model: model, window: window, host: host)
+        controller.query("Late fixture")
+        precondition(controller.projection.snapshot!.results.count == 1)
+        controller.query("Renamed after native edit")
+        precondition(controller.projection.snapshot!.results.count == 1)
         controller.dismiss(restoringFocus: false)
         print("paletteIndexReusesRequestsAfterEnvironmentEditAndNormalizesOneRename: passed")
 
