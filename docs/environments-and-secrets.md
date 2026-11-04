@@ -20,6 +20,10 @@ Outside editing, the URL shows each reference as a chip with just the variable n
 
 Selecting an environment in the inspector finishes the current edit and chooses what you edit next. Use **Use for Requests** or the composer's environment picker to change the active environment. Globals always appears once, at the top. Use an environment's context menu to rename or delete it. Long names and values use one line; hover or focus a field to read the full text.
 
+![Environment inspector showing Globals, named environments and literal demo variables](assets/screenshots/environments.png)
+
+You can also press **⌘K**, choose **Switch environment…**, then confirm **Globals only** or a named environment. The active choice has a checkmark. It changes only on confirmation, after any pending environment edit saves successfully. [Command Palette](command-palette.md) describes the submenu keys.
+
 ## Credentials and secret references
 
 A literal value is stored in the workspace. A secret reference stores a name whose value resolves from this Mac's Keychain. A teammate receives the reference name, not its credential value.

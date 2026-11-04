@@ -5,11 +5,12 @@
 | Symptom | Check |
 | --- | --- |
 | macOS blocks launching | Follow [first-launch instructions](installation.md#first-launch); use an Apple Silicon Mac with macOS 15+ |
-| A feature in the docs is missing | Compare your version with [Unreleased changes](../CHANGELOG.md); docs follow current source |
+| A feature in the docs is missing | Compare your installed release with the [changelog](../CHANGELOG.md) and [published downloads](https://github.com/Christopher96u/wirebolt/releases); docs follow current source |
 | Workspace will not open | Choose the folder containing `wirebolt.toml`; check permissions and preserve a backup before manual edits |
 | Variables are unresolved | Check exact key spelling, row enabled state, Global values and toolbar environment selection |
 | Missing credential | The reference must exist in this Mac's Keychain; importing a workspace does not import its credential material |
-| API key fails | **Value Secret** is a reference name, not a token-entry field; follow [secret provisioning](environments-and-secrets.md#credentials-and-secret-references) |
+| API key fails | Check Header vs Query Params, the Key name and the credential in **Auth → API Key → Value**; enter the token on each Mac and save or send to write it to Keychain |
+| ⌘K does not open | Focus the workspace window and finish Settings, sheets, alerts or rename/close prompts; wait for workspace/import/Git/OAuth transitions to finish |
 | Request cannot connect | Check the URL, server availability and the effective proxy policy beside Send |
 | Local demo cannot connect | Start the demo server; confirm port 18990 is free and try Direct at request scope |
 | Proxy test fails but GET works | The probe uses HEAD without request auth, headers, body or cookies |

@@ -1,8 +1,10 @@
 # Changelog
 
-Changes under **Unreleased** are on `main` but not in a published build yet. Downloads are listed on the [releases page](https://github.com/Christopher96u/wirebolt/releases). Earlier 0.1.0 betas were distributed through a separate tap repository; this file does not reconstruct their history.
+Changes under **Unreleased** are not in a published build yet. A version section can be prepared before its release is published; downloadable builds are listed on the [releases page](https://github.com/Christopher96u/wirebolt/releases). Earlier 0.1.0 betas were distributed through a separate tap repository; this file does not reconstruct their history.
 
 ## Unreleased
+
+## 1.0.0-rc.2
 
 ### Added
 

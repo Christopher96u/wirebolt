@@ -13,9 +13,9 @@ Available message representations include Text, JSON, Binary (Hex/Base64) and Fi
 
 Params and Headers support **Request → Bulk Edit** (**⌘B**), as in HTTP requests. Request history and **Copy cURL** apply only to HTTP requests.
 
-![WebSocket text exchange against a local demo endpoint](assets/screenshots/websocket.png)
+![Native WebSocket view showing demonstration sent and received messages](assets/screenshots/websocket.png)
 
-The screenshot uses a local echo fixture; the HTTP-only [quick-start server](examples/demo-server.py) does not implement WebSockets. Use your own WebSocket endpoint to follow these steps.
+The screenshot uses injected demonstration events in the native WebSocket view; its endpoint is illustrative. The HTTP-only [quick-start server](examples/demo-server.py) does not implement WebSockets. Use your own WebSocket endpoint to follow these steps.
 
 Saving persists the request definition, not an active socket connection. Reconnect after changing proxy, headers, authentication or transport options: the existing connection keeps the configuration used when it opened.
 

@@ -12,6 +12,8 @@ Open a request's **Auth** tab and choose the scheme. Save the request with **⌘
 | API Key | Choose **Add To** (Header or Query Params), enter the **Key** name and the **Value** |
 | OAuth 2.0 | Configure Authorization Code + PKCE or Client Credentials, then acquire a token |
 
+![OAuth Authorization Code plus PKCE configuration using demonstration provider URLs](assets/screenshots/authentication.png)
+
 Passwords, tokens, API key values and OAuth client secrets are stored in this Mac's Keychain. The request saves only a reference name, and every request gets its own names, so two requests never share or overwrite each other's credentials. Use the eye button to show a masked value. Typed credentials are written to Keychain when you send, save or request a token.
 
 Choosing another scheme starts that scheme empty; switching back does not restore the previous credentials.

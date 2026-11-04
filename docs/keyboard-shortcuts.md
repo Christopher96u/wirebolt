@@ -45,7 +45,7 @@
 
 | Action | Shortcut |
 | --- | --- |
-| Command Palette | ⌘K |
+| [Command Palette](command-palette.md) | ⌘K |
 | Go back / forward | ⌃⌘← / ⌃⌘→ |
 | Split right | ⇧⌘D |
 | Focus sidebar | ⌘0 |

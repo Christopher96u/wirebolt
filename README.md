@@ -28,7 +28,7 @@ Built for speed, from switching tabs to inspecting large responses. Wirebolt pai
 
 Send HTTP requests, connect to WebSockets, and keep your API work in readable local files. No account. No telemetry. Share through Git when you choose.
 
-> **Release candidate:** Wirebolt 1.0 is being finalized through release candidates. This documentation describes the current source on `main`; published builds can lag behind it. See the [changelog](CHANGELOG.md) for unreleased work and [installation](docs/installation.md) for supported hardware and first-launch instructions.
+> **Release candidate:** Wirebolt 1.0 is being finalized through release candidates. This documentation describes the current source on `main`; published builds can lag behind it. Compare the [changelog](CHANGELOG.md) with the [available releases](https://github.com/Christopher96u/wirebolt/releases), and see [installation](docs/installation.md) for supported hardware and first-launch instructions.
 
 ## Install
 
@@ -68,8 +68,10 @@ The [quick start](docs/quick-start.md) includes a local demo server and copyable
 | Feature | What it gives you |
 | --- | --- |
 | [HTTP requests](docs/requests.md) | Methods, query parameters, headers, JSON, forms, multipart and file uploads |
-| [Response inspection](docs/requests.md#inspect-the-response) | JSON, tree, raw, XML, HTML, image and hex views; headers, cookies and the executed request |
+| [Response inspection](docs/requests.md#inspect-the-response) | JSON, tree, Text, XML, HTML, Webview, image and Hex; headers, cookies and Prepared Request |
 | [Workspaces](docs/workspaces.md) | Collections, folders, drag or keyboard ordering with undo, preview tabs and split editors, saved as readable TOML |
+| [Command Palette](docs/command-palette.md) | ⌘K to find requests and tabs, run common actions, and switch environments or themes |
+| [Appearance](docs/appearance.md) | Black, Paper, Ember, custom themes, VS Code theme import and compact or comfortable density |
 | [Environments](docs/environments-and-secrets.md) | Global variables, environment overrides and Keychain secret references |
 | [Authentication](docs/authentication.md) | Basic, Bearer, API key and OAuth 2.0 configuration |
 | [Proxy and network](docs/proxy-and-network.md) | App, workspace and request proxy policies; timeouts, redirects and TLS validation |
@@ -83,6 +85,12 @@ The [quick start](docs/quick-start.md) includes a local demo server and copyable
 ![Environment editor with local demo variables](docs/assets/screenshots/environments.png)
 
 Use `{{base_url}}` in your requests and switch environments without rewriting URLs. [Set up environments →](docs/environments-and-secrets.md)
+
+### Find your next action
+
+![Command Palette searching workspace requests with an existing tab marked Open](docs/assets/screenshots/command-palette.png)
+
+Press **⌘K** to jump to requests and open tabs, find a command, or choose an environment or theme. Highlight with the arrows and confirm with Return. [Use the Command Palette →](docs/command-palette.md)
 
 ### Choose how each request connects
 
@@ -105,7 +113,7 @@ Git operations run only when requested. There is no background cloud sync and no
 ## Known limitations
 
 - Packages currently target Apple Silicon; Intel, Windows and Linux packages are not provided.
-- API key secret provisioning requires Keychain Access; there is no general secret manager in the app yet.
+- Credentials are configured in request authentication and environment fields; there is no general secret-management screen.
 - Markdown images display alternative text; previews do not execute HTML.
 - Proxy host exclusions are not exposed in the UI.
 

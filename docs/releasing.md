@@ -21,7 +21,7 @@ Releases are published from this repository: the ZIP is attached to a GitHub Rel
 On an Apple Silicon Mac with Python 3:
 
 ```sh
-./scripts/package-release.sh 1.0.0-rc.1
+./scripts/package-release.sh 1.0.0-rc.2
 ```
 
 The script refuses to overwrite an existing output directory. It builds an arm64 app, sets `CFBundleShortVersionString` to `X.Y.Z` and `CFBundleVersion` to the commit count, includes third-party notices, verifies ad-hoc signing and writes the ZIP, notices, Cask and source commit under `build/releases/<version>/`.
@@ -33,7 +33,7 @@ Packages are ad-hoc signed, not notarized. The Cask removes the quarantine attri
 Publishing requires an authenticated GitHub CLI, a public repository, and a clean `main` equal to `origin/main` at the packaged commit:
 
 ```sh
-./scripts/publish-release.sh 1.0.0-rc.1
+./scripts/publish-release.sh 1.0.0-rc.2
 ```
 
 The script commits `Casks/wirebolt.rb` as `Release v<version>`, tags `v<version>`, pushes `main` and the tag together, then creates the GitHub Release with the ZIP and notices. Release notes come from the matching changelog section plus installation instructions. Prereleases are not marked as latest.

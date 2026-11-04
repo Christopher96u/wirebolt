@@ -56,7 +56,7 @@ If macOS reports a damaged package or offers no **Open Anyway** button, download
 
 ## Versions
 
-The docs and screenshots follow the source branch. Features under **Unreleased** in the [changelog](../CHANGELOG.md) are not in a published build yet. To try current source changes, follow the development guide.
+The docs and screenshots follow the source branch. Compare the [changelog](../CHANGELOG.md) with the [releases page](https://github.com/Christopher96u/wirebolt/releases) to see which changes are available in a downloadable build: a changelog section can be prepared before publication. To try current source changes, follow the development guide.
 
 ## Workspace location
 
