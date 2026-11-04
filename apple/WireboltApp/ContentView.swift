@@ -16,6 +16,7 @@ struct ContentView: View {
     @State private var liveSidebarWidth: Double?
     @State private var sidebarDragOrigin: Double?
     @Environment(\.wireboltTheme) private var theme
+    @Environment(\.openWindow) private var openWindow
     @State private var isDropTargeted = false
     private var sidebarWidth: Double { liveSidebarWidth ?? storedSidebarWidth }
     /// Until the first workspace load finishes, show placeholders instead of an empty sidebar
@@ -25,10 +26,23 @@ struct ContentView: View {
     var body: some View {
         workspaceWithDialogs
             .blur(radius: model.isShowingAppSettings ? 4 : 0)
-            .disabled(model.isShowingAppSettings)
-            .allowsHitTesting(!model.isShowingAppSettings)
-            .accessibilityHidden(model.isShowingAppSettings)
+            .disabled(model.isShowingAppSettings || interface.commandPalette?.blocksWorkspace == true)
+            .allowsHitTesting(!model.isShowingAppSettings && interface.commandPalette?.blocksWorkspace != true)
+            .accessibilityHidden(model.isShowingAppSettings || interface.commandPalette?.blocksWorkspace == true)
             .overlay { SettingsModal(model: model) }
+            .overlay {
+                if let palette = interface.commandPalette, palette.presentation == .presented || palette.presentation == .executing {
+                    CommandPaletteView(controller: palette)
+                }
+            }
+            .onAppear {
+                let open = openWindow
+                interface.openAuxiliaryWindow = { open(id: $0) }
+            }
+            .onChange(of: model.workspaceEpoch) { interface.commandPalette?.dismiss(restoringFocus: false) }
+            .onChange(of: interface.workspaceInteractionBlocked(model: model)) {
+                if interface.workspaceInteractionBlocked(model: model) { interface.commandPalette?.dismiss(restoringFocus: false) }
+            }
     }
 
     private var workspacePanels: some View {

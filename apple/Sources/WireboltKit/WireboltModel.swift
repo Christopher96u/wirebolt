@@ -122,12 +122,15 @@ public final class WireboltModel {
 
     public var workspace = WorkspaceDraft(name: "Wirebolt") {
         didSet {
+            paletteWorkspaceRevision &+= 1
             sidebarSnapshot = nil
             sidebarVisibleCache = nil
             sidebarUnfilteredCache = nil
             if !mirroringWorkspace { workspaceNeedsSynchronization = true }
         }
     }
+    public private(set) var paletteWorkspaceRevision: UInt64 = 0
+    public private(set) var workspaceEpoch: UInt64 = 0
     @ObservationIgnored private let rustWorkspace: AppWorkspaceSession
     @ObservationIgnored private let rustOperations: AppWorkspaceOperations
     @ObservationIgnored private var mirroringWorkspace = false
@@ -934,6 +937,7 @@ public final class WireboltModel {
     }
 
     private func applyLoadedWorkspace(_ loaded: WorkspaceLoad, restoring layout: SessionLayout? = nil) {
+        workspaceEpoch &+= 1
         mirroringWorkspace = true
         workspaceLoadNotice = loaded.diagnostics.notice
         workspace = WorkspaceDraft(domain: loaded.workspace)

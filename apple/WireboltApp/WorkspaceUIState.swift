@@ -109,8 +109,11 @@ struct SidebarMoveCommands: Equatable {
 @MainActor
 @Observable
 final class WorkspaceUIState {
+    var commandPalette: CommandPaletteController?
+    @ObservationIgnored var isWorkspaceWindowActive: (NSWindow) -> Bool = { $0 === NSApp.keyWindow }
+    @ObservationIgnored var openAuxiliaryWindow: ((String) -> Void)?
     var sidebarDragIdentifier: String?
-    @ObservationIgnored private let defaults: UserDefaults
+    @ObservationIgnored let defaults: UserDefaults
     @ObservationIgnored private let rustInterface = AppWorkspaceInterface()
 
     var columnVisibility = NavigationSplitViewVisibility.all
@@ -159,11 +162,13 @@ final class WorkspaceUIState {
     /// Focuses the new-key row of the visible key-value table, switching to Params when the
     /// visible section has none.
     func addKey() {
+        guard !isCommandPaletteOpen else { return }
         if !canEditFields { requestSection = .params }
         activePresentation.isBulkEditing = false
         activePresentation.focusNewKeyTrigger += 1
     }
     func selectTab(index: Int? = nil, offset: Int = 0, model: WireboltModel) {
+        guard !isCommandPaletteOpen else { return }
         guard let group = model.sessions.activeGroup, !group.tabIDs.isEmpty else { return }
         guard
             let target = sessionTabDestination(
@@ -188,6 +193,7 @@ final class WorkspaceUIState {
     var focusURLTrigger = 0
     var pendingURLFocusID: String?
     func focusRequestSearch() {
+        guard !isCommandPaletteOpen else { return }
         columnVisibility = .all
         focusSearchTrigger += 1
     }
@@ -205,8 +211,10 @@ final class WorkspaceUIState {
     var isShowingEnvironmentInspector = false
     @ObservationIgnored var closeEnvironmentInspector: (@MainActor () async -> Bool)?
     var environmentCloseTrigger = 0
+    var environmentFocusTrigger = 0
 
     func toggleEnvironmentInspector() {
+        guard !isCommandPaletteOpen else { return }
         if isShowingEnvironmentInspector { environmentCloseTrigger += 1 }
         else { isShowingEnvironmentInspector = true }
     }
@@ -260,6 +268,7 @@ final class WorkspaceUIState {
     /// Opens a saved request from the sidebar. A plain click or arrow key reuses the preview
     /// tab; ⌘-click (or `preview: false`) opens a regular tab that stays open.
     func activateSavedRequest(_ location: RequestLocation, model: WireboltModel, preview: Bool? = nil) {
+        guard !isCommandPaletteOpen else { return }
         persistActivePresentation()
         let commandClick = NSApp.currentEvent.map { $0.type == .leftMouseUp || $0.type == .leftMouseDown ? $0.modifierFlags.contains(.command) : false } ?? false
         model.select(location, preview: preview ?? !commandClick)
@@ -268,6 +277,7 @@ final class WorkspaceUIState {
     }
 
     func activateTab(id: String, groupID: String? = nil, model: WireboltModel) {
+        guard !isCommandPaletteOpen else { return }
         persistActivePresentation()
         model.sessions.select(tabID: id, in: groupID)
         synchronizeSelection(model: model)
@@ -275,6 +285,7 @@ final class WorkspaceUIState {
     }
 
     func makeNewRequest(model: WireboltModel, kind: DocumentKind = .http) {
+        guard !isCommandPaletteOpen else { return }
         persistActivePresentation()
         Task {
             guard let session = await model.createRequest(kind: kind) else { return }
@@ -294,6 +305,7 @@ final class WorkspaceUIState {
         collectionID: String,
         groupID: String? = nil
     ) {
+        guard !isCommandPaletteOpen else { return }
         persistActivePresentation()
         Task {
             guard let session = await model.createRequest(
@@ -312,6 +324,7 @@ final class WorkspaceUIState {
     }
 
     func resetForWorkspace(model: WireboltModel) {
+        commandPalette?.dismiss(restoringFocus: false)
         rustInterface.reset()
         closeRevision += 1
         isShowingEnvironmentInspector = false
@@ -334,6 +347,7 @@ final class WorkspaceUIState {
     }
 
     func promptForNewCollection() {
+        guard !isCommandPaletteOpen else { return }
         workspaceNamePrompt = WorkspaceNamePrompt(
             target: .collection(id: nil),
             title: "New Collection",
@@ -342,6 +356,7 @@ final class WorkspaceUIState {
     }
 
     func promptForCollectionRename(_ collection: CollectionDraft) {
+        guard !isCommandPaletteOpen else { return }
         workspaceNamePrompt = WorkspaceNamePrompt(
             target: .collection(id: collection.id),
             title: "Rename Collection",
@@ -355,6 +370,7 @@ final class WorkspaceUIState {
 
     /// Shows the sidebar if it is hidden and moves keyboard focus to it.
     func focusSidebar() {
+        guard !isCommandPaletteOpen else { return }
         if columnVisibility == .detailOnly {
             focusesSidebarOnAppear = true
             columnVisibility = .all
@@ -373,6 +389,7 @@ final class WorkspaceUIState {
     var sidebarScrollTarget: String?
 
     func makeNewFolder(model: WireboltModel, collectionID: String? = nil, parentID: String? = nil) {
+        guard !isCommandPaletteOpen else { return }
         Task {
             if let collectionID { renamingGroupID = await model.createGroup(collectionID: collectionID, parentID: parentID, name: "Untitled Folder") }
             else { renamingGroupID = await model.createRootFolder() }
@@ -380,6 +397,7 @@ final class WorkspaceUIState {
     }
 
     func promptForGroupRename(collectionID: String, group: GroupDraft) {
+        guard !isCommandPaletteOpen else { return }
         workspaceNamePrompt = WorkspaceNamePrompt(
             target: .group(collectionID: collectionID, id: group.id),
             title: "Rename Folder",
@@ -391,6 +409,7 @@ final class WorkspaceUIState {
     /// also removes other items or discards unsaved edits (HIG: no alerts for common,
     /// undoable actions).
     func requestDelete(_ target: WorkspaceDeleteTarget, title: String, model: WireboltModel) {
+        guard !isCommandPaletteOpen else { return }
         let detail = model.deleteConsequences(target)
         if detail.isEmpty {
             performDelete(target, model: model)
@@ -401,6 +420,7 @@ final class WorkspaceUIState {
 
     /// Delete in the focused sidebar deletes the selected row.
     func requestDeleteOfSelection(model: WireboltModel) {
+        guard !isCommandPaletteOpen else { return }
         if let cursor = sidebarCursor,
            let row = model.sidebarRows(query: sidebarFilter, collapsed: collapsedSidebarCollections, expanded: expandedSidebarGroups)
             .first(where: { $0.id == cursor }) {
@@ -421,6 +441,7 @@ final class WorkspaceUIState {
     }
 
     func confirmWorkspaceDelete(model: WireboltModel) {
+        guard !isCommandPaletteOpen else { return }
         guard let request = workspaceDeleteRequest else { return }
         workspaceDeleteRequest = nil
         performDelete(request.target, model: model)
@@ -445,20 +466,24 @@ final class WorkspaceUIState {
 
     /// Keeps a preview tab open (double-click on the tab or Keep Open).
     func pinTab(id: String, model: WireboltModel) {
+        guard !isCommandPaletteOpen else { return }
         model.sessions.pin(tabID: id)
     }
 
     func openInNewSplit(tabID: String, model: WireboltModel) {
+        guard !isCommandPaletteOpen else { return }
         persistActivePresentation()
         guard model.sessions.split(tabID: tabID) != nil else { return }
         synchronizeSelection(model: model)
     }
 
     func closeTab(id: String, model: WireboltModel) {
+        guard !isCommandPaletteOpen else { return }
         close(.one(id), model: model)
     }
 
     func closeActiveTab(model: WireboltModel) {
+        guard !isCommandPaletteOpen else { return }
         guard let id = model.sessions.activeSession?.id else {
             // With no tab left, ⌘W closes the window like other Mac apps.
             NSApp.keyWindow?.performClose(nil)
@@ -479,6 +504,7 @@ final class WorkspaceUIState {
     }
 
     func close(_ scope: TabCloseScope, model: WireboltModel, in targetGroupID: String? = nil) {
+        guard !isCommandPaletteOpen else { return }
         close(scope, model: model, groupID: targetGroupID ?? model.sessions.activeGroupID, allowDirty: false)
     }
 
@@ -504,6 +530,7 @@ final class WorkspaceUIState {
     }
 
     func saveDirtyClose(model: WireboltModel) {
+        guard !isCommandPaletteOpen else { return }
         guard let request = rustInterface.takeClose() else { return }
         closeRevision += 1
         Task {
@@ -513,6 +540,7 @@ final class WorkspaceUIState {
     }
 
     func confirmDirtyClose(model: WireboltModel) {
+        guard !isCommandPaletteOpen else { return }
         guard let request = rustInterface.takeClose() else { return }
         closeRevision += 1
         close(request.scope, model: model, groupID: request.groupId, allowDirty: true)
@@ -547,6 +575,7 @@ final class WorkspaceUIState {
     }
 
     func reopenLastDocument(model: WireboltModel) {
+        guard !isCommandPaletteOpen else { return }
         guard let id = rustInterface.reopen(hasActive: model.sessions.activeSession != nil),
             let session = lastClosedSession, session.id == id
         else { return }
@@ -600,16 +629,19 @@ extension WorkspaceUIState {
 
     /// Selecting a request row opens it; folders and collections are only highlighted.
     func selectSidebarRow(_ id: String, model: WireboltModel, scroll: Bool = false) {
+        guard !isCommandPaletteOpen else { return }
         _ = navigateSidebar(.select(id: id, scroll: scroll), model: model)
     }
 
     /// ↑/↓ over every visible row, including folders and collections.
     func moveSidebarSelection(_ delta: Int, model: WireboltModel) {
+        guard !isCommandPaletteOpen else { return }
         _ = navigateSidebar(.step(delta: Int64(delta)), model: model)
     }
 
     /// ← collapses or selects the parent; → expands or selects the first child.
     func moveSidebarSelectionHorizontally(right: Bool, model: WireboltModel) {
+        guard !isCommandPaletteOpen else { return }
         _ = navigateSidebar(.arrow(right: right), model: model)
     }
 
@@ -620,10 +652,12 @@ extension WorkspaceUIState {
 
     /// Return renames the selected row, as in Finder and the Xcode navigator.
     func renameSidebarSelection(model: WireboltModel) {
+        guard !isCommandPaletteOpen else { return }
         _ = navigateSidebar(.rename, model: model)
     }
 
     func beginRename(_ row: SidebarSnapshot.Row) {
+        guard !isCommandPaletteOpen else { return }
         switch row.content {
         case .collection(let collection): renamingCollectionID = collection.id
         case .group(_, let group): renamingGroupID = group.id
@@ -633,6 +667,7 @@ extension WorkspaceUIState {
 
     /// ⌘↓ opens the selection: a request moves focus to its URL, a container toggles.
     func openSidebarSelection(model: WireboltModel) {
+        guard !isCommandPaletteOpen else { return }
         _ = navigateSidebar(.open, model: model)
     }
 
@@ -655,6 +690,7 @@ extension WorkspaceUIState {
 
     @discardableResult
     private func navigateSidebar(_ action: WorkspaceSidebarAction, model: WireboltModel) -> Bool {
+        guard !isCommandPaletteOpen else { return false }
         let rows = visibleSidebarRows(model: model)
         let result = rustInterface.sidebar(
             input: sidebarState, rows: rows.map(\.workspaceMetadata),
@@ -686,6 +722,7 @@ extension WorkspaceUIState {
     }
 
     func moveSidebarItem(_ identifier: String, by delta: Int, model: WireboltModel) {
+        guard !isCommandPaletteOpen else { return }
         Task { await model.moveSidebarItem(identifier, by: delta) }
     }
 }

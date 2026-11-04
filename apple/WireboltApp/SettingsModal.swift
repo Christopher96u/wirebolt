@@ -80,9 +80,13 @@ struct SettingsModal: View {
 
 /// Capture before disabling the workspace's native field editor.
 @MainActor
-func presentAppSettings(_ model: WireboltModel) {
+func presentAppSettings(_ model: WireboltModel, focus: WorkspaceFocusCapture? = nil) {
     guard !model.isShowingAppSettings else { return }
-    SettingsModalFocus.shared.capture()
+    if let focus {
+        SettingsModalFocus.shared.window = focus.window
+        SettingsModalFocus.shared.previous = focus.previous
+        SettingsModalFocus.shared.selection = focus.selection
+    } else { SettingsModalFocus.shared.capture() }
     model.isShowingAppSettings = true
 }
 
