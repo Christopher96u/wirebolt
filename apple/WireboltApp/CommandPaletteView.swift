@@ -103,7 +103,7 @@ struct CommandPaletteView: View {
         Button { controller.confirm(result.id) } label: {
             HStack(spacing: 10) {
                 if !result.method.isEmpty {
-                    MethodChip(method: HTTPMethod(rawValue: result.method)!, webSocket: result.webSocket)
+                    MethodChip(method: HTTPMethod(domainValue: result.method), webSocket: result.webSocket)
                         .frame(width: 46)
                 } else {
                     Image(systemName: symbol(result.destination)).font(.system(size: 15))

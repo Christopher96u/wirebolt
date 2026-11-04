@@ -112,6 +112,7 @@ final class WorkspaceUIState {
     var commandPalette: CommandPaletteController?
     @ObservationIgnored var isWorkspaceWindowActive: (NSWindow) -> Bool = { $0 === NSApp.keyWindow }
     @ObservationIgnored var openAuxiliaryWindow: ((String) -> Void)?
+    @ObservationIgnored var sidebarHasFocus = false
     var sidebarDragIdentifier: String?
     @ObservationIgnored let defaults: UserDefaults
     @ObservationIgnored private let rustInterface = AppWorkspaceInterface()

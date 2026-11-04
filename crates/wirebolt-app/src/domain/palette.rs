@@ -78,7 +78,7 @@ pub enum PaletteEnvironmentSelection {
 impl PaletteEnvironmentSelection {
     fn id(&self) -> String {
         match self {
-            Self::Globals => "environment:globals".into(),
+            Self::Globals => "choice:globals-only".into(),
             Self::Environment { id } => format!("environment:{id}"),
         }
     }
@@ -401,6 +401,11 @@ impl CommandPalette {
                 .and_then(|id| saved.get_mut(&(id.clone(), tab.request_id.clone())))
             {
                 entry.add_title(normalize(&tab.title));
+                entry.corpus.push(' ');
+                entry.corpus.push_str(&normalize(&method_label(
+                    tab.method.clone(),
+                    tab.web_socket,
+                )));
             }
         }
         for source in &self.saved {
@@ -411,6 +416,8 @@ impl CommandPalette {
                 && let Some(entry) = saved.get_mut(&(collection_id.clone(), request_id.clone()))
             {
                 entry.add_title(source.title.clone());
+                entry.corpus.push(' ');
+                entry.corpus.push_str(&normalize(&source.result.method));
             }
         }
     }
@@ -707,7 +714,15 @@ impl CommandPalette {
         let result_summary = if ranked.len() > RESULT_LIMIT {
             format!("{RESULT_LIMIT} of {} · Refine search", ranked.len())
         } else {
-            format!("{} results", ranked.len())
+            format!(
+                "{} {}",
+                ranked.len(),
+                if ranked.len() == 1 {
+                    "result"
+                } else {
+                    "results"
+                }
+            )
         };
         let results = ranked
             .into_iter()

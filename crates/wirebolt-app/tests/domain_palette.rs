@@ -453,18 +453,55 @@ fn updates_reuse_request_normalization_and_return_typed_missing_destinations() {
 fn saved_and_all_split_draft_titles_search_one_active_group_row() {
     let mut palette = CommandPalette::default();
     palette.replace_workspace(vec![collection(&["Saved title"])]);
+    let mut other = tab("right", "b", "Other split title");
+    other.method = "POST".into();
     palette.update_tabs(
-        vec![
-            tab("right", "b", "Other split title"),
-            tab("left", "a", "Active draft title"),
-        ],
+        vec![other, tab("left", "a", "Active draft title")],
         "left".into(),
         2,
     );
-    for query in ["Saved title", "Other split title", "Active draft title"] {
+    for query in [
+        "Saved title",
+        "Other split title",
+        "Active draft title",
+        "POST",
+        "GET",
+    ] {
         let snapshot = palette.query(query.into(), PaletteFilter::Requests);
         assert_eq!(snapshot.results.len(), 1);
         assert_eq!(snapshot.results[0].title, "Active draft title");
         assert_eq!(snapshot.results[0].open_tab.as_ref().unwrap().tab_id, "a");
+    }
+}
+
+#[test]
+fn globals_and_an_environment_named_globals_have_distinct_stable_destinations() {
+    let mut palette = CommandPalette::default();
+    palette.update_choices(
+        vec![PaletteChoice {
+            id: "globals".into(),
+            name: "Named globals".into(),
+        }],
+        vec![],
+        PaletteEnvironmentSelection::Globals,
+        String::new(),
+    );
+    let page = palette.enter(PalettePage::Environments);
+    assert_eq!(page.results.len(), 2);
+    assert_ne!(page.results[0].id, page.results[1].id);
+    for result in page.results {
+        let resolved = palette.resolve(&result.id);
+        assert_eq!(resolved, PaletteResolution::Ready { result });
+    }
+    match palette.resolve("environment:globals") {
+        PaletteResolution::Ready { result } => assert_eq!(
+            result.destination,
+            PaletteDestination::Environment {
+                selection: PaletteEnvironmentSelection::Environment {
+                    id: "globals".into()
+                }
+            }
+        ),
+        PaletteResolution::Failed { reason } => panic!("unexpected {reason:?}"),
     }
 }

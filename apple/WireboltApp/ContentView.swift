@@ -542,6 +542,7 @@ private struct WorkspaceSidebar: View {
             if sidebarIsFocused { SidebarFocusRing(model: model, interface: interface) }
         }
         .focusable().focusEffectDisabled().focused($sidebarIsFocused)
+        .onChange(of: sidebarIsFocused, initial: true) { interface.sidebarHasFocus = sidebarIsFocused }
         .modifier(SidebarMoveFocusedValue(model: model, interface: interface, isFocused: sidebarIsFocused))
         .onChange(of: interface.focusSidebarTrigger) {
             if !interface.isRenamingInSidebar { sidebarIsFocused = true }

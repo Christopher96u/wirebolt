@@ -30,11 +30,14 @@ import SwiftUI
     }
 }
 
+private enum PaletteOriginSurface { case native, sidebar }
+
 @MainActor private struct PaletteOrigin {
     let focus: WorkspaceFocusCapture
     let epoch: UInt64
     let tabID: String?
     let groupID: String
+    let surface: PaletteOriginSurface
 }
 
 private enum PaletteKeyCode {
@@ -66,6 +69,8 @@ final class CommandPaletteController {
         self.model = model; self.interface = interface; self.defaults = defaults; self.themes = themes
     }
 
+    func owns(_ window: NSWindow?) -> Bool { isOpen && self.window === window }
+
     func canOpen(in window: NSWindow?) -> Bool {
         guard let model, let interface else { return false }
         return interface.canOpenCommandPalette(model: model, in: window)
@@ -81,9 +86,10 @@ final class CommandPaletteController {
         // IME owns marked text; do not end composition to open a modal.
         guard (window.firstResponder as? NSTextView)?.hasMarkedText() != true else { return }
         let captured = WorkspaceFocusCapture(window: window)
+        let surface: PaletteOriginSurface = interface?.sidebarHasFocus == true ? .sidebar : .native
         guard window.makeFirstResponder(nil) else { return }
         self.window = window
-        origin = PaletteOrigin(focus: captured, epoch: model.workspaceEpoch, tabID: model.sessions.activeSession?.id, groupID: model.sessions.activeGroupID)
+        origin = PaletteOrigin(focus: captured, epoch: model.workspaceEpoch, tabID: model.sessions.activeSession?.id, groupID: model.sessions.activeGroupID, surface: surface)
         presentation = .opening
         generation += 1
         let token = generation
@@ -282,7 +288,11 @@ final class CommandPaletteController {
             guard let self, generation == token, !isOpen, let model, let interface,
                   model.workspaceEpoch == expectedEpoch, !interface.workspaceInteractionBlocked(model: model) else { return }
             let sameDocument = model.sessions.activeSession?.id == tab && model.sessions.activeGroupID == group
-            if sameDocument, captured?.focus.restore() == true { return }
+            if sameDocument {
+                if captured?.surface == .sidebar {
+                    if interface.columnVisibility != .detailOnly { interface.focusSidebar(); return }
+                } else if captured?.focus.restore() == true { return }
+            }
             if model.sessions.activeSession != nil { interface.focusURLTrigger += 1 }
             else { interface.focusSidebar() }
         }

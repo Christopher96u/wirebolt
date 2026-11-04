@@ -107,9 +107,9 @@ extension WorkspaceUIState {
         environmentFocusTrigger += 1
     }
     /// ⌘W is modal while the palette owns the workspace.
-    @discardableResult func dismissCommandPaletteForClose() -> Bool {
-        guard isCommandPaletteOpen else { return false }
-        commandPalette?.dismiss(restoringFocus: true)
+    @discardableResult func dismissCommandPaletteForClose(in window: NSWindow? = NSApp.keyWindow) -> Bool {
+        guard let commandPalette, commandPalette.owns(window) else { return false }
+        commandPalette.dismiss(restoringFocus: true)
         return true
     }
 }

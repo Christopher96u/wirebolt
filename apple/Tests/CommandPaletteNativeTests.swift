@@ -17,11 +17,13 @@ import SwiftUI
         precondition((window.firstResponder as? NSTextView)?.isFieldEditor == true)
         return controller
     }
-    static func choose(_ command: WorkspaceCommand, controller: CommandPaletteController) {
-        let title = domainWorkspaceCommandDescriptor(command: command, context: CommandContext(hasSession: true, webSocket: false, hasName: true, hasCollections: true, canGoBack: true, canGoForward: true, tabCount: 2, sidebarHidden: false, canOpenPalette: true)).title
+    @discardableResult static func choose(_ command: WorkspaceCommand, controller: CommandPaletteController, model: WireboltModel, interface: WorkspaceUIState) -> String {
+        let title = interface.commandDescriptor(command, model: model).title
         controller.query(">" + title)
         let result = controller.projection.snapshot!.results.first { $0.destination == .command(command: command) }!
+        controller.highlight(result.id)
         controller.confirm(result.id)
+        return result.id
     }
     static func run(root: URL, defaults: UserDefaults, screenshots: URL?) async throws {
         let restoreAX = NativeTestSupport.enableAccessibility()
@@ -29,10 +31,12 @@ import SwiftUI
         let globals = EnvironmentDraft(id: WorkspaceDraft.globalEnvironmentID, name: "Globals")
         let request = RequestDraft(id: "list", name: "List products", url: "https://example.invalid/secret-url-sentinel", note: "Fixture notes", body: .json(value: "{\"private\":true}"))
         let create = RequestDraft(id: "create", name: "Create product", method: .post)
+        let customMethod = RequestDraft(id: "custom-method", name: "Custom imported method", method: HTTPMethod(domainValue: "BAD METHOD"))
         let workspace = WorkspaceDraft(name: "Catalog API", collections: [CollectionDraft(id: "catalog", name: "Catalog API",
             groups: [GroupDraft(id: "products", name: "Products")], requests: [
                 RequestLocation(collectionID: "catalog", groupID: "products", request: request),
-                RequestLocation(collectionID: "catalog", groupID: "products", request: create)])],
+                RequestLocation(collectionID: "catalog", groupID: "products", request: create),
+                RequestLocation(collectionID: "catalog", request: customMethod)])],
             environments: [globals, EnvironmentDraft(id: "staging", name: "Staging", variables: [EnvironmentVariableDraft(id: "base", key: "base_url", value: .literal("environment-sentinel"))]), EnvironmentDraft(id: "production", name: "Production")])
         let store = PaletteFixtureStore(workspace)
         let transport = PaletteCountingRunner()
@@ -64,6 +68,10 @@ import SwiftUI
         interface.collapsedSidebarCollections = ["catalog"]
         let controller = await open(interface, model: model, window: window, host: host)
         if let screenshots { try NativeTestSupport.capture(host, directory: screenshots, name: "command-palette-root") }
+        controller.query("custom imported method")
+        await NativeTestSupport.settle(host)
+        precondition(controller.projection.snapshot!.results.count == 1 && controller.projection.snapshot!.results[0].method == "BAD METHOD")
+        print("paletteRendersStoredCustomMethodsWithoutValidationCrash: passed")
         for query in ["products", ">theme", "secret-url-sentinel", "environment-sentinel", ""] {
             controller.query(query)
             controller.projection.move(1)
@@ -167,7 +175,7 @@ import SwiftUI
         controller.confirm()
         precondition(model.sessions.activeSession === splitSession && model.sessions.activeGroupID == splitGroup && splitSession.draft == splitDraft)
         _ = await open(interface, model: model, window: window, host: host)
-        choose(.filterRequests, controller: controller)
+        choose(.filterRequests, controller: controller, model: model, interface: interface)
         await NativeTestSupport.settle(host)
         precondition(interface.columnVisibility == .all && !controller.isOpen)
         print("paletteConfirmsSavedRequestAndExactSplitTabWithCurrentDraftMetadata: passed")
@@ -177,8 +185,7 @@ import SwiftUI
         await NativeTestSupport.settle(host)
         if let screenshots { try NativeTestSupport.capture(host, directory: screenshots, name: "command-palette-actions") }
         controller.query(">environment")
-        let parent = controller.projection.snapshot!
-        choose(.switchEnvironment, controller: controller)
+        let parentID = choose(.switchEnvironment, controller: controller, model: model, interface: interface)
         precondition(controller.projection.snapshot?.page == .environments)
         await NativeTestSupport.settle(host)
         let search = EnvironmentInspectorTests.fields(host).first { $0.accessibilityLabel() == "Search environments" }!
@@ -191,13 +198,13 @@ import SwiftUI
         precondition(controller.handleKey(key(51, window)))
         precondition(controller.projection.snapshot?.page == .root)
         // choose() changes the query; verify the actual parent preserved by the core.
-        precondition(controller.projection.snapshot?.selectedId == parent.selectedId || controller.projection.snapshot?.query == ">Switch environment…")
-        choose(.switchEnvironment, controller: controller)
-        controller.confirm("environment:globals")
+        precondition(controller.projection.snapshot?.selectedId == parentID && controller.projection.snapshot?.query == ">" + interface.commandDescriptor(.switchEnvironment, model: model).title)
+        choose(.switchEnvironment, controller: controller, model: model, interface: interface)
+        controller.confirm("choice:globals-only")
         await NativeTestSupport.wait(host) { !controller.isOpen }
         precondition(model.selectedEnvironmentID == nil)
         _ = await open(interface, model: model, window: window, host: host)
-        choose(.changeTheme, controller: controller)
+        choose(.changeTheme, controller: controller, model: model, interface: interface)
         await NativeTestSupport.settle(host)
         precondition(EnvironmentInspectorTests.fields(host).contains { $0.placeholderString == "Search themes…" && $0.accessibilityLabel() == "Search themes" })
         if let screenshots { try NativeTestSupport.capture(host, directory: screenshots, name: "command-palette-themes") }
@@ -237,7 +244,7 @@ import SwiftUI
         await run.complete()
         print("paletteIMEUnavailableReasonAndModalAccessibility: passed")
         _ = await open(interface, model: model, window: window, host: host)
-        choose(.settings, controller: controller)
+        choose(.settings, controller: controller, model: model, interface: interface)
         await NativeTestSupport.settle(host)
         precondition(model.isShowingAppSettings && !controller.isOpen)
         precondition(!controller.canOpen(in: window))
@@ -266,10 +273,10 @@ import SwiftUI
         print("paletteRequestPinsPreviewAndTabPreservesTouchedPreview: passed")
 
         _ = await open(interface, model: model, window: window, host: host)
-        choose(.newWebSocket, controller: controller)
+        choose(.newWebSocket, controller: controller, model: model, interface: interface)
         await NativeTestSupport.wait(host) { model.sessions.activeSession?.kind == .webSocket }
         _ = await open(interface, model: model, window: window, host: host)
-        choose(.save, controller: controller)
+        choose(.save, controller: controller, model: model, interface: interface)
         await NativeTestSupport.wait(host) { !controller.isOpen }
         precondition(model.sessions.activeSession?.savedDraft != nil)
         print("paletteCreatesWebSocketAndSavesThroughExistingActions: passed")
@@ -277,10 +284,10 @@ import SwiftUI
         await store.setFailing(true)
         let priorTab = model.sessions.activeSession?.id
         _ = await open(interface, model: model, window: window, host: host)
-        choose(.newHttp, controller: controller)
+        choose(.newHttp, controller: controller, model: model, interface: interface)
         await NativeTestSupport.wait(host) { controller.presentation == .presented }
         precondition(controller.failure != nil && model.sessions.activeSession?.id == priorTab)
-        choose(.save, controller: controller)
+        choose(.save, controller: controller, model: model, interface: interface)
         await NativeTestSupport.wait(host) { controller.presentation == .presented }
         precondition(controller.failure != nil && model.sessions.activeSession?.id == priorTab)
         controller.dismiss(restoringFocus: true)
@@ -289,7 +296,7 @@ import SwiftUI
 
         // A failed environment commit preserves selection and hands off to its error.
         _ = await open(interface, model: model, window: window, host: host)
-        choose(.switchEnvironment, controller: controller)
+        choose(.switchEnvironment, controller: controller, model: model, interface: interface)
         model.environmentEditing.edit(.key(environmentId: "staging", id: "base"), text: "bad name")
         controller.confirm("environment:staging")
         await NativeTestSupport.wait(host) { !controller.isOpen }
@@ -308,12 +315,12 @@ import SwiftUI
         precondition(controller.isOpen && controller.failure != nil)
         controller.dismiss(restoringFocus: false)
         _ = await open(interface, model: model, window: window, host: host)
-        choose(.changeTheme, controller: controller)
+        choose(.changeTheme, controller: controller, model: model, interface: interface)
         precondition(controller.projection.snapshot!.results.contains { $0.title == "Harbor" })
         controller.confirm("theme:" + ThemeSelection.custom(id: custom.id).rawValue)
         precondition(defaults.string(forKey: "interfaceAppearance") == custom.id)
         _ = await open(interface, model: model, window: window, host: host)
-        choose(.changeTheme, controller: controller)
+        choose(.changeTheme, controller: controller, model: model, interface: interface)
         _ = await themes.delete(id: custom.id, selection: .system)
         controller.confirm("theme:" + custom.id)
         precondition(controller.isOpen && controller.failure != nil)
@@ -384,7 +391,7 @@ import SwiftUI
             let oldEnvironment = model.selectedEnvironmentID
             let target = oldEnvironment == "staging" ? "production" : "staging"
             _ = await open(interface, model: model, window: window, host: host)
-            choose(.switchEnvironment, controller: controller)
+            choose(.switchEnvironment, controller: controller, model: model, interface: interface)
             let gate = FixtureCredentialGate()
             await store.holdNextEnvironmentWrite(gate)
             model.environmentEditing.edit(.value(environmentId: "staging", id: "base"), text: cancel ? "cancel fixture" : "apply fixture")
@@ -426,9 +433,10 @@ import SwiftUI
         interface.columnVisibility = .all
         interface.focusSidebar()
         await NativeTestSupport.settle(host)
+        precondition(interface.sidebarHasFocus)
         let priorURLFocus = interface.focusURLTrigger
         _ = await open(interface, model: model, window: window, host: host)
-        choose(.toggleSidebar, controller: controller)
+        choose(.toggleSidebar, controller: controller, model: model, interface: interface)
         await NativeTestSupport.settle(host)
         precondition(interface.columnVisibility == .detailOnly && interface.focusURLTrigger > priorURLFocus)
 
@@ -445,7 +453,7 @@ import SwiftUI
         for command in [WorkspaceCommand.toggleSidebar, .nextTab, .previousTab, .back, .forward] {
             if interface.commandDescriptor(command, model: model).unavailableReason != nil { continue }
             _ = await open(interface, model: model, window: window, host: host)
-            choose(command, controller: controller)
+            choose(command, controller: controller, model: model, interface: interface)
             await NativeTestSupport.settle(host)
             precondition((window.firstResponder as? NSView)?.window === window)
         }
@@ -453,11 +461,24 @@ import SwiftUI
         await NativeTestSupport.settle(host)
         for command in [WorkspaceCommand.requestNote, .requestBody, .responseBody, .responseHeaders] {
             _ = await open(interface, model: model, window: window, host: host)
-            choose(command, controller: controller)
+            choose(command, controller: controller, model: model, interface: interface)
             await NativeTestSupport.settle(host)
             precondition(!controller.isOpen && (window.firstResponder as? NSView)?.window === window)
         }
         print("paletteCommandsRestoreEditorAndFocusSelectedSectionContent: passed")
+
+        // Closing a front auxiliary window must leave the workspace palette alone.
+        _ = await open(interface, model: model, window: window, host: host)
+        let (auxiliaryWindow, auxiliaryHost) = await NativeTestSupport.mount(Text("Auxiliary fixture"), defaults: interface.defaults)
+        precondition(!controller.handleKey(key(13, auxiliaryWindow, characters: "w", modifiers: .command)))
+        precondition(!interface.dismissCommandPaletteForClose(in: auxiliaryWindow))
+        auxiliaryWindow.styleMask.insert(.closable)
+        auxiliaryWindow.performClose(nil)
+        await NativeTestSupport.wait(auxiliaryHost) { !auxiliaryWindow.isVisible }
+        precondition(controller.isOpen)
+        precondition(interface.dismissCommandPaletteForClose(in: window))
+        await NativeTestSupport.settle(host)
+        print("paletteCommandWIsScopedToItsOwningWindow: passed")
 
         // Shift-Command-W must enter the same dirty-window guard as the title-bar close.
         model.sessions.activeSession!.draft.note = "Unsaved guarded-close fixture"
