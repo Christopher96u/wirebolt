@@ -34,8 +34,9 @@ import SwiftUI
                 RequestLocation(collectionID: "catalog", groupID: "products", request: request),
                 RequestLocation(collectionID: "catalog", groupID: "products", request: create)])],
             environments: [globals, EnvironmentDraft(id: "staging", name: "Staging", variables: [EnvironmentVariableDraft(id: "base", key: "base_url", value: .literal("environment-sentinel"))]), EnvironmentDraft(id: "production", name: "Production")])
+        let store = PaletteFixtureStore(workspace)
         let transport = PaletteCountingRunner()
-        let model = WireboltModel(runner: transport, persistence: PaletteFixtureStore(workspace),
+        let model = WireboltModel(runner: transport, persistence: store,
             history: HistoryRepository(root: root.appending(path: "palette-history")),
             cookieJar: CookieJar(storageURL: root.appending(path: "palette-cookies")), cookieDirectory: root,
             proxyPreferences: ProxyPreferences(defaults: defaults))
@@ -246,6 +247,19 @@ import SwiftUI
         precondition(model.sessions.activeSession?.savedDraft != nil)
         print("paletteCreatesWebSocketAndSavesThroughExistingActions: passed")
 
+        await store.setFailing(true)
+        let priorTab = model.sessions.activeSession?.id
+        _ = await open(interface, model: model, window: window, host: host)
+        choose(.newHttp, controller: controller)
+        await NativeTestSupport.wait(host) { controller.presentation == .presented }
+        precondition(controller.failure != nil && model.sessions.activeSession?.id == priorTab)
+        choose(.save, controller: controller)
+        await NativeTestSupport.wait(host) { controller.presentation == .presented }
+        precondition(controller.failure != nil && model.sessions.activeSession?.id == priorTab)
+        controller.dismiss(restoringFocus: true)
+        await store.setFailing(false)
+        print("paletteCreationAndSaveFailuresRemainInlineWithoutChangingTabs: passed")
+
         // A failed environment commit preserves selection and hands off to its error.
         _ = await open(interface, model: model, window: window, host: host)
         choose(.switchEnvironment, controller: controller)
@@ -261,7 +275,8 @@ import SwiftUI
 
         _ = await open(interface, model: model, window: window, host: host)
         controller.query("preview fixture")
-        model.workspace.collections[0].requests.removeAll { $0.request.id == "preview" }
+        let catalogIndex = model.workspace.collections.firstIndex { $0.id == "catalog" }!
+        model.workspace.collections[catalogIndex].requests.removeAll { $0.request.id == "preview" }
         controller.confirm("request:catalog:preview")
         precondition(controller.isOpen && controller.failure != nil)
         controller.dismiss(restoringFocus: false)
@@ -283,6 +298,20 @@ import SwiftUI
         interface.renamingRequestID = "catalog:list"
         precondition(!controller.canOpen(in: window))
         interface.renamingRequestID = nil
+        model.importSummary = ImportSummary(collectionNames: ["Imported fixture"], requestCount: 1, groupCount: 0)
+        precondition(controller.canOpen(in: window))
+        model.importSummary = ImportSummary(collectionNames: ["Imported fixture"], requestCount: 1, groupCount: 0, warnings: ["Fixture warning"])
+        precondition(!controller.canOpen(in: window))
+        model.importSummary = nil
+        _ = await open(interface, model: model, window: window, host: host)
+        let otherGroup = model.sessions.groups.first { $0.id != model.sessions.activeGroupID }!
+        model.sessions.activeGroupID = otherGroup.id
+        interface.synchronizeSelection(model: model)
+        let beforeFocus = interface.focusURLTrigger
+        controller.dismiss(restoringFocus: true)
+        await NativeTestSupport.settle(host)
+        precondition(interface.focusURLTrigger > beforeFocus)
+        print("paletteAllowsNonmodalImportBannerAndRestoresLogicalFocusAfterSelectionChanges: passed")
         precondition(transport.executionCount == 0 && transport.cancellationCount == 0)
         print("paletteRevalidatesRemovedDestinationsCustomThemesAndOpeningGuards: passed")
     }

@@ -149,13 +149,16 @@ actor FixtureIdentityStore: WorkspacePersistence {
 
 /// Workspace loaded entirely in process; secret access is an immediate fixture failure.
 actor PaletteFixtureStore: WorkspacePersistence {
+    private var failing = false
+    func setFailing(_ value: Bool) { failing = value }
     let workspace: WorkspaceDraft
     init(_ workspace: WorkspaceDraft) { self.workspace = workspace }
     func loadResult() async throws -> WorkspaceLoadResult {
         WorkspaceLoadResult(workspace: workspace.domain, diagnostics: WorkspaceLoadDiagnostics(problems: [], omitted: 0, notice: nil))
     }
     func apply(_ command: SessionWorkspaceCommand) async throws -> WorkspaceDelta {
-        WorkspaceDelta(version: 1, kind: .workspace, affectedIDs: [])
+        if failing { throw CocoaError(.fileWriteNoPermission) }
+        return WorkspaceDelta(version: 1, kind: .workspace, affectedIDs: [])
     }
     func save(request: RequestDraft, in collectionID: String) async throws {}
     func save(environment: EnvironmentDraft) async throws {}

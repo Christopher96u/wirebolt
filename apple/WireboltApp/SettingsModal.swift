@@ -34,26 +34,14 @@ struct SettingsModal: View {
         .onChange(of: model.isShowingAppSettings, initial: true) {
             if model.isShowingAppSettings {
                 hasPresented = true
-                guard focus.previous == nil else { return }
+                guard focus.origin == nil else { return }
                 focus.capture()
-            } else if let previous = focus.previous, let window = focus.window, window.attachedSheet == nil {
-                let selection = focus.selection
+            } else if let origin = focus.origin, let window = focus.window, window.attachedSheet == nil {
                 // Wait for the workspace's native controls to be enabled again.
                 DispatchQueue.main.async {
                     guard !model.isShowingAppSettings else { return }
-                    if window.attachedSheet == nil {
-                        // Commit the workspace's enabled controls before AppKit
-                        // asks the captured field to become first responder.
-                        window.contentView?.layoutSubtreeIfNeeded()
-                        window.makeFirstResponder(previous)
-                        if let selection, let editor = window.firstResponder as? NSTextView {
-                            let length = (editor.string as NSString).length
-                            let start = min(selection.location, length)
-                            editor.setSelectedRange(NSRange(location: start, length: min(selection.length, length - start)))
-                        }
-                    }
-                    focus.previous = nil
-                    focus.selection = nil
+                    _ = origin.restore()
+                    focus.origin = nil
                 }
             }
         }
@@ -63,18 +51,10 @@ struct SettingsModal: View {
 @MainActor private final class SettingsModalFocus {
     static let shared = SettingsModalFocus()
     weak var window: NSWindow?
-    weak var previous: NSResponder?
-    var selection: NSRange?
+    var origin: WorkspaceFocusCapture?
 
     func capture() {
-        let responder = window?.firstResponder
-        if let editor = responder as? NSTextView, editor.isFieldEditor {
-            previous = editor.delegate as? NSResponder
-            selection = editor.selectedRange()
-        } else {
-            previous = responder
-            selection = nil
-        }
+        origin = window.map(WorkspaceFocusCapture.init(window:))
     }
 }
 
@@ -84,8 +64,7 @@ func presentAppSettings(_ model: WireboltModel, focus: WorkspaceFocusCapture? = 
     guard !model.isShowingAppSettings else { return }
     if let focus {
         SettingsModalFocus.shared.window = focus.window
-        SettingsModalFocus.shared.previous = focus.previous
-        SettingsModalFocus.shared.selection = focus.selection
+        SettingsModalFocus.shared.origin = focus
     } else { SettingsModalFocus.shared.capture() }
     model.isShowingAppSettings = true
 }

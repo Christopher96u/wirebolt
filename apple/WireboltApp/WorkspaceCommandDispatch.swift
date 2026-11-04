@@ -6,7 +6,7 @@ extension WorkspaceUIState {
     func workspaceInteractionBlocked(model: WireboltModel) -> Bool {
         model.isLoadingWorkspace || model.isImporting || model.isGitBusy || model.isOAuthBusy
             || model.isShowingAppSettings || model.isShowingWorkspaceSettings || model.isShowingGitCollaboration
-            || model.importSummary != nil || model.importFailureMessage != nil || model.operationFailure != nil
+            || model.importSummary?.needsReview == true || model.importFailureMessage != nil || model.operationFailure != nil
             || model.operationFailureMessage != nil || isShowingImporter || isShowingCurlImporter
             || workspaceNamePrompt != nil || workspaceDeleteRequest != nil || isShowingDirtyClose
     }

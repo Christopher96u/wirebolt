@@ -284,43 +284,27 @@ final class WorkspaceUIState {
         PerformanceProbe.tabSwitched()
     }
 
-    func makeNewRequest(model: WireboltModel, kind: DocumentKind = .http) {
+    func makeNewRequest(model: WireboltModel, kind: DocumentKind = .http, collectionID: String? = nil, groupID: String? = nil) {
         guard !isCommandPaletteOpen else { return }
-        persistActivePresentation()
         Task {
-            guard let session = await model.createRequest(kind: kind) else { return }
-            activeTabID = session.id
-            presentationByTabID[session.id] = DocumentPresentationState()
-            requestSection = kind == .http ? .params : .body
-            responseSection = .body
-            renamingRequestID = nil
-            pendingURLFocusID = session.id
-            focusURLTrigger += 1
+            guard let session = await prepareNewRequest(model: model, kind: kind, collectionID: collectionID, groupID: groupID) else { return }
+            finishNewRequest(session)
         }
     }
 
-    func makeNewRequest(
-        model: WireboltModel,
-        kind: DocumentKind = .http,
-        collectionID: String,
-        groupID: String? = nil
-    ) {
-        guard !isCommandPaletteOpen else { return }
+    func prepareNewRequest(model: WireboltModel, kind: DocumentKind, collectionID: String? = nil, groupID: String? = nil) async -> DocumentSession? {
         persistActivePresentation()
-        Task {
-            guard let session = await model.createRequest(
-                kind: kind,
-                collectionID: collectionID,
-                groupID: groupID
-            ) else { return }
-            activeTabID = session.id
-            presentationByTabID[session.id] = DocumentPresentationState()
-            requestSection = kind == .http ? .params : .body
-            responseSection = .body
-            renamingRequestID = nil
-            pendingURLFocusID = session.id
-            focusURLTrigger += 1
-        }
+        return await model.createRequest(kind: kind, collectionID: collectionID, groupID: groupID)
+    }
+
+    func finishNewRequest(_ session: DocumentSession) {
+        activeTabID = session.id
+        presentationByTabID[session.id] = DocumentPresentationState()
+        requestSection = session.kind == .http ? .params : .body
+        responseSection = .body
+        renamingRequestID = nil
+        pendingURLFocusID = session.id
+        focusURLTrigger += 1
     }
 
     func resetForWorkspace(model: WireboltModel) {

@@ -205,6 +205,21 @@ final class CommandPaletteController {
                 model.sessions.pin(tabID: tabID)
             } else { interface.activateSavedRequest(location, model: model, preview: false) }
             interface.focusURLTrigger += 1
+        case .command(let command) where command == .newHttp || command == .newWebSocket:
+            presentation = .executing
+            let token = generation
+            Task {
+                let session = await interface.prepareNewRequest(model: model, kind: command == .newHttp ? .http : .webSocket)
+                guard generation == token, model.workspaceEpoch == epoch else { return }
+                if let session {
+                    dismiss(restoringFocus: false)
+                    interface.finishNewRequest(session)
+                } else {
+                    model.operationFailure = nil
+                    failure = "The request could not be created. Check the workspace and try again."
+                    presentation = .presented
+                }
+            }
         case .command(.save):
             presentation = .executing
             let token = generation
@@ -239,9 +254,11 @@ final class CommandPaletteController {
         guard restoringFocus else { return }
         DispatchQueue.main.async { [weak self] in
             guard let self, generation == token, !isOpen, let model, let interface,
-                  model.workspaceEpoch == expectedEpoch, model.sessions.activeSession?.id == tab,
-                  model.sessions.activeGroupID == group, !interface.workspaceInteractionBlocked(model: model) else { return }
-            if captured?.restore() != true { interface.focusURLTrigger += 1 }
+                  model.workspaceEpoch == expectedEpoch, !interface.workspaceInteractionBlocked(model: model) else { return }
+            let sameDocument = model.sessions.activeSession?.id == tab && model.sessions.activeGroupID == group
+            if sameDocument, captured?.restore() == true { return }
+            if model.sessions.activeSession != nil { interface.focusURLTrigger += 1 }
+            else { interface.focusSidebar() }
         }
     }
     func announceSelection() {
