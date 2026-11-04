@@ -134,7 +134,7 @@ func finishEnvironmentEditing(model: WireboltModel, interface: WorkspaceUIState,
 /// The window close button and File ▸ Close Window route here so unsaved edits are confirmed.
 @MainActor
 func requestWorkspaceWindowClose(_ window: NSWindow, model: WireboltModel, interface: WorkspaceUIState) {
-    if interface.dismissCommandPaletteForClose() { return }
+    interface.commandPalette?.dismiss(restoringFocus: false)
     Task {
         guard await finishEnvironmentEditing(model: model, interface: interface, in: window) else { return }
         guard await confirmUnsavedChanges(model: model, in: window, quitting: false) else { return }
