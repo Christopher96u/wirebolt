@@ -69,6 +69,12 @@ Unicode line/paragraph separators. The Markdown corpus compares every attributed
 run and visible text, including unfinished fenced-code-block newlines and inserted
 block separators.
 
+For the palette's in-process native checks alone, run
+`WIREBOLT_NATIVE_TEST_FILTER=command-palette scripts/native-adapter-tests.sh`
+after generating bindings. Omitting `WIREBOLT_NATIVE_TEST_FILTER` runs the complete
+adapter suite. Set `WIREBOLT_NATIVE_CAPTURE_DIRECTORY` to an output directory for
+fixture screenshots; the harness uses temporary stores and isolated defaults.
+
 The native adapter suite also covers sidebar search focus, Settings cleanup, custom method validation, bulk field reconciliation, multipart text/file value access, Find dismissal, WebSocket error placement and disconnect, atomic cookie deletion failure, and non-blocking orphaned inspector drafts. The isolated launch smoke also checks the native File menu. Set `WIREBOLT_NATIVE_CAPTURE_DIRECTORY` to capture the General, Appearance, Globals and orphaned-edit notice fixtures. Cookie jars remain scoped in memory across workspace switches; explicit deletions roll back on a failed atomic write. Staged TLS identity choices stay in a Rust secret editor until workspace Save.
 
 ## Workspace persistence
@@ -125,7 +131,8 @@ Run on an idle Apple Silicon Mac:
 The contract distinguishes the response engine's cold first viewport (50 ms budget) from a complete native window's first content (300 ms budget, including native view construction and JSON formatting when applicable). Budgets are test targets, not universal timings promised for every Mac or workload.
 
 The `command-palette` native workload covers a 10,000-request fixture with warm
-open (50 ms p95), query through visible results (25 ms p95), and native typing
+open, warm open immediately after an environment-variable edit or request rename
+(each 50 ms p95), query through visible results (25 ms p95), and native typing
 (16 ms p95) gates calibrated on the M5 Pro. It asserts zero full-draft reads and
 writes, including a 1 MiB open draft. See [the command palette spec](specs/command-palette.md).
 

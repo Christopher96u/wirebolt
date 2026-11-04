@@ -122,14 +122,12 @@ public final class WireboltModel {
 
     public var workspace = WorkspaceDraft(name: "Wirebolt") {
         didSet {
-            paletteWorkspaceRevision &+= 1
             sidebarSnapshot = nil
             sidebarVisibleCache = nil
             sidebarUnfilteredCache = nil
             if !mirroringWorkspace { workspaceNeedsSynchronization = true }
         }
     }
-    public private(set) var paletteWorkspaceRevision: UInt64 = 0
     public private(set) var workspaceEpoch: UInt64 = 0
     @ObservationIgnored private let rustWorkspace: AppWorkspaceSession
     @ObservationIgnored private let rustOperations: AppWorkspaceOperations
@@ -1105,7 +1103,7 @@ extension WireboltModel {
             workspace.collections.insert(CollectionDraft(domain: root), at: 0)
         }
         guard let plan = result.plan else { return }
-        workspace.collections.removeAll { plan.removedCollectionIds.contains($0.id) }
+        if !plan.removedCollectionIds.isEmpty { workspace.collections.removeAll { plan.removedCollectionIds.contains($0.id) } }
         for collection in plan.collections {
             let projected = CollectionDraft(domain: collection)
             if let index = workspace.collections.firstIndex(where: { $0.id == collection.id }) {

@@ -647,12 +647,17 @@ public struct WorkspaceDraft: Equatable, Sendable {
         transport: DomainTransport(
             validateTls: false, followRedirects: false, maximumRedirects: 0, totalTimeoutMs: 0, readTimeoutMs: 0,
             clientCertificateReference: nil, customCaPath: nil), collections: [], environments: [])
+    public private(set) var collectionsRevision: UInt64 = 0
     private var projectedCollections: [CollectionDraft] = []
     private var projectedEnvironments: [EnvironmentDraft] = []
     init(domain: DomainWorkspace) {
         self.domain = domain
         projectedCollections = domain.collections.map(CollectionDraft.init(domain:))
         projectedEnvironments = domain.environments.map(EnvironmentDraft.init(domain:))
+    }
+
+    public static func == (lhs: Self, rhs: Self) -> Bool {
+        lhs.domain == rhs.domain
     }
 
     public static let globalEnvironmentID = "global"
@@ -672,6 +677,7 @@ public struct WorkspaceDraft: Equatable, Sendable {
     public var collections: [CollectionDraft] {
         get { projectedCollections }
         set {
+            collectionsRevision &+= 1
             projectedCollections = newValue
             domain.collections = newValue.map(\.domain)
         }

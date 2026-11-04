@@ -18,7 +18,7 @@ import SwiftUI
         return controller
     }
     static func choose(_ command: WorkspaceCommand, controller: CommandPaletteController) {
-        let title = workspaceCommandDescriptor(command: command, context: CommandContext(hasSession: true, webSocket: false, hasName: true, hasCollections: true, canGoBack: true, canGoForward: true, tabCount: 2, sidebarHidden: false)).title
+        let title = domainWorkspaceCommandDescriptor(command: command, context: CommandContext(hasSession: true, webSocket: false, hasName: true, hasCollections: true, canGoBack: true, canGoForward: true, tabCount: 2, sidebarHidden: false, canOpenPalette: true)).title
         controller.query(">" + title)
         let result = controller.projection.snapshot!.results.first { $0.destination == .command(command: command) }!
         controller.confirm(result.id)
@@ -69,9 +69,14 @@ import SwiftUI
             controller.projection.move(1)
         }
         precondition(!interface.dispatch(.newHttp, model: model))
-        interface.closeActiveTab(model: model)
-        interface.selectTab(offset: 1, model: model)
-        interface.addKey()
+        precondition(!interface.dispatchWorkspaceAction {
+            interface.closeActiveTab(model: model)
+            interface.selectTab(offset: 1, model: model)
+            interface.addKey()
+            interface.moveSidebarSelection(1, model: model)
+            interface.renameSidebarSelection(model: model)
+            interface.toggleEnvironmentInspector()
+        })
         precondition(controller.handleKey(key(48, window, modifiers: .control)))
         precondition(transport.executionCount == 0 && transport.cancellationCount == 0)
         precondition(active.draft == initialDraft && active.activeRunID == runID)
@@ -128,6 +133,12 @@ import SwiftUI
         print("paletteRestoresURLBodyNotesTableAndInspectorFocus: passed")
 
         _ = await open(interface, model: model, window: window, host: host)
+        controller.query("List products")
+        await NativeTestSupport.settle(host)
+        precondition(controller.projection.snapshot!.results.count == 1)
+        let openRequest = controller.projection.snapshot!.results[0]
+        precondition(openRequest.marker == "Open" && openRequest.subtitle == "Catalog API / Products" && openRequest.method == "GET")
+        if let screenshots { try NativeTestSupport.capture(host, directory: screenshots, name: "command-palette-open-request") }
         controller.query("product")
         await NativeTestSupport.settle(host)
         if let screenshots { try NativeTestSupport.capture(host, directory: screenshots, name: "command-palette-requests") }
@@ -144,7 +155,15 @@ import SwiftUI
         let splitDraft = splitSession.draft
         interface.activateTab(id: active.id, groupID: initialGroups[0].0, model: model)
         _ = await open(interface, model: model, window: window, host: host)
+        controller.query("List products")
+        precondition(controller.projection.snapshot!.results.count == 1 && controller.projection.snapshot!.results[0].marker == "Open")
+        controller.confirm()
+        precondition(model.sessions.activeSession === active)
+        // Verify draft title updates when that saved request's split is active.
+        interface.activateTab(id: splitSession.id, groupID: splitGroup, model: model)
+        _ = await open(interface, model: model, window: window, host: host)
         controller.query("unsaved split")
+        precondition(controller.projection.snapshot!.results.count == 1 && controller.projection.snapshot!.results[0].marker == "Open")
         controller.confirm()
         precondition(model.sessions.activeSession === splitSession && model.sessions.activeGroupID == splitGroup && splitSession.draft == splitDraft)
         _ = await open(interface, model: model, window: window, host: host)
@@ -162,6 +181,11 @@ import SwiftUI
         choose(.switchEnvironment, controller: controller)
         precondition(controller.projection.snapshot?.page == .environments)
         await NativeTestSupport.settle(host)
+        let search = EnvironmentInspectorTests.fields(host).first { $0.accessibilityLabel() == "Search environments" }!
+        precondition(search.placeholderString == "Search environments…")
+        controller.query("requests")
+        precondition(controller.projection.snapshot!.results.isEmpty)
+        controller.query("")
         if let screenshots { try NativeTestSupport.capture(host, directory: screenshots, name: "command-palette-environments") }
         controller.query("")
         precondition(controller.handleKey(key(51, window)))
@@ -169,12 +193,13 @@ import SwiftUI
         // choose() changes the query; verify the actual parent preserved by the core.
         precondition(controller.projection.snapshot?.selectedId == parent.selectedId || controller.projection.snapshot?.query == ">Switch environment…")
         choose(.switchEnvironment, controller: controller)
-        controller.confirm("environment:")
+        controller.confirm("environment:globals")
         await NativeTestSupport.wait(host) { !controller.isOpen }
         precondition(model.selectedEnvironmentID == nil)
         _ = await open(interface, model: model, window: window, host: host)
         choose(.changeTheme, controller: controller)
         await NativeTestSupport.settle(host)
+        precondition(EnvironmentInspectorTests.fields(host).contains { $0.placeholderString == "Search themes…" && $0.accessibilityLabel() == "Search themes" })
         if let screenshots { try NativeTestSupport.capture(host, directory: screenshots, name: "command-palette-themes") }
         controller.highlight("theme:paper")
         precondition(defaults.string(forKey: "interfaceAppearance") == originalAppearance)
@@ -198,6 +223,8 @@ import SwiftUI
         precondition(ax.contains { $0.name == "Command Palette" })
         precondition(ax.contains { $0.name == "Search requests or actions" })
         precondition(!ax.contains { $0.name.contains("secret-url-sentinel") })
+        precondition(!controller.handleKey(key(14, window, characters: "e", modifiers: .option)))
+        precondition(controller.handleKey(key(45, window, characters: "n", modifiers: .command)))
         let editor = window.firstResponder as! NSTextView
         editor.setMarkedText("東京", selectedRange: NSRange(location: 2, length: 0), replacementRange: NSRange(location: NSNotFound, length: 0))
         precondition(editor.hasMarkedText())
@@ -314,7 +341,138 @@ import SwiftUI
         print("paletteAllowsNonmodalImportBannerAndRestoresLogicalFocusAfterSelectionChanges: passed")
         precondition(transport.executionCount == 0 && transport.cancellationCount == 0)
         print("paletteRevalidatesRemovedDestinationsCustomThemesAndOpeningGuards: passed")
+        try await reviewRegressions(model: model, interface: interface, controller: controller, store: store, window: window, host: host)
+
     }
+    private static func buttons(_ view: NSView) -> [NSButton] {
+        (view as? NSButton).map { [$0] } ?? view.subviews.flatMap(buttons)
+    }
+
+    static func reviewRegressions(model: WireboltModel, interface: WorkspaceUIState, controller: CommandPaletteController,
+        store: PaletteFixtureStore, window: NSWindow, host: NSView) async throws {
+        // The menu, palette and dispatcher receive the same context and catalog record.
+        interface.columnVisibility = .detailOnly
+        let descriptor = interface.commandDescriptor(.toggleSidebar, model: model)
+        precondition(descriptor.title == "Show Sidebar")
+        precondition(interface.commandDescriptor(.commandPalette, model: model).shortcut?.label == "⌘K")
+        _ = await open(interface, model: model, window: window, host: host)
+        controller.query(">show sidebar")
+        precondition(controller.projection.snapshot!.results.first?.title == descriptor.title)
+        controller.dismiss(restoringFocus: false)
+        interface.columnVisibility = .all
+        print("paletteMenusAndDispatcherUseSharedEligibilityAndCatalog: passed")
+
+        // Unrelated environment writes don't invalidate the request index; renames normalize one row.
+        _ = await open(interface, model: model, window: window, host: host)
+        let normalized = controller.projection.rust.normalizedRequests()
+        controller.dismiss(restoringFocus: false)
+        model.environmentEditing.edit(.value(environmentId: "staging", id: "base"), text: "changed fixture")
+        let flushed = await model.environmentEditing.flush()
+        precondition(flushed)
+        _ = await open(interface, model: model, window: window, host: host)
+        precondition(controller.projection.rust.normalizedRequests() == normalized)
+        controller.dismiss(restoringFocus: false)
+        let renamedID = model.workspace.collections.first { $0.id == "catalog" }!.requests[0].request.id
+        await model.renameRequest(collectionID: "catalog", requestID: renamedID, name: "Renamed palette fixture")
+        _ = await open(interface, model: model, window: window, host: host)
+        precondition(controller.projection.rust.normalizedRequests() == normalized + 1)
+        controller.dismiss(restoringFocus: false)
+        print("paletteIndexReusesRequestsAfterEnvironmentEditAndNormalizesOneRename: passed")
+
+        // During confirmation Escape/Back cannot navigate, and cancelling invalidates activation.
+        for cancel in [false, true] {
+            let oldEnvironment = model.selectedEnvironmentID
+            let target = oldEnvironment == "staging" ? "production" : "staging"
+            _ = await open(interface, model: model, window: window, host: host)
+            choose(.switchEnvironment, controller: controller)
+            let gate = FixtureCredentialGate()
+            await store.holdNextEnvironmentWrite(gate)
+            model.environmentEditing.edit(.value(environmentId: "staging", id: "base"), text: cancel ? "cancel fixture" : "apply fixture")
+            controller.confirm("environment:" + target)
+            await NativeTestSupport.wait(host) { gate.started }
+            precondition(controller.presentation == .executing)
+            precondition(controller.handleKey(key(53, window)))
+            controller.backOrDismiss()
+            precondition(controller.projection.snapshot?.page == .environments)
+            if cancel { precondition(controller.handleKey(key(13, window, characters: "w", modifiers: .command))) }
+            gate.release()
+            await NativeTestSupport.wait(host) { !model.environmentEditing.hasEdits && !controller.isOpen }
+            precondition(model.selectedEnvironmentID == (cancel ? oldEnvironment : target))
+        }
+        print("paletteExecutingEnvironmentFlushBlocksEscapeAndCancellationInvalidatesActivation: passed")
+
+        // Settings and Help keep app-wide availability even while workspace interaction is blocked.
+        var auxiliary: [String] = []
+        interface.openAuxiliaryWindow = { auxiliary.append($0) }
+        for block in [0, 1, 2, 3] {
+            model.isShowingAppSettings = block == 0
+            model.isShowingWorkspaceSettings = block == 1
+            model.operationFailureMessage = block == 2 ? "Fixture alert" : nil
+            model.isShowingGitCollaboration = block == 3
+            precondition(interface.commandIsAvailable(.help, model: model) && interface.commandIsAvailable(.settings, model: model))
+            precondition(interface.dispatch(.help, model: model))
+            precondition(auxiliary.last == helpWindowID)
+            precondition(interface.dispatch(.settings, model: model))
+            precondition(model.isShowingAppSettings)
+            model.isShowingAppSettings = false
+            model.isShowingWorkspaceSettings = false
+            model.operationFailureMessage = nil
+            model.isShowingGitCollaboration = false
+        }
+        await NativeTestSupport.settle(host)
+        print("paletteSettingsAndHelpPreserveAppWideAvailability: passed")
+
+        // Hiding a focused sidebar sends focus to the editor rather than its collapsed view.
+        interface.columnVisibility = .all
+        interface.focusSidebar()
+        await NativeTestSupport.settle(host)
+        let priorURLFocus = interface.focusURLTrigger
+        _ = await open(interface, model: model, window: window, host: host)
+        choose(.toggleSidebar, controller: controller)
+        await NativeTestSupport.settle(host)
+        precondition(interface.columnVisibility == .detailOnly && interface.focusURLTrigger > priorURLFocus)
+
+        // Commands that don't have a destination responder restore it or focus section content.
+        interface.isShowingEnvironmentInspector = false
+        let location = model.workspace.collections.first { $0.id == "catalog" }!.requests[0]
+        interface.activateSavedRequest(location, model: model, preview: false)
+        _ = model.sessions.open(draft: RequestDraft(id: "focus-fixture", name: "Focus fixture", body: .json(value: "{}")))
+        interface.synchronizeSelection(model: model)
+        interface.requestSection = .body
+        await NativeTestSupport.settle(host)
+        let body = NativeTestSupport.textViews(host).first { $0.isEditable && !$0.isFieldEditor }!
+        window.makeFirstResponder(body)
+        for command in [WorkspaceCommand.toggleSidebar, .nextTab, .previousTab, .back, .forward] {
+            if interface.commandDescriptor(command, model: model).unavailableReason != nil { continue }
+            _ = await open(interface, model: model, window: window, host: host)
+            choose(command, controller: controller)
+            await NativeTestSupport.settle(host)
+            precondition((window.firstResponder as? NSView)?.window === window)
+        }
+        interface.activateSavedRequest(location, model: model, preview: false)
+        await NativeTestSupport.settle(host)
+        for command in [WorkspaceCommand.requestNote, .requestBody, .responseBody, .responseHeaders] {
+            _ = await open(interface, model: model, window: window, host: host)
+            choose(command, controller: controller)
+            await NativeTestSupport.settle(host)
+            precondition(!controller.isOpen && (window.firstResponder as? NSView)?.window === window)
+        }
+        print("paletteCommandsRestoreEditorAndFocusSelectedSectionContent: passed")
+
+        // Shift-Command-W must enter the same dirty-window guard as the title-bar close.
+        model.sessions.activeSession!.draft.note = "Unsaved guarded-close fixture"
+        _ = await open(interface, model: model, window: window, host: host)
+        precondition(controller.handleKey(key(13, window, characters: "W", modifiers: [.command, .shift])))
+        await NativeTestSupport.wait(host) { window.attachedSheet != nil }
+        precondition(!controller.isOpen && window.isVisible)
+        let sheet = window.attachedSheet!
+        let cancelButton = sheet.contentView!.subviews.flatMap { buttons($0) }.first { $0.title == "Cancel" }!
+        cancelButton.performClick(nil)
+        await NativeTestSupport.wait(host) { window.attachedSheet == nil }
+        precondition(window.isVisible && model.sessions.activeSession!.draft.note == "Unsaved guarded-close fixture")
+        print("paletteShiftCommandWUsesGuardedWindowCloseWhileCommandWOnlyDismisses: passed")
+    }
+
 }
 
 private final class PaletteCountingRunner: RequestRunner, @unchecked Sendable {

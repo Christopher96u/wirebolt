@@ -49,7 +49,7 @@ struct WireboltApp: App {
             )
         }
 
-        Window("Wirebolt Help", id: WireboltCommands.helpWindowID) {
+        Window("Wirebolt Help", id: helpWindowID) {
             WireboltHelpView()
         }
         .defaultSize(width: 650, height: 590)
@@ -105,8 +105,7 @@ final class WireboltAppDelegate: NSObject, NSApplicationDelegate {
         guard event.keyCode == 48, modifiers == .control || modifiers == [.control, .shift],
               let window = event.window, window === WorkspaceWindowRegistry.primary, window.attachedSheet == nil
         else { return false }
-        guard !interface.isCommandPaletteOpen else { return true }
-        interface.selectTab(offset: modifiers.contains(.shift) ? -1 : 1, model: model)
+        interface.dispatchWorkspaceAction { interface.selectTab(offset: modifiers.contains(.shift) ? -1 : 1, model: model) }
         return true
     }
 
@@ -165,8 +164,6 @@ private extension UserDefaults {
 }
 
 struct WireboltCommands: Commands {
-    static let helpWindowID = "help"
-
     @FocusedValue(\.workspaceCommands) private var focusedWorkspace
     @FocusedValue(\.sidebarMove) private var sidebarMove
     @FocusedValue(\.environmentAddRow) private var environmentAddRow
@@ -192,25 +189,25 @@ struct WireboltCommands: Commands {
         CommandGroup(replacing: .newItem) {
             command(.newHttp)
             command(.newWebSocket)
-            Button("New Folder") { interface.makeNewFolder(model: model) }
+            workspaceButton("New Folder") { interface.makeNewFolder(model: model) }
                 .keyboardShortcut("n", modifiers: [.command, .option])
                 .disabled(noWorkspace)
-            Button("New Collection…") { interface.promptForNewCollection() }
+            workspaceButton("New Collection…") { interface.promptForNewCollection() }
                 .keyboardShortcut("n", modifiers: [.command, .shift])
                 .disabled(noWorkspace)
             Divider()
-            Button("New Workspace…") { guard !interface.isCommandPaletteOpen else { return }; chooseWorkspace(model: model, interface: interface, create: true) }
+            workspaceButton("New Workspace…") { chooseWorkspace(model: model, interface: interface, create: true) }
                 .disabled(workspaceActionsBusy)
-            Button("Open Workspace…") { guard !interface.isCommandPaletteOpen else { return }; chooseWorkspace(model: model, interface: interface, create: false) }
+            workspaceButton("Open Workspace…") { chooseWorkspace(model: model, interface: interface, create: false) }
                 .keyboardShortcut("o", modifiers: .command)
                 .disabled(workspaceActionsBusy)
             Menu("Open Recent") {
                 ForEach(recents.urls, id: \.self) { url in
-                    Button(url.lastPathComponent) { guard !interface.isCommandPaletteOpen else { return }; openRecentWorkspace(url, model: model, interface: interface) }
+                    workspaceButton(url.lastPathComponent) { openRecentWorkspace(url, model: model, interface: interface) }
                         .help(url.path)
                 }
                 Divider()
-                Button("Clear Menu") { recents.clear() }
+                workspaceButton("Clear Menu") { recents.clear() }
                     .disabled(recents.urls.isEmpty)
             }
             .disabled(workspaceActionsBusy)
@@ -225,7 +222,6 @@ struct WireboltCommands: Commands {
                 else { NSApp.keyWindow?.performClose(nil) }
             }.keyboardShortcut("w", modifiers: .command)
             Button("Close Window") {
-                if interface.dismissCommandPaletteForClose() { return }
                 guard let window = NSApp.keyWindow else { return }
                 if focusedWorkspace != nil { requestWorkspaceWindowClose(window, model: model, interface: interface) }
                 else { window.performClose(nil) }
@@ -242,8 +238,7 @@ struct WireboltCommands: Commands {
             command(.toggleSidebar)
         }
         CommandMenu("Request") {
-            Button("Send") {
-                guard !interface.isCommandPaletteOpen else { return }
+            workspaceButton("Send") {
                 guard let session = model.sessions.activeSession else { return }
                 commitPendingEdits(in: NSApp.keyWindow)
                 if session.kind == .webSocket { Task { await session.socket.send(body: session.draft.body) } }
@@ -251,11 +246,10 @@ struct WireboltCommands: Commands {
             }.keyboardShortcut(.return, modifiers: .command)
                 .disabled(noWorkspace || !state.hasURL || state.isRunning
                     || (state.activeKind == .webSocket && state.socketStatus != .connected))
-            Button("Cancel Request") { guard !interface.isCommandPaletteOpen else { return }; model.cancel() }
+            workspaceButton("Cancel Request") { model.cancel() }
                 .keyboardShortcut(".", modifiers: .command)
                 .disabled(noWorkspace || !state.isRunning)
-            Button(state.socketStatus == .disconnected ? "Connect" : "Disconnect") {
-                guard !interface.isCommandPaletteOpen else { return }
+            workspaceButton(state.socketStatus == .disconnected ? "Connect" : "Disconnect") {
                 guard let session = model.sessions.activeSession, session.kind == .webSocket else { return }
                 if session.socket.status == .disconnected { Task { await model.connectWebSocket(session) } }
                 else { session.socket.disconnect() }
@@ -263,39 +257,34 @@ struct WireboltCommands: Commands {
                 .disabled(noWorkspace || state.activeKind != .webSocket || !sessionSocketCanToggle(status: state.socketStatus, hasUrl: state.hasURL))
             Divider()
             // Reorders the request or folder selected in the focused sidebar.
-            Button("Move Up") {
-                guard !interface.isCommandPaletteOpen else { return }
+            workspaceButton("Move Up") {
                 if let sidebarMove { interface.moveSidebarItem(sidebarMove.identifier, by: -1, model: model) }
             }.keyboardShortcut(.upArrow, modifiers: [.command, .option])
                 .disabled(sidebarMove?.canMoveUp != true)
-            Button("Move Down") {
-                guard !interface.isCommandPaletteOpen else { return }
+            workspaceButton("Move Down") {
                 if let sidebarMove { interface.moveSidebarItem(sidebarMove.identifier, by: 1, model: model) }
             }.keyboardShortcut(.downArrow, modifiers: [.command, .option])
                 .disabled(sidebarMove?.canMoveDown != true)
             Divider()
             // ⇧⌘C shows the Colors panel and ⌥⌘C copies style (Match Case in the find bar).
-            Button("Copy cURL") { guard !interface.isCommandPaletteOpen else { return }; copyRequestAsCurl(model.draft, model: model) }
+            workspaceButton("Copy cURL") { copyRequestAsCurl(model.draft, model: model) }
                 .keyboardShortcut("c", modifiers: [.command, .option, .shift])
                 .disabled(noWorkspace || state.activeKind != .http)
             Divider()
             command(.editUrl)
             // Switches to Params first when the visible section has no key-value table.
-            Button("Add Key") {
-                guard !interface.isCommandPaletteOpen else { return }
+            workspaceButton("Add Key") {
                 if let environmentAddRow { environmentAddRow() } else { interface.addKey() }
             }
                 .keyboardShortcut("k", modifiers: [.command, .shift])
                 .disabled(noWorkspace || (!state.hasActiveSession && environmentAddRow == nil))
             Divider()
-            Toggle("Bulk Edit", isOn: Binding(get: { interface.isBulkEditing }, set: { if !interface.isCommandPaletteOpen { interface.isBulkEditing = $0 } }))
+            Toggle("Bulk Edit", isOn: Binding(get: { interface.isBulkEditing }, set: { value in interface.dispatchWorkspaceAction { interface.isBulkEditing = value } }))
                 .keyboardShortcut("b", modifiers: .command)
                 .disabled(noWorkspace || !interface.canEditFields)
         }
         CommandMenu("Navigate") {
-            Button("Command Palette…") { interface.toggleCommandPalette(model: model) }
-                .keyboardShortcut("k", modifiers: .command)
-                .disabled(!interface.isCommandPaletteOpen && (focusedWorkspace == nil || !model.hasLoadedWorkspace || interface.workspaceInteractionBlocked(model: model) || interface.isRenamingInSidebar))
+            command(.commandPalette)
             Divider()
             command(.back)
             command(.forward)
@@ -324,7 +313,7 @@ struct WireboltCommands: Commands {
             command(.previousTab)
             Menu("Select Tab at Index") {
                 ForEach(1...9, id: \.self) { index in
-                    Button("Tab \(index)") { interface.selectTab(index: index - 1, model: model) }
+                    workspaceButton("Tab \(index)") { interface.selectTab(index: index - 1, model: model) }
                         .keyboardShortcut(KeyEquivalent(Character(String(index))), modifiers: .command)
                         .disabled(noWorkspace || state.tabCount < index)
                 }
@@ -333,18 +322,21 @@ struct WireboltCommands: Commands {
         CommandMenu("Workspace") {
             command(.workspaceSettings)
             command(.environmentInspector)
-            Button("Rename Workspace…") { guard !interface.isCommandPaletteOpen else { return }; promptToRenameWorkspace(model: model) }
+            workspaceButton("Rename Workspace…") { promptToRenameWorkspace(model: model) }
                 .disabled(noWorkspace || workspaceActionsBusy)
-            Button("Cookies…") { guard !interface.isCommandPaletteOpen else { return }; openWindow(id: CookiesView.windowID) }
+            workspaceButton("Cookies…") { openWindow(id: CookiesView.windowID) }
                 .disabled(noWorkspace)
             // ⇧⌘G is the system Find Previous.
-            Button("Git Collaboration…") { guard !interface.isCommandPaletteOpen else { return }; model.isShowingGitCollaboration = true }
+            workspaceButton("Git Collaboration…") { model.isShowingGitCollaboration = true }
                 .keyboardShortcut("g", modifiers: [.command, .control])
                 .disabled(noWorkspace || model.isLoadingWorkspace)
         }
     }
+    private func workspaceButton(_ title: String, action: @escaping @MainActor () -> Void) -> some View {
+        Button(title) { interface.dispatchWorkspaceAction(action) }
+    }
     private func command(_ command: WorkspaceCommand) -> some View {
-        WorkspaceCommandButton(command: command, model: model, interface: interface, state: state, disabled: focusedWorkspace == nil && command != .settings && command != .help)
+        WorkspaceCommandButton(command: command, model: model, interface: interface, disabled: focusedWorkspace == nil && command != .settings && command != .help)
     }
 
 }

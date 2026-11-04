@@ -1,9 +1,11 @@
 import AppKit
 import SwiftUI
 
+let helpWindowID = "help"
+
 @MainActor
 func chooseWorkspace(model: WireboltModel, interface: WorkspaceUIState, create: Bool) {
-    guard !interface.isCommandPaletteOpen, !model.isLoadingWorkspace, !model.isGitBusy, !model.isOAuthBusy else { return }
+    guard !model.isLoadingWorkspace, !model.isGitBusy, !model.isOAuthBusy else { return }
     let window = NSApp.keyWindow
     Task {
         guard await confirmDiscardingForWorkspaceSwitch(model: model, interface: interface, in: window) else { return }
@@ -32,7 +34,7 @@ func chooseWorkspace(model: WireboltModel, interface: WorkspaceUIState, create: 
 /// Opens a workspace from File ▸ Open Recent.
 @MainActor
 func openRecentWorkspace(_ url: URL, model: WireboltModel, interface: WorkspaceUIState) {
-    guard !interface.isCommandPaletteOpen, !model.isLoadingWorkspace, !model.isGitBusy, !model.isOAuthBusy else { return }
+    guard !model.isLoadingWorkspace, !model.isGitBusy, !model.isOAuthBusy else { return }
     let window = NSApp.keyWindow
     Task {
         guard await confirmDiscardingForWorkspaceSwitch(model: model, interface: interface, in: window) else { return }

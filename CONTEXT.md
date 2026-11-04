@@ -68,7 +68,7 @@ its workspace. Runtime storage remains outside Git-visible workspace files.
 
 - Rust owns workspace persistence, import parsing, the editable request/workspace/
   environment records, variable editing and resolution, cURL exports, proxy policy, forms
-  and probe state, editor tokenization/indent columns, bounded PEM file input, sidebar indexes/drop eligibility/menu ordering, chrome labels, typed theme/contrast computation, custom-theme derivation, VS Code JSONC import and versioned local theme-library persistence,
+  and probe state, editor tokenization/indent columns, bounded PEM file input, sidebar indexes/drop eligibility/menu ordering, the shared command catalog and eligibility, metadata-only palette indexing/ranking, chrome labels, typed theme/contrast computation, custom-theme derivation, VS Code JSONC import and versioned local theme-library persistence,
   OAuth 2 protocol logic, immutable request preparation, HTTP transport, and TLS input.
 - Rust also owns response body storage, indexing, search, folding, wrapping policy,
   JSON parsing, Markdown run assembly/cache policy, run history, and cookie policy in `wirebolt-app::response`.

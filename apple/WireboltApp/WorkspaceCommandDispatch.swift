@@ -16,62 +16,86 @@ extension WorkspaceUIState {
         }
         commandPalette?.toggle(in: window)
     }
-    func commandDescriptor(_ command: WorkspaceCommand, context: CommandContext) -> CommandDescriptor {
-        var context = context
-        context.sidebarHidden = columnVisibility == .detailOnly
-        return workspaceCommandDescriptor(command: command, context: context)
+    func canOpenCommandPalette(model: WireboltModel, in window: NSWindow?) -> Bool {
+        guard let window else { return false }
+        return window === WorkspaceWindowRegistry.primary && isWorkspaceWindowActive(window)
+            && model.hasLoadedWorkspace && !workspaceInteractionBlocked(model: model)
+            && !isRenamingInSidebar && window.attachedSheet == nil && NSApp.modalWindow == nil
     }
-    /// All menu and palette effects pass this guard at execution time.
-    @discardableResult func dispatch(_ command: WorkspaceCommand, model: WireboltModel) -> Bool {
+    func commandContext(model: WireboltModel) -> CommandContext {
+        model.workspaceCommandContext(sidebarHidden: columnVisibility == .detailOnly,
+            canOpenPalette: isCommandPaletteOpen || canOpenCommandPalette(model: model, in: WorkspaceWindowRegistry.primary))
+    }
+    func commandDescriptor(_ command: WorkspaceCommand, model: WireboltModel) -> CommandDescriptor {
+        domainWorkspaceCommandDescriptor(command: command, context: commandContext(model: model))
+    }
+    func commandIsAvailable(_ command: WorkspaceCommand, model: WireboltModel) -> Bool {
+        if command == .help || command == .settings { return true }
+        if command == .commandPalette { return commandDescriptor(command, model: model).unavailableReason == nil }
+        return !isCommandPaletteOpen && !workspaceInteractionBlocked(model: model)
+            && commandDescriptor(command, model: model).unavailableReason == nil
+    }
+    /// One gate for document menu commands, focused actions and the tab key monitor.
+    @discardableResult func dispatchWorkspaceAction(_ action: () -> Void) -> Bool {
         guard !isCommandPaletteOpen else { return false }
-        if command == .settings || command == .help {
-            guard NSApp.modalWindow == nil, NSApp.keyWindow?.attachedSheet == nil else { return false }
-            if command == .settings {
-                presentAppSettings(model)
-                if let window = WorkspaceWindowRegistry.primary { window.makeKeyAndOrderFront(nil) }
-                else { openAuxiliaryWindow?("workspace") }
-            } else { openAuxiliaryWindow?("help") }
+        action()
+        return true
+    }
+    @discardableResult func dispatch(_ command: WorkspaceCommand, model: WireboltModel) -> Bool {
+        if command == .settings {
+            let focus = commandPalette?.capturedFocus
+            commandPalette?.dismiss(restoringFocus: false)
+            presentAppSettings(model, focus: focus)
+            if let window = WorkspaceWindowRegistry.primary { window.makeKeyAndOrderFront(nil) }
+            else { openAuxiliaryWindow?("workspace") }
             return true
         }
-        guard !workspaceInteractionBlocked(model: model),
-              let window = WorkspaceWindowRegistry.primary, isWorkspaceWindowActive(window),
-              window.attachedSheet == nil, NSApp.modalWindow == nil,
-              workspaceCommandDescriptor(command: command, context: model.workspaceCommandContext).unavailableReason == nil else { return false }
-        switch command {
-        case .newHttp: makeNewRequest(model: model)
-        case .newWebSocket: makeNewRequest(model: model, kind: .webSocket)
-        case .save:
-            Task { _ = await saveCommand(model: model) }
-        case .filterRequests: focusRequestSearch()
-        case .toggleSidebar: columnVisibility = columnVisibility == .detailOnly ? .all : .detailOnly
-        case .editUrl: focusURLTrigger += 1
-        case .focusResponse: focusResponseTrigger += 1
-        case .focusSidebar: focusSidebar()
-        case .back: model.sessions.goBack(); synchronizeSelection(model: model)
-        case .forward: model.sessions.goForward(); synchronizeSelection(model: model)
-        case .nextTab: selectTab(offset: 1, model: model)
-        case .previousTab: selectTab(offset: -1, model: model)
-        case .splitRight:
-            guard let tab = model.sessions.activeSession else { return false }
-            openInNewSplit(tabID: tab.id, model: model)
-        case .requestParams: requestSection = .params
-        case .requestHeaders: requestSection = .headers
-        case .requestBody: requestSection = .body
-        case .requestAuth: requestSection = .auth
-        case .requestNote: requestSection = .note
-        case .requestSettings: requestSection = .settings
-        case .responseHeaders: responseSection = .headers
-        case .responseBody: responseSection = .body
-        case .responseCookies: responseSection = .cookies
-        case .responseRaw: responseSection = .raw
-        case .responseRequest: responseSection = .request
-        case .settings: presentAppSettings(model)
-        case .help: openAuxiliaryWindow?("help")
-        case .workspaceSettings: model.isShowingWorkspaceSettings = true
-        case .environmentInspector: focusEnvironmentInspector()
-        case .switchEnvironment, .changeTheme: toggleCommandPalette(model: model)
+        if command == .help {
+            commandPalette?.dismiss(restoringFocus: true)
+            openAuxiliaryWindow?(helpWindowID)
+            return true
         }
-        return true
+        if command == .commandPalette {
+            guard commandIsAvailable(command, model: model) else { return false }
+            toggleCommandPalette(model: model, in: WorkspaceWindowRegistry.primary)
+            return true
+        }
+        guard commandIsAvailable(command, model: model),
+              let window = WorkspaceWindowRegistry.primary, isWorkspaceWindowActive(window),
+              window.attachedSheet == nil, NSApp.modalWindow == nil else { return false }
+        return dispatchWorkspaceAction {
+            switch command {
+            case .newHttp: makeNewRequest(model: model)
+            case .newWebSocket: makeNewRequest(model: model, kind: .webSocket)
+            case .save: Task { _ = await saveCommand(model: model) }
+            case .filterRequests: focusRequestSearch()
+            case .toggleSidebar: columnVisibility = columnVisibility == .detailOnly ? .all : .detailOnly
+            case .editUrl: focusURLTrigger += 1
+            case .focusResponse: focusResponseTrigger += 1
+            case .focusSidebar: focusSidebar()
+            case .back: model.sessions.goBack(); synchronizeSelection(model: model)
+            case .forward: model.sessions.goForward(); synchronizeSelection(model: model)
+            case .nextTab: selectTab(offset: 1, model: model)
+            case .previousTab: selectTab(offset: -1, model: model)
+            case .splitRight:
+                if let tab = model.sessions.activeSession { openInNewSplit(tabID: tab.id, model: model) }
+            case .requestParams: requestSection = .params; focusRequestContentTrigger += 1
+            case .requestHeaders: requestSection = .headers; focusRequestContentTrigger += 1
+            case .requestBody: requestSection = .body; focusRequestContentTrigger += 1
+            case .requestAuth: requestSection = .auth; focusRequestContentTrigger += 1
+            case .requestNote: requestSection = .note; focusRequestContentTrigger += 1
+            case .requestSettings: requestSection = .settings; focusRequestContentTrigger += 1
+            case .responseHeaders: responseSection = .headers; focusResponseTrigger += 1
+            case .responseBody: responseSection = .body; focusResponseTrigger += 1
+            case .responseCookies: responseSection = .cookies; focusResponseTrigger += 1
+            case .responseRaw: responseSection = .raw; focusResponseTrigger += 1
+            case .responseRequest: responseSection = .request; focusResponseTrigger += 1
+            case .workspaceSettings: model.isShowingWorkspaceSettings = true
+            case .environmentInspector: focusEnvironmentInspector()
+            case .switchEnvironment, .changeTheme: toggleCommandPalette(model: model)
+            default: break
+            }
+        }
     }
     func saveCommand(model: WireboltModel) async -> Bool {
         guard let session = model.sessions.activeSession,
@@ -94,27 +118,35 @@ struct WorkspaceCommandButton: View {
     let command: WorkspaceCommand
     let model: WireboltModel
     let interface: WorkspaceUIState
-    let state: WorkspaceCommandState
     var disabled = false
     var body: some View {
-        let descriptor = interface.commandDescriptor(command, context: state.paletteContext)
+        let descriptor = interface.commandDescriptor(command, model: model)
         Group {
-            if let key = descriptor.key.first {
-                button(descriptor).keyboardShortcut(KeyEquivalent(key), modifiers: modifiers(descriptor.modifiers))
+            if let shortcut = descriptor.shortcut {
+                button(descriptor).keyboardShortcut(key(shortcut.key), modifiers: modifiers(shortcut.modifiers))
             } else { button(descriptor) }
         }
-        .disabled(disabled || interface.isCommandPaletteOpen || interface.workspaceInteractionBlocked(model: model) || descriptor.unavailableReason != nil)
+        .disabled(disabled || !interface.commandIsAvailable(command, model: model))
     }
     private func button(_ descriptor: CommandDescriptor) -> some View {
         Button(descriptor.title) { interface.dispatch(command, model: model) }
             .help(descriptor.unavailableReason ?? descriptor.title)
     }
-    private func modifiers(_ value: UInt8) -> EventModifiers {
-        var result: EventModifiers = []
-        if value & 1 != 0 { result.insert(.command) }
-        if value & 2 != 0 { result.insert(.shift) }
-        if value & 4 != 0 { result.insert(.option) }
-        if value & 8 != 0 { result.insert(.control) }
-        return result
+    private func key(_ key: ShortcutKey) -> KeyEquivalent {
+        switch key {
+        case .character(let value): KeyEquivalent(value.first!)
+        case .leftArrow: .leftArrow
+        case .rightArrow: .rightArrow
+        }
+    }
+    private func modifiers(_ values: [ShortcutModifier]) -> EventModifiers {
+        values.reduce(into: EventModifiers()) { result, value in
+            switch value {
+            case .command: result.insert(.command)
+            case .shift: result.insert(.shift)
+            case .option: result.insert(.option)
+            case .control: result.insert(.control)
+            }
+        }
     }
 }

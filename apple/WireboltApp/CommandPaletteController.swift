@@ -16,9 +16,10 @@ import SwiftUI
         } else { previous = responder }
     }
     func restore() -> Bool {
-        guard let window, window.attachedSheet == nil, let previous,
-              let view = previous as? NSView, view.window === window else { return false }
+        guard let window, window.attachedSheet == nil else { return false }
         window.contentView?.layoutSubtreeIfNeeded()
+        guard let previous, let view = previous as? NSView, view.window === window,
+              !view.isHiddenOrHasHiddenAncestor, !view.visibleRect.isEmpty else { return false }
         guard window.makeFirstResponder(previous) else { return false }
         if let selection, let editor = window.firstResponder as? NSTextView {
             let length = (editor.string as NSString).length
@@ -29,6 +30,18 @@ import SwiftUI
     }
 }
 
+@MainActor private struct PaletteOrigin {
+    let focus: WorkspaceFocusCapture
+    let epoch: UInt64
+    let tabID: String?
+    let groupID: String
+}
+
+private enum PaletteKeyCode {
+    static let down: UInt16 = 125, up: UInt16 = 126, returnKey: UInt16 = 36, enter: UInt16 = 76
+    static let escape: UInt16 = 53, delete: UInt16 = 51, tab: UInt16 = 48
+}
+
 @MainActor @Observable
 final class CommandPaletteController {
     enum Presentation { case closed, opening, presented, executing }
@@ -36,16 +49,15 @@ final class CommandPaletteController {
     var isOpen: Bool { presentation != .closed }
     var blocksWorkspace: Bool { presentation == .presented || presentation == .executing }
     let projection = CommandPaletteProjection()
-    private(set) var failure: String?
+    private(set) var failureReason: PaletteFailure?
+    var failure: String? { failureReason.map { domainPaletteFailureMessage(reason: $0) } }
     @ObservationIgnored private weak var model: WireboltModel?
     @ObservationIgnored private weak var interface: WorkspaceUIState?
     @ObservationIgnored private weak var window: NSWindow?
     @ObservationIgnored private let defaults: UserDefaults
     @ObservationIgnored private let themes: ThemeStore
-    @ObservationIgnored private var origin: WorkspaceFocusCapture?
-    @ObservationIgnored private var epoch: UInt64 = 0
-    @ObservationIgnored private var originTabID: String?
-    @ObservationIgnored private var originGroupID: String?
+    @ObservationIgnored private var origin: PaletteOrigin?
+    var capturedFocus: WorkspaceFocusCapture? { origin?.focus }
     @ObservationIgnored private var generation = 0
     @ObservationIgnored private var monitor: Any?
     @ObservationIgnored private var observers: [NSObjectProtocol] = []
@@ -55,11 +67,12 @@ final class CommandPaletteController {
     }
 
     func canOpen(in window: NSWindow?) -> Bool {
-        guard let model, let interface, let window,
-              window === WorkspaceWindowRegistry.primary, interface.isWorkspaceWindowActive(window),
-              model.hasLoadedWorkspace, !interface.workspaceInteractionBlocked(model: model),
-              !interface.isRenamingInSidebar, window.attachedSheet == nil, NSApp.modalWindow == nil else { return false }
-        return true
+        guard let model, let interface else { return false }
+        return interface.canOpenCommandPalette(model: model, in: window)
+    }
+
+    private func isCurrent(_ token: Int) -> Bool {
+        generation == token && model?.workspaceEpoch == origin?.epoch
     }
 
     func toggle(in window: NSWindow?) {
@@ -69,28 +82,26 @@ final class CommandPaletteController {
         guard (window.firstResponder as? NSTextView)?.hasMarkedText() != true else { return }
         let captured = WorkspaceFocusCapture(window: window)
         guard window.makeFirstResponder(nil) else { return }
-        self.window = window; origin = captured
-        epoch = model.workspaceEpoch
-        originTabID = model.sessions.activeSession?.id
-        originGroupID = model.sessions.activeGroupID
+        self.window = window
+        origin = PaletteOrigin(focus: captured, epoch: model.workspaceEpoch, tabID: model.sessions.activeSession?.id, groupID: model.sessions.activeGroupID)
         presentation = .opening
         generation += 1
         let token = generation
         Task {
             guard await model.environmentEditing.flush() else {
-                guard generation == token else { return }
+                guard isCurrent(token) else { return }
                 dismiss(restoringFocus: false)
                 interface?.focusEnvironmentInspector()
                 return
             }
-            guard generation == token, presentation == .opening,
-                  model.workspaceEpoch == epoch, canOpen(in: window) else {
-                if generation == token { dismiss(restoringFocus: true) }
+            guard isCurrent(token), presentation == .opening,
+                  canOpen(in: window) else {
+                if isCurrent(token) { dismiss(restoringFocus: true) }
                 return
             }
             updateMetadata()
             projection.open()
-            failure = nil
+            failureReason = nil
             presentation = .presented
             installIsolation(in: window)
         }
@@ -111,19 +122,31 @@ final class CommandPaletteController {
     func handleKey(_ event: NSEvent) -> Bool {
         guard isOpen, event.window === window else { return false }
         let modifiers = event.modifierFlags.intersection([.command, .control, .option, .shift])
-        if modifiers == .control || modifiers == [.control, .shift], event.keyCode == 48 { return true }
+        if modifiers == .control || modifiers == [.control, .shift], event.keyCode == PaletteKeyCode.tab { return true }
         if modifiers == .command, event.charactersIgnoringModifiers?.lowercased() == "w" {
             dismiss(restoringFocus: true); return true
         }
-        // ⌘K is registered solely in Navigate. Let the menu dispatch it.
-        if modifiers.contains(.command) || modifiers.contains(.control) || modifiers.contains(.option) { return false }
+        if modifiers == [.command, .shift], event.charactersIgnoringModifiers?.lowercased() == "w",
+           let model, let interface, let window {
+            requestWorkspaceWindowClose(window, model: model, interface: interface)
+            return true
+        }
+        // Option composition and Control editing belong to the native search field.
+        if !modifiers.intersection([.control, .option]).isEmpty && !modifiers.contains(.command) { return false }
+        // Palette, window, app and native search-editing shortcuts retain their owners.
+        if modifiers.contains(.command) {
+            let key = event.charactersIgnoringModifiers?.lowercased() ?? ""
+            return !(modifiers == .command && ["k", "q", ",", "?", "a", "c", "v", "x", "z"].contains(key)
+                || modifiers == [.command, .shift] && ["?", "z"].contains(key))
+        }
         if (window?.firstResponder as? NSTextView)?.hasMarkedText() == true { return false }
+        guard presentation == .presented else { return true }
         switch event.keyCode {
-        case 125: projection.move(1); announceSelection(); return true
-        case 126: projection.move(-1); announceSelection(); return true
-        case 36, 76: confirm(); return true
-        case 53: backOrDismiss(); return true
-        case 51 where projection.snapshot?.query.isEmpty == true && projection.snapshot?.page != .root:
+        case PaletteKeyCode.down: projection.move(1); announceSelection(); return true
+        case PaletteKeyCode.up: projection.move(-1); announceSelection(); return true
+        case PaletteKeyCode.returnKey, PaletteKeyCode.enter: confirm(); return true
+        case PaletteKeyCode.escape: backOrDismiss(); return true
+        case PaletteKeyCode.delete where projection.snapshot?.query.isEmpty == true && projection.snapshot?.page != .root:
             backOrDismiss(); return true
         default: return false
         }
@@ -131,56 +154,63 @@ final class CommandPaletteController {
 
     func updateMetadata() {
         guard let model, let interface else { return }
-        var context = model.workspaceCommandContext
-        context.sidebarHidden = interface.columnVisibility == .detailOnly
-        let choices = [PaletteChoice(id: ThemeSelection.system.rawValue, name: "Follow System")]
-            + ThemePreset.allCases.map { PaletteChoice(id: ThemeSelection.builtIn(preset: $0).rawValue, name: $0.name) }
-            + themes.customThemes.map { PaletteChoice(id: ThemeSelection.custom(id: $0.id).rawValue, name: $0.name) }
+        let context = interface.commandContext(model: model)
+        let choices = [PaletteTheme(id: ThemeSelection.system.rawValue, name: "Follow System", kind: .builtIn)]
+            + ThemePreset.allCases.map { PaletteTheme(id: ThemeSelection.builtIn(preset: $0).rawValue, name: $0.name, kind: .builtIn) }
+            + themes.customThemes.map { PaletteTheme(id: ThemeSelection.custom(id: $0.id).rawValue, name: $0.name, kind: .custom) }
         projection.update(model: model, context: context, themes: choices,
             appearance: ThemeSelection(rawValue: defaults.string(forKey: "interfaceAppearance") ?? "").rawValue)
     }
 
     func query(_ query: String, filter: PaletteFilter? = nil) {
         guard presentation == .presented else { return }
-        failure = nil
+        failureReason = nil
         projection.query(query, filter: filter ?? projection.snapshot?.filter ?? .all)
         announceSelection()
     }
-    func highlight(_ id: String) { projection.select(id); announceSelection() }
+    func highlight(_ id: String) { guard presentation == .presented else { return }; projection.select(id); announceSelection() }
     func backOrDismiss() {
-        failure = nil
+        guard presentation == .presented else { return }
+        failureReason = nil
         if !projection.back() { dismiss(restoringFocus: true) }
         else { announceSelection() }
     }
     func confirm(_ id: String? = nil) {
         guard presentation == .presented, let model, let interface,
-              model.workspaceEpoch == epoch, let window, canOpen(in: window),
+              model.workspaceEpoch == origin?.epoch, let window, canOpen(in: window),
               let id = id ?? projection.snapshot?.selectedId else { return }
         updateMetadata()
-        guard let result = projection.rust.resolve(id: id) else {
-            failure = "This destination is no longer available."; projection.refresh(); return
+        let result: PaletteResult
+        switch projection.rust.resolve(id: id) {
+        case .ready(let resolved): result = resolved
+        case .failed(let reason): failureReason = reason; projection.refresh(); return
         }
-        if let reason = result.unavailableReason { failure = reason; projection.refresh(); return }
         switch result.destination {
         case .command(let command) where command == .switchEnvironment || command == .changeTheme:
             projection.enter(command == .switchEnvironment ? .environments : .themes)
             announceSelection()
-        case .environment(let environmentID):
+        case .environment:
             presentation = .executing
             let token = generation
             Task {
                 guard await model.environmentEditing.flush() else {
-                    guard generation == token else { return }
+                    guard isCurrent(token) else { return }
                     dismiss(restoringFocus: false)
                     interface.focusEnvironmentInspector()
                     return
                 }
-                guard generation == token, model.workspaceEpoch == epoch,
-                      environmentID == nil || model.workspace.selectableEnvironments.contains(where: { $0.id == environmentID }) else {
-                    if generation == token { presentation = .presented; failure = "This environment is no longer available." }
-                    return
+                guard isCurrent(token) else { return }
+                updateMetadata()
+                switch projection.rust.resolve(id: id) {
+                case .ready(let current):
+                    if case .environment(let selection) = current.destination {
+                        switch selection {
+                        case .globals: model.selectedEnvironmentID = nil
+                        case .environment(let environmentID): model.selectedEnvironmentID = environmentID
+                        }
+                    }
+                case .failed(let reason): presentation = .presented; failureReason = reason; projection.refresh(); return
                 }
-                model.selectedEnvironmentID = environmentID
                 dismiss(restoringFocus: true)
             }
         case .theme(let id):
@@ -188,21 +218,16 @@ final class CommandPaletteController {
             defaults.set(id, forKey: "interfaceAppearance")
             dismiss(restoringFocus: true)
         case .tab(let groupID, let tabID):
-            guard model.sessions.groups.contains(where: { $0.id == groupID && $0.tabIDs.contains(tabID) }) else {
-                failure = "This tab is no longer open."; return
-            }
             dismiss(restoringFocus: false)
             interface.activateTab(id: tabID, groupID: groupID, model: model)
             interface.focusURLTrigger += 1
         case .request(let collectionID, let requestID):
-            guard let location = model.workspace.collections.first(where: { $0.id == collectionID })?.requests.first(where: { $0.request.id == requestID }) else {
-                failure = "This request is no longer available."; return
-            }
-            let target = projection.rust.requestTab(collection: collectionID, request: requestID)
+            // Rust resolved against the synchronous projection of this exact workspace.
+            let location = model.workspace.location(collectionID: collectionID, requestID: requestID)!
             dismiss(restoringFocus: false)
-            if case .tab(let groupID, let tabID) = target {
-                interface.activateTab(id: tabID, groupID: groupID, model: model)
-                model.sessions.pin(tabID: tabID)
+            if let target = result.openTab {
+                interface.activateTab(id: target.tabId, groupID: target.groupId, model: model)
+                model.sessions.pin(tabID: target.tabId)
             } else { interface.activateSavedRequest(location, model: model, preview: false) }
             interface.focusURLTrigger += 1
         case .command(let command) where command == .newHttp || command == .newWebSocket:
@@ -210,13 +235,13 @@ final class CommandPaletteController {
             let token = generation
             Task {
                 let session = await interface.prepareNewRequest(model: model, kind: command == .newHttp ? .http : .webSocket)
-                guard generation == token, model.workspaceEpoch == epoch else { return }
+                guard isCurrent(token) else { return }
                 if let session {
                     dismiss(restoringFocus: false)
                     interface.finishNewRequest(session)
                 } else {
                     model.operationFailure = nil
-                    failure = "The request could not be created. Check the workspace and try again."
+                    failureReason = .createFailed
                     presentation = .presented
                 }
             }
@@ -225,18 +250,19 @@ final class CommandPaletteController {
             let token = generation
             Task {
                 let saved = await interface.saveCommand(model: model)
-                guard generation == token, model.workspaceEpoch == epoch else { return }
+                guard isCurrent(token) else { return }
                 if saved { dismiss(restoringFocus: true) }
                 else {
                     model.operationFailure = nil
-                    failure = "The request could not be saved. Check the workspace and try again."
+                    failureReason = .saveFailed
                     presentation = .presented
                 }
             }
         case .command(let command):
             let captured = origin
-            dismiss(restoringFocus: false)
-            if command == .settings { presentAppSettings(model, focus: captured) }
+            let restoresOrigin = [.toggleSidebar, .back, .forward, .nextTab, .previousTab].contains(command)
+            dismiss(restoringFocus: restoresOrigin)
+            if command == .settings { presentAppSettings(model, focus: captured?.focus) }
             else { interface.dispatch(command, model: model) }
         }
     }
@@ -244,11 +270,11 @@ final class CommandPaletteController {
     func dismiss(restoringFocus: Bool) {
         guard isOpen else { return }
         let captured = origin
-        let expectedEpoch = epoch, tab = originTabID, group = originGroupID
+        let expectedEpoch = captured?.epoch, tab = captured?.tabID, group = captured?.groupID
         generation += 1
         let token = generation
         presentation = .closed
-        projection.clear(); failure = nil; origin = nil
+        projection.clear(); failureReason = nil; origin = nil
         if let monitor { NSEvent.removeMonitor(monitor); self.monitor = nil }
         observers.forEach { NotificationCenter.default.removeObserver($0) }; observers.removeAll()
         guard restoringFocus else { return }
@@ -256,7 +282,7 @@ final class CommandPaletteController {
             guard let self, generation == token, !isOpen, let model, let interface,
                   model.workspaceEpoch == expectedEpoch, !interface.workspaceInteractionBlocked(model: model) else { return }
             let sameDocument = model.sessions.activeSession?.id == tab && model.sessions.activeGroupID == group
-            if sameDocument, captured?.restore() == true { return }
+            if sameDocument, captured?.focus.restore() == true { return }
             if model.sessions.activeSession != nil { interface.focusURLTrigger += 1 }
             else { interface.focusSidebar() }
         }
@@ -264,7 +290,7 @@ final class CommandPaletteController {
     func announceSelection() {
         guard let window, let snapshot = projection.snapshot else { return }
         let result = snapshot.results.first { $0.id == snapshot.selectedId }
-        let message = result.map { [$0.title, $0.subtitle, $0.current ? "Current" : "", $0.unavailableReason ?? ""].filter { !$0.isEmpty }.joined(separator: ", ") } ?? "No results"
+        let message = result?.accessibilityLabel ?? "No results"
         NSAccessibility.post(element: window, notification: .announcementRequested,
             userInfo: [.announcement: message, .priority: NSAccessibilityPriorityLevel.medium.rawValue])
     }

@@ -149,6 +149,8 @@ actor FixtureIdentityStore: WorkspacePersistence {
 
 /// Workspace loaded entirely in process; secret access is an immediate fixture failure.
 actor PaletteFixtureStore: WorkspacePersistence {
+    private var nextEnvironmentGate: FixtureCredentialGate?
+    func holdNextEnvironmentWrite(_ gate: FixtureCredentialGate) { nextEnvironmentGate = gate }
     private var failing = false
     func setFailing(_ value: Bool) { failing = value }
     let workspace: WorkspaceDraft
@@ -158,6 +160,10 @@ actor PaletteFixtureStore: WorkspacePersistence {
     }
     func apply(_ command: SessionWorkspaceCommand) async throws -> WorkspaceDelta {
         if failing { throw CocoaError(.fileWriteNoPermission) }
+        if case .saveEnvironment = command, let gate = nextEnvironmentGate {
+            nextEnvironmentGate = nil
+            await gate.wait()
+        }
         return WorkspaceDelta(version: 1, kind: .workspace, affectedIDs: [])
     }
     func save(request: RequestDraft, in collectionID: String) async throws {}

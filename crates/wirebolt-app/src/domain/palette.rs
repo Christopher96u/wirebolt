@@ -6,6 +6,8 @@ use super::{
 };
 use std::collections::{HashMap, HashSet};
 
+const RESULT_LIMIT: usize = 50;
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PaletteRequest {
     pub id: String,
@@ -50,12 +52,81 @@ pub struct PaletteTab {
     pub title: String,
     pub method: String,
     pub web_socket: bool,
-    pub group_name: String,
+    pub group_index: u64,
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PaletteChoice {
     pub id: String,
     pub name: String,
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PaletteThemeKind {
+    BuiltIn,
+    Custom,
+}
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PaletteTheme {
+    pub id: String,
+    pub name: String,
+    pub kind: PaletteThemeKind,
+}
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum PaletteEnvironmentSelection {
+    Globals,
+    Environment { id: String },
+}
+impl PaletteEnvironmentSelection {
+    fn id(&self) -> String {
+        match self {
+            Self::Globals => "environment:globals".into(),
+            Self::Environment { id } => format!("environment:{id}"),
+        }
+    }
+}
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PaletteTabTarget {
+    pub group_id: String,
+    pub tab_id: String,
+}
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum PaletteFailure {
+    DestinationRemoved,
+    RequestRemoved,
+    TabClosed,
+    EnvironmentRemoved,
+    ThemeRemoved,
+    CommandUnavailable { reason: String },
+    CreateFailed,
+    SaveFailed,
+}
+impl PaletteFailure {
+    #[must_use]
+    pub fn message(&self) -> String {
+        match self {
+            Self::DestinationRemoved => "This destination is no longer available.",
+            Self::RequestRemoved => "This request is no longer available.",
+            Self::TabClosed => "This tab is no longer open.",
+            Self::EnvironmentRemoved => "This environment is no longer available.",
+            Self::ThemeRemoved => "This theme is no longer available.",
+            Self::CommandUnavailable { reason } => reason,
+            Self::CreateFailed => {
+                "The request could not be created. Check the workspace and try again."
+            }
+            Self::SaveFailed => {
+                "The request could not be saved. Check the workspace and try again."
+            }
+        }
+        .into()
+    }
+}
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[allow(
+    clippy::large_enum_variant,
+    reason = "UniFFI carries one bounded result record by value."
+)]
+pub enum PaletteResolution {
+    Ready { result: PaletteResult },
+    Failed { reason: PaletteFailure },
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum PaletteDestination {
@@ -71,7 +142,7 @@ pub enum PaletteDestination {
         command: WorkspaceCommand,
     },
     Environment {
-        id: Option<String>,
+        selection: PaletteEnvironmentSelection,
     },
     Theme {
         id: String,
@@ -98,9 +169,46 @@ pub struct PaletteResult {
     pub title: String,
     pub subtitle: String,
     pub method: String,
+    pub web_socket: bool,
     pub shortcut: String,
     pub unavailable_reason: Option<String>,
     pub current: bool,
+    pub marker: String,
+    pub open_tab: Option<PaletteTabTarget>,
+    pub accessibility_label: String,
+}
+impl PaletteResult {
+    fn new(id: String, destination: PaletteDestination, title: String) -> Self {
+        Self {
+            id,
+            destination,
+            title,
+            subtitle: String::new(),
+            method: String::new(),
+            web_socket: false,
+            shortcut: String::new(),
+            unavailable_reason: None,
+            current: false,
+            marker: String::new(),
+            open_tab: None,
+            accessibility_label: String::new(),
+        }
+    }
+    fn accessible(mut self) -> Self {
+        self.accessibility_label = [
+            self.method.as_str(),
+            &self.title,
+            &self.subtitle,
+            &self.marker,
+            if self.current { "Current" } else { "" },
+            self.unavailable_reason.as_deref().unwrap_or(""),
+        ]
+        .into_iter()
+        .filter(|s| !s.is_empty())
+        .collect::<Vec<_>>()
+        .join(", ");
+        self
+    }
 }
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct PaletteSnapshot {
@@ -111,18 +219,31 @@ pub struct PaletteSnapshot {
     pub selected_id: Option<String>,
     pub results: Vec<PaletteResult>,
     pub total: u64,
+    pub effective_filter: PaletteFilter,
+    pub page_title: String,
+    pub search_placeholder: String,
+    pub search_label: String,
+    pub result_summary: String,
 }
 #[derive(Clone, Debug)]
 struct Entry {
     result: PaletteResult,
     title: String,
+    alternate_titles: Vec<String>,
     secondary: String,
     corpus: String,
 }
 impl Entry {
-    fn new(result: PaletteResult, synonyms: &str) -> Self {
+    fn add_title(&mut self, title: String) {
+        if title != self.title && !self.alternate_titles.contains(&title) {
+            self.corpus.push(' ');
+            self.corpus.push_str(&title);
+            self.alternate_titles.push(title);
+        }
+    }
+    fn new(result: PaletteResult, secondary: &str, synonyms: &str) -> Self {
         let title = normalize(&result.title);
-        let secondary = normalize(&result.subtitle);
+        let secondary = normalize(secondary);
         let corpus = format!(
             "{title} {secondary} {} {}",
             normalize(&result.method),
@@ -131,6 +252,7 @@ impl Entry {
         Self {
             result,
             title,
+            alternate_titles: vec![],
             secondary,
             corpus,
         }
@@ -138,6 +260,7 @@ impl Entry {
 }
 #[derive(Debug, Default)]
 pub struct CommandPalette {
+    saved: Vec<Entry>,
     requests: Vec<Entry>,
     tabs: Vec<Entry>,
     tab_metadata: Vec<PaletteTab>,
@@ -145,14 +268,21 @@ pub struct CommandPalette {
     themes: Vec<Entry>,
     context: CommandContext,
     active_group: String,
-    selected_environment: Option<String>,
-    selected_theme: String,
+    group_count: u64,
+    environment_metadata: Option<(Vec<PaletteChoice>, PaletteEnvironmentSelection)>,
+    theme_metadata: Option<(Vec<PaletteTheme>, String)>,
+    normalized_requests: u64,
     state: PaletteSnapshot,
     parent: Option<PaletteSnapshot>,
 }
 impl CommandPalette {
+    /// Reuses normalized request entries; a rename only normalizes its changed entry.
     pub fn replace_workspace(&mut self, collections: Vec<PaletteCollection>) {
-        self.requests.clear();
+        let old: HashMap<_, _> = self
+            .saved
+            .drain(..)
+            .map(|e| (e.result.id.clone(), e))
+            .collect();
         for collection in collections {
             let folders: HashMap<_, _> = collection
                 .groups
@@ -172,128 +302,193 @@ impl CommandPalette {
                 }
                 names.reverse();
                 names.insert(0, &collection.name);
-                self.requests.push(Entry::new(
-                    PaletteResult {
-                        id: format!("request:{}:{}", collection.id, request.id),
-                        destination: PaletteDestination::Request {
-                            collection_id: collection.id.clone(),
-                            request_id: request.id,
-                        },
-                        title: request.name,
-                        subtitle: names.join(" / "),
-                        method: if request.web_socket {
-                            "WS".into()
-                        } else {
-                            request.method
-                        },
-                        shortcut: String::new(),
-                        unavailable_reason: None,
-                        current: false,
+                let mut result = PaletteResult::new(
+                    format!("request:{}:{}", collection.id, request.id),
+                    PaletteDestination::Request {
+                        collection_id: collection.id.clone(),
+                        request_id: request.id,
                     },
-                    "",
-                ));
+                    request.name,
+                );
+                result.subtitle = names.join(" / ");
+                result.method = method_label(request.method, request.web_socket);
+                result.web_socket = request.web_socket;
+                result = result.accessible();
+                if let Some(entry) = old.get(&result.id).filter(|e| e.result == result) {
+                    self.saved.push(entry.clone());
+                } else {
+                    self.normalized_requests += 1;
+                    self.saved
+                        .push(Entry::new(result.clone(), &result.subtitle, ""));
+                }
             }
         }
+        self.merge_tabs();
         self.state.revision += 1;
     }
-    /// Only new/changed bounded tab metadata is normalized; no draft synchronization.
-    pub fn update_tabs(&mut self, tabs: Vec<PaletteTab>, active_group: String) {
-        if tabs == self.tab_metadata && active_group == self.active_group {
+    #[must_use]
+    pub const fn normalized_requests(&self) -> u64 {
+        self.normalized_requests
+    }
+
+    /// Only changed bounded tab metadata is normalized; no draft synchronization.
+    pub fn update_tabs(&mut self, tabs: Vec<PaletteTab>, active_group: String, group_count: u64) {
+        if tabs == self.tab_metadata
+            && active_group == self.active_group
+            && group_count == self.group_count
+        {
             return;
         }
-        let old: HashMap<_, _> = self
-            .tabs
-            .drain(..)
-            .map(|e| (e.result.id.clone(), e))
-            .collect();
-        self.tabs = tabs
-            .iter()
-            .map(|tab| {
-                let id = format!("tab:{}:{}", tab.group_id, tab.tab_id);
-                if let Some(entry) = old
-                    .get(&id)
-                    .filter(|_| self.tab_metadata.iter().any(|t| t == tab))
-                {
-                    return entry.clone();
-                }
-                Entry::new(
-                    PaletteResult {
-                        id,
-                        destination: PaletteDestination::Tab {
-                            group_id: tab.group_id.clone(),
-                            tab_id: tab.tab_id.clone(),
-                        },
-                        title: tab.title.clone(),
-                        subtitle: tab.group_name.clone(),
-                        method: if tab.web_socket {
-                            "WS".into()
-                        } else {
-                            tab.method.clone()
-                        },
-                        shortcut: String::new(),
-                        unavailable_reason: None,
-                        current: false,
-                    },
-                    "",
-                )
-            })
-            .collect();
+        self.group_count = group_count;
         self.tab_metadata = tabs;
         self.active_group = active_group;
+        self.merge_tabs();
         self.state.revision += 1;
+    }
+    fn merge_tabs(&mut self) {
+        self.requests = self.saved.clone();
+        self.tabs.clear();
+        let mut saved: HashMap<_, _> = self
+            .requests
+            .iter_mut()
+            .filter_map(|entry| match &entry.result.destination {
+                PaletteDestination::Request {
+                    collection_id,
+                    request_id,
+                } => Some(((collection_id.clone(), request_id.clone()), entry)),
+                _ => None,
+            })
+            .collect();
+        let multiple_groups = self.group_count > 1;
+        for tab in &self.tab_metadata {
+            if let Some(entry) = tab
+                .collection_id
+                .as_ref()
+                .and_then(|id| saved.get_mut(&(id.clone(), tab.request_id.clone())))
+            {
+                if entry.result.open_tab.is_some()
+                    && (tab.group_id != self.active_group
+                        || entry
+                            .result
+                            .open_tab
+                            .as_ref()
+                            .is_some_and(|t| t.group_id == self.active_group))
+                {
+                    continue;
+                }
+                let mut result = entry.result.clone();
+                result.title.clone_from(&tab.title);
+                result.method = method_label(tab.method.clone(), tab.web_socket);
+                result.web_socket = tab.web_socket;
+                result.open_tab = Some(PaletteTabTarget {
+                    group_id: tab.group_id.clone(),
+                    tab_id: tab.tab_id.clone(),
+                });
+                result.marker = if tab.group_id == self.active_group {
+                    "Open".into()
+                } else {
+                    format!("Open in split {}", tab.group_index + 1)
+                };
+                **entry = Entry::new(result.clone().accessible(), &result.subtitle, "");
+            } else {
+                self.tabs.push(Self::unsaved_tab(tab, multiple_groups));
+            }
+        }
+        for tab in &self.tab_metadata {
+            if let Some(entry) = tab
+                .collection_id
+                .as_ref()
+                .and_then(|id| saved.get_mut(&(id.clone(), tab.request_id.clone())))
+            {
+                entry.add_title(normalize(&tab.title));
+            }
+        }
+        for source in &self.saved {
+            if let PaletteDestination::Request {
+                collection_id,
+                request_id,
+            } = &source.result.destination
+                && let Some(entry) = saved.get_mut(&(collection_id.clone(), request_id.clone()))
+            {
+                entry.add_title(source.title.clone());
+            }
+        }
+    }
+    fn unsaved_tab(tab: &PaletteTab, multiple_groups: bool) -> Entry {
+        let mut result = PaletteResult::new(
+            format!("tab:{}:{}", tab.group_id, tab.tab_id),
+            PaletteDestination::Tab {
+                group_id: tab.group_id.clone(),
+                tab_id: tab.tab_id.clone(),
+            },
+            tab.title.clone(),
+        );
+        result.method = method_label(tab.method.clone(), tab.web_socket);
+        result.web_socket = tab.web_socket;
+        result.subtitle = if multiple_groups {
+            format!("Unsaved · Split {}", tab.group_index + 1)
+        } else {
+            "Unsaved".into()
+        };
+        Entry::new(result.accessible(), "", "")
     }
     pub fn update_choices(
         &mut self,
         environments: Vec<PaletteChoice>,
-        themes: Vec<PaletteChoice>,
-        selected_environment: Option<String>,
+        themes: Vec<PaletteTheme>,
+        selected_environment: PaletteEnvironmentSelection,
         selected_theme: String,
     ) {
-        self.environments = std::iter::once(PaletteChoice {
-            id: String::new(),
-            name: "Globals only".into(),
-        })
-        .chain(environments)
-        .map(|choice| {
-            let id = (!choice.id.is_empty()).then_some(choice.id.clone());
-            Entry::new(
-                PaletteResult {
-                    id: format!("environment:{}", choice.id),
-                    destination: PaletteDestination::Environment { id: id.clone() },
-                    title: choice.name,
-                    subtitle: "Environment for requests".into(),
-                    method: String::new(),
-                    shortcut: String::new(),
-                    unavailable_reason: None,
-                    current: id == selected_environment,
-                },
-                "",
-            )
-        })
-        .collect();
-        self.themes = themes
-            .into_iter()
-            .map(|choice| {
-                Entry::new(
-                    PaletteResult {
-                        id: format!("theme:{}", choice.id),
-                        destination: PaletteDestination::Theme {
+        let environment_metadata = (environments, selected_environment);
+        if self.environment_metadata.as_ref() != Some(&environment_metadata) {
+            self.environments =
+                std::iter::once((PaletteEnvironmentSelection::Globals, "Globals only".into()))
+                    .chain(environment_metadata.0.iter().map(|e| {
+                        (
+                            PaletteEnvironmentSelection::Environment { id: e.id.clone() },
+                            e.name.clone(),
+                        )
+                    }))
+                    .map(|(selection, name)| {
+                        let mut result = PaletteResult::new(
+                            selection.id(),
+                            PaletteDestination::Environment {
+                                selection: selection.clone(),
+                            },
+                            name,
+                        );
+                        result.current = selection == environment_metadata.1;
+                        Entry::new(result.accessible(), "", "")
+                    })
+                    .collect();
+            self.environment_metadata = Some(environment_metadata);
+            self.state.revision += 1;
+        }
+        let theme_metadata = (themes, selected_theme);
+        if self.theme_metadata.as_ref() != Some(&theme_metadata) {
+            self.themes = theme_metadata
+                .0
+                .iter()
+                .map(|choice| {
+                    let mut result = PaletteResult::new(
+                        format!("theme:{}", choice.id),
+                        PaletteDestination::Theme {
                             id: choice.id.clone(),
                         },
-                        title: choice.name,
-                        subtitle: "Appearance".into(),
-                        method: String::new(),
-                        shortcut: String::new(),
-                        unavailable_reason: None,
-                        current: choice.id == selected_theme,
-                    },
-                    "",
-                )
-            })
-            .collect();
-        self.selected_environment = selected_environment;
-        self.selected_theme = selected_theme;
-        self.state.revision += 1;
+                        choice.name.clone(),
+                    );
+                    result.subtitle = match choice.kind {
+                        PaletteThemeKind::BuiltIn => "Built-in",
+                        PaletteThemeKind::Custom => "Custom",
+                    }
+                    .into();
+                    result.current = choice.id == theme_metadata.1;
+                    Entry::new(result.accessible(), "", "")
+                })
+                .collect();
+            self.theme_metadata = Some(theme_metadata);
+            self.state.revision += 1;
+        }
     }
     pub fn set_context(&mut self, context: CommandContext) {
         self.context = context;
@@ -340,9 +535,41 @@ impl CommandPalette {
         self.state.clone()
     }
     /// Re-resolves stable identity against current metadata, never a row offset.
-    pub fn resolve(&mut self, id: &str) -> Option<PaletteResult> {
-        self.search();
-        self.state.results.iter().find(|r| r.id == id).cloned()
+    #[must_use]
+    pub fn resolve(&self, id: &str) -> PaletteResolution {
+        let commands = self.commands();
+        let result = self
+            .requests
+            .iter()
+            .chain(&self.tabs)
+            .chain(&self.environments)
+            .chain(&self.themes)
+            .chain(&commands)
+            .find(|e| e.result.id == id)
+            .map(|e| e.result.clone());
+        match result {
+            Some(result) => match &result.unavailable_reason {
+                Some(reason) => PaletteResolution::Failed {
+                    reason: PaletteFailure::CommandUnavailable {
+                        reason: reason.clone(),
+                    },
+                },
+                None => PaletteResolution::Ready { result },
+            },
+            None => PaletteResolution::Failed {
+                reason: if id.starts_with("request:") {
+                    PaletteFailure::RequestRemoved
+                } else if id.starts_with("tab:") {
+                    PaletteFailure::TabClosed
+                } else if id.starts_with("environment:") {
+                    PaletteFailure::EnvironmentRemoved
+                } else if id.starts_with("theme:") {
+                    PaletteFailure::ThemeRemoved
+                } else {
+                    PaletteFailure::DestinationRemoved
+                },
+            },
+        }
     }
     pub fn enter(&mut self, page: PalettePage) -> PaletteSnapshot {
         if self.state.page == PalettePage::Root && page != PalettePage::Root {
@@ -366,120 +593,81 @@ impl CommandPalette {
         self.state = parent;
         Some(self.search())
     }
-    /// Finds a saved request's open destination in the active group first.
-    #[must_use]
-    pub fn request_tab(&self, collection: &str, request: &str) -> Option<PaletteDestination> {
-        self.tab_metadata
-            .iter()
-            .filter(|t| t.collection_id.as_deref() == Some(collection) && t.request_id == request)
-            .min_by_key(|t| t.group_id != self.active_group)
-            .map(|t| PaletteDestination::Tab {
-                group_id: t.group_id.clone(),
-                tab_id: t.tab_id.clone(),
-            })
-    }
     fn commands(&self) -> Vec<Entry> {
         WorkspaceCommand::ALL
             .iter()
+            .filter(|c| **c != WorkspaceCommand::CommandPalette)
             .map(|command| {
                 let descriptor = command.descriptor(&self.context);
-                let subtitle = match command {
-                    WorkspaceCommand::RequestParams
-                    | WorkspaceCommand::RequestHeaders
-                    | WorkspaceCommand::RequestBody
-                    | WorkspaceCommand::RequestAuth
-                    | WorkspaceCommand::RequestNote
-                    | WorkspaceCommand::RequestSettings => "Request Section",
-                    WorkspaceCommand::ResponseHeaders
-                    | WorkspaceCommand::ResponseBody
-                    | WorkspaceCommand::ResponseCookies
-                    | WorkspaceCommand::ResponseRaw
-                    | WorkspaceCommand::ResponseRequest => "Response Section",
-                    _ => "Action",
-                };
-                let shortcut = format!(
-                    "{}{}{}{}{}",
-                    if descriptor.modifiers & 8 != 0 {
-                        "⌃"
-                    } else {
-                        ""
-                    },
-                    if descriptor.modifiers & 4 != 0 {
-                        "⌥"
-                    } else {
-                        ""
-                    },
-                    if descriptor.modifiers & 2 != 0 {
-                        "⇧"
-                    } else {
-                        ""
-                    },
-                    if descriptor.modifiers & 1 != 0 {
-                        "⌘"
-                    } else {
-                        ""
-                    },
-                    match descriptor.key.as_str() {
-                        "\u{f702}" => "←".into(),
-                        "\u{f703}" => "→".into(),
-                        _ => descriptor.key.to_uppercase(),
-                    }
+                let mut result = PaletteResult::new(
+                    format!("command:{}", command.id()),
+                    PaletteDestination::Command { command: *command },
+                    descriptor.title,
                 );
-                Entry::new(
-                    PaletteResult {
-                        id: format!("command:{command:?}"),
-                        destination: PaletteDestination::Command { command: *command },
-                        title: descriptor.title,
-                        subtitle: subtitle.into(),
-                        method: String::new(),
-                        shortcut,
-                        unavailable_reason: descriptor.unavailable_reason,
-                        current: false,
-                    },
-                    &descriptor.synonyms,
-                )
+                result.shortcut = descriptor.shortcut.map_or_else(String::new, |s| s.label);
+                result.unavailable_reason = descriptor.unavailable_reason;
+                Entry::new(result.accessible(), "", &descriptor.synonyms)
             })
             .collect()
+    }
+    fn root_entries<'a>(&'a self, query: &str, commands: &'a [Entry]) -> Vec<&'a Entry> {
+        let filter = self.state.effective_filter;
+        let mut entries = vec![];
+        if filter != PaletteFilter::Actions {
+            if query.is_empty() {
+                let mut seen = HashSet::new();
+                for tab in &self.tab_metadata {
+                    let entry = self.requests.iter().find(|e| e.result.open_tab.as_ref().is_some_and(|t| t.group_id == tab.group_id && t.tab_id == tab.tab_id))
+                                .or_else(|| self.tabs.iter().find(|e| matches!(&e.result.destination, PaletteDestination::Tab { group_id, tab_id } if *group_id == tab.group_id && *tab_id == tab.tab_id)));
+                    if let Some(entry) = entry.filter(|e| seen.insert(e.result.id.clone())) {
+                        entries.push(entry);
+                    }
+                }
+            } else {
+                entries.extend(&self.tabs);
+                entries.extend(&self.requests);
+            }
+        }
+        if filter != PaletteFilter::Requests {
+            entries.extend(commands.iter().filter(|entry| {
+                !query.is_empty()
+                    || matches!(
+                        entry.result.destination,
+                        PaletteDestination::Command {
+                            command: WorkspaceCommand::NewHttp
+                                | WorkspaceCommand::FilterRequests
+                                | WorkspaceCommand::SwitchEnvironment
+                                | WorkspaceCommand::ChangeTheme
+                                | WorkspaceCommand::Settings
+                        }
+                    )
+            }));
+        }
+        entries
     }
     fn search(&mut self) -> PaletteSnapshot {
         let text = self.state.query.trim();
         let actions_only = text.starts_with('>') && self.state.page == PalettePage::Root;
         let query = normalize(if actions_only { text[1..].trim() } else { text });
         let words: Vec<_> = query.split_whitespace().collect();
+        self.state.effective_filter = if actions_only {
+            PaletteFilter::Actions
+        } else {
+            self.state.filter
+        };
+        let (title, label) = match self.state.page {
+            PalettePage::Root => ("Command Palette", "Search requests or actions"),
+            PalettePage::Environments => ("Switch environment", "Search environments"),
+            PalettePage::Themes => ("Change theme", "Search themes"),
+        };
+        self.state.page_title = title.into();
+        self.state.search_label = label.into();
+        self.state.search_placeholder = format!("{label}…");
         let commands = self.commands();
         let entries: Vec<&Entry> = match self.state.page {
             PalettePage::Environments => self.environments.iter().collect(),
             PalettePage::Themes => self.themes.iter().collect(),
-            PalettePage::Root => {
-                let filter = if actions_only {
-                    PaletteFilter::Actions
-                } else {
-                    self.state.filter
-                };
-                let mut entries = vec![];
-                if filter != PaletteFilter::Actions {
-                    entries.extend(&self.tabs);
-                    if !query.is_empty() {
-                        entries.extend(&self.requests);
-                    }
-                }
-                if filter != PaletteFilter::Requests {
-                    entries.extend(commands.iter().filter(|entry| {
-                        !query.is_empty()
-                            || matches!(
-                                entry.result.destination,
-                                PaletteDestination::Command {
-                                    command: WorkspaceCommand::NewHttp
-                                        | WorkspaceCommand::FilterRequests
-                                        | WorkspaceCommand::SwitchEnvironment
-                                        | WorkspaceCommand::ChangeTheme
-                                        | WorkspaceCommand::Settings
-                                }
-                            )
-                    }));
-                }
-                entries
-            }
+            PalettePage::Root => self.root_entries(&query, &commands),
         };
         let mut ranked: Vec<_> = entries
             .into_iter()
@@ -488,22 +676,25 @@ impl CommandPalette {
                 if !words.iter().all(|word| matches(&entry.corpus, word)) {
                     return None;
                 }
-                let rank = if query.is_empty() || entry.title == query {
-                    0
-                } else if entry.title.starts_with(&query) {
-                    1
-                } else if matches(&entry.title, &query) {
-                    2
-                } else {
-                    3
-                };
+                let rank = std::iter::once(&entry.title)
+                    .chain(&entry.alternate_titles)
+                    .map(|title| {
+                        if query.is_empty() || *title == query {
+                            0
+                        } else if title.starts_with(&query) {
+                            1
+                        } else if matches(title, &query) {
+                            2
+                        } else {
+                            3
+                        }
+                    })
+                    .min()
+                    .unwrap_or(3);
                 let secondary = !query.is_empty() && !matches(&entry.secondary, &query);
                 let open = match &entry.result.destination {
                     PaletteDestination::Tab { .. } => true,
-                    PaletteDestination::Request {
-                        collection_id,
-                        request_id,
-                    } => self.request_tab(collection_id, request_id).is_some(),
+                    PaletteDestination::Request { .. } => entry.result.open_tab.is_some(),
                     _ => false,
                 };
                 Some(((rank, secondary, !open, order), &entry.result))
@@ -512,12 +703,20 @@ impl CommandPalette {
         if !query.is_empty() {
             ranked.sort_by_key(|(rank, _)| *rank);
         }
-        self.state.total = u64::try_from(ranked.len()).unwrap_or(u64::MAX);
-        self.state.results = ranked
+        let total = u64::try_from(ranked.len()).unwrap_or(u64::MAX);
+        let result_summary = if ranked.len() > RESULT_LIMIT {
+            format!("{RESULT_LIMIT} of {} · Refine search", ranked.len())
+        } else {
+            format!("{} results", ranked.len())
+        };
+        let results = ranked
             .into_iter()
-            .take(50)
+            .take(RESULT_LIMIT)
             .map(|(_, r)| r.clone())
             .collect();
+        self.state.total = total;
+        self.state.result_summary = result_summary;
+        self.state.results = results;
         if !self
             .state
             .results
@@ -530,5 +729,6 @@ impl CommandPalette {
     }
 }
 
-#[cfg(test)]
-mod tests;
+fn method_label(method: String, web_socket: bool) -> String {
+    if web_socket { "WS".into() } else { method }
+}

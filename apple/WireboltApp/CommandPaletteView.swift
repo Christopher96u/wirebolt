@@ -38,7 +38,7 @@ struct CommandPaletteView: View {
                     Button { controller.backOrDismiss() } label: { Image(systemName: "chevron.left") }
                         .buttonStyle(.plain).accessibilityLabel("Back to actions")
                 }
-                Text(snapshot.page == .root ? "Command Palette" : snapshot.page == .environments ? "Switch environment" : "Change theme")
+                Text(snapshot.pageTitle)
                     .font(.system(size: 11, weight: .medium)).foregroundStyle(theme.muted.color)
                 Spacer()
                 Button { controller.dismiss(restoringFocus: true) } label: { Image(systemName: "xmark") }
@@ -46,9 +46,9 @@ struct CommandPaletteView: View {
             }.padding(.horizontal, 16).padding(.top, 14)
             HStack(spacing: 10) {
                 Image(systemName: "magnifyingglass").foregroundStyle(theme.muted.color).accessibilityHidden(true)
-                CommandPaletteSearch(controller: controller, query: snapshot.query, color: theme.primary.nsColor)
+                CommandPaletteSearch(controller: controller, query: snapshot.query, placeholder: snapshot.searchPlaceholder, label: snapshot.searchLabel, color: theme.primary.nsColor)
                     .frame(height: 30)
-                    .accessibilityLabel("Search requests or actions")
+                    .accessibilityLabel(snapshot.searchLabel)
             }.padding(.horizontal, 16).padding(.vertical, 12)
             if snapshot.page == .root {
                 HStack(spacing: 4) {
@@ -87,12 +87,12 @@ struct CommandPaletteView: View {
                 Text("↵ confirm")
                 Text(snapshot.page == .root ? "esc close" : "⌫ / esc back")
                 Spacer(minLength: 0)
-                Text(snapshot.total > 50 ? "50 of \(snapshot.total) · Refine search" : "\(snapshot.total) results")
+                Text(snapshot.resultSummary)
             }.font(.system(size: 10)).foregroundStyle(theme.muted.color).padding(.horizontal, 16).padding(.vertical, 11)
         }.foregroundStyle(theme.primary.color)
     }
     private func filter(_ title: String, _ filter: PaletteFilter, snapshot: PaletteSnapshot) -> some View {
-        let selected = snapshot.query.trimmingCharacters(in: .whitespacesAndNewlines).hasPrefix(">") ? filter == .actions : snapshot.filter == filter
+        let selected = snapshot.effectiveFilter == filter
         return Button(title) { controller.query(snapshot.query, filter: filter) }
             .buttonStyle(.plain).font(.system(size: 11, weight: selected ? .medium : .regular))
             .padding(.horizontal, 10).padding(.vertical, 5)
@@ -103,18 +103,22 @@ struct CommandPaletteView: View {
         Button { controller.confirm(result.id) } label: {
             HStack(spacing: 10) {
                 if !result.method.isEmpty {
-                    Text(result.method).font(.system(size: 10, weight: .semibold, design: .monospaced))
-                        .foregroundStyle(theme.muted.color).frame(width: 46)
+                    MethodChip(method: HTTPMethod(rawValue: result.method)!, webSocket: result.webSocket)
+                        .frame(width: 46)
                 } else {
                     Image(systemName: symbol(result.destination)).font(.system(size: 15))
                         .foregroundStyle(theme.muted.color).frame(width: 46).accessibilityHidden(true)
                 }
                 VStack(alignment: .leading, spacing: 4) {
                     Text(result.title).font(.system(size: 13, weight: .medium)).lineLimit(1)
-                    Text(result.unavailableReason ?? result.subtitle).font(.system(size: 11))
-                        .foregroundStyle(theme.muted.color).lineLimit(2)
+                    if let reason = result.unavailableReason {
+                        Text(reason).font(.system(size: 11)).foregroundStyle(theme.muted.color).lineLimit(2)
+                    } else if !result.subtitle.isEmpty {
+                        Text(result.subtitle).font(.system(size: 11)).foregroundStyle(theme.muted.color).lineLimit(2)
+                    }
                 }
                 Spacer(minLength: 4)
+                if !result.marker.isEmpty { Text(result.marker).font(.system(size: 10)).foregroundStyle(theme.muted.color) }
                 if result.current { Image(systemName: "checkmark").accessibilityHidden(true) }
                 else { Text(result.shortcut).font(.system(size: 10, design: .monospaced)).foregroundStyle(theme.muted.color) }
             }.padding(.horizontal, 10).frame(minHeight: 50).frame(maxWidth: .infinity, alignment: .leading)
@@ -123,7 +127,7 @@ struct CommandPaletteView: View {
         }
         .buttonStyle(.plain)
         .onHover { if $0 { controller.highlight(result.id) } }
-        .accessibilityLabel([result.method, result.title, result.subtitle, result.current ? "Current" : "", result.unavailableReason ?? ""].filter { !$0.isEmpty }.joined(separator: ", "))
+        .accessibilityLabel(result.accessibilityLabel)
         .accessibilityValue(result.unavailableReason == nil ? "Available" : "Unavailable")
         .accessibilityAddTraits(selected ? .isSelected : [])
     }
@@ -141,13 +145,15 @@ struct CommandPaletteView: View {
 struct CommandPaletteSearch: NSViewRepresentable {
     let controller: CommandPaletteController
     let query: String
+    let placeholder: String
+    let label: String
     let color: NSColor
     func makeCoordinator() -> Coordinator { Coordinator(controller: controller) }
     func makeNSView(context: Context) -> NSTextField {
         let field = PaletteSearchField()
         field.delegate = context.coordinator
-        field.placeholderString = "Search requests or actions…"
-        field.setAccessibilityLabel("Search requests or actions")
+        field.placeholderString = placeholder
+        field.setAccessibilityLabel(label)
         field.font = .systemFont(ofSize: 17)
         field.isBordered = false
         field.drawsBackground = false
@@ -156,6 +162,8 @@ struct CommandPaletteSearch: NSViewRepresentable {
         return field
     }
     func updateNSView(_ field: NSTextField, context: Context) {
+        field.placeholderString = placeholder
+        field.setAccessibilityLabel(label)
         field.textColor = color
         if field.stringValue != query, (field.currentEditor() as? NSTextView)?.hasMarkedText() != true { field.stringValue = query }
     }
