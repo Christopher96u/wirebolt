@@ -42,6 +42,7 @@ swiftc \
   apple/Sources/WireboltKit/EnvironmentInspectorEditing.swift \
   apple/Sources/WireboltKit/WorkspaceOperations.swift \
   apple/Sources/WireboltKit/SidebarSnapshot.swift \
+  apple/Sources/WireboltKit/CommandPalette.swift \
   apple/Tests/WireboltKitTests/RuntimeRunFixture.swift \
   apple/Tests/StreamBridgeSmoke.swift \
   apple/Tests/BridgeSmoke.swift \

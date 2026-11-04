@@ -6,6 +6,8 @@ Changes under **Unreleased** are on `main` but not in a published build yet. Dow
 
 ### Added
 
+- **Command Palette…** (⌘K) finds workspace requests, open tabs and safe actions, with environment and theme pickers.
+
 - **QUERY** method (RFC 10008) in the method menu, with its own color.
 - **Clear All History…** in Settings → General → History removes all saved history.
 - Custom themes from two colors and VS Code theme imports, with a live preview, checked contrast, and rename/delete controls (Settings → Appearance).

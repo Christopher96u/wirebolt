@@ -76,6 +76,9 @@ warmup and the core version handshake (ABI revision 5).
 
 | File | What remains and why |
 | --- | --- |
+| `WireboltApp/CommandPaletteController.swift` | Native modal lifetime, responder/selection capture, IME event routing, focus restoration and destination handoff over Rust-owned palette state. |
+| `WireboltApp/WorkspaceCommandDispatch.swift` | Native window/modal eligibility and dispatch to existing application actions; Rust supplies shared command identity, titles, shortcuts and domain availability. |
+| `WireboltKit/CommandPalette.swift` | Fine-grained observation of Rust query/selection/back-stack snapshots and bounded allowlisted metadata updates; no request-content search or per-keystroke draft synchronization. |
 | `WireboltApp/EditorFind.swift` | Native search-field focus, keyboard handling and editor selection presentation over Rust search results. |
 | `WireboltApp/EnvironmentEditor.swift` | Inspector presentation and AppKit end-editing notifications, truncation and accessibility. Rust owns unfinished field buffers, orphan reconciliation and notice text, browse reconciliation, action labels, typed commits, validation, secret storage and undo. The model owns commit serialization across close, switch, quit and Git replacement. |
 | `WireboltApp/FieldTextInput.swift` | Native text editing, selection, focus, accessibility and UTF-16 completion presentation. |

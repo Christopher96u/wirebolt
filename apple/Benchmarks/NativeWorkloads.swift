@@ -46,6 +46,9 @@ final class ProbeWindow: NSWindow { override var canBecomeKey: Bool { true } }
         let nativeColdWindowFirstContentMilliseconds: Double
         let nativeResponseRendererColdSwitchMilliseconds: Double
         let nativeResponseRendererSwitchP95Milliseconds: Double
+        let nativeCommandPaletteWarmOpenP95Milliseconds: Double
+        let nativeCommandPaletteQueryP95Milliseconds: Double
+        let nativeCommandPaletteTypingP95Milliseconds: Double
         let nativeTabCloseCommandP95Milliseconds: Double
     }
     static var windowFirstContentBudget = 0.0
@@ -54,6 +57,9 @@ final class ProbeWindow: NSWindow { override var canBecomeKey: Bool { true } }
     /// Warm switches between mounted renderers: one 60 Hz frame for the complete native
     /// SwiftUI/AppKit path. The engine-only synthetic budget (4 ms) is gated by PerformanceContract.
     static var rendererSwitchBudget = 0.0
+    static var paletteOpenBudget = 0.0
+    static var paletteQueryBudget = 0.0
+    static var paletteTypingBudget = 0.0
     static var tabCloseBudget = 0.0
     static var samples = 100
     static let defaultsName = "wirebolt-native-workloads-\(UUID().uuidString)"
@@ -1148,6 +1154,9 @@ final class ProbeWindow: NSWindow { override var canBecomeKey: Bool { true } }
         rendererColdSwitchBudget = budgets.nativeResponseRendererColdSwitchMilliseconds
         rendererSwitchBudget = budgets.nativeResponseRendererSwitchP95Milliseconds
         tabCloseBudget = budgets.nativeTabCloseCommandP95Milliseconds
+        paletteOpenBudget = budgets.nativeCommandPaletteWarmOpenP95Milliseconds
+        paletteQueryBudget = budgets.nativeCommandPaletteQueryP95Milliseconds
+        paletteTypingBudget = budgets.nativeCommandPaletteTypingP95Milliseconds
         _ = NSApplication.shared
         NSApp.setActivationPolicy(.prohibited)
         defer { fixtureDefaults.removePersistentDomain(forName: defaultsName) }
@@ -1167,6 +1176,7 @@ final class ProbeWindow: NSWindow { override var canBecomeKey: Bool { true } }
         if mode=="notes-ui" { try await verifyNotes() }
         else if mode=="markdown" { try await markdownPreview(size) }
         else if mode=="editor" { try editor(size) }
+        else if mode=="command-palette" { try await commandPalette(size, root: root) }
         else if mode=="workspace" { try workspace(size,root:root) }
         else if mode=="tab-close" { closeTabs(size, root: root); verifyLastTabReopen(root: root) }
         else if mode=="body-typing" { try bodyTyping() }

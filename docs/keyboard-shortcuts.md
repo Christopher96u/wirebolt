@@ -45,6 +45,7 @@
 
 | Action | Shortcut |
 | --- | --- |
+| Command Palette | ⌘K |
 | Go back / forward | ⌃⌘← / ⌃⌘→ |
 | Split right | ⇧⌘D |
 | Focus sidebar | ⌘0 |
@@ -67,6 +68,7 @@ For a WebSocket request, ⌥⌘3 opens **Message**. Response sections apply to H
 
 ## In context
 
+- **Command Palette:** type to search, use All / Requests / Actions or a leading `>` for actions, ↑ / ↓ to highlight and Return to confirm. Esc returns from an environment or theme submenu; Esc at the root, ⌘K, or ⌘W closes the palette. Backspace on an empty submenu query returns to the parent. Highlighting never opens a request or applies a choice.
 - **Settings modal:** ⌘F focuses settings search; Esc or ⌘W returns to the workspace.
 - **Environment editor:** ⇧⌘K adds a variable entry; Return, Tab and focus loss save the edited field; Esc closes the inspector after saving. Use ⌘Z / ⇧⌘Z to undo / redo changes.
 - **Find in a response or editor:** ⌘F opens the find bar; Return and ⇧Return go to the next and previous match; ⌥⌘C, ⌥⌘W and ⌥⌘R toggle Match Case, Whole Word and Regular Expression; ⌥⌘L finds in the selection; Esc closes the bar.

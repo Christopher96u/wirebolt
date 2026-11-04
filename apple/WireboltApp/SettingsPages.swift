@@ -61,7 +61,7 @@ struct KeyboardSettingsPage: View {
         ShortcutGroup(title: "Requests", shortcuts: [("New request", "⌘N"),
             ("Save request", "⌘S"), ("Send request or message", "⌘↩"), ("Cancel request", "⌘."),
             ("Connect or disconnect WebSocket", "⌃⌘↩"), ("Edit URL", "⌘L"), ("Add key", "⇧⌘K")]),
-        ShortcutGroup(title: "Navigation", shortcuts: [("Focus sidebar", "⌘0"), ("Focus response", "⌥⌘0"),
+        ShortcutGroup(title: "Navigation", shortcuts: [("Command Palette", "⌘K"), ("Focus sidebar", "⌘0"), ("Focus response", "⌥⌘0"),
             ("Split right", "⇧⌘D"), ("Next tab", "⌃⇥"), ("Previous tab", "⌃⇧⇥"),
             ("Select tab 1–9", "⌘1–9"), ("Request sections", "⌥⌘1–6"), ("Response sections", "⌃⌘1–5")]),
         ShortcutGroup(title: "Workspace", shortcuts: [("Open workspace", "⌘O"), ("New folder", "⌥⌘N"),
