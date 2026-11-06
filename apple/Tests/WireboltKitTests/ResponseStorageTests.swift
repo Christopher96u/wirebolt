@@ -44,27 +44,22 @@ struct ResponseStorageTests {
         }
     }
 
-    @Test("Cookie expiry fixtures and Rust parsing match the original Foundation formatters")
+    @Test("Cookie expiry matches pinned Foundation-compatibility fixtures")
     func foundationCookieDates() async throws {
         let fixture = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
             .appending(path: "../../../crates/wirebolt-app/tests/fixtures/cookie-dates.json")
         let rows = try #require(JSONSerialization.jsonObject(with: Data(contentsOf: fixture)) as? [[Any]])
-        let formatters = ["EEE, dd MMM yyyy HH:mm:ss zzz", "EEEE, dd-MMM-yy HH:mm:ss zzz"].map { format in
-            let formatter = DateFormatter()
-            formatter.locale = Locale(identifier: "en_US_POSIX")
-            formatter.timeZone = TimeZone(secondsFromGMT: 0)
-            formatter.dateFormat = format
-            return formatter
-        }
+        // These fixtures pin the original parser contract. Foundation/ICU date
+        // parsing can drift between macOS versions: CI has treated HST as UTC
+        // while Rust and the recorded Honolulu timestamps still agree. Assert
+        // the bridge against the pinned values, rather than a mutable OS oracle.
         let origin = try #require(URL(string: "https://example.com/"))
         let jar = CookieJar()
         for row in rows {
             let source = try #require(row[0] as? String)
-            let expected = formatters.lazy.compactMap { $0.date(from: source) }.first
             let fixtureDate = (row[1] as? NSNumber).map { Date(timeIntervalSince1970: $0.doubleValue) }
-            #expect(expected == fixtureDate, "Fixture: \(source)")
             let received = await jar.store(headers: [ResponseHeader(name: "Set-Cookie", value: "name=value; Expires=\(source)")], requestURL: origin)
-            #expect(received.first?.expiresAt == expected, "Cookie: \(source)")
+            #expect(received.first?.expiresAt == fixtureDate, "Cookie: \(source)")
         }
     }
 
