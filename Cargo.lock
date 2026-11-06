@@ -2244,7 +2244,7 @@ dependencies = [
 
 [[package]]
 name = "uniffi-bindgen"
-version = "1.0.0-rc.1"
+version = "1.0.0-rc.2"
 dependencies = [
  "uniffi",
 ]
@@ -2675,7 +2675,7 @@ dependencies = [
 
 [[package]]
 name = "wirebolt-app"
-version = "1.0.0-rc.1"
+version = "1.0.0-rc.2"
 dependencies = [
  "async-trait",
  "base64",
@@ -2701,7 +2701,7 @@ dependencies = [
 
 [[package]]
 name = "wirebolt-core"
-version = "1.0.0-rc.1"
+version = "1.0.0-rc.2"
 dependencies = [
  "base64",
  "brotli-decompressor",
@@ -2732,7 +2732,7 @@ dependencies = [
 
 [[package]]
 name = "wirebolt-ffi"
-version = "1.0.0-rc.1"
+version = "1.0.0-rc.2"
 dependencies = [
  "async-trait",
  "rustls",

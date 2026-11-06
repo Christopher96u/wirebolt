@@ -25,7 +25,9 @@ Replace the path and remote placeholder with your own values. You can also clone
 4. Enter a commit message and click **Commit**.
 5. Click **Push** when ready to publish to the configured remote. A branch without an upstream shows **Publish**, which pushes it to `origin` and tracks it. Push is disabled, with the reason in its tooltip, when there is nothing to push.
 
-![Git collaboration sheet for a disposable demo repository](assets/screenshots/git.png)
+![Native Git Collaboration view displaying demonstration workspace changes](assets/screenshots/git.png)
+
+The screenshot uses a display-only Git status fixture; no remote repository was contacted to make it.
 
 Wirebolt commits its managed workspace documents. Unrelated files are not included by that action. Review ordinary literal fields for credentials before sharing; secret references do not make all user-entered text safe automatically.
 

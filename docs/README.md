@@ -15,6 +15,8 @@ These guides describe the current source on `main`. Downloaded releases may not 
 | Guide | Covers |
 | --- | --- |
 | [Requests and responses](requests.md) | Compose, send, cancel, inspect and save |
+| [Command Palette](command-palette.md) | ⌘K, workspace-wide request search, actions, environments and themes |
+| [Appearance](appearance.md) | Built-in/custom themes, VS Code import, density and editor preferences |
 | [Environments and secrets](environments-and-secrets.md) | Variables, overrides, Keychain and sharing |
 | [Authentication](authentication.md) | Basic, Bearer, API keys and OAuth 2.0 |
 | [Proxy and network](proxy-and-network.md) | Inheritance, routes, testing and transport options |

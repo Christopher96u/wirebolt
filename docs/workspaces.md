@@ -16,7 +16,7 @@ Switching workspaces closes the old tabs and cancels active requests. If there a
 
 ## Collections, folders and ordering
 
-A new workspace starts empty: use **New Request** (**⌘N**), **Import**, or drop a cURL, HAR, Postman, Insomnia, Bruno or Wirebolt file (or a Bruno collection folder) on the window. Create requests and folders from the **+** menu or the relevant context menu; an empty collection shows its own **New Request** row. Right-click a sidebar item for its available actions.
+A new workspace starts empty: use **New Request** (**⌘N**), **Import**, or drop a cURL, HAR, Postman, Insomnia or Bruno file (or a Bruno collection folder) on the window. Create requests and folders from the **+** menu or the relevant context menu; an empty collection shows its own **New Request** row. Right-click a sidebar item for its available actions.
 
 In Comfortable density, request rows show their URL path beside the method, without the host, base variable, query or fragment. The trailing column holds the last run's relative time and status. **History** shows the active request's saved run count; expand it to restore a previous run.
 
@@ -40,8 +40,8 @@ and does not generate a warning when the workspace opens again.
 **Navigate → Command Palette…** (**⌘K**) finds requests across the workspace,
 including collapsed folders and requests hidden by the sidebar filter, plus open
 tabs and navigation actions. Highlight with ↑ / ↓ and confirm with Return; Esc
-closes it. See [Keyboard shortcuts](keyboard-shortcuts.md#in-context) for filters
-and submenu keys.
+closes it. See [Command Palette](command-palette.md) for filters, environment/theme
+pickers and submenu keys.
 
 When the sidebar has focus, its selection is outlined:
 
@@ -78,6 +78,8 @@ Each workspace has its own cookie jar, stored in `~/Library/Application Support/
 
 **Workspace → Cookies…** lists the open workspace's cookies with their domain, path, expiry and flags. Values are hidden until you choose **Show Values**. Select cookies and click **Delete** (or press Delete), or use **Clear All…** to empty the jar. Other workspaces keep their own cookies.
 
+![Workspace cookie jar with demonstration cookies and hidden values](assets/screenshots/cookies.png)
+
 ## Collaborate
 
-Make the workspace folder the root of a Git repository (**Workspace → Git Collaboration…** offers **Initialize Git Repository**) and configure a remote, then use [Git Collaboration](git-collaboration.md). Export is another option when you want a [portable JSON document](import-export.md).
+Make the workspace folder the root of a Git repository (**Workspace → Git Collaboration…** offers **Initialize Git Repository**) and configure a remote, then use [Git Collaboration](git-collaboration.md). Share the workspace folder to transfer saved definitions. See [Import and export](import-export.md) for importing other clients and copying a request as cURL.

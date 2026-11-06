@@ -45,3 +45,7 @@ Open the environment menu → **Configure Environments…**. Add an enabled Glob
 Add your endpoint's usage notes under **Note → Edit**, then open **Preview** and save with **⌘S**.
 
 Next, learn about [environments](environments-and-secrets.md), [authentication](authentication.md) or [proxy settings](proxy-and-network.md).
+
+## Find the request again
+
+Press **⌘K** and type `Create order`. Use **↑ / ↓** and **Return** to select it. An **Open** marker means Wirebolt will return to its existing tab. This also finds requests in collapsed folders or hidden by the sidebar filter. Press **Esc** to return to your work. See the [Command Palette guide](command-palette.md) for actions, environments and themes.

@@ -284,3 +284,18 @@ it also uses disposable fixtures.
 ## Documentation changes
 
 Use relative links, current UI labels and runnable examples. Keep screenshots in `docs/assets/screenshots` with descriptive alternative text. See [asset provenance](assets/README.md) before refreshing images. Check that docs describe the target revision, and update the changelog when documenting behavior that is not in a published release yet.
+
+Refresh the complete published screenshot set with:
+
+```sh
+./scripts/docs-screenshots.sh
+```
+
+The documentation runner hosts production SwiftUI/AppKit views with isolated
+preferences and storage. It sends GET and POST through the production Rust HTTP
+transport to the quick-start demo API on a free loopback port and asserts the
+responses before capture. WebSocket events and Git status are injected display
+fixtures. It never contacts their illustrative endpoints or an OAuth provider,
+and uses no real workspace or Keychain. Output defaults to
+`build/docs-screenshots/`; review its PNGs, manifest and source commit before
+updating the tracked assets. Capture methods and limits belong in the provenance.

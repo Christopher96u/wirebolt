@@ -39,13 +39,15 @@ The response area shows status, timing and size. Use its panels to inspect the b
 
 While a request is resent, the previous response stays visible, dimmed, until the new one arrives. When a request fails, the response area explains the failure and offers **Retry**, **Network Settings** and, when available, **View Request**.
 
-Use the renderer menu for JSON, JSON tree, raw text, XML, HTML, Webview, image or hex views as appropriate for the response. A renderer cannot turn incompatible bytes into valid JSON or an image; use Raw or Hex to inspect unexpected content.
+Use the renderer menu for JSON, JSON Tree View, Text, XML, HTML, Webview, Image or Hex as appropriate for the response. A renderer cannot turn incompatible bytes into valid JSON or an image; use Text or Hex to inspect unexpected content.
 
 The HTML source view and Webview serve different purposes. Open a Webview only for content you want to render; Markdown notes use a separate local preview.
 
 ## Tabs, split editors and history
 
 Tabs show each request's method and name. Clicking a request in the sidebar opens it in a *preview* tab (italic title) that the next click reuses. Editing or sending the request, double-clicking the tab or ⌘-clicking the sidebar row keeps it open. A dot replaces the close button on tabs with unsaved edits. Switch tabs with **⇧⌘]** / **⇧⌘[**, **⌃Tab** / **⌃⇧Tab** or **⌘1** – **⌘9**.
+
+**⌘K** searches saved requests and open tabs across the workspace by name, method, collection or folder. Confirming a result selects an existing tab when possible, or opens a regular tab; browsing results leaves your current request in place. See [Command Palette](command-palette.md).
 
 Open multiple requests in tabs. **Navigate → Split Right** (**⇧⌘D**) creates a second editor group for comparison. Drafts and responses are independent between document sessions. Save each edited draft you want to retain. Wirebolt reopens your tabs and the latest response of each request at the next launch.
 
