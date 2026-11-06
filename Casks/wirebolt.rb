@@ -1,6 +1,6 @@
 cask "wirebolt" do
-  version "1.0.0-rc.1"
-  sha256 "e3447e8816ea1e11eb6e008b368d054cf80ed1b2fe160c9e3ce2a2d8917cf738"
+  version "1.0.0-rc.2"
+  sha256 "b9b780c7fecf94151b8741d8fb0e862d4eef99c07d68be81a578297f58aa5933"
 
   url "https://github.com/Christopher96u/wirebolt/releases/download/v#{version}/Wirebolt-#{version}-arm64.zip"
   name "Wirebolt"
